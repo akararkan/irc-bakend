@@ -1,0 +1,203 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IRC PLATFORM — APPLICATION CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+spring:
+
+  application:
+    name: irc
+
+  # ── Database ──────────────────────────────────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/irc
+    username: ${DB_USERNAME:khi}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  # ── JPA ───────────────────────────────────────────────────────────────────────
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: true
+    show-sql: true
+    defer-datasource-initialization: true
+
+  # ── SQL init (runs schema.sql AFTER Hibernate DDL) ──────────────────────────
+  sql:
+    init:
+      mode: always
+    properties:
+      hibernate:
+        format_sql: true
+        use_sql_comments: true
+
+        # ✅ PERFORMANCE OPTIMIZATION (MERGED)
+        jdbc:
+          batch_size: 30
+          fetch_size: 50
+        order_inserts: true
+        order_updates: true
+        default_batch_fetch_size: 20
+        query:
+          in_clause_parameter_padding: true
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000
+      cache-null-values: false
+
+  # ── OAuth2 Client ─────────────────────────────────────────────────────────────
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID:your-client-id}
+            client-secret: ${GOOGLE_CLIENT_SECRET:your-client-secret}
+            scope:
+              - email
+              - profile
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            client-name: Google
+        provider:
+          google:
+            authorization-uri: https://accounts.google.com/o/oauth2/v2/auth
+            token-uri: https://oauth2.googleapis.com/token
+            user-info-uri: https://www.googleapis.com/oauth2/v3/userinfo
+            user-name-attribute: sub
+
+  # ── RabbitMQ ──────────────────────────────────────────────────────────────────
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: auto
+        retry:
+          enabled: true
+          initial-interval: 1000ms
+          max-attempts: 3
+          multiplier: 2.0
+          max-interval: 10000ms
+        default-requeue-rejected: false
+        prefetch: 10
+        concurrency: 2
+        max-concurrency: 5
+    template:
+      mandatory: true
+
+  # ── Jackson ───────────────────────────────────────────────────────────────────
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: UTC
+
+  # ── File Upload ───────────────────────────────────────────────────────────────
+  servlet:
+    multipart:
+      max-file-size: 500MB
+      max-request-size: 500MB
+
+  # ── MVC ───────────────────────────────────────────────────────────────────────
+  mvc:
+    throw-exception-if-no-handler-found: true
+
+  web:
+    resources:
+      add-mappings: false
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IRC PLATFORM CORE CONFIG (NEW BLOCK)
+# ═══════════════════════════════════════════════════════════════════════════════
+irc:
+  doi:
+    prefix: "10.12345"
+
+  base-url: "https://irc.example.com"
+
+  verification:
+    secret: ${IRC_VERIFICATION_SECRET:9fK2LmQ7xA4vZpR8sD1cYwN5TgH3UeB6}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  APPLICATION SPECIFIC CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+app:
+
+  jwt:
+    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
+    access-token-expiration-ms: 3600000
+    refresh-token-expiration-ms: 604800000
+    issuer: irc-platform
+
+  cors:
+    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173}
+    allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
+    allowed-headers: ${CORS_HEADERS:*}
+    allow-credentials: ${CORS_CREDENTIALS:true}
+    max-age: ${CORS_MAX_AGE:3600}
+
+  oauth2:
+    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:3000/oauth2/callback}
+    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback}
+
+  storage:
+    endpoint: ${R2_ENDPOINT:https://55dce88e6a5db45662dc27ef50d83c2a.r2.cloudflarestorage.com}
+    access-key: ${R2_ACCESS_KEY:d06b80c862aca3f99a7dc4733ad26411}
+    secret-key: ${R2_SECRET_KEY:4dbb16899e5b4416c5acb94da9c47aed9d6861ec392fdb0745f75f7b3d992314}
+    bucket-name: ${R2_BUCKET_NAME:irc}
+    public-url-base: ${R2_PUBLIC_URL:https://pub-55dce88e6a5db45662dc27ef50d83c2a.r2.dev}
+    region: ${R2_REGION:auto}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LOGGING
+# ═══════════════════════════════════════════════════════════════════════════════
+logging:
+  level:
+    root: INFO
+    ak.dev.irc: DEBUG
+    ak.dev.irc.security: DEBUG
+    ak.dev.irc.irc_security.rabbitmq: DEBUG
+    org.springframework.security: INFO
+    org.springframework.amqp: INFO
+    org.hibernate.SQL: WARN
+    software.amazon.awssdk: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SERVER
+# ═══════════════════════════════════════════════════════════════════════════════
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+    include-exception: false

@@ -1,0 +1,64 @@
+package ak.dev.irc.app.post.repository;
+
+import ak.dev.irc.app.post.entity.Post;
+import ak.dev.irc.app.post.enums.PostStatus;
+import ak.dev.irc.app.post.enums.PostType;
+import ak.dev.irc.app.post.enums.PostVisibility;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface PostRepository extends JpaRepository<Post, UUID> {
+
+    // Feed: all visible published posts by a specific author
+    Page<Post> findByAuthorIdAndStatusAndVisibility(
+            UUID authorId, PostStatus status, PostVisibility visibility, Pageable pageable);
+
+    // Public feed (latest)
+    Page<Post> findByStatusAndVisibilityOrderByCreatedAtDesc(
+            PostStatus status, PostVisibility visibility, Pageable pageable);
+
+    // By type (e.g. REEL feed, STORY feed)
+    Page<Post> findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
+            PostType postType, PostStatus status, PostVisibility visibility, Pageable pageable);
+
+    // Expire stories
+    @Query("SELECT p FROM Post p WHERE p.postType = 'STORY' AND p.expiresAt < :now AND p.status = 'PUBLISHED'")
+    List<Post> findExpiredStories(@Param("now") LocalDateTime now);
+
+    // Share link lookup
+    Optional<Post> findByShareLink(String shareLink);
+
+    // Counter updates (direct DB, avoids optimistic lock conflicts)
+    @Modifying
+    @Query("UPDATE Post p SET p.reactionCount = p.reactionCount + :delta WHERE p.id = :id")
+    void updateReactionCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    @Modifying
+    @Query("UPDATE Post p SET p.commentCount = p.commentCount + :delta WHERE p.id = :id")
+    void updateCommentCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    @Modifying
+    @Query("UPDATE Post p SET p.shareCount = p.shareCount + 1 WHERE p.id = :id")
+    void incrementShareCount(@Param("id") UUID id);
+
+    @Modifying
+    @Query("UPDATE Post p SET p.viewCount = p.viewCount + 1 WHERE p.id = :id")
+    void incrementViewCount(@Param("id") UUID id);
+
+    // Search
+    @Query("SELECT p FROM Post p WHERE p.status = 'PUBLISHED' AND p.visibility = 'PUBLIC' " +
+            "AND (LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%')) " +
+            "OR LOWER(p.voiceTranscript) LIKE LOWER(CONCAT('%',:q,'%')))")
+    Page<Post> search(@Param("q") String query, Pageable pageable);
+}
