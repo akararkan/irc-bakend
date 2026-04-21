@@ -13,10 +13,13 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -32,8 +35,19 @@ public class PostController {
     public ResponseEntity<PostResponse> createPost(
             @Valid @RequestBody CreatePostRequest req,
             @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(postService.createPost(req, user.getId()));
+    }
+
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<PostResponse> createPostWithFiles(
+            @Valid @RequestPart("data") CreatePostRequest req,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(postService.createPostWithFiles(req, user.getId(), files));
     }
 
     // ── Read ──────────────────────────────────────────────────
@@ -78,6 +92,7 @@ public class PostController {
             @PathVariable UUID postId,
             @Valid @RequestBody ReactToPostRequest req,
             @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(postService.reactToPost(postId, user.getId(), req));
     }
 
@@ -85,6 +100,7 @@ public class PostController {
     public ResponseEntity<Void> removeReaction(
             @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         postService.removeReaction(postId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -96,6 +112,7 @@ public class PostController {
             @PathVariable UUID postId,
             @RequestParam(required = false) String caption,
             @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(postService.sharePost(postId, user.getId(), caption));
     }
 
@@ -105,6 +122,7 @@ public class PostController {
     public ResponseEntity<Void> deletePost(
             @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         postService.deletePost(postId, user.getId());
         return ResponseEntity.noContent().build();
     }

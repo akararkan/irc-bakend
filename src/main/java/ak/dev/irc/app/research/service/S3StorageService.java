@@ -2,6 +2,8 @@ package ak.dev.irc.app.research.service;
 
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.InputStream;
+
 /**
  * Abstraction over Cloudflare R2 (S3-compatible) storage.
  * Handles upload, delete, and pre-signed URL generation for research media.
@@ -25,10 +27,10 @@ public interface S3StorageService {
     void delete(String s3Key);
 
     /**
-     * Generates a publicly accessible CDN / pre-signed URL for the given key.
+     * Generates a proxy-based URL for the given key (served through the backend).
      *
      * @param s3Key the object key
-     * @return the full URL
+     * @return the proxy URL path (e.g. /api/v1/media/posts/media/xxx.jpg)
      */
     String getPublicUrl(String s3Key);
 
@@ -40,4 +42,17 @@ public interface S3StorageService {
      * @return the pre-signed URL
      */
     String getPreSignedUrl(String s3Key, int expiryMinutes);
+
+    /**
+     * Retrieves an object from the bucket as a stream (used for media proxying).
+     *
+     * @param s3Key the object key
+     * @return the response input stream wrapper containing both the stream and metadata
+     */
+    S3ObjectStream getObject(String s3Key);
+
+    /**
+     * Wrapper holding a streamed S3 object and its metadata.
+     */
+    record S3ObjectStream(InputStream inputStream, String contentType, long contentLength) {}
 }

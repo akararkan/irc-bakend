@@ -56,9 +56,8 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("UPDATE Post p SET p.viewCount = p.viewCount + 1 WHERE p.id = :id")
     void incrementViewCount(@Param("id") UUID id);
 
-    // Search
+    // Search (voice transcript removed from posts — search only by text content)
     @Query("SELECT p FROM Post p WHERE p.status = 'PUBLISHED' AND p.visibility = 'PUBLIC' " +
-            "AND (LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%')) " +
-            "OR LOWER(p.voiceTranscript) LIKE LOWER(CONCAT('%',:q,'%')))")
+            "AND LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%'))")
     Page<Post> search(@Param("q") String query, Pageable pageable);
 }

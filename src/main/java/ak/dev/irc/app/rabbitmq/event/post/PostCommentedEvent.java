@@ -17,6 +17,7 @@ public class PostCommentedEvent implements Serializable {
     private UUID commentAuthorId;
     private UUID postAuthorId;
     private UUID parentCommentId;   // null if top-level
+    private UUID parentCommentAuthorId;
     private boolean isReply;
     private boolean hasVoice;
     @Builder.Default

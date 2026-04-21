@@ -155,15 +155,15 @@ app:
     issuer: irc-platform
 
   cors:
-    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173}
+    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
     allowed-headers: ${CORS_HEADERS:*}
     allow-credentials: ${CORS_CREDENTIALS:true}
     max-age: ${CORS_MAX_AGE:3600}
 
   oauth2:
-    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:3000/oauth2/callback}
-    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback}
+    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:5173/oauth2/callback}
+    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback,http://192.168.1.118:3000/oauth2/callback,http://192.168.1.118:5173/oauth2/callback}
 
   storage:
     endpoint: ${R2_ENDPOINT:https://55dce88e6a5db45662dc27ef50d83c2a.r2.cloudflarestorage.com}
@@ -184,8 +184,12 @@ logging:
     ak.dev.irc.security: DEBUG
     ak.dev.irc.irc_security.rabbitmq: DEBUG
     org.springframework.security: INFO
+    org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
     org.springframework.amqp: INFO
     org.hibernate.SQL: WARN
+    org.hibernate: WARN
+    io.netty: ERROR
+    io.netty.util.internal: ERROR
     software.amazon.awssdk: WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
@@ -195,6 +199,7 @@ logging:
 #  SERVER
 # ═══════════════════════════════════════════════════════════════════════════════
 server:
+  address: 0.0.0.0
   port: ${SERVER_PORT:8080}
   error:
     include-message: always

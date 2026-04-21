@@ -18,7 +18,6 @@ public class MediaItemResponse {
     private Integer durationSeconds;
     private Long fileSizeBytes;
     private String mimeType;
-    private String waveformData;
-    private String transcript;
+
     private Integer sortOrder;
 }

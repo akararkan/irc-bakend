@@ -138,7 +138,7 @@ public class Research extends BaseAuditEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
-    private ResearchStatus status = ResearchStatus.DRAFT;
+    private ResearchStatus status = ResearchStatus.PUBLISHED;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "visibility", nullable = false, length = 20)

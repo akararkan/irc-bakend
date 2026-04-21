@@ -3,16 +3,22 @@ package ak.dev.irc.app.research.config;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.net.URI;
+import java.time.Duration;
 
 @Configuration
+// Only enable this S3 configuration when both access-key and secret-key are provided.
+@ConditionalOnExpression("'${app.storage.access-key:}' != '' and '${app.storage.secret-key:}' != ''")
 public class S3Config {
 
     @Value("${app.storage.endpoint}")
@@ -34,6 +40,13 @@ public class S3Config {
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(accessKey, secretKey)))
                 .region(Region.of(region))
+                .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(Duration.ofSeconds(30))
+                        .apiCallAttemptTimeout(Duration.ofSeconds(10))
+                        .retryPolicy(RetryPolicy.builder()
+                                .numRetries(2)
+                                .build())
+                        .build())
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(true)
                         .build())

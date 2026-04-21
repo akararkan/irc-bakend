@@ -20,6 +20,7 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         JOIN FETCH uf.follower f
         WHERE uf.following.id = :userId
           AND f.deletedAt IS NULL
+        ORDER BY uf.followedAt DESC
         """)
     Page<UserFollow> findFollowers(@Param("userId") UUID userId, Pageable pageable);
 
@@ -29,6 +30,7 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         JOIN FETCH uf.following f
         WHERE uf.follower.id = :userId
           AND f.deletedAt IS NULL
+        ORDER BY uf.followedAt DESC
         """)
     Page<UserFollow> findFollowing(@Param("userId") UUID userId, Pageable pageable);
 
@@ -53,6 +55,7 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         SELECT uf.follower.id FROM UserFollow uf
         WHERE uf.following.id = :userId
           AND uf.follower.deletedAt IS NULL
+        ORDER BY uf.followedAt DESC, uf.follower.id
         """)
     List<UUID> findFollowerIds(@Param("userId") UUID userId, Pageable pageable);
 

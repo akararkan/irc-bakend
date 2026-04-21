@@ -5,6 +5,8 @@ import ak.dev.irc.app.rabbitmq.event.post.PostCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCreatedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchPublishedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchReactedEvent;
@@ -12,9 +14,11 @@ import ak.dev.irc.app.rabbitmq.event.user.UserBlockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserFollowedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnblockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnfollowedEvent;
+import ak.dev.irc.app.post.repository.PostCommentRepository;
 import ak.dev.irc.app.user.entity.Notification;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.NotificationType;
+import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.mapper.NotificationMapper;
 import ak.dev.irc.app.user.realtime.NotificationPushedEvent;
 import ak.dev.irc.app.user.repository.NotificationRepository;
@@ -32,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.NOTIFICATION_QUEUE;
 
@@ -78,11 +83,12 @@ public class NotificationEventConsumer {
 
     private static final int FOLLOWER_FAN_OUT_BATCH = 500;
 
-    private final NotificationRepository notifRepo;
-    private final UserRepository         userRepo;
-    private final UserFollowRepository   followRepo;
-    private final NotificationMapper     notifMapper;
-    private final ApplicationEventPublisher eventPublisher;
+        private final NotificationRepository notifRepo;
+        private final UserRepository         userRepo;
+        private final UserFollowRepository   followRepo;
+        private final PostCommentRepository  postCommentRepo;
+        private final NotificationMapper     notifMapper;
+        private final ApplicationEventPublisher eventPublisher;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  User — Follow / Unfollow
@@ -203,31 +209,18 @@ public class NotificationEventConsumer {
 
         User researcher = researcherOpt.get();
 
-        List<UUID> followerIds = followRepo.findFollowerIds(
-                event.researcherId(), PageRequest.of(0, FOLLOWER_FAN_OUT_BATCH));
+        int savedNotifications = fanOutToFollowers(event.researcherId(), follower -> Notification.builder()
+                .user(follower)
+                .actor(researcher)
+                .type(NotificationType.POST_NEW)   // reuse the existing "new publication" notification type
+                .title("New research published")
+                .body(researcher.getFullName() + " (@" + researcher.getUsername()
+                        + ") published: \"" + event.researchTitle() + "\"")
+                .resourceId(event.researchId())
+                .resourceType("Research")
+                .build());
 
-        log.debug("[CONSUMER] Fanning out ResearchPublished to {} follower(s)", followerIds.size());
-
-        List<Notification> notifications = followerIds.stream()
-                .map(followerId -> userRepo.findActiveById(followerId))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .map(follower -> Notification.builder()
-                        .user(follower)
-                        .actor(researcher)
-                        .type(NotificationType.POST_NEW)   // FIX: was PUBLICATION_LIKED (wrong semantics)
-                        .title("New research published")
-                        .body(researcher.getFullName() + " (@" + researcher.getUsername()
-                                + ") published: \"" + event.researchTitle() + "\"")
-                        .resourceId(event.researchId())
-                        .resourceType("Research")
-                        .build())
-                .toList();
-
-        notifRepo.saveAll(notifications);
-        // Fan-out realtime push for each follower
-        notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
-        log.info("[CONSUMER] ResearchPublished — {} notification(s) saved & queued for SSE", notifications.size());
+        log.info("[CONSUMER] ResearchPublished — {} notification(s) saved & queued for SSE", savedNotifications);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -307,6 +300,83 @@ public class NotificationEventConsumer {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  Q&A — Question Created
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onQuestionCreated(QuestionCreatedEvent event) {
+        log.info("[CONSUMER] QuestionCreated — questionId={} author={} ({})",
+                event.questionId(), event.authorId(), event.authorUsername());
+
+        Optional<User> authorOpt = userRepo.findActiveById(event.authorId());
+        if (authorOpt.isEmpty()) {
+            log.warn("[CONSUMER] QuestionCreated skipped — author not found id={}", event.authorId());
+            return;
+        }
+
+        User author = authorOpt.get();
+
+        int savedNotifications = fanOutToRoles(
+                List.of(Role.SCHOLAR, Role.ADMIN, Role.SUPER_ADMIN),
+                author.getId(),
+                recipient -> Notification.builder()
+                        .user(recipient)
+                        .actor(author)
+                        .type(NotificationType.QUESTION_NEW)
+                        .title("New question to answer")
+                        .body(author.getFullName() + " (@" + author.getUsername()
+                                + ") asked: \"" + event.questionTitle() + "\"")
+                        .resourceId(event.questionId())
+                        .resourceType("Question")
+                        .build());
+
+        log.info("[CONSUMER] QuestionCreated — {} notification(s) saved & queued for SSE", savedNotifications);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Q&A — Question Answered
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onQuestionAnswered(QuestionAnsweredEvent event) {
+        log.info("[CONSUMER] QuestionAnswered — questionId={} answerId={} answerAuthor={} ({})",
+                event.questionId(), event.answerId(), event.answerAuthorId(), event.answerAuthorUsername());
+
+        if (event.questionAuthorId().equals(event.answerAuthorId())) {
+            log.debug("[CONSUMER] QuestionAnswered skipped — answer author is the question author");
+            return;
+        }
+
+        Optional<User> questionAuthorOpt = userRepo.findActiveById(event.questionAuthorId());
+        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
+
+        if (questionAuthorOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
+            log.warn("[CONSUMER] QuestionAnswered skipped — user not found");
+            return;
+        }
+
+        User questionAuthor = questionAuthorOpt.get();
+        User answerAuthor = answerAuthorOpt.get();
+
+        Notification notification = Notification.builder()
+                .user(questionAuthor)
+                .actor(answerAuthor)
+                .type(NotificationType.QUESTION_ANSWERED)
+                .title("Your question has an answer")
+                .body(answerAuthor.getFullName() + " (@" + answerAuthor.getUsername()
+                        + ") answered: \"" + event.questionTitle() + "\"")
+                .resourceId(event.questionId())
+                .resourceType("Question")
+                .build();
+
+        notifRepo.save(notification);
+        pushRealtime(questionAuthor.getId(), notification);
+        log.debug("[CONSUMER] QUESTION_ANSWERED notification saved & queued for SSE → questionAuthor={}", questionAuthor.getId());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  Post — Created (fan-out to followers)
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -334,33 +404,19 @@ public class NotificationEventConsumer {
 
         User author = authorOpt.get();
 
-        List<UUID> followerIds = followRepo.findFollowerIds(
-                event.getAuthorId(), PageRequest.of(0, FOLLOWER_FAN_OUT_BATCH));
-
-        log.debug("[CONSUMER] Fanning out PostCreated to {} follower(s)", followerIds.size());
-
         String postLabel = toReadablePostType(event.getPostType());
+        int savedNotifications = fanOutToFollowers(event.getAuthorId(), follower -> Notification.builder()
+                .user(follower)
+                .actor(author)
+                .type(NotificationType.POST_NEW)
+            .title("New " + postLabel + " from " + author.getFullName())
+            .body(author.getFullName() + " (@" + author.getUsername()
+                + ") posted a new " + postLabel + ".")
+                .resourceId(event.getPostId())
+                .resourceType("Post")
+                .build());
 
-        List<Notification> notifications = followerIds.stream()
-                .map(followerId -> userRepo.findActiveById(followerId))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .map(follower -> Notification.builder()
-                        .user(follower)
-                        .actor(author)
-                        .type(NotificationType.POST_NEW)
-                        .title("New " + postLabel + " from " + author.getFullName())
-                        .body(author.getFullName() + " (@" + author.getUsername()
-                                + ") posted a new " + postLabel + ".")
-                        .resourceId(event.getPostId())
-                        .resourceType("Post")
-                        .build())
-                .toList();
-
-        notifRepo.saveAll(notifications);
-        // Fan-out realtime push for each follower
-        notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
-        log.info("[CONSUMER] PostCreated — {} notification(s) saved & queued for SSE", notifications.size());
+        log.info("[CONSUMER] PostCreated — {} notification(s) saved & queued for SSE", savedNotifications);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -396,12 +452,12 @@ public class NotificationEventConsumer {
         Notification notification = Notification.builder()
                 .user(author)
                 .actor(reactor)
-                .type(NotificationType.POST_REACTED)
-                .title("Someone reacted to your post")
+            .type(NotificationType.POST_REACTED)
+            .title("Someone reacted to your post")
                 .body(reactor.getFullName() + " (@" + reactor.getUsername()
-                        + ") reacted " + reactionLabel + " to your post.")
+                + ") reacted " + reactionLabel + " to your post.")
                 .resourceId(event.getPostId())
-                .resourceType("Post")
+            .resourceType("Post")
                 .build();
 
         notifRepo.save(notification);
@@ -424,15 +480,29 @@ public class NotificationEventConsumer {
         log.info("[CONSUMER] PostCommented — postId={} commentId={} isReply={}",
                 event.getPostId(), event.getCommentId(), event.isReply());
 
-        Optional<User> commenterOpt = userRepo.findActiveById(event.getCommentAuthorId());
-        Optional<User> recipientOpt = userRepo.findActiveById(event.getPostAuthorId());
+                Optional<User> commenterOpt = userRepo.findActiveById(event.getCommentAuthorId());
 
-        if (commenterOpt.isEmpty() || recipientOpt.isEmpty()) {
+                if (commenterOpt.isEmpty()) {
             log.warn("[CONSUMER] PostCommented skipped — user not found");
             return;
         }
 
         User commenter = commenterOpt.get();
+
+                UUID recipientId = resolvePostCommentRecipient(event);
+                if (recipientId == null) {
+                    log.warn("[CONSUMER] PostCommented skipped — recipient could not be resolved (postId={}, commentId={})",
+                            event.getPostId(), event.getCommentId());
+                    return;
+                }
+
+                Optional<User> recipientOpt = userRepo.findActiveById(recipientId);
+                if (recipientOpt.isEmpty()) {
+                    log.warn("[CONSUMER] PostCommented skipped — recipient user not found (recipient={}, postId={}, commentId={})",
+                            recipientId, event.getPostId(), event.getCommentId());
+                    return;
+                }
+
         User recipient = recipientOpt.get();
 
         // Don't notify when someone comments on their own post
@@ -495,12 +565,12 @@ public class NotificationEventConsumer {
         Notification notification = Notification.builder()
                 .user(commentAuthor)
                 .actor(reactor)
-                .type(NotificationType.POST_COMMENT_REACTED)
-                .title("Someone reacted to your comment")
+            .type(NotificationType.POST_COMMENT_REACTED)
+            .title("Someone reacted to your comment")
                 .body(reactor.getFullName() + " (@" + reactor.getUsername()
-                        + ") reacted " + reactionLabel + " to your comment.")
+                + ") reacted " + reactionLabel + " to your comment.")
                 .resourceId(event.getPostId())
-                .resourceType("Post")
+            .resourceType("Post")
                 .build();
 
         notifRepo.save(notification);
@@ -535,7 +605,6 @@ public class NotificationEventConsumer {
 
         User sharer = sharerOpt.get();
         User author = authorOpt.get();
-
         Notification notification = Notification.builder()
                 .user(author)
                 .actor(sharer)
@@ -602,5 +671,86 @@ public class NotificationEventConsumer {
             case "REEL"       -> "reel";
             default           -> "post";
         };
+    }
+
+    private int fanOutToFollowers(UUID ownerId, Function<User, Notification> notificationFactory) {
+        int totalNotifications = 0;
+        int page = 0;
+
+        while (true) {
+            List<UUID> followerIds = followRepo.findFollowerIds(ownerId, PageRequest.of(page, FOLLOWER_FAN_OUT_BATCH));
+            if (followerIds.isEmpty()) {
+                break;
+            }
+
+            List<Notification> notifications = followerIds.stream()
+                    .map(userRepo::findActiveById)
+                    .flatMap(Optional::stream)
+                    .map(notificationFactory)
+                    .toList();
+
+            if (!notifications.isEmpty()) {
+                notifRepo.saveAll(notifications);
+                notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
+                totalNotifications += notifications.size();
+            }
+
+            if (followerIds.size() < FOLLOWER_FAN_OUT_BATCH) {
+                break;
+            }
+
+            page++;
+        }
+
+        return totalNotifications;
+    }
+
+    private int fanOutToRoles(List<Role> roles, UUID excludedUserId, Function<User, Notification> notificationFactory) {
+        int totalNotifications = 0;
+        int page = 0;
+
+        while (true) {
+            var recipientsPage = userRepo.findActiveByRoles(roles, PageRequest.of(page, FOLLOWER_FAN_OUT_BATCH));
+            if (recipientsPage.isEmpty()) {
+                break;
+            }
+
+            List<Notification> notifications = recipientsPage.getContent().stream()
+                    .filter(user -> excludedUserId == null || !user.getId().equals(excludedUserId))
+                    .map(notificationFactory)
+                    .toList();
+
+            if (!notifications.isEmpty()) {
+                notifRepo.saveAll(notifications);
+                notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
+                totalNotifications += notifications.size();
+            }
+
+            if (!recipientsPage.hasNext()) {
+                break;
+            }
+
+            page++;
+        }
+
+        return totalNotifications;
+    }
+
+    private UUID resolvePostCommentRecipient(PostCommentedEvent event) {
+        if (!event.isReply()) {
+            return event.getPostAuthorId();
+        }
+
+        if (event.getParentCommentAuthorId() != null) {
+            return event.getParentCommentAuthorId();
+        }
+
+        if (event.getParentCommentId() != null) {
+            return postCommentRepo.findById(event.getParentCommentId())
+                    .map(comment -> comment.getAuthor().getId())
+                    .orElse(null);
+        }
+
+        return null;
     }
 }

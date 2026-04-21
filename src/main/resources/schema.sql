@@ -48,3 +48,70 @@ ALTER TABLE researches
 CREATE INDEX IF NOT EXISTS idx_research_search_vector
     ON researches USING GIN (search_vector);
 
+-- ── 4. Q&A domain (independent questions and answers) ────────────────────────
+
+CREATE TABLE IF NOT EXISTS questions (
+    id UUID PRIMARY KEY,
+    author_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    title VARCHAR(500) NOT NULL,
+    body TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+    answer_count BIGINT NOT NULL DEFAULT 0,
+    deleted_at TIMESTAMP NULL,
+
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_by UUID NULL,
+    updated_by UUID NULL,
+    created_by_ip VARCHAR(45) NULL,
+    updated_by_ip VARCHAR(45) NULL,
+    created_by_device VARCHAR(300) NULL,
+    updated_by_device VARCHAR(300) NULL,
+    last_action VARCHAR(30) NULL,
+    action_note VARCHAR(500) NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_question_author ON questions (author_id);
+CREATE INDEX IF NOT EXISTS idx_question_status ON questions (status);
+CREATE INDEX IF NOT EXISTS idx_question_deleted ON questions (deleted_at);
+
+CREATE TABLE IF NOT EXISTS question_answers (
+    id UUID PRIMARY KEY,
+    question_id UUID NOT NULL REFERENCES questions (id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    is_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+    is_edited BOOLEAN NOT NULL DEFAULT FALSE,
+    edited_at TIMESTAMP NULL,
+    deleted_at TIMESTAMP NULL,
+
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_by UUID NULL,
+    updated_by UUID NULL,
+    created_by_ip VARCHAR(45) NULL,
+    updated_by_ip VARCHAR(45) NULL,
+    created_by_device VARCHAR(300) NULL,
+    updated_by_device VARCHAR(300) NULL,
+    last_action VARCHAR(30) NULL,
+    action_note VARCHAR(500) NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_qanswer_question ON question_answers (question_id);
+CREATE INDEX IF NOT EXISTS idx_qanswer_author ON question_answers (author_id);
+CREATE INDEX IF NOT EXISTS idx_qanswer_deleted ON question_answers (deleted_at);
+
+-- ── 5. Post comment lifecycle tracking ────────────────────────────────────
+
+ALTER TABLE IF EXISTS post_comments
+    ADD COLUMN IF NOT EXISTS is_edited BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE IF EXISTS post_comments
+    ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP NULL;
+
+ALTER TABLE IF EXISTS post_comments
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL;
+
+CREATE INDEX IF NOT EXISTS idx_post_comment_deleted ON post_comments (is_deleted);
+CREATE INDEX IF NOT EXISTS idx_post_comment_edited ON post_comments (is_edited);
+

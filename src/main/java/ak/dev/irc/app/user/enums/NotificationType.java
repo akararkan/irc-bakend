@@ -24,6 +24,10 @@ public enum NotificationType {
     POST_COMMENT_REACTED, // someone reacted to your comment
     POST_SHARED,          // someone shared your post
 
+    // ── Q&A ─────────────────────────────────────────────────
+    QUESTION_NEW,
+    QUESTION_ANSWERED,
+
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,
     ACCOUNT_WARNING

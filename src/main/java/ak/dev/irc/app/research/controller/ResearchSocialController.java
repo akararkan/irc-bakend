@@ -14,10 +14,12 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
 import java.util.UUID;
@@ -65,8 +67,10 @@ public class ResearchSocialController {
     @GetMapping("/comments")
     public ResponseEntity<Page<CommentResponse>> getComments(
             @PathVariable UUID researchId,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(researchService.getComments(researchId, pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID uid = user != null ? user.getId() : null;
+        return ResponseEntity.ok(researchService.getComments(researchId, pageable, uid));
     }
 
     @PostMapping("/comments")
@@ -77,6 +81,18 @@ public class ResearchSocialController {
             @AuthenticationPrincipal User user) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(researchService.addComment(researchId, request, user.getId()));
+    }
+
+    @PostMapping(value = "/comments/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<CommentResponse> addCommentWithMedia(
+            @PathVariable UUID researchId,
+            @Valid @RequestPart("data") AddCommentRequest request,
+            @RequestPart(value = "media", required = false) MultipartFile media,
+            @RequestPart(value = "voice", required = false) MultipartFile voice,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(researchService.addCommentWithMedia(researchId, request, user.getId(), media, voice));
     }
 
     @PatchMapping("/comments/{commentId}")
@@ -97,6 +113,26 @@ public class ResearchSocialController {
             @AuthenticationPrincipal User user) {
         researchService.deleteComment(researchId, commentId, user.getId());
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/comments/{commentId}/hide")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> hideComment(
+            @PathVariable UUID researchId,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal User user) {
+        researchService.hideComment(researchId, commentId, user.getId());
+        return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
+    }
+
+    @PostMapping("/comments/{commentId}/unhide")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> unhideComment(
+            @PathVariable UUID researchId,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal User user) {
+        researchService.unhideComment(researchId, commentId, user.getId());
+        return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 
     // ── Comment likes ─────────────────────────────────────────────────────────

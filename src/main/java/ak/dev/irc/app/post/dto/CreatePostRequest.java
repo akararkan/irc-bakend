@@ -20,12 +20,6 @@ public class CreatePostRequest {
 
     private PostVisibility visibility = PostVisibility.PUBLIC;
 
-    // ── voice / audio ─────────────────────────────────────────
-    /** CDN URL of the uploaded voice recording */
-    private String voiceUrl;
-    private Integer voiceDurationSeconds;
-    private String voiceTranscript;
-    private String waveformData;
 
     // ── background audio (reels / embedded) ──────────────────
     private String audioTrackUrl;

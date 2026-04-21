@@ -41,7 +41,7 @@ public class RedisCacheConfig {
                         BasicPolymorphicTypeValidator.builder()
                                 .allowIfBaseType(Object.class).build(),
                         ObjectMapper.DefaultTyping.NON_FINAL,
-                        JsonTypeInfo.As.PROPERTY);
+                        JsonTypeInfo.As.WRAPPER_ARRAY);
 
         GenericJackson2JsonRedisSerializer serializer =
                 new GenericJackson2JsonRedisSerializer(mapper);

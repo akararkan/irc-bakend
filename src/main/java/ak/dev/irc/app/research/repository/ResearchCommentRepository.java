@@ -14,7 +14,11 @@ import java.util.UUID;
 @Repository
 public interface ResearchCommentRepository extends JpaRepository<ResearchComment, UUID> {
 
-    /** Top-level comments for a research (parent IS NULL) */
+    /** Top-level comments for a research (parent IS NULL) — hidden comments are excluded */
+    Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(
+            UUID researchId, Pageable pageable);
+
+    /** Top-level comments for a research (parent IS NULL) — includes hidden comments */
     Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(
             UUID researchId, Pageable pageable);
 

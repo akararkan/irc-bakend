@@ -47,6 +47,12 @@ public final class RabbitMQConstants {
 
     public static final String RESEARCH_VIEWED     = "research.analytics.viewed";
     public static final String RESEARCH_DOWNLOADED = "research.analytics.downloaded";
+
+    // ── Routing keys — Q&A ───────────────────────────────────────────────────
+
+    public static final String QNA_QUESTION_CREATED  = "qna.lifecycle.created";
+    public static final String QNA_QUESTION_ANSWERED = "qna.social.answered";
+
     // ════════════════════════════════════════════════════════════
     //  Post / Social-media events  (NEW)
     // ════════════════════════════════════════════════════════════
@@ -61,4 +67,9 @@ public final class RabbitMQConstants {
     public static final String POST_LIFECYCLE_PATTERN = "post.lifecycle.#";
     /** Catches post.social.* */
     public static final String POST_SOCIAL_PATTERN    = "post.social.#";
+
+    /** Catches qna.lifecycle.* */
+    public static final String QNA_LIFECYCLE_PATTERN = "qna.lifecycle.#";
+    /** Catches qna.social.* */
+    public static final String QNA_SOCIAL_PATTERN    = "qna.social.#";
 }

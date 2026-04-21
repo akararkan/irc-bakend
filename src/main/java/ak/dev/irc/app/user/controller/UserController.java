@@ -36,6 +36,11 @@ public class UserController {
         return ResponseEntity.ok(userService.getProfile(id));
     }
 
+    @GetMapping("/username/{username}")
+    public ResponseEntity<UserResponse> getProfileByUsername(@PathVariable String username) {
+        return ResponseEntity.ok(userService.getProfileByUsername(username));
+    }
+
     @PatchMapping("/me")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<UserResponse> updateProfile(
@@ -62,7 +67,7 @@ public class UserController {
 
     @GetMapping("/search")
     public ResponseEntity<Page<UserResponse>> search(
-            @RequestParam String q,
+            @RequestParam(defaultValue = "") String q,
             @PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(userService.searchUsers(q, pageable));
     }

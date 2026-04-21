@@ -73,6 +73,27 @@ public class UserServiceImpl implements UserService {
 
     @Override
     @Transactional(readOnly = true)
+    public UserResponse getProfileByUsername(String username) {
+        log.debug("Fetching profile for username [{}]", username);
+
+        User user = userRepository.findByUsername(username)
+                .filter(u -> u.getDeletedAt() == null)
+                .orElseThrow(() -> {
+                    log.warn("Active user not found for username [{}]", username);
+                    return new ResourceNotFoundException("User", "username", username);
+                });
+
+        long followers = followRepository.countByFollowingId(user.getId());
+        long following = followRepository.countByFollowerId(user.getId());
+
+        log.debug("Profile loaded for username [{}] — followers={}, following={}",
+                username, followers, following);
+
+        return userMapper.toResponse(user, followers, following);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public UserResponse getMyProfile() {
         UUID myId = authenticatedUserId();
         log.info("User [{}] fetching own profile", myId);
@@ -289,13 +310,15 @@ public class UserServiceImpl implements UserService {
         log.info("Searching users — query='{}', page={}, size={}",
                 query, pageable.getPageNumber(), pageable.getPageSize());
 
+        Page<User> raw;
         if (query == null || query.isBlank()) {
-            log.warn("Empty search query received");
-            throw new BadRequestException(
-                    "Search query must not be empty.", "SEARCH_QUERY_EMPTY");
+            log.debug("Blank query — returning all active users");
+            raw = userRepository.findAllActive(pageable);
+        } else {
+            raw = userRepository.searchUsers(query, pageable);
         }
 
-        Page<UserResponse> results = userRepository.searchUsers(query, pageable)
+        Page<UserResponse> results = raw
                 .map(u -> userMapper.toResponse(
                         u,
                         followRepository.countByFollowingId(u.getId()),

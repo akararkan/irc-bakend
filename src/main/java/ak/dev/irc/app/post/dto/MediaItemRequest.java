@@ -21,9 +21,6 @@ public class MediaItemRequest {
     private Long fileSizeBytes;
     private String mimeType;
 
-    /** For VOICE_NOTE media items */
-    private String waveformData;
-    private String transcript;
 
     private Integer sortOrder = 0;
 }

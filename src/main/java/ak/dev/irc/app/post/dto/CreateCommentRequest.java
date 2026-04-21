@@ -15,9 +15,10 @@ public class CreateCommentRequest {
     @Size(max = 2000, message = "Comment must not exceed 2000 characters")
     private String textContent;
 
-    // ── voice comment (the unique feature) ───────────────────
-    private String voiceUrl;
-    private Integer voiceDurationSeconds;
-    private String voiceTranscript;
-    private String waveformData;
+    // ── media attachment (image / video) ──────────────────────
+    private String mediaUrl;
+    private String mediaType;          // IMAGE or VIDEO
+    private String mediaThumbnailUrl;
+
+    // (voice comment fields removed for posts)
 }

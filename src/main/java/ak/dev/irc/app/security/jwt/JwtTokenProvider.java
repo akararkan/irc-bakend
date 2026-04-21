@@ -93,6 +93,7 @@ public class JwtTokenProvider {
 
         return Jwts.builder()
                 .claim("tokenType", "REFRESH")
+                .id(UUID.randomUUID().toString())
                 .subject(user.getId().toString())
                 .issuer(issuer)
                 .issuedAt(new Date())

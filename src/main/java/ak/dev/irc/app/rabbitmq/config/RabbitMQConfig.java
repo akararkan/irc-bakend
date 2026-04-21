@@ -30,6 +30,8 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.*;
  * │    research.social.#    ──►  irc.queue.notifications                     │
  * │    post.lifecycle.#     ──►  irc.queue.notifications   ← ADDED           │
  * │    post.social.#        ──►  irc.queue.notifications   ← ADDED           │
+ * │    qna.lifecycle.#      ──►  irc.queue.notifications   ← ADDED           │
+ * │    qna.social.#         ──►  irc.queue.notifications   ← ADDED           │
  * │    research.analytics.# ──►  irc.queue.analytics                        │
  * │                                                                          │
  * │  irc.dlx.exchange       ──►  irc.queue.dead-letter  (failed messages)   │
@@ -139,6 +141,22 @@ public class RabbitMQConfig {
                 .with(POST_SOCIAL_PATTERN);      // "post.social.#"
     }
 
+    /** Q&A lifecycle events (qna.lifecycle.created, …). */
+    @Bean
+    public Binding notificationBindingQnaLifecycle(Queue notificationQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(notificationQueue)
+                .to(ircExchange)
+                .with(QNA_LIFECYCLE_PATTERN);
+    }
+
+    /** Q&A social events (qna.social.answered, …). */
+    @Bean
+    public Binding notificationBindingQnaSocial(Queue notificationQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(notificationQueue)
+                .to(ircExchange)
+                .with(QNA_SOCIAL_PATTERN);
+    }
+
     // ── Bindings — analytics queue ────────────────────────────────────────────
 
     /** Research analytics events (views, downloads) */
@@ -177,7 +195,8 @@ public class RabbitMQConfig {
                 "ak.dev.irc.irc_security.rabbitmq.event.research",
                 "ak.dev.irc.app.rabbitmq.event.user",
                 "ak.dev.irc.app.rabbitmq.event.research",
-                "ak.dev.irc.app.rabbitmq.event.post"
+            "ak.dev.irc.app.rabbitmq.event.post",
+            "ak.dev.irc.app.rabbitmq.event.qna"
         );
 
         converter.setJavaTypeMapper(typeMapper);

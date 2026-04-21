@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.service.impl;
 
+import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.*;
 import ak.dev.irc.app.rabbitmq.publisher.ResearchEventPublisher;
 import ak.dev.irc.app.research.dto.request.*;
@@ -73,7 +74,7 @@ public class ResearchServiceImpl implements ResearchService {
     // ══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Creates a new research draft.
+     * Creates and immediately publishes a new research.
      *
      * <p>Media files are uploaded atomically as part of this single call.
      * Each file in {@code files} is matched by index to the corresponding
@@ -85,7 +86,7 @@ public class ResearchServiceImpl implements ResearchService {
      * @param req          validated create request (JSON part of multipart)
      * @param files        binary files (PDF, images, video, etc.) — may be null/empty
      * @param researcherId the authenticated researcher's UUID
-     * @return full {@link ResearchResponse} of the newly created draft
+     * @return full {@link ResearchResponse} of the newly published research
      */
     @Override
     @Caching(evict = {
@@ -113,7 +114,12 @@ public class ResearchServiceImpl implements ResearchService {
             String shareToken = ircIdentifierService.generateShareToken();
             String slug       = generateSlug(req.title());
 
-            // ── Build & persist the research entity ────────────────────────
+            // ── Generate DOI if not provided ─────────────────────────────
+            String doi = (req.doi() != null && !req.doi().isBlank())
+                    ? req.doi()
+                    : ircIdentifierService.generateDoi(seqNum);
+
+            // ── Build & persist the research entity (auto-published) ────
             Research research = Research.builder()
                     .researcher(researcher)
                     .title(req.title())
@@ -122,7 +128,7 @@ public class ResearchServiceImpl implements ResearchService {
                     .abstractText(req.abstractText())
                     .keywords(req.keywords())
                     .citation(req.citation())
-                    .doi(req.doi())
+                    .doi(doi)
                     .visibility(req.visibility())
                     .scheduledPublishAt(req.scheduledPublishAt())
                     .commentsEnabled(req.commentsEnabled())
@@ -130,7 +136,8 @@ public class ResearchServiceImpl implements ResearchService {
                     .ircSequenceNumber(seqNum)
                     .ircId(ircId)
                     .shareToken(shareToken)
-                    .status(ResearchStatus.DRAFT)
+                    .status(ResearchStatus.PUBLISHED)
+                    .publishedAt(LocalDateTime.now())
                     .build();
 
             research = researchRepo.save(research);
@@ -189,8 +196,11 @@ public class ResearchServiceImpl implements ResearchService {
                 }
             }
 
-            log.info("Research created: id={} ircId={} researcher={} mediaCount={}",
-                    research.getId(), ircId, researcherId,
+            // ── Fire published event ──────────────────────────────────────
+            researchEventPublisher.publishResearchPublished(research);
+
+            log.info("Research created & published: id={} ircId={} DOI={} researcher={} mediaCount={}",
+                    research.getId(), ircId, research.getDoi(), researcherId,
                     research.getMediaFiles().size());
 
             return mapper.toResponse(research, researcherId);
@@ -756,9 +766,14 @@ public class ResearchServiceImpl implements ResearchService {
     public CommentResponse addComment(UUID researchId, AddCommentRequest request, UUID userId) {
         if (researchId == null || request == null)
             throw new BadRequestException("Research ID and comment data are required", "INVALID_INPUT");
-        if (request.content() == null || request.content().isBlank())
-            throw new BadRequestException("Comment content cannot be empty", "EMPTY_COMMENT");
-        if (request.content().length() > 5000)
+
+        // At least one of: text, media, or voice must be present
+        boolean hasContent = request.content() != null && !request.content().isBlank();
+        boolean hasMedia   = request.mediaUrl() != null && !request.mediaUrl().isBlank();
+        boolean hasVoice   = request.voiceUrl() != null && !request.voiceUrl().isBlank();
+        if (!hasContent && !hasMedia && !hasVoice)
+            throw new BadRequestException("Comment must have text, media, or voice content", "EMPTY_COMMENT");
+        if (hasContent && request.content().length() > 5000)
             throw new BadRequestException("Comment exceeds maximum length of 5000 characters", "COMMENT_TOO_LONG");
 
         Research research = findPublishedOrThrow(researchId);
@@ -768,7 +783,12 @@ public class ResearchServiceImpl implements ResearchService {
 
         try {
             ResearchComment comment = ResearchComment.builder()
-                    .research(research).user(user).content(request.content().trim()).build();
+                    .research(research).user(user)
+                    .content(hasContent ? request.content().trim() : null)
+                    .mediaUrl(request.mediaUrl())
+                    .mediaType(request.mediaType())
+                    .mediaThumbnailUrl(request.mediaThumbnailUrl())
+                    .build();
 
             if (request.parentId() != null) {
                 ResearchComment parent = commentRepo.findById(request.parentId())
@@ -785,12 +805,51 @@ public class ResearchServiceImpl implements ResearchService {
             comment = commentRepo.save(comment);
             researchRepo.adjustCommentCount(researchId, 1);
             researchEventPublisher.publishCommented(research, user, comment);
-            return mapper.toCommentResponse(comment);
+            // return full view for the commenter (they should see their own comment even if hidden)
+            return mapper.toCommentResponse(comment, true);
 
         } catch (ResourceNotFoundException | BadRequestException e) { throw e; }
         catch (DataIntegrityViolationException e) {
             throw new BadRequestException("Invalid comment data", "COMMENT_DATA_ERROR");
         }
+    }
+
+    @Override
+    @Transactional
+    public CommentResponse addCommentWithMedia(UUID researchId, AddCommentRequest request, UUID userId,
+                                               MultipartFile media, MultipartFile voice) {
+        String mediaUrl = request.mediaUrl();
+        String mediaType = request.mediaType();
+        String mediaThumbnailUrl = request.mediaThumbnailUrl();
+        String voiceUrl = request.voiceUrl();
+
+        // Upload voice recording if present
+        if (voice != null && !voice.isEmpty()) {
+            String voiceKey = s3.upload(voice, "research/comments/voice");
+            voiceUrl = s3.getPublicUrl(voiceKey);
+        }
+
+        // Upload media file if present
+        if (media != null && !media.isEmpty()) {
+            String mediaKey = s3.upload(media, "research/comments/media");
+            mediaUrl = s3.getPublicUrl(mediaKey);
+            String contentType = media.getContentType();
+            if (contentType != null && contentType.startsWith("video")) {
+                mediaType = "VIDEO";
+            } else {
+                mediaType = "IMAGE";
+            }
+        }
+
+        // Build a new request with the uploaded URLs
+        AddCommentRequest enriched = new AddCommentRequest(
+                request.content(), request.parentId(),
+                mediaUrl, mediaType, mediaThumbnailUrl,
+                voiceUrl, request.voiceDurationSeconds(),
+                request.voiceTranscript(), request.waveformData()
+        );
+
+        return addComment(researchId, enriched, userId);
     }
 
     @Override
@@ -815,7 +874,10 @@ public class ResearchServiceImpl implements ResearchService {
         comment.setContent(request.content().trim());
         comment.setEdited(true);
         comment.setEditedAt(LocalDateTime.now());
-        return mapper.toCommentResponse(commentRepo.save(comment));
+        comment.audit(AuditAction.UPDATE, "Edited comment");
+        ResearchComment saved = commentRepo.save(comment);
+        // commenter should see their edited comment
+        return mapper.toCommentResponse(saved, true);
     }
 
     @Override
@@ -826,23 +888,93 @@ public class ResearchServiceImpl implements ResearchService {
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
             throw new ForbiddenException("Comment does not belong to this research");
-        if (!comment.getUser().getId().equals(userId))
-            throw new ForbiddenException("You can only delete your own comments");
+        // Allow either the comment owner or the research owner to delete
+        boolean isCommentOwner = comment.getUser().getId().equals(userId);
+        boolean isResearchOwner = comment.getResearch().getResearcher() != null
+                && comment.getResearch().getResearcher().getId().equals(userId);
+        if (!isCommentOwner && !isResearchOwner)
+            throw new ForbiddenException("You can only delete your own comments or comments on your research");
         if (comment.getDeletedAt() != null)
             throw new BadRequestException("Comment is already deleted", "ALREADY_DELETED");
 
         comment.setDeletedAt(LocalDateTime.now());
+        comment.audit(AuditAction.DELETE, "Deleted comment");
         commentRepo.save(comment);
         researchRepo.adjustCommentCount(researchId, -1);
     }
 
     @Override
+    public void hideComment(UUID researchId, UUID commentId, UUID userId) {
+        if (commentId == null || userId == null)
+            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+        ResearchComment comment = commentRepo.findById(commentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
+        if (!comment.getResearch().getId().equals(researchId))
+            throw new ForbiddenException("Comment does not belong to this research");
+        if (comment.getDeletedAt() != null)
+            throw new BadRequestException("Cannot hide a deleted comment", "COMMENT_DELETED");
+
+        // Allow research owner or the commenter to hide the comment
+        boolean isCommentOwner = comment.getUser().getId().equals(userId);
+        boolean isResearchOwner = comment.getResearch().getResearcher() != null
+                && comment.getResearch().getResearcher().getId().equals(userId);
+        if (!isCommentOwner && !isResearchOwner)
+            throw new ForbiddenException("You can only hide your own comments or comments on your research");
+
+        // set hidden metadata
+        if (!comment.isHidden()) {
+            comment.setHidden(true);
+            comment.setHiddenAt(LocalDateTime.now());
+            comment.setHiddenBy(findUserOrThrow(userId));
+            comment.audit(AuditAction.UPDATE, "Hidden comment");
+            commentRepo.save(comment);
+        }
+    }
+
+    @Override
+    public void unhideComment(UUID researchId, UUID commentId, UUID userId) {
+        if (commentId == null || userId == null)
+            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+        ResearchComment comment = commentRepo.findById(commentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
+        if (!comment.getResearch().getId().equals(researchId))
+            throw new ForbiddenException("Comment does not belong to this research");
+        if (!comment.isHidden())
+            throw new BadRequestException("Comment is not hidden", "NOT_HIDDEN");
+
+        // Allow research owner or the commenter to unhide
+        boolean isCommentOwner = comment.getUser().getId().equals(userId);
+        boolean isResearchOwner = comment.getResearch().getResearcher() != null
+                && comment.getResearch().getResearcher().getId().equals(userId);
+        if (!isCommentOwner && !isResearchOwner)
+            throw new ForbiddenException("You can only unhide your own comments or comments on your research");
+
+        comment.setHidden(false);
+        comment.setHiddenAt(null);
+        comment.setHiddenBy(null);
+        comment.audit(AuditAction.UPDATE, "Unhidden comment");
+        commentRepo.save(comment);
+    }
+
+    @Override
     @Transactional(readOnly = true)
-    public Page<CommentResponse> getComments(UUID researchId, Pageable pageable) {
+    public Page<CommentResponse> getComments(UUID researchId, Pageable pageable, UUID currentUserId) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
-        return commentRepo
-                .findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(researchId, pageable)
-                .map(mapper::toCommentResponse);
+
+        // Determine if the requester is the research owner — owners can view hidden comments
+        boolean isResearchOwner = false;
+        if (currentUserId != null) {
+            Research research = researchRepo.findByIdAndDeletedAtIsNull(researchId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+            isResearchOwner = research.getResearcher() != null && research.getResearcher().getId().equals(currentUserId);
+        }
+
+        Page<ResearchComment> page = isResearchOwner
+                ? commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(researchId, pageable)
+                : commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(researchId, pageable);
+
+        final boolean canViewHidden = isResearchOwner;
+        return page.map(c -> mapper.toCommentResponse(c, canViewHidden));
     }
 
     @Override
@@ -1009,8 +1141,8 @@ public class ResearchServiceImpl implements ResearchService {
     public List<String> getTrendingTags(int limit) {
         if (limit <= 0 || limit > 100) limit = 10;
         try {
-            return tagRepo.findTrendingTags(PageRequest.of(0, limit))
-                    .stream().map(row -> (String) row[0]).filter(Objects::nonNull).toList();
+            return new ArrayList<>(tagRepo.findTrendingTags(PageRequest.of(0, limit))
+                    .stream().map(row -> (String) row[0]).filter(Objects::nonNull).toList());
         } catch (DataAccessException e) {
             throw new AppException("Failed to fetch trending tags", HttpStatus.INTERNAL_SERVER_ERROR, "TAG_FETCH_ERROR");
         }
@@ -1023,7 +1155,10 @@ public class ResearchServiceImpl implements ResearchService {
     private User findResearcherOrThrow(UUID userId) {
         User user = userRepo.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
-        if (user.getRole() != Role.RESEARCHER && user.getRole() != Role.ADMIN && user.getRole() != Role.SUPER_ADMIN)
+        if (user.getRole() != Role.SCHOLAR
+                && user.getRole() != Role.RESEARCHER
+                && user.getRole() != Role.ADMIN
+                && user.getRole() != Role.SUPER_ADMIN)
             throw new ForbiddenException("Only researchers can manage researches");
         return user;
     }

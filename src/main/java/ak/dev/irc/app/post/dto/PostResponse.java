@@ -23,11 +23,6 @@ public class PostResponse {
     private PostStatus status;
     private PostVisibility visibility;
 
-    // ── voice ─────────────────────────────────────────────────
-    private String voiceUrl;
-    private Integer voiceDurationSeconds;
-    private String voiceTranscript;
-    private String waveformData;
 
     // ── audio track ───────────────────────────────────────────
     private String audioTrackUrl;

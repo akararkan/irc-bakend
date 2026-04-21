@@ -14,10 +14,20 @@ public record CommentResponse(
     String userProfileImage,
 
     String content,
+
+    // ── media attachment (image / video) ──────────────────────
+    String mediaUrl,
+    String mediaType,
+    String mediaThumbnailUrl,
+
+
+
     Long likeCount,
     Long replyCount,
     boolean isEdited,
     LocalDateTime editedAt,
+    boolean isHidden,
+    LocalDateTime hiddenAt,
 
     UUID parentId,
     List<CommentResponse> replies,

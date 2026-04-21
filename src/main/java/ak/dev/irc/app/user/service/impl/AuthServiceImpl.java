@@ -85,6 +85,7 @@ public class AuthServiceImpl implements AuthService {
                 .username(request.username())
                 .email(request.email())
                 .password(passwordEncoder.encode(request.password()))
+                .role(ak.dev.irc.app.user.enums.Role.SCHOLAR)
                 .isEnabled(true)
                 .build();
         user.audit(AuditAction.CREATE, "User registered");

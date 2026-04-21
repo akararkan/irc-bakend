@@ -11,19 +11,24 @@ import ak.dev.irc.app.post.mapper.PostMapper;
 import ak.dev.irc.app.post.repository.*;
 import ak.dev.irc.app.rabbitmq.event.post.*;
 import ak.dev.irc.app.rabbitmq.publisher.PostEventPublisher;
+import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityNotFoundException;
+import ak.dev.irc.app.common.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.scheduling.annotation.Scheduled;
+// import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.time.LocalDateTime;
+// java.time.LocalDateTime removed — stories disabled
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -37,6 +42,7 @@ public class PostService {
     private final PostMapper             postMapper;
     private final PostEventPublisher     eventPublisher;
     private final UserRepository         userRepository;
+    private final S3StorageService       storageService;
 
     // ── Create ────────────────────────────────────────────────
 
@@ -47,9 +53,9 @@ public class PostService {
 
         Post post = postMapper.toEntity(req, author);
 
-        // Story TTL: auto-expire in 24 h
+        // Stories are disabled — reject unsupported post types
         if (req.getPostType() == PostType.STORY) {
-            post.setExpiresAt(LocalDateTime.now().plusHours(24));
+            throw new BadRequestException("Post type '" + req.getPostType() + "' is not supported", "POST_TYPE_DISABLED");
         }
 
         // Share link
@@ -65,22 +71,62 @@ public class PostService {
 
         post = postRepository.save(post);
 
-        // Publish RabbitMQ event
+        // Publish RabbitMQ event (posts no longer carry voice)
         eventPublisher.publishPostCreated(PostCreatedEvent.builder()
                 .postId(post.getId())
                 .authorId(authorId)
                 .postType(post.getPostType().name())
                 .visibility(post.getVisibility().name())
-                .hasVoice(post.getVoiceUrl() != null)
+                .hasVoice(false)
                 .build());
 
         log.info("Post created: {} by user {}", post.getId(), authorId);
         return postMapper.toResponse(post);
     }
 
+    /**
+     * Create a post with multipart file uploads (media images/videos + voice recording).
+     * Files are uploaded to R2 storage and their URLs are set on the post entity.
+     */
+    @Transactional
+    public PostResponse createPostWithFiles(CreatePostRequest req, UUID authorId,
+                                            List<MultipartFile> files) {
+
+        // Voice uploads removed for posts — only media files are processed here
+
+        // Build media list from uploaded files
+        if (files != null && !files.isEmpty()) {
+            List<ak.dev.irc.app.post.dto.MediaItemRequest> mediaItems = new ArrayList<>();
+            int order = 0;
+            for (MultipartFile file : files) {
+                String key = storageService.upload(file, "posts/media");
+                String url = storageService.getPublicUrl(key);
+
+                ak.dev.irc.app.post.dto.MediaItemRequest item = new ak.dev.irc.app.post.dto.MediaItemRequest();
+                item.setUrl(url);
+                item.setMimeType(file.getContentType());
+                item.setFileSizeBytes(file.getSize());
+                item.setSortOrder(order++);
+
+                // Determine media type from content type
+                if (file.getContentType() != null && file.getContentType().startsWith("video/")) {
+                    item.setMediaType(PostMediaType.VIDEO);
+                } else {
+                    item.setMediaType(PostMediaType.IMAGE);
+                }
+
+                mediaItems.add(item);
+            }
+            req.setMediaList(mediaItems);
+        }
+
+        // Delegate to the standard create method
+        return createPost(req, authorId);
+    }
+
     // ── Read ──────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PostResponse getPost(UUID postId, UUID requesterId) {
         Post post = findPublishedPost(postId);
         postRepository.incrementViewCount(postId);
@@ -207,19 +253,7 @@ public class PostService {
      * Runs every 60 seconds — marks expired stories as ARCHIVED
      * so they no longer appear in feeds or public queries.
      */
-    @Scheduled(fixedRate = 60_000)
-    @Transactional
-    public void expireStories() {
-        var expired = postRepository.findExpiredStories(LocalDateTime.now());
-        for (Post story : expired) {
-            story.setStatus(PostStatus.ARCHIVED);
-            postRepository.save(story);
-            log.debug("Story expired and archived: {}", story.getId());
-        }
-        if (!expired.isEmpty()) {
-            log.info("Expired {} storie(s)", expired.size());
-        }
-    }
+    // Story expiration job removed because story/posts of type STORY are no longer supported
 
     // ── Helpers ───────────────────────────────────────────────
 

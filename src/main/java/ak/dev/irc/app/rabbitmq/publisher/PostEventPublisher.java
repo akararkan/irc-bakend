@@ -7,6 +7,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Component
 @RequiredArgsConstructor
@@ -41,11 +43,25 @@ public class PostEventPublisher {
     }
 
     private void publish(String routingKey, Object event, String label) {
-        try {
-            rabbitTemplate.convertAndSend(RabbitMQConstants.IRC_EXCHANGE, routingKey, event);
-            log.info("[RabbitMQ] Published → {}", label);
-        } catch (Exception e) {
-            log.error("[RabbitMQ] Failed to publish {} : {}", label, e.getMessage(), e);
+        Runnable publishAction = () -> {
+            try {
+                rabbitTemplate.convertAndSend(RabbitMQConstants.IRC_EXCHANGE, routingKey, event);
+                log.info("[RabbitMQ] Published → {}", label);
+            } catch (Exception e) {
+                log.error("[RabbitMQ] Failed to publish {} : {}", label, e.getMessage(), e);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publishAction.run();
+                }
+            });
+            return;
         }
+
+        publishAction.run();
     }
 }

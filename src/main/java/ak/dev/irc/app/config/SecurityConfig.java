@@ -35,7 +35,9 @@ import java.util.List;
 @Slf4j
 @Configuration
 @EnableWebSecurity
-@EnableMethodSecurity
+// ⚠️ TESTING MODE — @EnableMethodSecurity disabled so @PreAuthorize annotations are ignored.
+// Re-enable before production!
+// @EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -69,8 +71,9 @@ public class SecurityConfig {
                         .anyRequest().permitAll()
                 )
 
-                // ⚠️ JWT filter disabled for testing — re-enable before production!
-                // .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                // JWT filter enabled so SecurityContext is populated from Bearer tokens.
+                // This does NOT block unauthenticated requests — permitAll() above handles that.
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
 
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authz -> authz
@@ -110,6 +113,7 @@ public class SecurityConfig {
         config.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
+                "http://192.168.1.*:*",
                 "https://*.irc-research.org"
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));

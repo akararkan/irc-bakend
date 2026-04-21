@@ -16,7 +16,9 @@ import java.util.UUID;
 @Table(name = "post_comments", indexes = {
         @Index(name = "idx_comment_post",   columnList = "post_id"),
         @Index(name = "idx_comment_parent", columnList = "parent_id"),
-        @Index(name = "idx_comment_author", columnList = "author_id")
+    @Index(name = "idx_comment_author", columnList = "author_id"),
+    @Index(name = "idx_comment_deleted", columnList = "is_deleted"),
+    @Index(name = "idx_comment_edited", columnList = "is_edited")
 })
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class PostComment {
@@ -47,18 +49,17 @@ public class PostComment {
     @Column(name = "text_content", columnDefinition = "TEXT")
     private String textContent;
 
-    // ── voice comment (unique feature) ───────────────────────
-    @Column(name = "voice_url")
-    private String voiceUrl;
+    // ── media attachment (image or video) ────────────────────
+    @Column(name = "media_url")
+    private String mediaUrl;
 
-    @Column(name = "voice_duration_seconds")
-    private Integer voiceDurationSeconds;
+    @Column(name = "media_type")
+    private String mediaType;          // IMAGE or VIDEO
 
-    @Column(name = "voice_transcript", columnDefinition = "TEXT")
-    private String voiceTranscript;
+    @Column(name = "media_thumbnail_url")
+    private String mediaThumbnailUrl;
 
-    @Column(name = "waveform_data", columnDefinition = "TEXT")
-    private String waveformData;
+    // (voice/comment audio removed for posts)
 
     // ── reactions & counters ──────────────────────────────────
     @OneToMany(mappedBy = "comment", cascade = CascadeType.ALL, orphanRemoval = true)
@@ -77,6 +78,16 @@ public class PostComment {
     @Builder.Default
     private Boolean isDeleted = false;
 
+    @Column(name = "is_edited", nullable = false)
+    @Builder.Default
+    private boolean edited = false;
+
+    @Column(name = "edited_at")
+    private LocalDateTime editedAt;
+
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
+
     // ── audit ─────────────────────────────────────────────────
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
@@ -85,6 +96,10 @@ public class PostComment {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    public boolean isDeleted() {
+        return Boolean.TRUE.equals(isDeleted) || deletedAt != null;
+    }
 
     public void incrementReactions() { this.reactionCount++; }
     public void decrementReactions() { if (this.reactionCount > 0) this.reactionCount--; }

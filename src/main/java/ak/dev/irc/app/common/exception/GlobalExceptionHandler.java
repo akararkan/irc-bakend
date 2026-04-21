@@ -5,9 +5,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.security.authentication.*;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -20,6 +22,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import software.amazon.awssdk.core.exception.SdkClientException;
 
 import java.util.List;
 import java.util.Map;
@@ -185,9 +188,9 @@ public class GlobalExceptionHandler {
     //  3. SECURITY / AUTHENTICATION EXCEPTIONS
     // ══════════════════════════════════════════════════════════════════════════
 
-    @ExceptionHandler(AccessDeniedException.class)
+    @ExceptionHandler({AccessDeniedException.class, AuthorizationDeniedException.class})
     public ResponseEntity<ApiErrorResponse> handleAccessDenied(
-            AccessDeniedException ex, HttpServletRequest request) {
+            Exception ex, HttpServletRequest request) {
 
         String traceId = traceId();
         log.warn("[{}] Access denied on {} {} — {}",
@@ -201,6 +204,16 @@ public class GlobalExceptionHandler {
                 .errorCode("ACCESS_DENIED")
                 .traceId(traceId)
                 .build();
+
+        // If the client only accepts text/event-stream (SSE), we can't return
+        // application/json without triggering HttpMediaTypeNotAcceptableException.
+        // Return with explicit content-type to avoid the secondary error.
+        String accept = request.getHeader("Accept");
+        if (accept != null && accept.contains(MediaType.TEXT_EVENT_STREAM_VALUE)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body);
+        }
 
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
     }
@@ -416,7 +429,32 @@ public class GlobalExceptionHandler {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  8. CATCH-ALL
+    //  8. EXTERNAL STORAGE (S3 / Cloudflare R2)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @ExceptionHandler(SdkClientException.class)
+    public ResponseEntity<ApiErrorResponse> handleSdkClientException(
+            SdkClientException ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.error("[{}] Storage service (R2/S3) error on {} {} — {}: {}",
+                traceId, request.getMethod(), request.getRequestURI(),
+                ex.getClass().getSimpleName(), ex.getMessage(), ex);
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error("Service Unavailable")
+                .message("File storage service is currently unavailable. Please try again later.")
+                .path(request.getRequestURI())
+                .errorCode("STORAGE_UNAVAILABLE")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  9. CATCH-ALL
     // ══════════════════════════════════════════════════════════════════════════
 
     @ExceptionHandler(Exception.class)

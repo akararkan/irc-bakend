@@ -32,7 +32,7 @@ public class RefreshToken extends BaseAuditEntity {
                 foreignKey = @ForeignKey(name = "fk_refresh_token_user"))
     private User user;
 
-    @Column(name = "token", nullable = false, unique = true, length = 255)
+    @Column(name = "token", nullable = false, unique = true, length = 512)
     private String token;
 
     @Column(name = "device_info", length = 300)

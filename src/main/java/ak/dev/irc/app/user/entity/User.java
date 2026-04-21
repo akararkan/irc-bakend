@@ -62,7 +62,7 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
     @Builder.Default
-    private Role role = Role.USER;
+        private Role role = Role.SCHOLAR;
 
     @Column(name = "is_profile_locked", nullable = false)
     @Builder.Default
@@ -149,7 +149,14 @@ public class User extends BaseAuditEntity implements UserDetails {
      */
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
+                if (role == Role.SCHOLAR) {
+                        return List.of(
+                                        new SimpleGrantedAuthority("ROLE_SCHOLAR"),
+                                        new SimpleGrantedAuthority("ROLE_RESEARCHER")
+                        );
+                }
+
+                return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
     }
 
     @Override public String getPassword()              { return password; }

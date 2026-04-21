@@ -99,14 +99,16 @@ public class UserSocialServiceImpl implements UserSocialService {
             throw new ResourceNotFoundException("You are not following this user. Cannot unfollow.");
         }
 
+        User target = userRepository.findById(targetId).orElse(null);
         followRepository.deleteById(fid);
         userEventPublisher.publishUnfollowed(me, targetId);
 
         log.info("User [{}] unfollowed user [{}]", me, targetId);
 
-        User target = findActiveOrThrow(targetId);
-        return SocialActionResponse.of("UNFOLLOWED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+        return SocialActionResponse.of("UNFOLLOWED", targetId,
+            target != null ? target.getUsername() : null,
+            target != null ? target.getProfileImage() : null,
+            buildStatus(me, targetId));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

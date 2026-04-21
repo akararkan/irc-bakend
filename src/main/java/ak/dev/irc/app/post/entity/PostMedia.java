@@ -37,7 +37,7 @@ public class PostMedia {
     @Column(name = "alt_text")
     private String altText;
 
-    /** Duration in seconds for VIDEO / VOICE_NOTE / AUDIO_TRACK */
+    /** Duration in seconds for VIDEO / AUDIO_TRACK */
     @Column(name = "duration_seconds")
     private Integer durationSeconds;
 
@@ -49,14 +49,7 @@ public class PostMedia {
     @Column(name = "mime_type")
     private String mimeType;
 
-    // ── voice-note specific ───────────────────────────────────
-    /** JSON array of peak amplitudes */
-    @Column(name = "waveform_data", columnDefinition = "TEXT")
-    private String waveformData;
-
-    /** Auto-generated transcript */
-    @Column(name = "transcript", columnDefinition = "TEXT")
-    private String transcript;
+    // (voice-note fields removed for posts)
 
     /** Sort order within the post */
     @Column(name = "sort_order")

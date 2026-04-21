@@ -26,10 +26,7 @@ public class PostMapper {
                 .postType(req.getPostType())
                 .textContent(req.getTextContent())
                 .visibility(req.getVisibility() != null ? req.getVisibility() : ak.dev.irc.app.post.enums.PostVisibility.PUBLIC)
-                .voiceUrl(req.getVoiceUrl())
-                .voiceDurationSeconds(req.getVoiceDurationSeconds())
-                .voiceTranscript(req.getVoiceTranscript())
-                .waveformData(req.getWaveformData())
+                // voice fields removed for posts
                 .audioTrackUrl(req.getAudioTrackUrl())
                 .audioTrackName(req.getAudioTrackName())
                 .locationName(req.getLocationName())
@@ -67,10 +64,7 @@ public class PostMapper {
                 .postType(post.getPostType())
                 .status(post.getStatus())
                 .visibility(post.getVisibility())
-                .voiceUrl(post.getVoiceUrl())
-                .voiceDurationSeconds(post.getVoiceDurationSeconds())
-                .voiceTranscript(post.getVoiceTranscript())
-                .waveformData(post.getWaveformData())
+                // voice fields removed for posts
                 .audioTrackUrl(post.getAudioTrackUrl())
                 .audioTrackName(post.getAudioTrackName())
                 .mediaList(post.getMediaList() == null ? Collections.emptyList()
@@ -104,8 +98,6 @@ public class PostMapper {
                 .durationSeconds(req.getDurationSeconds())
                 .fileSizeBytes(req.getFileSizeBytes())
                 .mimeType(req.getMimeType())
-                .waveformData(req.getWaveformData())
-                .transcript(req.getTranscript())
                 .sortOrder(req.getSortOrder() != null ? req.getSortOrder() : 0)
                 .build();
     }
@@ -120,8 +112,6 @@ public class PostMapper {
                 .durationSeconds(m.getDurationSeconds())
                 .fileSizeBytes(m.getFileSizeBytes())
                 .mimeType(m.getMimeType())
-                .waveformData(m.getWaveformData())
-                .transcript(m.getTranscript())
                 .sortOrder(m.getSortOrder())
                 .build();
     }
@@ -146,15 +136,18 @@ public class PostMapper {
                 .postId(c.getPost().getId())
                 .parentId(c.getParent() != null ? c.getParent().getId() : null)
                 .author(author)
-                .textContent(c.getIsDeleted() ? null : c.getTextContent())
-                .voiceUrl(c.getIsDeleted() ? null : c.getVoiceUrl())
-                .voiceDurationSeconds(c.getVoiceDurationSeconds())
-                .voiceTranscript(c.getIsDeleted() ? null : c.getVoiceTranscript())
-                .waveformData(c.getIsDeleted() ? null : c.getWaveformData())
+                .textContent(c.isDeleted() ? null : c.getTextContent())
+                .mediaUrl(c.isDeleted() ? null : c.getMediaUrl())
+                .mediaType(c.isDeleted() ? null : c.getMediaType())
+                .mediaThumbnailUrl(c.isDeleted() ? null : c.getMediaThumbnailUrl())
+                // voice/comment audio removed for posts
                 .reactionCount(c.getReactionCount())
                 .replyCount(c.getReplyCount())
                 .myReaction(myReaction)
-                .deleted(c.getIsDeleted())
+                .edited(c.isEdited())
+                .editedAt(c.getEditedAt())
+                .deleted(c.isDeleted())
+                .deletedAt(c.getDeletedAt())
                 .createdAt(c.getCreatedAt())
                 .updatedAt(c.getUpdatedAt())
                 .build();

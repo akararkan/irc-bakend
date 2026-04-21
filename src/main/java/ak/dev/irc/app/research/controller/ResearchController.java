@@ -389,94 +389,9 @@ public class ResearchController {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  COMMENTS
+    //  SAVE / BOOKMARK  — read-only "me" queries live here;
+    //  mutating save/unsave is in ResearchSocialController
     // ══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Get paginated top-level comments (replies are nested inside each comment).
-     */
-    @GetMapping("/{id}/comments")
-    public ResponseEntity<Page<CommentResponse>> getComments(
-            @PathVariable UUID id,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(researchService.getComments(id, pageable));
-    }
-
-    @PostMapping("/{id}/comments")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<CommentResponse> addComment(
-            @PathVariable UUID id,
-            @Valid @RequestBody AddCommentRequest request,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(researchService.addComment(id, request, user.getId()));
-    }
-
-    @PatchMapping("/{id}/comments/{commentId}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<CommentResponse> editComment(
-            @PathVariable UUID id,
-            @PathVariable UUID commentId,
-            @Valid @RequestBody EditCommentRequest request,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.editComment(id, commentId, request, user.getId()));
-    }
-
-    @DeleteMapping("/{id}/comments/{commentId}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> deleteComment(
-            @PathVariable UUID id,
-            @PathVariable UUID commentId,
-            @AuthenticationPrincipal User user) {
-        researchService.deleteComment(id, commentId, user.getId());
-        return ResponseEntity.noContent().build();
-    }
-
-    // ── Comment likes ────────────────────────────────────────────────────────
-
-    @PostMapping("/{id}/comments/{commentId}/like")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> likeComment(
-            @PathVariable UUID id,
-            @PathVariable UUID commentId,
-            @AuthenticationPrincipal User user) {
-        researchService.likeComment(id, commentId, user.getId());
-        return ResponseEntity.ok().build();
-    }
-
-    @DeleteMapping("/{id}/comments/{commentId}/like")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> unlikeComment(
-            @PathVariable UUID id,
-            @PathVariable UUID commentId,
-            @AuthenticationPrincipal User user) {
-        researchService.unlikeComment(id, commentId, user.getId());
-        return ResponseEntity.noContent().build();
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    //  SAVE / BOOKMARK
-    // ══════════════════════════════════════════════════════════════════════════
-
-    /** Save a research to a collection (defaults to "Default" if not specified). */
-    @PostMapping("/{id}/save")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> saveResearch(
-            @PathVariable UUID id,
-            @RequestParam(required = false) String collection,
-            @AuthenticationPrincipal User user) {
-        researchService.saveResearch(id, collection, user.getId());
-        return ResponseEntity.ok().build();
-    }
-
-    @DeleteMapping("/{id}/save")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> unsaveResearch(
-            @PathVariable UUID id,
-            @AuthenticationPrincipal User user) {
-        researchService.unsaveResearch(id, user.getId());
-        return ResponseEntity.noContent().build();
-    }
 
     /** All saved researches for the authenticated user. */
     @GetMapping("/me/saved")
@@ -504,41 +419,6 @@ public class ResearchController {
         return ResponseEntity.ok(researchService.getUserCollections(user.getId()));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    //  VIEWS & DOWNLOADS
-    // ══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Record a view event. Deduplicated within a 24-hour window per user/IP.
-     * Fire-and-forget — always returns 204.
-     */
-    @PostMapping("/{id}/view")
-    public ResponseEntity<Void> recordView(
-            @PathVariable UUID id,
-            @RequestHeader(value = "X-Forwarded-For", required = false) String ipAddress,
-            @RequestHeader(value = "User-Agent", required = false) String userAgent,
-            @AuthenticationPrincipal User user) {
-        researchService.recordView(id, user != null ? user.getId() : null, ipAddress, userAgent);
-        return ResponseEntity.noContent().build();
-    }
-
-    /**
-     * Record a download event and return a pre-signed S3 URL (30-minute TTL).
-     *
-     * @param mediaId optional — targets a specific media file; null = whole bundle
-     */
-    @PostMapping("/{id}/download")
-    public ResponseEntity<String> recordDownload(
-            @PathVariable UUID id,
-            @RequestParam(required = false) UUID mediaId,
-            @RequestHeader(value = "X-Forwarded-For", required = false) String ipAddress,
-            @AuthenticationPrincipal User user) {
-        String downloadUrl = researchService.recordDownload(
-                id, mediaId, user != null ? user.getId() : null, ipAddress);
-        return downloadUrl != null
-                ? ResponseEntity.ok(downloadUrl)
-                : ResponseEntity.noContent().build();
-    }
 
     // ══════════════════════════════════════════════════════════════════════════
     //  SHARE & CITATIONS

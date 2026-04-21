@@ -11,6 +11,7 @@ import java.util.UUID;
 public interface UserService {
 
     UserResponse        getProfile(UUID userId);
+    UserResponse        getProfileByUsername(String username);
     UserResponse        getMyProfile();
     UserResponse        updateProfile(UpdateProfileRequest request);
 

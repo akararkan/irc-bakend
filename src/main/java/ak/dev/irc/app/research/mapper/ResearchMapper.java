@@ -34,50 +34,50 @@ public class ResearchMapper {
                 }
             }
             saved = r.getSaves().stream()
-                     .anyMatch(s -> s.getUser().getId().equals(currentUserId));
+                    .anyMatch(s -> s.getUser().getId().equals(currentUserId));
         }
 
         return new ResearchResponse(
-            r.getId(),
-            r.getSlug(),
-            r.getIrcId(),
-            author.getId(),
-            author.getFullName(),
-            author.getUsername(),
-            author.getProfileImage(),
-            r.getTitle(),
-            r.getDescription(),
-            r.getAbstractText(),
-            r.getKeywords(),
-            r.getCitation(),
-            r.getDoi(),
-            r.getVideoPromoUrl(),
-            r.getVideoPromoDurationSeconds(),
-            r.getVideoPromoThumbnailUrl(),
-            r.getCoverImageUrl(),
-            r.getStatus(),
-            r.getVisibility(),
-            r.getScheduledPublishAt(),
-            r.getPublishedAt(),
-            r.getViewCount(),
-            r.getDownloadCount(),
-            r.getReactionCount(),
-            r.getCommentCount(),
-            r.getSaveCount(),
-            r.getShareCount(),
-            r.getCitationCount(),
-            r.isCommentsEnabled(),
-            r.isDownloadsEnabled(),
-            r.getShareToken(),
-            buildShareUrl(r.getShareToken()),
-            r.getTags().stream().map(ResearchTag::getTagName).toList(),
-            r.getMediaFiles().stream().map(this::toMediaResponse).toList(),
-            r.getSources().stream().map(this::toSourceResponse).toList(),
-            reacted,
-            reactionType,
-            saved,
-            r.getCreatedAt(),
-            r.getUpdatedAt()
+                r.getId(),
+                r.getSlug(),
+                r.getIrcId(),
+                author.getId(),
+                author.getFullName(),
+                author.getUsername(),
+                author.getProfileImage(),
+                r.getTitle(),
+                r.getDescription(),
+                r.getAbstractText(),
+                r.getKeywords(),
+                r.getCitation(),
+                r.getDoi(),
+                r.getVideoPromoUrl(),
+                r.getVideoPromoDurationSeconds(),
+                r.getVideoPromoThumbnailUrl(),
+                r.getCoverImageUrl(),
+                r.getStatus(),
+                r.getVisibility(),
+                r.getScheduledPublishAt(),
+                r.getPublishedAt(),
+                r.getViewCount(),
+                r.getDownloadCount(),
+                r.getReactionCount(),
+                r.getCommentCount(),
+                r.getSaveCount(),
+                r.getShareCount(),
+                r.getCitationCount(),
+                r.isCommentsEnabled(),
+                r.isDownloadsEnabled(),
+                r.getShareToken(),
+                buildShareUrl(r.getShareToken()),
+                r.getTags().stream().map(ResearchTag::getTagName).toList(),
+                r.getMediaFiles().stream().map(this::toMediaResponse).toList(),
+                r.getSources().stream().map(this::toSourceResponse).toList(),
+                reacted,
+                reactionType,
+                saved,
+                r.getCreatedAt(),
+                r.getUpdatedAt()
         );
     }
 
@@ -91,36 +91,36 @@ public class ResearchMapper {
 
         if (currentUserId != null) {
             reacted = r.getReactions().stream()
-                       .anyMatch(rx -> rx.getUser().getId().equals(currentUserId));
+                    .anyMatch(rx -> rx.getUser().getId().equals(currentUserId));
             saved   = r.getSaves().stream()
-                       .anyMatch(s -> s.getUser().getId().equals(currentUserId));
+                    .anyMatch(s -> s.getUser().getId().equals(currentUserId));
         }
 
         return new ResearchSummaryResponse(
-            r.getId(),
-            r.getSlug(),
-            r.getIrcId(),
-            r.getTitle(),
-            r.getAbstractText(),
-            r.getCoverImageUrl(),
-            r.getVideoPromoThumbnailUrl(),
-            author.getId(),
-            author.getFullName(),
-            author.getUsername(),
-            author.getProfileImage(),
-            r.getStatus(),
-            r.getPublishedAt(),
-            r.getViewCount(),
-            r.getReactionCount(),
-            r.getCommentCount(),
-            r.getDownloadCount(),
-            r.getSaveCount(),
-            r.getShareCount(),
-            r.getCitationCount(),
-            r.getTags().stream().map(ResearchTag::getTagName).toList(),
-            buildShareUrl(r.getShareToken()),
-            reacted,
-            saved
+                r.getId(),
+                r.getSlug(),
+                r.getIrcId(),
+                r.getTitle(),
+                r.getAbstractText(),
+                r.getCoverImageUrl(),
+                r.getVideoPromoThumbnailUrl(),
+                author.getId(),
+                author.getFullName(),
+                author.getUsername(),
+                author.getProfileImage(),
+                r.getStatus(),
+                r.getPublishedAt(),
+                r.getViewCount(),
+                r.getReactionCount(),
+                r.getCommentCount(),
+                r.getDownloadCount(),
+                r.getSaveCount(),
+                r.getShareCount(),
+                r.getCitationCount(),
+                r.getTags().stream().map(ResearchTag::getTagName).toList(),
+                buildShareUrl(r.getShareToken()),
+                reacted,
+                saved
         );
     }
 
@@ -128,11 +128,11 @@ public class ResearchMapper {
 
     public MediaResponse toMediaResponse(ResearchMedia m) {
         return new MediaResponse(
-            m.getId(), m.getFileUrl(), m.getOriginalFileName(),
-            m.getMimeType(), m.getMediaType(), m.getFileSize(),
-            m.getDisplayOrder(), m.getCaption(), m.getAltText(),
-            m.getDurationSeconds(), m.getThumbnailUrl(),
-            m.getWidthPx(), m.getHeightPx()
+                m.getId(), m.getFileUrl(), m.getOriginalFileName(),
+                m.getMimeType(), m.getMediaType(), m.getFileSize(),
+                m.getDisplayOrder(), m.getCaption(), m.getAltText(),
+                m.getDurationSeconds(), m.getThumbnailUrl(),
+                m.getWidthPx(), m.getHeightPx()
         );
     }
 
@@ -140,32 +140,39 @@ public class ResearchMapper {
 
     public SourceResponse toSourceResponse(ResearchSource s) {
         return new SourceResponse(
-            s.getId(), s.getSourceType(), s.getTitle(),
-            s.getCitationText(), s.getUrl(), s.getDoi(), s.getIsbn(),
-            s.getFileUrl(), s.getOriginalFileName(), s.getMimeType(),
-            s.getFileSize(), s.getDisplayOrder()
+                s.getId(), s.getSourceType(), s.getTitle(),
+                s.getCitationText(), s.getUrl(), s.getDoi(), s.getIsbn(),
+                s.getFileUrl(), s.getOriginalFileName(), s.getMimeType(),
+                s.getFileSize(), s.getDisplayOrder()
         );
     }
 
     // ── Comment ──────────────────────────────────────────────────────────────
 
     public CommentResponse toCommentResponse(ResearchComment c) {
+        return toCommentResponse(c, false);
+    }
+
+    public CommentResponse toCommentResponse(ResearchComment c, boolean canViewHidden) {
         User u = c.getUser();
         List<CommentResponse> replies = c.getReplies() != null
-            ? c.getReplies().stream()
-                .filter(r -> !r.isDeleted())
-                .map(this::toCommentResponse)
+                ? c.getReplies().stream()
+                .filter(r -> !r.isDeleted() && (canViewHidden || !r.isHidden()))
+                .map(r -> toCommentResponse(r, canViewHidden))
                 .toList()
-            : Collections.emptyList();
+                : Collections.emptyList();
 
         return new CommentResponse(
-            c.getId(), c.getResearch().getId(),
-            u.getId(), u.getFullName(), u.getUsername(), u.getProfileImage(),
-            c.getContent(), c.getLikeCount(), c.getReplyCount(),
-            c.isEdited(), c.getEditedAt(),
-            c.getParent() != null ? c.getParent().getId() : null,
-            replies,
-            c.getCreatedAt()
+                c.getId(), c.getResearch().getId(),
+                u.getId(), u.getFullName(), u.getUsername(), u.getProfileImage(),
+                c.getContent(),
+                c.getMediaUrl(), c.getMediaType(), c.getMediaThumbnailUrl(),
+                c.getLikeCount(), c.getReplyCount(),
+                c.isEdited(), c.getEditedAt(),
+                c.isHidden(), c.getHiddenAt(),
+                c.getParent() != null ? c.getParent().getId() : null,
+                replies,
+                c.getCreatedAt()
         );
     }
 

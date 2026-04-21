@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -30,6 +31,18 @@ public interface UserRepository extends JpaRepository<User, UUID> {
             OR LOWER(u.email)    LIKE LOWER(CONCAT('%', :q, '%')))
         """)
     Page<User> searchUsers(@Param("q") String query, Pageable pageable);
+
+    @Query("SELECT u FROM User u WHERE u.deletedAt IS NULL")
+    Page<User> findAllActive(Pageable pageable);
+
+        @Query("""
+                SELECT u FROM User u
+                WHERE u.deletedAt IS NULL
+                    AND u.role IN :roles
+                ORDER BY u.createdAt DESC, u.id ASC
+                """)
+        Page<User> findActiveByRoles(@Param("roles") Collection<ak.dev.irc.app.user.enums.Role> roles,
+                                                                 Pageable pageable);
 
     @Query("SELECT u FROM User u WHERE u.id = :id AND u.deletedAt IS NULL")
     Optional<User> findActiveById(@Param("id") UUID id);

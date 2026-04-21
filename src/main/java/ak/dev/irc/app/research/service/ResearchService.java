@@ -96,15 +96,22 @@ public interface ResearchService {
 
     CommentResponse addComment(UUID researchId, AddCommentRequest request, UUID userId);
 
+    CommentResponse addCommentWithMedia(UUID researchId, AddCommentRequest request, UUID userId,
+                                        MultipartFile media, MultipartFile voice);
+
     CommentResponse editComment(UUID researchId, UUID commentId, EditCommentRequest request, UUID userId);
 
     void deleteComment(UUID researchId, UUID commentId, UUID userId);
 
-    Page<CommentResponse> getComments(UUID researchId, Pageable pageable);
+    Page<CommentResponse> getComments(UUID researchId, Pageable pageable, UUID currentUserId);
 
     void likeComment(UUID researchId, UUID commentId, UUID userId);
 
     void unlikeComment(UUID researchId, UUID commentId, UUID userId);
+
+    void hideComment(UUID researchId, UUID commentId, UUID userId);
+
+    void unhideComment(UUID researchId, UUID commentId, UUID userId);
 
     // ── Save / Bookmark ──────────────────────────────────────────────────────
 

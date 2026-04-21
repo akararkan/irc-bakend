@@ -51,22 +51,7 @@ public class Post {
     @Builder.Default
     private PostVisibility visibility = PostVisibility.PUBLIC;
 
-    // ── voice / audio (unique differentiator) ────────────────
-    /** CDN URL of the primary voice recording (VOICE_POST type) */
-    @Column(name = "voice_url")
-    private String voiceUrl;
-
-    /** Duration in seconds */
-    @Column(name = "voice_duration_seconds")
-    private Integer voiceDurationSeconds;
-
-    /** Auto-generated transcript of the voice content */
-    @Column(name = "voice_transcript", columnDefinition = "TEXT")
-    private String voiceTranscript;
-
-    /** JSON array of waveform peak amplitudes for client-side rendering */
-    @Column(name = "waveform_data", columnDefinition = "TEXT")
-    private String waveformData;
+    // (voice/audio posts removed — voice fields intentionally omitted)
 
     // ── story TTL ─────────────────────────────────────────────
     /** Populated only for PostType.STORY – null means no expiry */

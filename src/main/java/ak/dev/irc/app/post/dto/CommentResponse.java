@@ -20,18 +20,22 @@ public class CommentResponse {
     // ── content ───────────────────────────────────────────────
     private String textContent;
 
-    // ── voice comment ─────────────────────────────────────────
-    private String voiceUrl;
-    private Integer voiceDurationSeconds;
-    private String voiceTranscript;
-    private String waveformData;
+    // ── media attachment (image / video) ──────────────────────
+    private String mediaUrl;
+    private String mediaType;
+    private String mediaThumbnailUrl;
+
+    // (voice comments removed for posts)
 
     // ── reactions ─────────────────────────────────────────────
     private Long reactionCount;
     private Long replyCount;
     private PostReactionType myReaction;
 
+    private boolean edited;
+    private LocalDateTime editedAt;
     private boolean deleted;
+    private LocalDateTime deletedAt;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
