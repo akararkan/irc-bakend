@@ -19,17 +19,18 @@ import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityNotFoundException;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.post.enums.PostMediaType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-// import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-// java.time.LocalDateTime removed — stories disabled
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -58,9 +59,10 @@ public class PostService {
 
         Post post = postMapper.toEntity(req, author);
 
-        // Stories are disabled — reject unsupported post types
+        // Story validation: text-only, single image, or single video ≤ 30s
         if (req.getPostType() == PostType.STORY) {
-            throw new BadRequestException("Post type '" + req.getPostType() + "' is not supported", "POST_TYPE_DISABLED");
+            validateStoryContent(req);
+            post.setExpiresAt(LocalDateTime.now().plusHours(24));
         }
 
         // Share link
@@ -208,6 +210,16 @@ public class PostService {
     }
 
     @Transactional(readOnly = true)
+    public Page<PostResponse> getFollowingStoryFeed(UUID userId, Pageable pageable) {
+        List<UUID> followingIds = getFilteredFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        return postRepository.findFollowingStoryFeed(followingIds, LocalDateTime.now(), pageable)
+                .map(postMapper::toResponse);
+    }
+
+    @Transactional(readOnly = true)
     public Page<PostResponse> getReelFeed(Pageable pageable) {
         return postRepository
                 .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
@@ -306,9 +318,49 @@ public class PostService {
      * Runs every 60 seconds — marks expired stories as ARCHIVED
      * so they no longer appear in feeds or public queries.
      */
-    // Story expiration job removed because story/posts of type STORY are no longer supported
+    @Scheduled(fixedRate = 60_000)
+    @Transactional
+    public void archiveExpiredStories() {
+        List<Post> expired = postRepository.findExpiredStories(LocalDateTime.now());
+        if (!expired.isEmpty()) {
+            expired.forEach(p -> p.setStatus(PostStatus.ARCHIVED));
+            postRepository.saveAll(expired);
+            log.info("Archived {} expired stories", expired.size());
+        }
+    }
 
     // ── Helpers ───────────────────────────────────────────────
+
+    private void validateStoryContent(CreatePostRequest req) {
+        if (req.getMediaList() == null || req.getMediaList().isEmpty()) {
+            // Text-only story — valid as long as there's text content
+            if (req.getTextContent() == null || req.getTextContent().isBlank()) {
+                throw new BadRequestException(
+                        "Story must have text content or a single media attachment",
+                        "EMPTY_STORY");
+            }
+            return;
+        }
+
+        if (req.getMediaList().size() > 1) {
+            throw new BadRequestException(
+                    "Story can only have a single media attachment (one image or one video up to 30s)",
+                    "STORY_MEDIA_LIMIT");
+        }
+
+        var media = req.getMediaList().get(0);
+        if (media.getMediaType() == PostMediaType.VIDEO) {
+            if (media.getDurationSeconds() != null && media.getDurationSeconds() > 30) {
+                throw new BadRequestException(
+                        "Story video must be 30 seconds or less",
+                        "STORY_VIDEO_TOO_LONG");
+            }
+        } else if (media.getMediaType() != PostMediaType.IMAGE) {
+            throw new BadRequestException(
+                    "Story media must be an image or a video",
+                    "STORY_INVALID_MEDIA_TYPE");
+        }
+    }
 
     private List<UUID> getFilteredFollowingIds(UUID userId) {
         List<UUID> followingIds = followRepository.findFollowingIds(userId);

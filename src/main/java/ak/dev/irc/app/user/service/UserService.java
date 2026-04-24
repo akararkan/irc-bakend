@@ -12,6 +12,7 @@ public interface UserService {
 
     UserResponse        getProfile(UUID userId);
     UserResponse        getProfileByUsername(String username);
+    UserResponse        getProfileByEmail(String email);
     UserResponse        getMyProfile();
     UserResponse        updateProfile(UpdateProfileRequest request);
 

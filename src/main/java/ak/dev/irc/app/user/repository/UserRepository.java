@@ -18,9 +18,17 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     Optional<User> findByUsername(String username);
 
+    /** Finds a non-deleted user by email — use for profile lookups and auth. */
+    Optional<User> findByEmailAndDeletedAtIsNull(String email);
+
+    /** Finds a non-deleted user by username — use for profile lookups and auth. */
+    Optional<User> findByUsernameAndDeletedAtIsNull(String username);
+
     boolean existsByEmail(String email);
 
     boolean existsByUsername(String username);
+
+    boolean existsByUsernameAndDeletedAtIsNull(String username);
 
     @Query("""
         SELECT u FROM User u

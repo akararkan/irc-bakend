@@ -76,8 +76,7 @@ public class UserServiceImpl implements UserService {
     public UserResponse getProfileByUsername(String username) {
         log.debug("Fetching profile for username [{}]", username);
 
-        User user = userRepository.findByUsername(username)
-                .filter(u -> u.getDeletedAt() == null)
+        User user = userRepository.findByUsernameAndDeletedAtIsNull(username)
                 .orElseThrow(() -> {
                     log.warn("Active user not found for username [{}]", username);
                     return new ResourceNotFoundException("User", "username", username);
@@ -94,6 +93,23 @@ public class UserServiceImpl implements UserService {
 
     @Override
     @Transactional(readOnly = true)
+    public UserResponse getProfileByEmail(String email) {
+        log.debug("Fetching profile for email [{}]", email);
+
+        User user = userRepository.findByEmailAndDeletedAtIsNull(email)
+                .orElseThrow(() -> {
+                    log.warn("Active user not found for email [{}]", email);
+                    return new ResourceNotFoundException("User", "email", email);
+                });
+
+        long followers = followRepository.countByFollowingId(user.getId());
+        long following = followRepository.countByFollowerId(user.getId());
+
+        return userMapper.toResponse(user, followers, following);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public UserResponse getMyProfile() {
         UUID myId = authenticatedUserId();
         log.info("User [{}] fetching own profile", myId);
@@ -103,14 +119,7 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserResponse updateProfile(UpdateProfileRequest req) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] updating profile — fields: fname={}, lname={}, location={}, " +
-                        "profileBio={}, selfDescriber={}",
-                myId,
-                req.fname()         != null ? "provided" : "unchanged",
-                req.lname()         != null ? "provided" : "unchanged",
-                req.location()      != null ? "provided" : "unchanged",
-                req.profileBio()    != null ? "provided" : "unchanged",
-                req.selfDescriber() != null ? "provided" : "unchanged");
+        log.info("User [{}] updating profile", myId);
 
         User user = findActiveOrThrow(myId);
 
@@ -120,6 +129,19 @@ public class UserServiceImpl implements UserService {
         if (req.location()      != null) { user.setLocation(req.location());         changes++; }
         if (req.profileBio()    != null) { user.setProfileBio(req.profileBio());     changes++; }
         if (req.selfDescriber() != null) { user.setSelfDescriber(req.selfDescriber()); changes++; }
+
+        if (req.username() != null && !req.username().equalsIgnoreCase(user.getUsername())) {
+            if (userRepository.existsByUsernameAndDeletedAtIsNull(req.username())) {
+                throw new DuplicateResourceException("User", "username", req.username());
+            }
+            user.setUsername(req.username());
+            changes++;
+        }
+
+        if (req.isProfileLocked() != null) {
+            user.setProfileLocked(req.isProfileLocked());
+            changes++;
+        }
 
         if (changes == 0) {
             log.info("User [{}] profile update — no fields changed", myId);

@@ -41,6 +41,11 @@ public class UserController {
         return ResponseEntity.ok(userService.getProfileByUsername(username));
     }
 
+    @GetMapping("/email/{email}")
+    public ResponseEntity<UserResponse> getProfileByEmail(@PathVariable String email) {
+        return ResponseEntity.ok(userService.getProfileByEmail(email));
+    }
+
     @PatchMapping("/me")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<UserResponse> updateProfile(

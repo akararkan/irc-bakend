@@ -35,8 +35,8 @@ public class CustomUserDetailsService implements UserDetailsService {
         boolean isEmail = identifier != null && identifier.contains("@");
 
         User user = isEmail
-                ? userRepository.findByEmail(identifier).orElse(null)
-                : userRepository.findByUsername(identifier).orElse(null);
+                ? userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null)
+                : userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null);
 
         if (user == null) {
             log.warn("Authentication attempt with unknown {} '{}'",

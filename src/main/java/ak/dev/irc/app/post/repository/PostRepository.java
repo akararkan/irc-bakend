@@ -36,6 +36,20 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("SELECT p FROM Post p WHERE p.postType = 'STORY' AND p.expiresAt < :now AND p.status = 'PUBLISHED'")
     List<Post> findExpiredStories(@Param("now") LocalDateTime now);
 
+    // Story feed: active (non-expired) stories from followed users
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id IN :authorIds
+          AND p.postType = 'STORY'
+          AND p.status = 'PUBLISHED'
+          AND (p.expiresAt IS NULL OR p.expiresAt > :now)
+          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findFollowingStoryFeed(@Param("authorIds") List<UUID> authorIds,
+                                       @Param("now") LocalDateTime now,
+                                       Pageable pageable);
+
     // Share link lookup
     Optional<Post> findByShareLink(String shareLink);
 

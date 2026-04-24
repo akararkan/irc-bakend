@@ -85,6 +85,14 @@ public class PostController {
         return ResponseEntity.ok(postService.getFollowingFeed(user.getId(), pageable));
     }
 
+    @GetMapping("/feed/stories")
+    public ResponseEntity<Page<PostResponse>> getFollowingStoryFeed(
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getFollowingStoryFeed(user.getId(), pageable));
+    }
+
     @GetMapping("/feed/reels")
     public ResponseEntity<Page<PostResponse>> getReelFeed(
             @PageableDefault(size = 10) Pageable pageable) {
