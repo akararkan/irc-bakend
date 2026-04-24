@@ -3,6 +3,7 @@ package ak.dev.irc.app.post.controller;
 
 
 import ak.dev.irc.app.post.dto.CreatePostRequest;
+import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.service.PostService;
@@ -50,6 +51,17 @@ public class PostController {
                 .body(postService.createPostWithFiles(req, user.getId(), files));
     }
 
+    // ── Update ────────────────────────────────────────────────
+
+    @PatchMapping("/{postId}")
+    public ResponseEntity<PostResponse> updatePost(
+            @PathVariable UUID postId,
+            @Valid @RequestBody UpdatePostRequest req,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.updatePost(postId, req, user.getId()));
+    }
+
     // ── Read ──────────────────────────────────────────────────
 
     @GetMapping("/{postId}")
@@ -65,10 +77,26 @@ public class PostController {
         return ResponseEntity.ok(postService.getPublicFeed(pageable));
     }
 
+    @GetMapping("/feed/following")
+    public ResponseEntity<Page<PostResponse>> getFollowingFeed(
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getFollowingFeed(user.getId(), pageable));
+    }
+
     @GetMapping("/feed/reels")
     public ResponseEntity<Page<PostResponse>> getReelFeed(
             @PageableDefault(size = 10) Pageable pageable) {
         return ResponseEntity.ok(postService.getReelFeed(pageable));
+    }
+
+    @GetMapping("/feed/reels/following")
+    public ResponseEntity<Page<PostResponse>> getFollowingReelFeed(
+            @PageableDefault(size = 10) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getFollowingReelFeed(user.getId(), pageable));
     }
 
     @GetMapping("/user/{authorId}")

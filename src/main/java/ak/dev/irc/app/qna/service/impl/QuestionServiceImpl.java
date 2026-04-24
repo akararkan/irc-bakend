@@ -7,6 +7,7 @@ import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.qna.dto.request.CreateAnswerRequest;
 import ak.dev.irc.app.qna.dto.request.CreateQuestionRequest;
 import ak.dev.irc.app.qna.dto.request.EditAnswerRequest;
+import ak.dev.irc.app.qna.dto.request.EditQuestionRequest;
 import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
 import ak.dev.irc.app.qna.dto.response.QuestionResponse;
 import ak.dev.irc.app.qna.entity.Question;
@@ -19,6 +20,8 @@ import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.rabbitmq.publisher.QuestionEventPublisher;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.Role;
+import ak.dev.irc.app.user.repository.UserBlockRepository;
+import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -27,6 +30,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -36,6 +40,8 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionRepository questionRepository;
     private final QuestionAnswerRepository answerRepository;
     private final UserRepository userRepository;
+    private final UserFollowRepository followRepository;
+    private final UserBlockRepository blockRepository;
     private final QuestionMapper mapper;
     private final QuestionEventPublisher eventPublisher;
 
@@ -58,6 +64,33 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     @Override
+    @Transactional
+    public QuestionResponse editQuestion(UUID questionId, EditQuestionRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("You can only edit your own question");
+        }
+
+        if (request.getTitle() != null) {
+            if (request.getTitle().isBlank()) {
+                throw new BadRequestException("Question title cannot be empty", "EMPTY_TITLE");
+            }
+            question.setTitle(request.getTitle().trim());
+        }
+        if (request.getBody() != null) {
+            if (request.getBody().isBlank()) {
+                throw new BadRequestException("Question body cannot be empty", "EMPTY_BODY");
+            }
+            question.setBody(request.getBody().trim());
+        }
+
+        question.audit(AuditAction.UPDATE, "Edited question");
+        question = questionRepository.save(question);
+        return mapper.toQuestionResponse(question);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public QuestionResponse getQuestion(UUID questionId) {
         return mapper.toQuestionResponse(findQuestionOrThrow(questionId));
@@ -73,6 +106,21 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getFeed(Pageable pageable) {
         return questionRepository.findByDeletedAtIsNullOrderByCreatedAtDesc(pageable)
+                .map(mapper::toQuestionResponse);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable) {
+        List<UUID> followingIds = followRepository.findFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        followingIds.removeIf(id -> blockRepository.isBlockedBetween(userId, id));
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        return questionRepository.findFollowingFeed(followingIds, pageable)
                 .map(mapper::toQuestionResponse);
     }
 

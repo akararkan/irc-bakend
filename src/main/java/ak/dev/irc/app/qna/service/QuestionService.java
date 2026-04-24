@@ -3,6 +3,7 @@ package ak.dev.irc.app.qna.service;
 import ak.dev.irc.app.qna.dto.request.CreateAnswerRequest;
 import ak.dev.irc.app.qna.dto.request.CreateQuestionRequest;
 import ak.dev.irc.app.qna.dto.request.EditAnswerRequest;
+import ak.dev.irc.app.qna.dto.request.EditQuestionRequest;
 import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
 import ak.dev.irc.app.qna.dto.response.QuestionResponse;
 import org.springframework.data.domain.Page;
@@ -14,11 +15,15 @@ public interface QuestionService {
 
     QuestionResponse createQuestion(CreateQuestionRequest request, UUID authorId);
 
+    QuestionResponse editQuestion(UUID questionId, EditQuestionRequest request, UUID requesterId);
+
     QuestionResponse getQuestion(UUID questionId);
 
     Page<QuestionResponse> getQuestionFeed(Pageable pageable);
 
     Page<QuestionResponse> getFeed(Pageable pageable);
+
+    Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable);
 
     Page<QuestionResponse> getMyQuestions(UUID authorId, Pageable pageable);
 

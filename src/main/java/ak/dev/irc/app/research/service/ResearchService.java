@@ -70,6 +70,8 @@ public interface ResearchService {
 
     Page<ResearchSummaryResponse> getFeed(Pageable pageable, UUID currentUserId);
 
+    Page<ResearchSummaryResponse> getFollowingFeed(UUID userId, Pageable pageable);
+
     Page<ResearchSummaryResponse> getByResearcher(UUID researcherId, Pageable pageable, UUID currentUserId);
 
     Page<ResearchSummaryResponse> search(String query, Pageable pageable, UUID currentUserId);

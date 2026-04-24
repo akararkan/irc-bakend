@@ -3,6 +3,7 @@ package ak.dev.irc.app.post.service;
 
 
 import ak.dev.irc.app.post.dto.CreatePostRequest;
+import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.entity.*;
@@ -13,6 +14,8 @@ import ak.dev.irc.app.rabbitmq.event.post.*;
 import ak.dev.irc.app.rabbitmq.publisher.PostEventPublisher;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
+import ak.dev.irc.app.user.repository.UserBlockRepository;
+import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityNotFoundException;
 import ak.dev.irc.app.common.exception.BadRequestException;
@@ -42,6 +45,8 @@ public class PostService {
     private final PostMapper             postMapper;
     private final PostEventPublisher     eventPublisher;
     private final UserRepository         userRepository;
+    private final UserFollowRepository   followRepository;
+    private final UserBlockRepository    blockRepository;
     private final S3StorageService       storageService;
 
     // ── Create ────────────────────────────────────────────────
@@ -124,6 +129,34 @@ public class PostService {
         return createPost(req, authorId);
     }
 
+    // ── Update ────────────────────────────────────────────────
+
+    @Transactional
+    public PostResponse updatePost(UUID postId, UpdatePostRequest req, UUID requesterId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new EntityNotFoundException("Post not found"));
+
+        if (!post.getAuthor().getId().equals(requesterId)) {
+            throw new AccessDeniedException("You can only edit your own posts");
+        }
+
+        if (post.getStatus() == PostStatus.REMOVED) {
+            throw new BadRequestException("Cannot edit a removed post", "POST_REMOVED");
+        }
+
+        if (req.getTextContent() != null) post.setTextContent(req.getTextContent());
+        if (req.getVisibility() != null) post.setVisibility(req.getVisibility());
+        if (req.getAudioTrackUrl() != null) post.setAudioTrackUrl(req.getAudioTrackUrl());
+        if (req.getAudioTrackName() != null) post.setAudioTrackName(req.getAudioTrackName());
+        if (req.getLocationName() != null) post.setLocationName(req.getLocationName());
+        if (req.getLocationLat() != null) post.setLocationLat(req.getLocationLat());
+        if (req.getLocationLng() != null) post.setLocationLng(req.getLocationLng());
+
+        post = postRepository.save(post);
+        log.info("Post updated: {} by user {}", postId, requesterId);
+        return postMapper.toResponse(post);
+    }
+
     // ── Read ──────────────────────────────────────────────────
 
     @Transactional
@@ -151,6 +184,26 @@ public class PostService {
     public Page<PostResponse> getUserPosts(UUID authorId, Pageable pageable) {
         return postRepository
                 .findByAuthorIdAndStatusAndVisibility(authorId, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                .map(postMapper::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getFollowingFeed(UUID userId, Pageable pageable) {
+        List<UUID> followingIds = getFilteredFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        return postRepository.findFollowingFeed(followingIds, pageable)
+                .map(postMapper::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getFollowingReelFeed(UUID userId, Pageable pageable) {
+        List<UUID> followingIds = getFilteredFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        return postRepository.findFollowingReelFeed(followingIds, pageable)
                 .map(postMapper::toResponse);
     }
 
@@ -256,6 +309,14 @@ public class PostService {
     // Story expiration job removed because story/posts of type STORY are no longer supported
 
     // ── Helpers ───────────────────────────────────────────────
+
+    private List<UUID> getFilteredFollowingIds(UUID userId) {
+        List<UUID> followingIds = followRepository.findFollowingIds(userId);
+        if (followingIds.isEmpty()) return followingIds;
+        // Remove users who have blocked the requester or whom the requester has blocked
+        followingIds.removeIf(id -> blockRepository.isBlockedBetween(userId, id));
+        return followingIds;
+    }
 
     private Post findPublishedPost(UUID postId) {
         return postRepository.findById(postId)

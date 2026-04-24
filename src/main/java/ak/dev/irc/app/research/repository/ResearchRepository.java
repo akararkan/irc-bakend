@@ -36,6 +36,16 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     Page<Research> findByResearcherIdAndStatusAndDeletedAtIsNull(
             UUID researcherId, ResearchStatus status, Pageable pageable);
 
+    // Following feed: published research from followed researchers
+    @Query("""
+        SELECT r FROM Research r
+        WHERE r.researcher.id IN :researcherIds
+          AND r.status = 'PUBLISHED'
+          AND r.deletedAt IS NULL
+        ORDER BY r.publishedAt DESC
+        """)
+    Page<Research> findFollowingFeed(@Param("researcherIds") List<UUID> researcherIds, Pageable pageable);
+
     // ── LIKE search ──────────────────────────────────────────────────────────
 
     @Query("""

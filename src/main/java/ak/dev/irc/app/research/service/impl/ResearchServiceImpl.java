@@ -17,6 +17,8 @@ import ak.dev.irc.app.research.service.ResearchService;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.Role;
+import ak.dev.irc.app.user.repository.UserBlockRepository;
+import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -60,6 +62,8 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchViewRepository     viewRepo;
     private final ResearchDownloadRepository downloadRepo;
     private final UserRepository             userRepo;
+    private final UserFollowRepository       followRepo;
+    private final UserBlockRepository        blockRepo;
 
     private final S3StorageService       s3;
     private final ResearchMapper         mapper;
@@ -646,6 +650,21 @@ public class ResearchServiceImpl implements ResearchService {
         return researchRepo
                 .findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(ResearchStatus.PUBLISHED, pageable)
                 .map(r -> mapper.toSummary(r, currentUserId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<ResearchSummaryResponse> getFollowingFeed(UUID userId, Pageable pageable) {
+        List<UUID> followingIds = followRepo.findFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        followingIds.removeIf(id -> blockRepo.isBlockedBetween(userId, id));
+        if (followingIds.isEmpty()) {
+            return Page.empty(pageable);
+        }
+        return researchRepo.findFollowingFeed(followingIds, pageable)
+                .map(r -> mapper.toSummary(r, userId));
     }
 
     @Override

@@ -56,6 +56,27 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("UPDATE Post p SET p.viewCount = p.viewCount + 1 WHERE p.id = :id")
     void incrementViewCount(@Param("id") UUID id);
 
+    // Following feed: posts from followed users (PUBLIC + FOLLOWERS_ONLY)
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id IN :authorIds
+          AND p.status = 'PUBLISHED'
+          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findFollowingFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
+
+    // Following reel feed: reels from followed users
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id IN :authorIds
+          AND p.postType = 'REEL'
+          AND p.status = 'PUBLISHED'
+          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findFollowingReelFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
+
     // Search (voice transcript removed from posts — search only by text content)
     @Query("SELECT p FROM Post p WHERE p.status = 'PUBLISHED' AND p.visibility = 'PUBLIC' " +
             "AND LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%'))")

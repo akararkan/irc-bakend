@@ -274,6 +274,19 @@ public class ResearchController {
         return ResponseEntity.ok(researchService.getFeed(pageable, user != null ? user.getId() : null));
     }
 
+    /**
+     * Following feed — published researches from researchers that the
+     * authenticated user follows, ordered by publish date descending.
+     * Excludes blocked users in both directions.
+     */
+    @GetMapping("/feed/following")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Page<ResearchSummaryResponse>> getFollowingFeed(
+            @PageableDefault(size = 20, sort = "publishedAt") Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(researchService.getFollowingFeed(user.getId(), pageable));
+    }
+
     /** All published researches by a specific researcher. */
     @GetMapping("/researcher/{researcherId}")
     public ResponseEntity<Page<ResearchSummaryResponse>> getByResearcher(

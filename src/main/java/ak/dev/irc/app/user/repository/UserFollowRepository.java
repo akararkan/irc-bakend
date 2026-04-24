@@ -59,6 +59,17 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         """)
     List<UUID> findFollowerIds(@Param("userId") UUID userId, Pageable pageable);
 
+    /**
+     * Returns the UUIDs of all users that a given user follows — used by
+     * following-based feeds to fetch content from followed users.
+     */
+    @Query("""
+        SELECT uf.following.id FROM UserFollow uf
+        WHERE uf.follower.id = :userId
+          AND uf.following.deletedAt IS NULL
+        """)
+    List<UUID> findFollowingIds(@Param("userId") UUID userId);
+
     /** Delete all follow rows between two users in both directions */
     @Modifying
     @Query("""

@@ -3,6 +3,7 @@ package ak.dev.irc.app.qna.controller;
 import ak.dev.irc.app.qna.dto.request.CreateAnswerRequest;
 import ak.dev.irc.app.qna.dto.request.CreateQuestionRequest;
 import ak.dev.irc.app.qna.dto.request.EditAnswerRequest;
+import ak.dev.irc.app.qna.dto.request.EditQuestionRequest;
 import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
 import ak.dev.irc.app.qna.dto.response.QuestionResponse;
 import ak.dev.irc.app.qna.service.QuestionService;
@@ -51,6 +52,17 @@ public class QuestionController {
         return ResponseEntity.ok(questionService.getFeed(pageable));
     }
 
+    @GetMapping("/feed/following")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Page<QuestionResponse>> getFollowingFeed(
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return ResponseEntity.ok(questionService.getFollowingFeed(user.getId(), pageable));
+    }
+
     @GetMapping("/me")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Page<QuestionResponse>> getMyQuestions(
@@ -60,6 +72,18 @@ public class QuestionController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         return ResponseEntity.ok(questionService.getMyQuestions(user.getId(), pageable));
+    }
+
+    @PatchMapping("/{questionId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> editQuestion(
+            @PathVariable UUID questionId,
+            @Valid @RequestBody EditQuestionRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return ResponseEntity.ok(questionService.editQuestion(questionId, request, user.getId()));
     }
 
     @GetMapping("/{questionId}")
