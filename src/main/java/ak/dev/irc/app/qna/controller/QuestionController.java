@@ -1,11 +1,7 @@
 package ak.dev.irc.app.qna.controller;
 
-import ak.dev.irc.app.qna.dto.request.CreateAnswerRequest;
-import ak.dev.irc.app.qna.dto.request.CreateQuestionRequest;
-import ak.dev.irc.app.qna.dto.request.EditAnswerRequest;
-import ak.dev.irc.app.qna.dto.request.EditQuestionRequest;
-import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
-import ak.dev.irc.app.qna.dto.response.QuestionResponse;
+import ak.dev.irc.app.qna.dto.request.*;
+import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
@@ -17,15 +13,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -35,20 +25,23 @@ public class QuestionController {
 
     private final QuestionService questionService;
 
+    // ══════════════════════════════════════════════════════════════════════════
+    //  QUESTIONS
+    // ══════════════════════════════════════════════════════════════════════════
+
     @PostMapping
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<QuestionResponse> createQuestion(
             @Valid @RequestBody CreateQuestionRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.createQuestion(request, user.getId()));
     }
 
     @GetMapping
-    public ResponseEntity<Page<QuestionResponse>> getFeed(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<Page<QuestionResponse>> getFeed(
+            @PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(questionService.getFeed(pageable));
     }
 
@@ -57,9 +50,7 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getFollowingFeed(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(questionService.getFollowingFeed(user.getId(), pageable));
     }
 
@@ -68,9 +59,7 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getMyQuestions(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(questionService.getMyQuestions(user.getId(), pageable));
     }
 
@@ -80,9 +69,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @Valid @RequestBody EditQuestionRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(questionService.editQuestion(questionId, request, user.getId()));
     }
 
@@ -90,6 +77,42 @@ public class QuestionController {
     public ResponseEntity<QuestionResponse> getQuestion(@PathVariable UUID questionId) {
         return ResponseEntity.ok(questionService.getQuestion(questionId));
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANSWER CONTROLS
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/{questionId}/lock-answers")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> lockAnswers(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.lockAnswers(questionId, user.getId()));
+    }
+
+    @DeleteMapping("/{questionId}/lock-answers")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> unlockAnswers(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.unlockAnswers(questionId, user.getId()));
+    }
+
+    @PatchMapping("/{questionId}/answer-limit")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> setAnswerLimit(
+            @PathVariable UUID questionId,
+            @RequestParam(required = false) Integer maxAnswers,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.setAnswerLimit(questionId, maxAnswers, user.getId()));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANSWERS
+    // ══════════════════════════════════════════════════════════════════════════
 
     @GetMapping("/{questionId}/answers")
     public ResponseEntity<Page<QuestionAnswerResponse>> getAnswers(
@@ -104,9 +127,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @Valid @RequestBody CreateAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addAnswer(questionId, request, user.getId()));
     }
@@ -118,22 +139,8 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @Valid @RequestBody EditAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(questionService.editAnswer(questionId, answerId, request, user.getId()));
-    }
-
-    @DeleteMapping("/{questionId}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> deleteQuestion(
-            @PathVariable UUID questionId,
-            @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-        questionService.deleteQuestion(questionId, user.getId());
-        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{questionId}/answers/{answerId}")
@@ -142,10 +149,81 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         questionService.deleteAnswer(questionId, answerId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ACCEPT / UNACCEPT
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/{questionId}/answers/{answerId}/accept")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> acceptAnswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.acceptAnswer(questionId, answerId, user.getId()));
+    }
+
+    @DeleteMapping("/{questionId}/answers/{answerId}/accept")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> unacceptAnswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.unacceptAnswer(questionId, answerId, user.getId()));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  FEEDBACK
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/{questionId}/answers/{answerId}/feedback")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<AnswerFeedbackResponse> addFeedback(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @Valid @RequestBody AddFeedbackRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(questionService.addFeedback(questionId, answerId, request, user.getId()));
+    }
+
+    @GetMapping("/{questionId}/answers/{answerId}/feedback")
+    public ResponseEntity<List<AnswerFeedbackResponse>> getFeedback(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId) {
+        return ResponseEntity.ok(questionService.getFeedback(questionId, answerId));
+    }
+
+    @DeleteMapping("/{questionId}/answers/{answerId}/feedback/{feedbackId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> deleteFeedback(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @PathVariable UUID feedbackId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        questionService.deleteFeedback(questionId, answerId, feedbackId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  DELETE QUESTION
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @DeleteMapping("/{questionId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> deleteQuestion(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        questionService.deleteQuestion(questionId, user.getId());
         return ResponseEntity.noContent().build();
     }
 }

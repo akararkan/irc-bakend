@@ -2,7 +2,9 @@ package ak.dev.irc.app.common.exception;
 
 import ak.dev.irc.app.common.dto.ApiErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.catalina.connector.ClientAbortException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -18,12 +20,14 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import software.amazon.awssdk.core.exception.SdkClientException;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -454,12 +458,51 @@ public class GlobalExceptionHandler {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  9. CATCH-ALL
+    //  9. CLIENT DISCONNECT (broken pipe during streaming responses)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * The client (usually a browser <audio>/<video> element seeking, pausing,
+     * or unmounting mid-stream) closed the TCP connection before we finished
+     * writing. Nothing we can do — the response is already gone, and trying
+     * to render an ApiErrorResponse on top of it produces the secondary
+     * "No converter for [ApiErrorResponse] with preset Content-Type 'audio/mpeg'"
+     * error. Log at DEBUG, return void → Spring treats the exception as handled.
+     */
+    @ExceptionHandler({
+            ClientAbortException.class,
+            AsyncRequestNotUsableException.class,
+    })
+    public void handleClientAbort(Exception ex, HttpServletRequest request) {
+        if (log.isDebugEnabled()) {
+            log.debug("Client disconnected mid-response on {} {} — {}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage());
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  10. CATCH-ALL
     // ══════════════════════════════════════════════════════════════════════════
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleAllUncaught(
-            Exception ex, HttpServletRequest request) {
+            Exception ex, HttpServletRequest request, HttpServletResponse response) {
+
+        // If the underlying cause is a client disconnect, treat it as #9.
+        if (isClientDisconnect(ex)) {
+            handleClientAbort(ex, request);
+            return null;
+        }
+
+        // Response already started streaming (e.g. a half-written audio/video
+        // body): we cannot append a JSON error body without colliding with
+        // the existing Content-Type. Log and bail out.
+        if (response.isCommitted()) {
+            log.warn("Suppressing error body — response already committed on {} {} ({})",
+                    request.getMethod(), request.getRequestURI(),
+                    ex.getClass().getSimpleName());
+            return null;
+        }
 
         String traceId = traceId();
         log.error("[{}] UNHANDLED exception on {} {} — {}: {}",
@@ -483,5 +526,31 @@ public class GlobalExceptionHandler {
 
     private String traceId() {
         return UUID.randomUUID().toString();
+    }
+
+    /**
+     * Walks the cause chain looking for a Tomcat/Jetty client-abort or any
+     * IOException whose message looks like a broken pipe / connection reset.
+     * These should never produce an error body.
+     */
+    private static boolean isClientDisconnect(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof ClientAbortException
+                    || t instanceof AsyncRequestNotUsableException) {
+                return true;
+            }
+            if (t instanceof IOException) {
+                String msg = t.getMessage();
+                if (msg != null) {
+                    String lower = msg.toLowerCase();
+                    if (lower.contains("broken pipe")
+                            || lower.contains("connection reset")
+                            || lower.contains("connection abort")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 }

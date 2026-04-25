@@ -11,4 +11,8 @@ public class EditQuestionRequest {
 
     @Size(max = 10000, message = "Question body must not exceed 10000 characters")
     private String body;
+
+    private Boolean answersLocked;
+
+    private Integer maxAnswers;
 }

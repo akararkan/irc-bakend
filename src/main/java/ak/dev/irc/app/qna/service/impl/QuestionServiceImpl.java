@@ -2,18 +2,17 @@ package ak.dev.irc.app.qna.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
-import ak.dev.irc.app.qna.dto.request.CreateAnswerRequest;
-import ak.dev.irc.app.qna.dto.request.CreateQuestionRequest;
-import ak.dev.irc.app.qna.dto.request.EditAnswerRequest;
-import ak.dev.irc.app.qna.dto.request.EditQuestionRequest;
-import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
-import ak.dev.irc.app.qna.dto.response.QuestionResponse;
+import ak.dev.irc.app.qna.dto.request.*;
+import ak.dev.irc.app.qna.dto.response.*;
+import ak.dev.irc.app.qna.entity.AnswerFeedback;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.qna.enums.QuestionStatus;
 import ak.dev.irc.app.qna.mapper.QuestionMapper;
+import ak.dev.irc.app.qna.repository.AnswerFeedbackRepository;
 import ak.dev.irc.app.qna.repository.QuestionAnswerRepository;
 import ak.dev.irc.app.qna.repository.QuestionRepository;
 import ak.dev.irc.app.qna.service.QuestionService;
@@ -39,11 +38,16 @@ public class QuestionServiceImpl implements QuestionService {
 
     private final QuestionRepository questionRepository;
     private final QuestionAnswerRepository answerRepository;
+    private final AnswerFeedbackRepository feedbackRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
     private final UserBlockRepository blockRepository;
     private final QuestionMapper mapper;
     private final QuestionEventPublisher eventPublisher;
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  QUESTIONS
+    // ══════════════════════════════════════════════════════════════════════════
 
     @Override
     @Transactional
@@ -56,6 +60,8 @@ public class QuestionServiceImpl implements QuestionService {
                 .body(request.getBody().trim())
                 .status(QuestionStatus.OPEN)
                 .answerCount(0L)
+                .answersLocked(request.isAnswersLocked())
+                .maxAnswers(request.getMaxAnswers())
                 .build();
 
         question = questionRepository.save(question);
@@ -83,6 +89,12 @@ public class QuestionServiceImpl implements QuestionService {
                 throw new BadRequestException("Question body cannot be empty", "EMPTY_BODY");
             }
             question.setBody(request.getBody().trim());
+        }
+        if (request.getAnswersLocked() != null) {
+            question.setAnswersLocked(request.getAnswersLocked());
+        }
+        if (request.getMaxAnswers() != null) {
+            question.setMaxAnswers(request.getMaxAnswers() <= 0 ? null : request.getMaxAnswers());
         }
 
         question.audit(AuditAction.UPDATE, "Edited question");
@@ -132,6 +144,10 @@ public class QuestionServiceImpl implements QuestionService {
                 .map(mapper::toQuestionResponse);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANSWERS
+    // ══════════════════════════════════════════════════════════════════════════
+
     @Override
     @Transactional
     public QuestionAnswerResponse addAnswer(UUID questionId, CreateAnswerRequest request, UUID authorId) {
@@ -142,10 +158,26 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Question is closed", "QUESTION_CLOSED");
         }
 
+        if (question.isAnswersLocked()) {
+            throw new BadRequestException("Answers are locked for this question", "ANSWERS_LOCKED");
+        }
+
+        if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
+            throw new BadRequestException(
+                    "Maximum number of answers (" + question.getMaxAnswers() + ") reached",
+                    "ANSWER_LIMIT_REACHED");
+        }
+
         QuestionAnswer answer = QuestionAnswer.builder()
                 .question(question)
                 .author(author)
                 .body(request.getBody().trim())
+                .mediaUrl(request.getMediaUrl())
+                .mediaType(request.getMediaType())
+                .mediaThumbnailUrl(request.getMediaThumbnailUrl())
+                .voiceUrl(request.getVoiceUrl())
+                .voiceDurationSeconds(request.getVoiceDurationSeconds())
+                .links(request.getLinks())
                 .build();
 
         answer = answerRepository.save(answer);
@@ -227,6 +259,155 @@ public class QuestionServiceImpl implements QuestionService {
         questionRepository.save(question);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANSWER CONTROLS
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public QuestionResponse lockAnswers(UUID questionId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can lock answers");
+        }
+        question.setAnswersLocked(true);
+        question.audit(AuditAction.UPDATE, "Answers locked");
+        question = questionRepository.save(question);
+        return mapper.toQuestionResponse(question);
+    }
+
+    @Override
+    @Transactional
+    public QuestionResponse unlockAnswers(UUID questionId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can unlock answers");
+        }
+        question.setAnswersLocked(false);
+        question.audit(AuditAction.UPDATE, "Answers unlocked");
+        question = questionRepository.save(question);
+        return mapper.toQuestionResponse(question);
+    }
+
+    @Override
+    @Transactional
+    public QuestionResponse setAnswerLimit(UUID questionId, Integer maxAnswers, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can set the answer limit");
+        }
+        question.setMaxAnswers(maxAnswers != null && maxAnswers <= 0 ? null : maxAnswers);
+        question.audit(AuditAction.UPDATE, "Answer limit set to " + (maxAnswers == null ? "unlimited" : maxAnswers));
+        question = questionRepository.save(question);
+        return mapper.toQuestionResponse(question);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ACCEPT / UNACCEPT
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse acceptAnswer(UUID questionId, UUID answerId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can accept answers");
+        }
+
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        answer.setAccepted(true);
+        answer.audit(AuditAction.UPDATE, "Answer accepted");
+        answer = answerRepository.save(answer);
+        return mapper.toAnswerResponse(answer);
+    }
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse unacceptAnswer(UUID questionId, UUID answerId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can unaccept answers");
+        }
+
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        answer.setAccepted(false);
+        answer.audit(AuditAction.UPDATE, "Answer unaccepted");
+        answer = answerRepository.save(answer);
+        return mapper.toAnswerResponse(answer);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  FEEDBACK
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public AnswerFeedbackResponse addFeedback(UUID questionId, UUID answerId,
+                                               AddFeedbackRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        findScholarOrThrow(requesterId);
+
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        // Only the question author or admins can give feedback
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can give feedback on answers");
+        }
+
+        if (feedbackRepository.existsByAnswerIdAndAuthorId(answerId, requesterId)) {
+            throw new DuplicateResourceException("Feedback", "answer+author", "already exists");
+        }
+
+        User feedbackAuthor = userRepository.getReferenceById(requesterId);
+
+        AnswerFeedback feedback = AnswerFeedback.builder()
+                .answer(answer)
+                .author(feedbackAuthor)
+                .feedbackType(request.getFeedbackType())
+                .body(request.getBody() != null ? request.getBody().trim() : null)
+                .build();
+        feedback.audit(AuditAction.CREATE, "Feedback added: " + request.getFeedbackType());
+
+        feedback = feedbackRepository.save(feedback);
+        return mapper.toFeedbackResponse(feedback);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<AnswerFeedbackResponse> getFeedback(UUID questionId, UUID answerId) {
+        findQuestionOrThrow(questionId);
+        return feedbackRepository.findByAnswerIdOrderByCreatedAtAsc(answerId).stream()
+                .map(mapper::toFeedbackResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void deleteFeedback(UUID questionId, UUID answerId, UUID feedbackId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can delete feedback");
+        }
+
+        AnswerFeedback feedback = feedbackRepository.findById(feedbackId)
+                .orElseThrow(() -> new ResourceNotFoundException("Feedback", "id", feedbackId));
+
+        if (!feedback.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Feedback does not belong to this answer", "FEEDBACK_MISMATCH");
+        }
+
+        feedbackRepository.delete(feedback);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  PRIVATE HELPERS
+    // ══════════════════════════════════════════════════════════════════════════
+
     private Question findQuestionOrThrow(UUID questionId) {
         return questionRepository.findByIdAndDeletedAtIsNull(questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Question", "id", questionId));
@@ -246,14 +427,10 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private boolean canManageQuestion(Question question, UUID requesterId) {
-        if (requesterId == null) {
-            return false;
-        }
+        if (requesterId == null) return false;
 
         User requester = userRepository.findById(requesterId).orElse(null);
-        if (requester == null) {
-            return false;
-        }
+        if (requester == null) return false;
 
         return question.getAuthor().getId().equals(requesterId)
                 || requester.getRole() == Role.ADMIN
@@ -261,14 +438,10 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private boolean canManageAnswer(Question question, QuestionAnswer answer, UUID requesterId) {
-        if (requesterId == null) {
-            return false;
-        }
+        if (requesterId == null) return false;
 
         User requester = userRepository.findById(requesterId).orElse(null);
-        if (requester == null) {
-            return false;
-        }
+        if (requester == null) return false;
 
         return answer.getAuthor().getId().equals(requesterId)
                 || question.getAuthor().getId().equals(requesterId)

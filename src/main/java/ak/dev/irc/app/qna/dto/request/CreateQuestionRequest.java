@@ -14,4 +14,10 @@ public class CreateQuestionRequest {
     @NotBlank(message = "Question body is required")
     @Size(max = 10000, message = "Question body must not exceed 10000 characters")
     private String body;
+
+    /** Lock answers from the start (default false). */
+    private boolean answersLocked = false;
+
+    /** Maximum number of answers. Null = unlimited. */
+    private Integer maxAnswers;
 }

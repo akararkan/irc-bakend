@@ -52,6 +52,15 @@ public class Question extends BaseAuditEntity {
     @Builder.Default
     private Long answerCount = 0L;
 
+    /** When true, no new answers can be submitted. */
+    @Column(name = "answers_locked", nullable = false)
+    @Builder.Default
+    private boolean answersLocked = false;
+
+    /** Maximum number of answers allowed. Null means unlimited. */
+    @Column(name = "max_answers")
+    private Integer maxAnswers;
+
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 

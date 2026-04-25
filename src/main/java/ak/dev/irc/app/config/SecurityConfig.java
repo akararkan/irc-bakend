@@ -110,10 +110,15 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
+        // Dev origins: localhost + every RFC-1918 private LAN range so the
+        // dev server is reachable from phones on the same Wi-Fi without
+        // re-editing this list every time the host IP changes.
         config.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
-                "http://192.168.1.*:*",
+                "http://192.168.*.*:*",
+                "http://10.*.*.*:*",
+                "http://172.*.*.*:*",
                 "https://*.irc-research.org"
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));

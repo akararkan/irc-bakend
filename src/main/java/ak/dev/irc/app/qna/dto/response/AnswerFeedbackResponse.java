@@ -1,23 +1,19 @@
 package ak.dev.irc.app.qna.dto.response;
 
-import ak.dev.irc.app.qna.enums.QuestionStatus;
+import ak.dev.irc.app.qna.enums.FeedbackType;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-public record QuestionResponse(
+public record AnswerFeedbackResponse(
         UUID id,
+        UUID answerId,
         UUID authorId,
         String authorUsername,
         String authorFullName,
         String authorProfileImage,
-        String title,
+        FeedbackType feedbackType,
         String body,
-        QuestionStatus status,
-        Long answerCount,
-        boolean answersLocked,
-        Integer maxAnswers,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
-) {
-}
+) {}

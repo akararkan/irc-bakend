@@ -11,11 +11,22 @@ public record QuestionAnswerResponse(
         String authorFullName,
         String authorProfileImage,
         String body,
+        // media
+        String mediaUrl,
+        String mediaType,
+        String mediaThumbnailUrl,
+        // voice
+        String voiceUrl,
+        Integer voiceDurationSeconds,
+        // links
+        String links,
+        // status
         boolean accepted,
         boolean edited,
         LocalDateTime editedAt,
         boolean deleted,
         LocalDateTime deletedAt,
+        long feedbackCount,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {

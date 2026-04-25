@@ -6,6 +6,8 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -42,6 +44,28 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Column(name = "body", nullable = false, columnDefinition = "TEXT")
     private String body;
 
+    // ── Media attachments ───────────────────────────────────────
+    @Column(name = "media_url", columnDefinition = "TEXT")
+    private String mediaUrl;
+
+    @Column(name = "media_type", length = 20)
+    private String mediaType;       // IMAGE, VIDEO
+
+    @Column(name = "media_thumbnail_url", columnDefinition = "TEXT")
+    private String mediaThumbnailUrl;
+
+    // ── Voice recording ──────────────────────────────────────────
+    @Column(name = "voice_url", columnDefinition = "TEXT")
+    private String voiceUrl;
+
+    @Column(name = "voice_duration_seconds")
+    private Integer voiceDurationSeconds;
+
+    // ── Links ────────────────────────────────────────────────────
+    @Column(name = "links", columnDefinition = "TEXT")
+    private String links;           // comma-separated URLs
+
+    // ── Status ───────────────────────────────────────────────────
     @Column(name = "is_accepted", nullable = false)
     @Builder.Default
     private boolean accepted = false;
@@ -55,6 +79,12 @@ public class QuestionAnswer extends BaseAuditEntity {
 
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
+
+    // ── Feedback from question author ────────────────────────────
+    @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    @OrderBy("createdAt ASC")
+    @Builder.Default
+    private List<AnswerFeedback> feedbacks = new ArrayList<>();
 
     public boolean isDeleted() {
         return deletedAt != null;
