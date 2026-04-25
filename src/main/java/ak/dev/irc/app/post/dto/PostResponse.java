@@ -50,10 +50,6 @@ public class PostResponse {
     private PostReactionType myReaction;   // null if not reacted
     private boolean isSaved;
 
-    // ── story ─────────────────────────────────────────────────
-    private LocalDateTime expiresAt;
-    private boolean expired;
-
     // ── audit ─────────────────────────────────────────────────
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

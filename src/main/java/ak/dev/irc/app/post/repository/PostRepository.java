@@ -12,7 +12,6 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,27 +27,9 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     Page<Post> findByStatusAndVisibilityOrderByCreatedAtDesc(
             PostStatus status, PostVisibility visibility, Pageable pageable);
 
-    // By type (e.g. REEL feed, STORY feed)
+    // By type (e.g. REEL feed)
     Page<Post> findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
             PostType postType, PostStatus status, PostVisibility visibility, Pageable pageable);
-
-    // Expire stories
-    @Query("SELECT p FROM Post p WHERE p.postType = 'STORY' AND p.expiresAt < :now AND p.status = 'PUBLISHED'")
-    List<Post> findExpiredStories(@Param("now") LocalDateTime now);
-
-    // Story feed: active (non-expired) stories from followed users
-    @Query("""
-        SELECT p FROM Post p
-        WHERE p.author.id IN :authorIds
-          AND p.postType = 'STORY'
-          AND p.status = 'PUBLISHED'
-          AND (p.expiresAt IS NULL OR p.expiresAt > :now)
-          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
-        ORDER BY p.createdAt DESC
-        """)
-    Page<Post> findFollowingStoryFeed(@Param("authorIds") List<UUID> authorIds,
-                                       @Param("now") LocalDateTime now,
-                                       Pageable pageable);
 
     // Share link lookup
     Optional<Post> findByShareLink(String shareLink);

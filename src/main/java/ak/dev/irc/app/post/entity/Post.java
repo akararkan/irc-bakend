@@ -53,11 +53,6 @@ public class Post {
 
     // (voice/audio posts removed — voice fields intentionally omitted)
 
-    // ── story TTL ─────────────────────────────────────────────
-    /** Populated only for PostType.STORY – null means no expiry */
-    @Column(name = "expires_at")
-    private LocalDateTime expiresAt;
-
     // ── reel / embedded audio ─────────────────────────────────
     @Column(name = "audio_track_url")
     private String audioTrackUrl;
@@ -112,9 +107,6 @@ public class Post {
     private LocalDateTime updatedAt;
 
     // ── helpers ───────────────────────────────────────────────
-    public boolean isExpired() {
-        return expiresAt != null && LocalDateTime.now().isAfter(expiresAt);
-    }
 
     public void incrementReactions() { this.reactionCount++; }
     public void decrementReactions() { if (this.reactionCount > 0) this.reactionCount--; }

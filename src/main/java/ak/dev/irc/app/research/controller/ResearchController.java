@@ -138,13 +138,32 @@ public class ResearchController {
     //  VIDEO PROMO
     // ══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Upload a video promo with optional thumbnail.
+     *
+     * <p>Video duration is automatically extracted from the file (MP4/MOV).
+     * If extraction fails (e.g. WebM format), pass {@code durationSeconds} as a fallback.
+     *
+     * <h4>Multipart parts</h4>
+     * <ul>
+     *   <li>{@code video}     — required — the video file (mp4, webm, quicktime)</li>
+     *   <li>{@code thumbnail} — optional — a thumbnail image for the video</li>
+     * </ul>
+     *
+     * <h4>Query parameters</h4>
+     * <ul>
+     *   <li>{@code durationSeconds} — optional — fallback if server-side extraction fails</li>
+     * </ul>
+     */
     @PostMapping(value = "/{id}/video-promo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> uploadVideoPromo(
             @PathVariable UUID id,
             @RequestPart("video") MultipartFile video,
+            @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
+            @RequestParam(value = "durationSeconds", required = false) Integer durationSeconds,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.uploadVideoPromo(id, video, user.getId()));
+        return ResponseEntity.ok(researchService.uploadVideoPromo(id, video, thumbnail, durationSeconds, user.getId()));
     }
 
     @DeleteMapping("/{id}/video-promo")

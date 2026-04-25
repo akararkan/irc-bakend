@@ -667,7 +667,6 @@ public class NotificationEventConsumer {
             case "TEXT"       -> "post";
             case "EMBEDDED"   -> "post";
             case "VOICE_POST" -> "voice post";
-            case "STORY"      -> "story";
             case "REEL"       -> "reel";
             default           -> "post";
         };

@@ -73,20 +73,33 @@ public class UserServiceImpl implements UserService {
 
     @Override
     @Transactional(readOnly = true)
-    public UserResponse getProfileByUsername(String username) {
-        log.debug("Fetching profile for username [{}]", username);
+    public UserResponse getProfileByUsername(String identifier) {
+        log.debug("Fetching profile for identifier [{}]", identifier);
 
-        User user = userRepository.findByUsernameAndDeletedAtIsNull(username)
-                .orElseThrow(() -> {
-                    log.warn("Active user not found for username [{}]", username);
-                    return new ResourceNotFoundException("User", "username", username);
-                });
+        // If the caller passed an email, look up by email instead of username
+        boolean isEmail = identifier != null && identifier.contains("@");
+
+        User user = isEmail
+                ? userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null)
+                : userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null);
+
+        // Fallback: if not found by username, try email (and vice versa)
+        if (user == null) {
+            user = isEmail
+                    ? userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null)
+                    : userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null);
+        }
+
+        if (user == null) {
+            log.warn("Active user not found for identifier [{}]", identifier);
+            throw new ResourceNotFoundException("User", "username", identifier);
+        }
 
         long followers = followRepository.countByFollowingId(user.getId());
         long following = followRepository.countByFollowerId(user.getId());
 
-        log.debug("Profile loaded for username [{}] — followers={}, following={}",
-                username, followers, following);
+        log.debug("Profile loaded for identifier [{}] — followers={}, following={}",
+                identifier, followers, following);
 
         return userMapper.toResponse(user, followers, following);
     }

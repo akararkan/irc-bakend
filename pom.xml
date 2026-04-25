@@ -204,6 +204,13 @@
 			<version>4.0.0</version>
 		</dependency>
 
+		<!-- MP4 / QuickTime metadata parser — extracts video duration server-side -->
+		<dependency>
+			<groupId>org.mp4parser</groupId>
+			<artifactId>isoparser</artifactId>
+			<version>1.9.56</version>
+		</dependency>
+
 		<!-- ══════════════════════════════════
              DEV TOOLS (local only, not packaged)
              ══════════════════════════════════ -->

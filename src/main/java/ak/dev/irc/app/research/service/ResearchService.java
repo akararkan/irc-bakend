@@ -39,7 +39,9 @@ public interface ResearchService {
 
     // ── Media upload (Cloudflare R2) ─────────────────────────────────────────
 
-    ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video, UUID researcherId);
+    ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video,
+                                      MultipartFile thumbnail, Integer durationSeconds,
+                                      UUID researcherId);
 
     ResearchResponse removeVideoPromo(UUID researchId, UUID researcherId);
 

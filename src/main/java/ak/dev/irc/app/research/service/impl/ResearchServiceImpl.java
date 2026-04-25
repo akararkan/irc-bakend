@@ -15,6 +15,7 @@ import ak.dev.irc.app.research.repository.*;
 import ak.dev.irc.app.research.service.IrcIdentifierService;
 import ak.dev.irc.app.research.service.ResearchService;
 import ak.dev.irc.app.research.service.S3StorageService;
+import ak.dev.irc.app.research.service.VideoMetadataExtractor;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
@@ -66,6 +67,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final UserBlockRepository        blockRepo;
 
     private final S3StorageService       s3;
+    private final VideoMetadataExtractor videoMetadataExtractor;
     private final ResearchMapper         mapper;
     private final IrcIdentifierService   ircIdentifierService;
     private final ResearchEventPublisher researchEventPublisher;
@@ -454,17 +456,55 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     @CacheEvict(value = "research-by-id", key = "#researchId")
-    public ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video, UUID researcherId) {
+    public ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video,
+                                              MultipartFile thumbnail, Integer durationSeconds,
+                                              UUID researcherId) {
         validateFile(video, "video", Arrays.asList("video/mp4", "video/webm", "video/quicktime"));
+
+        // Auto-extract duration from the video file; fall back to client-provided value
+        Integer extractedDuration = videoMetadataExtractor.extractDurationSeconds(video);
+        if (extractedDuration != null && extractedDuration > 0) {
+            durationSeconds = extractedDuration;
+        }
+        if (durationSeconds == null || durationSeconds <= 0) {
+            throw new BadRequestException(
+                    "Could not determine video duration. Please provide durationSeconds as a query parameter.",
+                    "DURATION_UNKNOWN");
+        }
+
+        if (thumbnail != null && !thumbnail.isEmpty()) {
+            validateFile(thumbnail, "thumbnail", Arrays.asList("image/jpeg", "image/png", "image/webp"));
+        }
+
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         try {
+            // Clean up old video promo files
             if (research.getVideoPromoS3Key() != null) {
                 try { s3.delete(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Old video promo delete failed: {}", e.getMessage()); }
             }
-            String s3Key = uploadFileToS3(video, "research/" + researchId + "/promo", "VIDEO_UPLOAD_FAILED");
-            research.setVideoPromoS3Key(s3Key);
-            research.setVideoPromoUrl(getPublicUrlFromS3(s3Key));
+            if (research.getVideoPromoThumbnailS3Key() != null) {
+                try { s3.delete(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Old video thumbnail delete failed: {}", e.getMessage()); }
+            }
+
+            // Upload video
+            String videoS3Key = uploadFileToS3(video, "research/" + researchId + "/promo", "VIDEO_UPLOAD_FAILED");
+            research.setVideoPromoS3Key(videoS3Key);
+            research.setVideoPromoUrl(getPublicUrlFromS3(videoS3Key));
+            research.setVideoPromoDurationSeconds(durationSeconds);
+
+            // Upload thumbnail if provided
+            if (thumbnail != null && !thumbnail.isEmpty()) {
+                String thumbS3Key = uploadFileToS3(thumbnail, "research/" + researchId + "/promo-thumb", "THUMBNAIL_UPLOAD_FAILED");
+                research.setVideoPromoThumbnailS3Key(thumbS3Key);
+                research.setVideoPromoThumbnailUrl(getPublicUrlFromS3(thumbS3Key));
+            } else {
+                research.setVideoPromoThumbnailS3Key(null);
+                research.setVideoPromoThumbnailUrl(null);
+            }
+
             researchRepo.save(research);
+            log.info("Video promo uploaded for research {} — duration={}s, hasThumbnail={}",
+                    researchId, durationSeconds, thumbnail != null && !thumbnail.isEmpty());
             return mapper.toResponse(research, researcherId);
         } catch (AppException e) { throw e; }
         catch (Exception e) {
@@ -479,9 +519,13 @@ public class ResearchServiceImpl implements ResearchService {
         if (research.getVideoPromoS3Key() != null) {
             try { s3.delete(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Video promo S3 delete failed: {}", e.getMessage()); }
         }
+        if (research.getVideoPromoThumbnailS3Key() != null) {
+            try { s3.delete(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Video thumbnail S3 delete failed: {}", e.getMessage()); }
+        }
         research.setVideoPromoS3Key(null);
         research.setVideoPromoUrl(null);
         research.setVideoPromoDurationSeconds(null);
+        research.setVideoPromoThumbnailS3Key(null);
         research.setVideoPromoThumbnailUrl(null);
         researchRepo.save(research);
         return mapper.toResponse(research, researcherId);

@@ -79,8 +79,6 @@ public class PostMapper {
                 .shareCount(post.getShareCount())
                 .viewCount(post.getViewCount())
                 .myReaction(myReaction)
-                .expiresAt(post.getExpiresAt())
-                .expired(post.isExpired())
                 .createdAt(post.getCreatedAt())
                 .updatedAt(post.getUpdatedAt())
                 .build();

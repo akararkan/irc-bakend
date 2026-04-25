@@ -89,6 +89,9 @@ public class Research extends BaseAuditEntity {
     @Column(name = "video_promo_thumbnail_url", columnDefinition = "TEXT")
     private String videoPromoThumbnailUrl;
 
+    @Column(name = "video_promo_thumbnail_s3_key", columnDefinition = "TEXT")
+    private String videoPromoThumbnailS3Key;
+
     // ── Citation ──────────────────────────────────────────────────────────────
 
     /** Formatted citation text (APA, MLA, etc.) auto-generated or entered */
@@ -138,7 +141,7 @@ public class Research extends BaseAuditEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
-    private ResearchStatus status = ResearchStatus.PUBLISHED;
+    private ResearchStatus status = ResearchStatus.DRAFT;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "visibility", nullable = false, length = 20)
