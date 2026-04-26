@@ -9,6 +9,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import org.springframework.data.jpa.repository.Modifying;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -33,4 +35,13 @@ public interface ResearchSaveRepository extends JpaRepository<ResearchSave, Rese
     List<String> findDistinctCollectionNamesByUserId(@Param("userId") UUID userId);
 
     long countByResearchId(UUID researchId);
+
+    @Modifying
+    @Query("""
+        UPDATE ResearchSave s SET s.collectionName = :newName
+        WHERE s.user.id = :userId AND s.collectionName = :oldName
+        """)
+    int renameCollection(@Param("userId") UUID userId,
+                         @Param("oldName") String oldName,
+                         @Param("newName") String newName);
 }

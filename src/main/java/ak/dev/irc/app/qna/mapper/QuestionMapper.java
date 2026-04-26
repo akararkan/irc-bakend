@@ -1,13 +1,12 @@
 package ak.dev.irc.app.qna.mapper;
 
-import ak.dev.irc.app.qna.dto.response.AnswerFeedbackResponse;
-import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
-import ak.dev.irc.app.qna.dto.response.QuestionResponse;
-import ak.dev.irc.app.qna.entity.AnswerFeedback;
-import ak.dev.irc.app.qna.entity.Question;
-import ak.dev.irc.app.qna.entity.QuestionAnswer;
+import ak.dev.irc.app.qna.dto.response.*;
+import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.user.entity.User;
 import org.springframework.stereotype.Component;
+
+import java.util.Collections;
+import java.util.List;
 
 @Component
 public class QuestionMapper {
@@ -34,6 +33,13 @@ public class QuestionMapper {
     public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer) {
         User author = answer.getAuthor();
         boolean deleted = answer.isDeleted();
+
+        List<AnswerAttachmentResponse> attachments = deleted ? Collections.emptyList()
+                : mapAttachments(answer.getAttachments());
+
+        List<AnswerSourceResponse> sources = deleted ? Collections.emptyList()
+                : mapSources(answer.getSources());
+
         return new QuestionAnswerResponse(
                 answer.getId(),
                 answer.getQuestion().getId(),
@@ -48,6 +54,8 @@ public class QuestionMapper {
                 deleted ? null : answer.getVoiceUrl(),
                 deleted ? null : answer.getVoiceDurationSeconds(),
                 deleted ? null : answer.getLinks(),
+                attachments,
+                sources,
                 answer.isAccepted(),
                 answer.isEdited(),
                 answer.getEditedAt(),
@@ -73,5 +81,53 @@ public class QuestionMapper {
                 feedback.getCreatedAt(),
                 feedback.getUpdatedAt()
         );
+    }
+
+    public AnswerAttachmentResponse toAttachmentResponse(AnswerAttachment attachment) {
+        return new AnswerAttachmentResponse(
+                attachment.getId(),
+                attachment.getAnswer().getId(),
+                attachment.getFileUrl(),
+                attachment.getOriginalFileName(),
+                attachment.getMimeType(),
+                attachment.getMediaType(),
+                attachment.getFileSize(),
+                attachment.getDisplayOrder(),
+                attachment.getCaption(),
+                attachment.getDurationSeconds(),
+                attachment.getThumbnailUrl(),
+                attachment.getCreatedAt()
+        );
+    }
+
+    public AnswerSourceResponse toSourceResponse(AnswerSource source) {
+        return new AnswerSourceResponse(
+                source.getId(),
+                source.getAnswer().getId(),
+                source.getSourceType(),
+                source.getTitle(),
+                source.getCitationText(),
+                source.getUrl(),
+                source.getDoi(),
+                source.getIsbn(),
+                source.getFileUrl(),
+                source.getOriginalFileName(),
+                source.getDisplayOrder(),
+                source.getCreatedAt()
+        );
+    }
+
+    private List<AnswerAttachmentResponse> mapAttachments(List<AnswerAttachment> attachments) {
+        if (attachments == null) return Collections.emptyList();
+        return attachments.stream()
+                .map(this::toAttachmentResponse)
+                .toList();
+    }
+
+    private List<AnswerSourceResponse> mapSources(List<AnswerSource> sources) {
+        if (sources == null) return Collections.emptyList();
+        return sources.stream()
+                .map(this::toSourceResponse)
+                .toList();
     }
 }

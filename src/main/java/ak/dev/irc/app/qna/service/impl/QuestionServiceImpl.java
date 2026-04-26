@@ -7,16 +7,14 @@ import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
-import ak.dev.irc.app.qna.entity.AnswerFeedback;
-import ak.dev.irc.app.qna.entity.Question;
-import ak.dev.irc.app.qna.entity.QuestionAnswer;
-import ak.dev.irc.app.qna.enums.QuestionStatus;
+import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.qna.mapper.QuestionMapper;
-import ak.dev.irc.app.qna.repository.AnswerFeedbackRepository;
-import ak.dev.irc.app.qna.repository.QuestionAnswerRepository;
-import ak.dev.irc.app.qna.repository.QuestionRepository;
+import ak.dev.irc.app.qna.repository.*;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.rabbitmq.publisher.QuestionEventPublisher;
+import ak.dev.irc.app.research.enums.MediaType;
+import ak.dev.irc.app.research.enums.SourceType;
+import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
@@ -27,6 +25,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -39,11 +38,14 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionRepository questionRepository;
     private final QuestionAnswerRepository answerRepository;
     private final AnswerFeedbackRepository feedbackRepository;
+    private final AnswerAttachmentRepository attachmentRepository;
+    private final AnswerSourceRepository sourceRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
     private final UserBlockRepository blockRepository;
     private final QuestionMapper mapper;
     private final QuestionEventPublisher eventPublisher;
+    private final S3StorageService storageService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -58,7 +60,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .author(author)
                 .title(request.getTitle().trim())
                 .body(request.getBody().trim())
-                .status(QuestionStatus.OPEN)
+                .status(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN)
                 .answerCount(0L)
                 .answersLocked(request.isAnswersLocked())
                 .maxAnswers(request.getMaxAnswers())
@@ -154,7 +156,8 @@ public class QuestionServiceImpl implements QuestionService {
         User author = findScholarOrThrow(authorId);
         Question question = findQuestionOrThrow(questionId);
 
-        if (question.getStatus() == QuestionStatus.CLOSED || question.getStatus() == QuestionStatus.ARCHIVED) {
+        if (question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.CLOSED
+                || question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED) {
             throw new BadRequestException("Question is closed", "QUESTION_CLOSED");
         }
 
@@ -182,8 +185,27 @@ public class QuestionServiceImpl implements QuestionService {
 
         answer = answerRepository.save(answer);
 
+        // Save sources if provided
+        if (request.getSources() != null && !request.getSources().isEmpty()) {
+            int order = 0;
+            for (CreateAnswerSourceRequest srcReq : request.getSources()) {
+                AnswerSource source = AnswerSource.builder()
+                        .answer(answer)
+                        .sourceType(srcReq.getSourceType())
+                        .title(srcReq.getTitle().trim())
+                        .citationText(srcReq.getCitationText() != null ? srcReq.getCitationText().trim() : null)
+                        .url(srcReq.getUrl())
+                        .doi(srcReq.getDoi())
+                        .isbn(srcReq.getIsbn())
+                        .displayOrder(order++)
+                        .build();
+                sourceRepository.save(source);
+                answer.getSources().add(source);
+            }
+        }
+
         question.setAnswerCount(question.getAnswerCount() + 1);
-        question.setStatus(QuestionStatus.ANSWERED);
+        question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
         questionRepository.save(question);
 
         eventPublisher.publishQuestionAnswered(question, answer);
@@ -232,7 +254,7 @@ public class QuestionServiceImpl implements QuestionService {
         }
 
         question.setDeletedAt(LocalDateTime.now());
-        question.setStatus(QuestionStatus.ARCHIVED);
+        question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED);
         questionRepository.save(question);
     }
 
@@ -253,8 +275,8 @@ public class QuestionServiceImpl implements QuestionService {
 
         long remainingAnswers = Math.max(0L, question.getAnswerCount() - 1);
         question.setAnswerCount(remainingAnswers);
-        if (remainingAnswers == 0 && question.getStatus() == QuestionStatus.ANSWERED) {
-            question.setStatus(QuestionStatus.OPEN);
+        if (remainingAnswers == 0 && question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED) {
+            question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
         }
         questionRepository.save(question);
     }
@@ -303,7 +325,7 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  ACCEPT / UNACCEPT
+    //  ACCEPT / UNACCEPT (multiple best answers supported)
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
@@ -318,8 +340,11 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         answer.setAccepted(true);
-        answer.audit(AuditAction.UPDATE, "Answer accepted");
+        answer.audit(AuditAction.UPDATE, "Answer accepted as best answer");
         answer = answerRepository.save(answer);
+
+        eventPublisher.publishAnswerAccepted(question, answer);
+
         return mapper.toAnswerResponse(answer);
     }
 
@@ -374,6 +399,36 @@ public class QuestionServiceImpl implements QuestionService {
         feedback.audit(AuditAction.CREATE, "Feedback added: " + request.getFeedbackType());
 
         feedback = feedbackRepository.save(feedback);
+
+        eventPublisher.publishFeedbackAdded(question, answer, feedback);
+
+        return mapper.toFeedbackResponse(feedback);
+    }
+
+    @Override
+    @Transactional
+    public AnswerFeedbackResponse editFeedback(UUID questionId, UUID answerId, UUID feedbackId,
+                                                AddFeedbackRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("Only the question author can edit feedback");
+        }
+
+        AnswerFeedback feedback = feedbackRepository.findById(feedbackId)
+                .orElseThrow(() -> new ResourceNotFoundException("Feedback", "id", feedbackId));
+
+        if (!feedback.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Feedback does not belong to this answer", "FEEDBACK_MISMATCH");
+        }
+        if (!feedback.getAuthor().getId().equals(requesterId)) {
+            throw new ForbiddenException("You can only edit your own feedback");
+        }
+
+        if (request.getFeedbackType() != null) feedback.setFeedbackType(request.getFeedbackType());
+        if (request.getBody() != null)         feedback.setBody(request.getBody().trim());
+
+        feedback.audit(AuditAction.UPDATE, "Feedback updated");
+        feedback = feedbackRepository.save(feedback);
         return mapper.toFeedbackResponse(feedback);
     }
 
@@ -402,6 +457,144 @@ public class QuestionServiceImpl implements QuestionService {
         }
 
         feedbackRepository.delete(feedback);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ATTACHMENTS (upload files to answer)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public AnswerAttachmentResponse uploadAttachment(UUID questionId, UUID answerId, MultipartFile file,
+                                                      String caption, Integer displayOrder, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only upload attachments to your own answer");
+        }
+
+        String prefix = "qna/" + questionId + "/answers/" + answerId + "/attachments";
+        String s3Key = storageService.upload(file, prefix);
+        String fileUrl = storageService.getPublicUrl(s3Key);
+
+        String mimeType = file.getContentType() != null ? file.getContentType() : "application/octet-stream";
+        MediaType mediaType = resolveMediaType(mimeType);
+
+        AnswerAttachment attachment = AnswerAttachment.builder()
+                .answer(answer)
+                .fileUrl(fileUrl)
+                .s3Key(s3Key)
+                .originalFileName(file.getOriginalFilename())
+                .mimeType(mimeType)
+                .mediaType(mediaType)
+                .fileSize(file.getSize())
+                .displayOrder(displayOrder != null ? displayOrder : 0)
+                .caption(caption)
+                .build();
+
+        attachment = attachmentRepository.save(attachment);
+        return mapper.toAttachmentResponse(attachment);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<AnswerAttachmentResponse> getAttachments(UUID questionId, UUID answerId) {
+        findQuestionOrThrow(questionId);
+        return attachmentRepository.findByAnswerIdOrderByDisplayOrderAsc(answerId).stream()
+                .map(mapper::toAttachmentResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void deleteAttachment(UUID questionId, UUID answerId, UUID attachmentId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only delete attachments from your own answer");
+        }
+
+        AnswerAttachment attachment = attachmentRepository.findById(attachmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Attachment", "id", attachmentId));
+
+        if (!attachment.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Attachment does not belong to this answer", "ATTACHMENT_MISMATCH");
+        }
+
+        storageService.delete(attachment.getS3Key());
+        attachmentRepository.delete(attachment);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SOURCES / REFERENCES
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public AnswerSourceResponse addSource(UUID questionId, UUID answerId,
+                                           CreateAnswerSourceRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only add sources to your own answer");
+        }
+
+        int nextOrder = answer.getSources() != null ? answer.getSources().size() : 0;
+
+        AnswerSource source = AnswerSource.builder()
+                .answer(answer)
+                .sourceType(request.getSourceType())
+                .title(request.getTitle().trim())
+                .citationText(request.getCitationText() != null ? request.getCitationText().trim() : null)
+                .url(request.getUrl())
+                .doi(request.getDoi())
+                .isbn(request.getIsbn())
+                .displayOrder(nextOrder)
+                .build();
+
+        source = sourceRepository.save(source);
+        return mapper.toSourceResponse(source);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<AnswerSourceResponse> getSources(UUID questionId, UUID answerId) {
+        findQuestionOrThrow(questionId);
+        return sourceRepository.findByAnswerIdOrderByDisplayOrderAsc(answerId).stream()
+                .map(mapper::toSourceResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void deleteSource(UUID questionId, UUID answerId, UUID sourceId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only delete sources from your own answer");
+        }
+
+        AnswerSource source = sourceRepository.findById(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
+
+        if (!source.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+        }
+
+        // If the source has an uploaded file, delete it from S3
+        if (source.getS3Key() != null) {
+            storageService.delete(source.getS3Key());
+        }
+
+        sourceRepository.delete(source);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -447,5 +640,25 @@ public class QuestionServiceImpl implements QuestionService {
                 || question.getAuthor().getId().equals(requesterId)
                 || requester.getRole() == Role.ADMIN
                 || requester.getRole() == Role.SUPER_ADMIN;
+    }
+
+    private MediaType resolveMediaType(String mimeType) {
+        if (mimeType == null) return MediaType.OTHER;
+
+        String lower = mimeType.toLowerCase();
+        if (lower.startsWith("image/"))       return MediaType.IMAGE;
+        if (lower.startsWith("video/"))       return MediaType.VIDEO;
+        if (lower.startsWith("audio/"))       return MediaType.AUDIO;
+        if (lower.equals("application/pdf"))  return MediaType.DOCUMENT;
+        if (lower.contains("wordprocessingml") || lower.contains("msword"))
+            return MediaType.DOCUMENT;
+        if (lower.contains("presentationml") || lower.contains("powerpoint"))
+            return MediaType.DOCUMENT;
+        if (lower.contains("spreadsheetml") || lower.contains("excel") || lower.equals("text/csv"))
+            return MediaType.SPREADSHEET;
+        if (lower.equals("application/zip") || lower.contains("tar") || lower.contains("rar")
+                || lower.contains("7z") || lower.contains("gzip"))
+            return MediaType.ARCHIVE;
+        return MediaType.OTHER;
     }
 }

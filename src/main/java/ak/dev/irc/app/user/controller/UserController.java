@@ -86,6 +86,14 @@ public class UserController {
         return ResponseEntity.status(201).body(userService.addLink(request));
     }
 
+    @PatchMapping("/me/links/{linkId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<UserLinkResponse> editLink(
+            @PathVariable UUID linkId,
+            @Valid @RequestBody EditLinkRequest request) {
+        return ResponseEntity.ok(userService.editLink(linkId, request));
+    }
+
     @DeleteMapping("/me/links/{linkId}")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Void> removeLink(@PathVariable UUID linkId) {
@@ -100,6 +108,14 @@ public class UserController {
     public ResponseEntity<UserContactResponse> addContact(
             @Valid @RequestBody AddContactRequest request) {
         return ResponseEntity.status(201).body(userService.addContact(request));
+    }
+
+    @PatchMapping("/me/contacts/{contactId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<UserContactResponse> editContact(
+            @PathVariable UUID contactId,
+            @Valid @RequestBody EditContactRequest request) {
+        return ResponseEntity.ok(userService.editContact(contactId, request));
     }
 
     @DeleteMapping("/me/contacts/{contactId}")

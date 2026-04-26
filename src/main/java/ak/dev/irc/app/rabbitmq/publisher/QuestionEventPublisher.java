@@ -1,8 +1,11 @@
 package ak.dev.irc.app.rabbitmq.publisher;
 
+import ak.dev.irc.app.qna.entity.AnswerFeedback;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
 import lombok.RequiredArgsConstructor;
@@ -51,11 +54,46 @@ public class QuestionEventPublisher {
                 "QUESTION_ANSWERED questionId=" + question.getId() + " answerId=" + answer.getId());
     }
 
+    public void publishAnswerAccepted(Question question, QuestionAnswer answer) {
+        AnswerAcceptedEvent event = AnswerAcceptedEvent.of(
+                question.getId(),
+                question.getTitle(),
+                question.getAuthor().getId(),
+                question.getAuthor().getUsername(),
+                question.getAuthor().getFullName(),
+                answer.getId(),
+                answer.getAuthor().getId(),
+                answer.getAuthor().getUsername(),
+                answer.getAuthor().getFullName()
+        );
+
+        publish(RabbitMQConstants.QNA_ANSWER_ACCEPTED, event,
+                "ANSWER_ACCEPTED questionId=" + question.getId() + " answerId=" + answer.getId());
+    }
+
+    public void publishFeedbackAdded(Question question, QuestionAnswer answer, AnswerFeedback feedback) {
+        AnswerFeedbackAddedEvent event = AnswerFeedbackAddedEvent.of(
+                question.getId(),
+                question.getTitle(),
+                question.getAuthor().getId(),
+                question.getAuthor().getFullName(),
+                answer.getId(),
+                answer.getAuthor().getId(),
+                answer.getAuthor().getUsername(),
+                answer.getAuthor().getFullName(),
+                feedback.getFeedbackType().name(),
+                preview(feedback.getBody())
+        );
+
+        publish(RabbitMQConstants.QNA_FEEDBACK_ADDED, event,
+                "FEEDBACK_ADDED questionId=" + question.getId() + " answerId=" + answer.getId());
+    }
+
     private void publish(String routingKey, Object event, String label) {
         Runnable publishAction = () -> {
             try {
                 rabbitTemplate.convertAndSend(RabbitMQConstants.IRC_EXCHANGE, routingKey, event);
-                log.info("[RabbitMQ] Published → {}", label);
+                log.info("[RabbitMQ] Published -> {}", label);
             } catch (Exception e) {
                 log.error("[RabbitMQ] Failed to publish {} : {}", label, e.getMessage(), e);
             }

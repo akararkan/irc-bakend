@@ -27,6 +27,8 @@ public enum NotificationType {
     // ── Q&A ─────────────────────────────────────────────────
     QUESTION_NEW,
     QUESTION_ANSWERED,
+    ANSWER_ACCEPTED,
+    ANSWER_FEEDBACK_RECEIVED,
 
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,

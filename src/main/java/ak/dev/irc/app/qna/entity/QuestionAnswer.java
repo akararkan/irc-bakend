@@ -80,6 +80,18 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 
+    // ── Attachments (PDF, Word, ZIP, video, audio, images) ────────
+    @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    @OrderBy("displayOrder ASC")
+    @Builder.Default
+    private List<AnswerAttachment> attachments = new ArrayList<>();
+
+    // ── Sources / references ────────────────────────────────────
+    @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    @OrderBy("displayOrder ASC")
+    @Builder.Default
+    private List<AnswerSource> sources = new ArrayList<>();
+
     // ── Feedback from question author ────────────────────────────
     @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("createdAt ASC")

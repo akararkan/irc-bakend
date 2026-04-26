@@ -142,8 +142,7 @@ public class ResearchServiceImpl implements ResearchService {
                     .ircSequenceNumber(seqNum)
                     .ircId(ircId)
                     .shareToken(shareToken)
-                    .status(ResearchStatus.PUBLISHED)
-                    .publishedAt(LocalDateTime.now())
+                    .status(ResearchStatus.DRAFT)
                     .build();
 
             research = researchRepo.save(research);
@@ -202,11 +201,8 @@ public class ResearchServiceImpl implements ResearchService {
                 }
             }
 
-            // ── Fire published event ──────────────────────────────────────
-            researchEventPublisher.publishResearchPublished(research);
-
-            log.info("Research created & published: id={} ircId={} DOI={} researcher={} mediaCount={}",
-                    research.getId(), ircId, research.getDoi(), researcherId,
+            log.info("Research created as DRAFT: id={} ircId={} researcher={} mediaCount={}",
+                    research.getId(), ircId, researcherId,
                     research.getMediaFiles().size());
 
             return mapper.toResponse(research, researcherId);
@@ -621,6 +617,28 @@ public class ResearchServiceImpl implements ResearchService {
         } catch (DataAccessException e) {
             throw new AppException("Failed to remove media file", HttpStatus.INTERNAL_SERVER_ERROR, "MEDIA_DELETE_ERROR");
         }
+    }
+
+    @Override
+    public SourceResponse updateSource(UUID researchId, UUID sourceId,
+                                        UpdateSourceRequest req, UUID researcherId) {
+        findResearchOwnedByOrThrow(researchId, researcherId);
+        ResearchSource source = sourceRepo.findById(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
+        if (!source.getResearch().getId().equals(researchId)) {
+            throw new BadRequestException("Source does not belong to this research", "SOURCE_MISMATCH");
+        }
+
+        if (req.sourceType() != null)    source.setSourceType(req.sourceType());
+        if (req.title() != null)         source.setTitle(req.title());
+        if (req.citationText() != null)  source.setCitationText(req.citationText());
+        if (req.url() != null)           source.setUrl(req.url());
+        if (req.doi() != null)           source.setDoi(req.doi());
+        if (req.isbn() != null)          source.setIsbn(req.isbn());
+        if (req.displayOrder() != null)  source.setDisplayOrder(req.displayOrder());
+
+        source = sourceRepo.save(source);
+        return mapper.toSourceResponse(source);
     }
 
     @Override
@@ -1125,6 +1143,16 @@ public class ResearchServiceImpl implements ResearchService {
     public List<String> getUserCollections(UUID userId) {
         if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
         return saveRepo.findDistinctCollectionNamesByUserId(userId);
+    }
+
+    @Override
+    @Transactional
+    public void renameCollection(UUID userId, String oldName, String newName) {
+        if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
+        if (oldName == null || oldName.isBlank()) throw new BadRequestException("Old collection name is required", "MISSING_OLD_NAME");
+        if (newName == null || newName.isBlank()) throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
+        int updated = saveRepo.renameCollection(userId, oldName, newName.trim());
+        log.info("Renamed collection '{}' → '{}' for user {} ({} saves updated)", oldName, newName, userId, updated);
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -70,7 +70,7 @@ public class ResearchController {
      * }</pre>
      */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> create(
             @RequestPart("data") @Valid CreateResearchRequest request,
             @RequestPart(value = "files[]", required = false) List<MultipartFile> files,
@@ -86,7 +86,7 @@ public class ResearchController {
     // ══════════════════════════════════════════════════════════════════════════
 
     @PatchMapping("/{id}")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> update(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateResearchRequest request,
@@ -99,35 +99,35 @@ public class ResearchController {
     // ══════════════════════════════════════════════════════════════════════════
 
     @PostMapping("/{id}/publish")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> publish(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.publish(id, user.getId()));
     }
 
     @PostMapping("/{id}/unpublish")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> unpublish(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.unpublish(id, user.getId()));
     }
 
     @PostMapping("/{id}/archive")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> archive(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.archive(id, user.getId()));
     }
 
     @PostMapping("/{id}/retract")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> retract(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.retract(id, user.getId()));
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<Void> delete(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         researchService.delete(id, user.getId());
@@ -156,7 +156,7 @@ public class ResearchController {
      * </ul>
      */
     @PostMapping(value = "/{id}/video-promo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> uploadVideoPromo(
             @PathVariable UUID id,
             @RequestPart("video") MultipartFile video,
@@ -167,7 +167,7 @@ public class ResearchController {
     }
 
     @DeleteMapping("/{id}/video-promo")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> removeVideoPromo(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.removeVideoPromo(id, user.getId()));
@@ -178,7 +178,7 @@ public class ResearchController {
     // ══════════════════════════════════════════════════════════════════════════
 
     @PostMapping(value = "/{id}/cover-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> uploadCoverImage(
             @PathVariable UUID id,
             @RequestPart("image") MultipartFile image,
@@ -187,7 +187,7 @@ public class ResearchController {
     }
 
     @DeleteMapping("/{id}/cover-image")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> removeCoverImage(
             @PathVariable UUID id, @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.removeCoverImage(id, user.getId()));
@@ -202,7 +202,7 @@ public class ResearchController {
      * Use this after creation if you need to add more files later.
      */
     @PostMapping(value = "/{id}/media", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<MediaResponse> addMedia(
             @PathVariable UUID id,
             @RequestPart("file") MultipartFile file,
@@ -215,7 +215,7 @@ public class ResearchController {
     }
 
     @PatchMapping("/{id}/media/{mediaId}")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<MediaResponse> updateMediaMetadata(
             @PathVariable UUID id,
             @PathVariable UUID mediaId,
@@ -225,7 +225,7 @@ public class ResearchController {
     }
 
     @DeleteMapping("/{id}/media/{mediaId}")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<Void> removeMedia(
             @PathVariable UUID id,
             @PathVariable UUID mediaId,
@@ -238,8 +238,18 @@ public class ResearchController {
     //  SOURCE FILE UPLOAD
     // ══════════════════════════════════════════════════════════════════════════
 
+    @PatchMapping("/{id}/sources/{sourceId}")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<SourceResponse> updateSource(
+            @PathVariable UUID id,
+            @PathVariable UUID sourceId,
+            @Valid @RequestBody UpdateSourceRequest request,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(researchService.updateSource(id, sourceId, request, user.getId()));
+    }
+
     @PostMapping(value = "/{id}/sources/{sourceId}/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<SourceResponse> uploadSourceFile(
             @PathVariable UUID id,
             @PathVariable UUID sourceId,
@@ -322,7 +332,7 @@ public class ResearchController {
 
     /** The authenticated researcher's draft researches. */
     @GetMapping("/me/drafts")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<Page<ResearchSummaryResponse>> getMyDrafts(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
@@ -331,7 +341,7 @@ public class ResearchController {
 
     /** All researches (all statuses) belonging to the authenticated researcher. */
     @GetMapping("/me/all")
-    @PreAuthorize("hasAnyRole('RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<Page<ResearchSummaryResponse>> getMyResearches(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
@@ -449,6 +459,17 @@ public class ResearchController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<List<String>> getUserCollections(@AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.getUserCollections(user.getId()));
+    }
+
+    /** Rename a save collection. */
+    @PatchMapping("/me/saved/collections")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> renameCollection(
+            @RequestParam String oldName,
+            @RequestParam String newName,
+            @AuthenticationPrincipal User user) {
+        researchService.renameCollection(user.getId(), oldName, newName);
+        return ResponseEntity.ok().build();
     }
 
 

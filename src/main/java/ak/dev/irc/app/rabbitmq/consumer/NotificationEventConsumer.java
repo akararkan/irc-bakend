@@ -5,6 +5,8 @@ import ak.dev.irc.app.rabbitmq.event.post.PostCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCreatedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchCommentedEvent;
@@ -377,6 +379,94 @@ public class NotificationEventConsumer {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  Q&A — Answer Accepted (notify the answer author)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onAnswerAccepted(AnswerAcceptedEvent event) {
+        log.info("[CONSUMER] AnswerAccepted — questionId={} answerId={} answerAuthor={}",
+                event.questionId(), event.answerId(), event.answerAuthorId());
+
+        // Don't notify if the question author accepted their own answer
+        if (event.questionAuthorId().equals(event.answerAuthorId())) {
+            log.debug("[CONSUMER] AnswerAccepted skipped — answer author is the question author");
+            return;
+        }
+
+        Optional<User> questionAuthorOpt = userRepo.findActiveById(event.questionAuthorId());
+        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
+
+        if (questionAuthorOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
+            log.warn("[CONSUMER] AnswerAccepted skipped — user not found");
+            return;
+        }
+
+        User questionAuthor = questionAuthorOpt.get();
+        User answerAuthor = answerAuthorOpt.get();
+
+        Notification notification = Notification.builder()
+                .user(answerAuthor)
+                .actor(questionAuthor)
+                .type(NotificationType.ANSWER_ACCEPTED)
+                .title("Your answer was accepted as best")
+                .body(questionAuthor.getFullName() + " (@" + questionAuthor.getUsername()
+                        + ") accepted your answer on: \"" + event.questionTitle() + "\"")
+                .resourceId(event.questionId())
+                .resourceType("Question")
+                .build();
+
+        notifRepo.save(notification);
+        pushRealtime(answerAuthor.getId(), notification);
+        log.debug("[CONSUMER] ANSWER_ACCEPTED notification saved & queued for SSE → answerAuthor={}", answerAuthor.getId());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Q&A — Feedback Added (notify the answer author)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onAnswerFeedbackAdded(AnswerFeedbackAddedEvent event) {
+        log.info("[CONSUMER] AnswerFeedbackAdded — questionId={} answerId={} answerAuthor={}",
+                event.questionId(), event.answerId(), event.answerAuthorId());
+
+        // Don't notify if the question author gave feedback to their own answer
+        if (event.questionAuthorId().equals(event.answerAuthorId())) {
+            log.debug("[CONSUMER] AnswerFeedbackAdded skipped — answer author is the question author");
+            return;
+        }
+
+        Optional<User> questionAuthorOpt = userRepo.findActiveById(event.questionAuthorId());
+        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
+
+        if (questionAuthorOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
+            log.warn("[CONSUMER] AnswerFeedbackAdded skipped — user not found");
+            return;
+        }
+
+        User questionAuthor = questionAuthorOpt.get();
+        User answerAuthor = answerAuthorOpt.get();
+
+        String feedbackLabel = toReadableFeedbackType(event.feedbackType());
+
+        Notification notification = Notification.builder()
+                .user(answerAuthor)
+                .actor(questionAuthor)
+                .type(NotificationType.ANSWER_FEEDBACK_RECEIVED)
+                .title("Feedback on your answer")
+                .body(questionAuthor.getFullName() + " (@" + questionAuthor.getUsername()
+                        + ") gave " + feedbackLabel + " feedback on your answer to: \"" + event.questionTitle() + "\"")
+                .resourceId(event.questionId())
+                .resourceType("Question")
+                .build();
+
+        notifRepo.save(notification);
+        pushRealtime(answerAuthor.getId(), notification);
+        log.debug("[CONSUMER] ANSWER_FEEDBACK_RECEIVED notification saved & queued for SSE → answerAuthor={}", answerAuthor.getId());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  Post — Created (fan-out to followers)
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -658,6 +748,18 @@ public class NotificationEventConsumer {
             case "CARE"       -> "🤗";
             case "INSIGHTFUL" -> "💡";
             default           -> reactionType;
+        };
+    }
+
+    /** Maps FeedbackType enum names to human-readable labels */
+    private String toReadableFeedbackType(String feedbackType) {
+        return switch (feedbackType) {
+            case "EXCELLENT"          -> "excellent";
+            case "HELPFUL"            -> "helpful";
+            case "NEEDS_IMPROVEMENT"  -> "needs improvement";
+            case "INCORRECT"          -> "incorrect";
+            case "OFF_TOPIC"          -> "off-topic";
+            default                   -> feedbackType.toLowerCase();
         };
     }
 

@@ -4,6 +4,7 @@ import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.UUID;
@@ -44,7 +45,7 @@ public interface QuestionService {
 
     QuestionResponse setAnswerLimit(UUID questionId, Integer maxAnswers, UUID requesterId);
 
-    // ── Accept / unaccept ────────────────────────────────────────────────────
+    // ── Accept / unaccept (multiple best answers) ───────────────────────────
 
     QuestionAnswerResponse acceptAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
@@ -54,7 +55,26 @@ public interface QuestionService {
 
     AnswerFeedbackResponse addFeedback(UUID questionId, UUID answerId, AddFeedbackRequest request, UUID requesterId);
 
+    AnswerFeedbackResponse editFeedback(UUID questionId, UUID answerId, UUID feedbackId, AddFeedbackRequest request, UUID requesterId);
+
     List<AnswerFeedbackResponse> getFeedback(UUID questionId, UUID answerId);
 
     void deleteFeedback(UUID questionId, UUID answerId, UUID feedbackId, UUID requesterId);
+
+    // ── Attachments (upload files to answer) ─────────────────────────────────
+
+    AnswerAttachmentResponse uploadAttachment(UUID questionId, UUID answerId, MultipartFile file,
+                                               String caption, Integer displayOrder, UUID requesterId);
+
+    List<AnswerAttachmentResponse> getAttachments(UUID questionId, UUID answerId);
+
+    void deleteAttachment(UUID questionId, UUID answerId, UUID attachmentId, UUID requesterId);
+
+    // ── Sources / references ─────────────────────────────────────────────────
+
+    AnswerSourceResponse addSource(UUID questionId, UUID answerId, CreateAnswerSourceRequest request, UUID requesterId);
+
+    List<AnswerSourceResponse> getSources(UUID questionId, UUID answerId);
+
+    void deleteSource(UUID questionId, UUID answerId, UUID sourceId, UUID requesterId);
 }

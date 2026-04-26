@@ -20,9 +20,11 @@ public interface UserService {
     UserResponse        removeProfileImage();
 
     UserLinkResponse    addLink(AddLinkRequest request);
+    UserLinkResponse    editLink(UUID linkId, EditLinkRequest request);
     void                removeLink(UUID linkId);
 
     UserContactResponse addContact(AddContactRequest request);
+    UserContactResponse editContact(UUID contactId, EditContactRequest request);
     void                removeContact(UUID contactId);
 
     Page<UserResponse>  searchUsers(String query, Pageable pageable);

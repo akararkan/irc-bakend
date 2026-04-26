@@ -59,6 +59,9 @@ public interface ResearchService {
 
     // ── Source file upload ────────────────────────────────────────────────────
 
+    SourceResponse updateSource(UUID researchId, UUID sourceId,
+                                UpdateSourceRequest request, UUID researcherId);
+
     SourceResponse uploadSourceFile(UUID researchId, UUID sourceId,
                                     MultipartFile file, UUID researcherId);
 
@@ -128,6 +131,8 @@ public interface ResearchService {
     Page<ResearchSummaryResponse> getSavedByCollection(UUID userId, String collectionName, Pageable pageable);
 
     List<String> getUserCollections(UUID userId);
+
+    void renameCollection(UUID userId, String oldName, String newName);
 
     // ── View & Download tracking ─────────────────────────────────────────────
 

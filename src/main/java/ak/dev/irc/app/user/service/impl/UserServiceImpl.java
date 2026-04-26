@@ -9,6 +9,8 @@ import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.dto.request.AddContactRequest;
 import ak.dev.irc.app.user.dto.request.AddLinkRequest;
+import ak.dev.irc.app.user.dto.request.EditContactRequest;
+import ak.dev.irc.app.user.dto.request.EditLinkRequest;
 import ak.dev.irc.app.user.dto.request.UpdateProfileRequest;
 import ak.dev.irc.app.user.dto.response.UserContactResponse;
 import ak.dev.irc.app.user.dto.response.UserLinkResponse;
@@ -263,6 +265,27 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public UserLinkResponse editLink(UUID linkId, EditLinkRequest req) {
+        UUID myId = authenticatedUserId();
+        User user = findActiveOrThrow(myId);
+
+        UserLink link = user.getLinks().stream()
+                .filter(l -> l.getId().equals(linkId))
+                .findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("Link", "id", linkId));
+
+        if (req.platform() != null)     link.setPlatform(req.platform());
+        if (req.description() != null)  link.setDescription(req.description());
+        if (req.url() != null)          link.setUrl(req.url());
+        if (req.isPublic() != null)     link.setPublic(req.isPublic());
+        if (req.displayOrder() != null) link.setDisplayOrder(req.displayOrder());
+
+        link.audit(AuditAction.UPDATE, "Link updated");
+        userRepository.save(user);
+        return userMapper.toLinkResponse(link);
+    }
+
+    @Override
     public void removeLink(UUID linkId) {
         UUID myId = authenticatedUserId();
         log.info("User [{}] removing link [{}]", myId, linkId);
@@ -315,6 +338,25 @@ public class UserServiceImpl implements UserService {
         log.info("User [{}] contact added — platform={}, id={}",
                 myId, req.platform(), contact.getId());
 
+        return userMapper.toContactResponse(contact);
+    }
+
+    @Override
+    public UserContactResponse editContact(UUID contactId, EditContactRequest req) {
+        UUID myId = authenticatedUserId();
+        User user = findActiveOrThrow(myId);
+
+        UserContact contact = user.getContacts().stream()
+                .filter(c -> c.getId().equals(contactId))
+                .findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("Contact", "id", contactId));
+
+        if (req.platform() != null) contact.setPlatform(req.platform());
+        if (req.value() != null)    contact.setValue(req.value());
+        if (req.isPublic() != null) contact.setPublic(req.isPublic());
+
+        contact.audit(AuditAction.UPDATE, "Contact updated");
+        userRepository.save(user);
         return userMapper.toContactResponse(contact);
     }
 
