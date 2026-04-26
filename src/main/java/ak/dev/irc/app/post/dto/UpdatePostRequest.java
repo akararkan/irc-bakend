@@ -13,6 +13,7 @@ public class UpdatePostRequest {
     private PostVisibility visibility;
 
     private String audioTrackUrl;
+    private String audioTrackS3Key;
     private String audioTrackName;
 
     private String locationName;

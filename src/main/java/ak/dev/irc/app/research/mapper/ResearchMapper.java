@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.mapper;
 
+import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.entity.*;
 import ak.dev.irc.app.user.entity.User;
@@ -77,7 +78,9 @@ public class ResearchMapper {
                 reactionType,
                 saved,
                 r.getCreatedAt(),
-                r.getUpdatedAt()
+                r.getUpdatedAt(),
+                TimeDisplayUtil.timeAgo(r.getPublishedAt() != null ? r.getPublishedAt() : r.getCreatedAt()),
+                TimeDisplayUtil.formattedDate(r.getPublishedAt() != null ? r.getPublishedAt() : r.getCreatedAt())
         );
     }
 
@@ -172,7 +175,9 @@ public class ResearchMapper {
                 c.isHidden(), c.getHiddenAt(),
                 c.getParent() != null ? c.getParent().getId() : null,
                 replies,
-                c.getCreatedAt()
+                c.getCreatedAt(),
+                TimeDisplayUtil.timeAgo(c.getCreatedAt()),
+                TimeDisplayUtil.formattedDate(c.getCreatedAt())
         );
     }
 

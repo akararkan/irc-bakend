@@ -53,6 +53,10 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "profile_image", columnDefinition = "TEXT")
     private String profileImage;
 
+    /** S3/R2 object key for the profile image */
+    @Column(name = "profile_image_s3_key", columnDefinition = "TEXT")
+    private String profileImageS3Key;
+
     @Column(name = "profile_bio", columnDefinition = "TEXT")
     private String profileBio;
 

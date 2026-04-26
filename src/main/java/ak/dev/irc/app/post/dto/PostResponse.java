@@ -2,7 +2,6 @@ package ak.dev.irc.app.post.dto;
 
 
 import ak.dev.irc.app.post.enums.*;
-import ak.dev.irc.app.post.dto.MediaItemResponse;
 import lombok.Builder;
 import lombok.Data;
 
@@ -23,7 +22,6 @@ public class PostResponse {
     private PostStatus status;
     private PostVisibility visibility;
 
-
     // ── audio track ───────────────────────────────────────────
     private String audioTrackUrl;
     private String audioTrackName;
@@ -36,9 +34,10 @@ public class PostResponse {
     private Double locationLat;
     private Double locationLng;
 
-    // ── sharing ───────────────────────────────────────────────
+    // ── sharing / repost ─────────────────────────────────────
     private PostResponse sharedPost;
     private String shareLink;
+    private boolean isRepost;
 
     // ── counters ──────────────────────────────────────────────
     private Long reactionCount;
@@ -50,9 +49,13 @@ public class PostResponse {
     private PostReactionType myReaction;   // null if not reacted
     private boolean isSaved;
 
-    // ── audit ─────────────────────────────────────────────────
+    // ── timestamps (raw) ─────────────────────────────────────
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // ── timestamps (display-friendly) ────────────────────────
+    private String timeAgo;
+    private String formattedDate;
 
     // ── inner summaries ───────────────────────────────────────
     @Data @Builder

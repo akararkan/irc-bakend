@@ -133,15 +133,47 @@ public class PostController {
         return ResponseEntity.noContent().build();
     }
 
-    // ── Share ─────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════════
+    //  REPOST / RESHARE
+    // ══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Repost a post (Facebook-style). Creates a new post in the sharer's feed
+     * with optional caption. The original post is embedded in the response.
+     */
+    @PostMapping("/{postId}/repost")
+    public ResponseEntity<PostResponse> repostPost(
+            @PathVariable UUID postId,
+            @RequestParam(required = false) String caption,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(postService.repostPost(postId, user.getId(), caption));
+    }
+
+    /**
+     * Undo a repost. Removes the repost from the user's feed.
+     */
+    @DeleteMapping("/{postId}/repost")
+    public ResponseEntity<Void> undoRepost(
+            @PathVariable UUID postId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        postService.undoRepost(postId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Legacy share endpoint — now delegates to repost.
+     */
     @PostMapping("/{postId}/share")
     public ResponseEntity<PostResponse> sharePost(
             @PathVariable UUID postId,
             @RequestParam(required = false) String caption,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        return ResponseEntity.ok(postService.sharePost(postId, user.getId(), caption));
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(postService.sharePost(postId, user.getId(), caption));
     }
 
     // ── Delete ────────────────────────────────────────────────

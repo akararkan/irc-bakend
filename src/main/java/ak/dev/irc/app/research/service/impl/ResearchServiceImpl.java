@@ -867,8 +867,10 @@ public class ResearchServiceImpl implements ResearchService {
                     .research(research).user(user)
                     .content(hasContent ? request.content().trim() : null)
                     .mediaUrl(request.mediaUrl())
+                    .mediaS3Key(request.mediaS3Key())
                     .mediaType(request.mediaType())
                     .mediaThumbnailUrl(request.mediaThumbnailUrl())
+                    .mediaThumbnailS3Key(request.mediaThumbnailS3Key())
                     .build();
 
             if (request.parentId() != null) {
@@ -900,20 +902,23 @@ public class ResearchServiceImpl implements ResearchService {
     public CommentResponse addCommentWithMedia(UUID researchId, AddCommentRequest request, UUID userId,
                                                MultipartFile media, MultipartFile voice) {
         String mediaUrl = request.mediaUrl();
+        String mediaS3Key = request.mediaS3Key();
         String mediaType = request.mediaType();
         String mediaThumbnailUrl = request.mediaThumbnailUrl();
+        String mediaThumbnailS3Key = request.mediaThumbnailS3Key();
         String voiceUrl = request.voiceUrl();
+        String voiceS3Key = request.voiceS3Key();
 
         // Upload voice recording if present
         if (voice != null && !voice.isEmpty()) {
-            String voiceKey = s3.upload(voice, "research/comments/voice");
-            voiceUrl = s3.getPublicUrl(voiceKey);
+            voiceS3Key = s3.upload(voice, "research/comments/voice");
+            voiceUrl = s3.getPublicUrl(voiceS3Key);
         }
 
         // Upload media file if present
         if (media != null && !media.isEmpty()) {
-            String mediaKey = s3.upload(media, "research/comments/media");
-            mediaUrl = s3.getPublicUrl(mediaKey);
+            mediaS3Key = s3.upload(media, "research/comments/media");
+            mediaUrl = s3.getPublicUrl(mediaS3Key);
             String contentType = media.getContentType();
             if (contentType != null && contentType.startsWith("video")) {
                 mediaType = "VIDEO";
@@ -922,11 +927,11 @@ public class ResearchServiceImpl implements ResearchService {
             }
         }
 
-        // Build a new request with the uploaded URLs
+        // Build a new request with the uploaded URLs and S3 keys
         AddCommentRequest enriched = new AddCommentRequest(
                 request.content(), request.parentId(),
-                mediaUrl, mediaType, mediaThumbnailUrl,
-                voiceUrl, request.voiceDurationSeconds(),
+                mediaUrl, mediaS3Key, mediaType, mediaThumbnailUrl, mediaThumbnailS3Key,
+                voiceUrl, voiceS3Key, request.voiceDurationSeconds(),
                 request.voiceTranscript(), request.waveformData()
         );
 

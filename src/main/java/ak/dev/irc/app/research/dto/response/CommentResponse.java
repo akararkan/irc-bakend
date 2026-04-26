@@ -20,8 +20,6 @@ public record CommentResponse(
     String mediaType,
     String mediaThumbnailUrl,
 
-
-
     Long likeCount,
     Long replyCount,
     boolean isEdited,
@@ -32,5 +30,7 @@ public record CommentResponse(
     UUID parentId,
     List<CommentResponse> replies,
 
-    LocalDateTime createdAt
+    LocalDateTime createdAt,
+    String timeAgo,
+    String formattedDate
 ) {}

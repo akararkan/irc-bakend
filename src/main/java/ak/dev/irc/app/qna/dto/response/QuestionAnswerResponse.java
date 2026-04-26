@@ -33,6 +33,8 @@ public record QuestionAnswerResponse(
         LocalDateTime deletedAt,
         long feedbackCount,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        String timeAgo,
+        String formattedDate
 ) {
 }

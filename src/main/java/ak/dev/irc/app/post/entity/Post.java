@@ -57,6 +57,9 @@ public class Post {
     @Column(name = "audio_track_url")
     private String audioTrackUrl;
 
+    @Column(name = "audio_track_s3_key", columnDefinition = "TEXT")
+    private String audioTrackS3Key;
+
     @Column(name = "audio_track_name")
     private String audioTrackName;
 

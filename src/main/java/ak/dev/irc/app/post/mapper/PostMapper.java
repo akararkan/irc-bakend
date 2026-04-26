@@ -2,12 +2,14 @@ package ak.dev.irc.app.post.mapper;
 
 
 
+import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.post.dto.CreatePostRequest;
 import ak.dev.irc.app.post.dto.MediaItemRequest;
 import ak.dev.irc.app.post.dto.CommentResponse;
 import ak.dev.irc.app.post.dto.MediaItemResponse;
 import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.entity.*;
+import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.user.entity.User;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +30,7 @@ public class PostMapper {
                 .visibility(req.getVisibility() != null ? req.getVisibility() : ak.dev.irc.app.post.enums.PostVisibility.PUBLIC)
                 // voice fields removed for posts
                 .audioTrackUrl(req.getAudioTrackUrl())
+                .audioTrackS3Key(req.getAudioTrackS3Key())
                 .audioTrackName(req.getAudioTrackName())
                 .locationName(req.getLocationName())
                 .locationLat(req.getLocationLat())
@@ -57,6 +60,8 @@ public class PostMapper {
                 .role(post.getAuthor().getRole() != null ? post.getAuthor().getRole().name() : null)
                 .build();
 
+        boolean isRepost = post.getPostType() == PostType.REPOST && post.getSharedPost() != null;
+
         return PostResponse.builder()
                 .id(post.getId())
                 .author(author)
@@ -74,6 +79,7 @@ public class PostMapper {
                 .locationLng(post.getLocationLng())
                 .sharedPost(post.getSharedPost() != null ? toResponse(post.getSharedPost()) : null)
                 .shareLink(post.getShareLink())
+                .isRepost(isRepost)
                 .reactionCount(post.getReactionCount())
                 .commentCount(post.getCommentCount())
                 .shareCount(post.getShareCount())
@@ -81,6 +87,8 @@ public class PostMapper {
                 .myReaction(myReaction)
                 .createdAt(post.getCreatedAt())
                 .updatedAt(post.getUpdatedAt())
+                .timeAgo(TimeDisplayUtil.timeAgo(post.getCreatedAt()))
+                .formattedDate(TimeDisplayUtil.formattedDate(post.getCreatedAt()))
                 .build();
     }
 
@@ -91,7 +99,9 @@ public class PostMapper {
                 .post(post)
                 .mediaType(req.getMediaType())
                 .url(req.getUrl())
+                .s3Key(req.getS3Key())
                 .thumbnailUrl(req.getThumbnailUrl())
+                .thumbnailS3Key(req.getThumbnailS3Key())
                 .altText(req.getAltText())
                 .durationSeconds(req.getDurationSeconds())
                 .fileSizeBytes(req.getFileSizeBytes())
@@ -148,6 +158,8 @@ public class PostMapper {
                 .deletedAt(c.getDeletedAt())
                 .createdAt(c.getCreatedAt())
                 .updatedAt(c.getUpdatedAt())
+                .timeAgo(TimeDisplayUtil.timeAgo(c.getCreatedAt()))
+                .formattedDate(TimeDisplayUtil.formattedDate(c.getCreatedAt()))
                 .build();
     }
 }

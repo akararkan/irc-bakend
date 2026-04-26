@@ -1,5 +1,6 @@
 package ak.dev.irc.app.qna.mapper;
 
+import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.user.entity.User;
@@ -26,7 +27,9 @@ public class QuestionMapper {
                 question.isAnswersLocked(),
                 question.getMaxAnswers(),
                 question.getCreatedAt(),
-                question.getUpdatedAt()
+                question.getUpdatedAt(),
+                TimeDisplayUtil.timeAgo(question.getCreatedAt()),
+                TimeDisplayUtil.formattedDate(question.getCreatedAt())
         );
     }
 
@@ -63,7 +66,9 @@ public class QuestionMapper {
                 answer.getDeletedAt(),
                 answer.getFeedbacks() != null ? answer.getFeedbacks().size() : 0L,
                 answer.getCreatedAt(),
-                answer.getUpdatedAt()
+                answer.getUpdatedAt(),
+                TimeDisplayUtil.timeAgo(answer.getCreatedAt()),
+                TimeDisplayUtil.formattedDate(answer.getCreatedAt())
         );
     }
 

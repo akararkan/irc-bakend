@@ -83,6 +83,10 @@ public class ResearchMedia extends BaseAuditEntity {
     @Column(name = "thumbnail_url", columnDefinition = "TEXT")
     private String thumbnailUrl;
 
+    /** S3/R2 object key for the thumbnail */
+    @Column(name = "thumbnail_s3_key", columnDefinition = "TEXT")
+    private String thumbnailS3Key;
+
     // ── Image-specific ────────────────────────────────────────────────────────
 
     @Column(name = "width_px")

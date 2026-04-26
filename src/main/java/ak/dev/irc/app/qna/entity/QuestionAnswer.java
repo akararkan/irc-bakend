@@ -48,15 +48,27 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Column(name = "media_url", columnDefinition = "TEXT")
     private String mediaUrl;
 
+    /** S3/R2 object key for the media file */
+    @Column(name = "media_s3_key", columnDefinition = "TEXT")
+    private String mediaS3Key;
+
     @Column(name = "media_type", length = 20)
     private String mediaType;       // IMAGE, VIDEO
 
     @Column(name = "media_thumbnail_url", columnDefinition = "TEXT")
     private String mediaThumbnailUrl;
 
+    /** S3/R2 object key for the media thumbnail */
+    @Column(name = "media_thumbnail_s3_key", columnDefinition = "TEXT")
+    private String mediaThumbnailS3Key;
+
     // ── Voice recording ──────────────────────────────────────────
     @Column(name = "voice_url", columnDefinition = "TEXT")
     private String voiceUrl;
+
+    /** S3/R2 object key for the voice recording */
+    @Column(name = "voice_s3_key", columnDefinition = "TEXT")
+    private String voiceS3Key;
 
     @Column(name = "voice_duration_seconds")
     private Integer voiceDurationSeconds;

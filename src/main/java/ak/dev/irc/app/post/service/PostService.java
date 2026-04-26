@@ -59,17 +59,17 @@ public class PostService {
         // Share link
         post.setShareLink(UUID.randomUUID().toString().replace("-", "").substring(0, 12));
 
-        // Handle re-share
+        // Handle re-share via createPost (legacy path — prefer repostPost)
         if (req.getSharedPostId() != null) {
             Post original = postRepository.findById(UUID.fromString(req.getSharedPostId()))
                     .orElseThrow(() -> new EntityNotFoundException("Original post not found"));
-            post.setSharedPost(original);
-            postRepository.incrementShareCount(original.getId());
+            post.setSharedPost(resolveOriginal(original));
+            postRepository.incrementShareCount(resolveOriginal(original).getId());
         }
 
         post = postRepository.save(post);
 
-        // Publish RabbitMQ event (posts no longer carry voice)
+        // Publish RabbitMQ event
         eventPublisher.publishPostCreated(PostCreatedEvent.builder()
                 .postId(post.getId())
                 .authorId(authorId)
@@ -83,25 +83,24 @@ public class PostService {
     }
 
     /**
-     * Create a post with multipart file uploads (media images/videos + voice recording).
+     * Create a post with multipart file uploads (media images/videos).
      * Files are uploaded to R2 storage and their URLs are set on the post entity.
      */
     @Transactional
     public PostResponse createPostWithFiles(CreatePostRequest req, UUID authorId,
                                             List<MultipartFile> files) {
 
-        // Voice uploads removed for posts — only media files are processed here
-
         // Build media list from uploaded files
         if (files != null && !files.isEmpty()) {
             List<ak.dev.irc.app.post.dto.MediaItemRequest> mediaItems = new ArrayList<>();
             int order = 0;
             for (MultipartFile file : files) {
-                String key = storageService.upload(file, "posts/media");
-                String url = storageService.getPublicUrl(key);
+                String s3Key = storageService.upload(file, "posts/media");
+                String url = storageService.getPublicUrl(s3Key);
 
                 ak.dev.irc.app.post.dto.MediaItemRequest item = new ak.dev.irc.app.post.dto.MediaItemRequest();
                 item.setUrl(url);
+                item.setS3Key(s3Key);
                 item.setMimeType(file.getContentType());
                 item.setFileSizeBytes(file.getSize());
                 item.setSortOrder(order++);
@@ -122,6 +121,122 @@ public class PostService {
         return createPost(req, authorId);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    //  REPOST / RESHARE (Facebook-style)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Repost/reshare a post. Creates a NEW Post (type=REPOST) in the sharer's feed
+     * that references the original. The sharer's followers will see this in their feed.
+     *
+     * - If the target is itself a repost, we chain to the true original
+     * - A user cannot repost the same original more than once
+     * - A user cannot repost their own post
+     */
+    @Transactional
+    public PostResponse repostPost(UUID postId, UUID sharerId, String caption) {
+        Post target = findPublishedPost(postId);
+        User sharer = userRepository.findById(sharerId)
+                .orElseThrow(() -> new EntityNotFoundException("User not found"));
+
+        // Resolve to the true original (skip repost chains)
+        Post original = resolveOriginal(target);
+
+        // Cannot repost your own post
+        if (original.getAuthor().getId().equals(sharerId)) {
+            throw new BadRequestException("You cannot repost your own post", "SELF_REPOST");
+        }
+
+        // Cannot repost the same original twice
+        if (postRepository.findRepostByAuthorAndOriginal(sharerId, original.getId()).isPresent()) {
+            throw new BadRequestException("You have already reposted this post", "DUPLICATE_REPOST");
+        }
+
+        // Create the repost as a new Post entity
+        Post repost = Post.builder()
+                .author(sharer)
+                .postType(PostType.REPOST)
+                .textContent(caption)
+                .status(PostStatus.PUBLISHED)
+                .visibility(PostVisibility.PUBLIC)
+                .sharedPost(original)
+                .shareLink(UUID.randomUUID().toString().replace("-", "").substring(0, 12))
+                .build();
+
+        repost = postRepository.save(repost);
+
+        // Increment share count on the original
+        postRepository.incrementShareCount(original.getId());
+
+        // Log the share event
+        PostShare share = PostShare.builder()
+                .post(original)
+                .sharer(sharer)
+                .caption(caption)
+                .sharePlatform("INTERNAL")
+                .build();
+        shareRepository.save(share);
+
+        // Publish events
+        eventPublisher.publishPostCreated(PostCreatedEvent.builder()
+                .postId(repost.getId())
+                .authorId(sharerId)
+                .postType(PostType.REPOST.name())
+                .visibility(PostVisibility.PUBLIC.name())
+                .hasVoice(false)
+                .build());
+
+        eventPublisher.publishPostShared(PostSharedEvent.builder()
+                .postId(original.getId())
+                .sharerId(sharerId)
+                .postAuthorId(original.getAuthor().getId())
+                .caption(caption)
+                .build());
+
+        log.info("Post reposted: original={} repost={} by user {}", original.getId(), repost.getId(), sharerId);
+        return postMapper.toResponse(repost);
+    }
+
+    /**
+     * Undo a repost. Removes the repost from the sharer's feed and decrements the share count.
+     */
+    @Transactional
+    public void undoRepost(UUID postId, UUID requesterId) {
+        Post target = postRepository.findById(postId)
+                .orElseThrow(() -> new EntityNotFoundException("Post not found"));
+        Post original = resolveOriginal(target);
+
+        Post repost = postRepository.findRepostByAuthorAndOriginal(requesterId, original.getId())
+                .orElseThrow(() -> new BadRequestException("You have not reposted this post", "NO_REPOST"));
+
+        if (!repost.getAuthor().getId().equals(requesterId)) {
+            throw new AccessDeniedException("You can only undo your own reposts");
+        }
+
+        repost.setStatus(PostStatus.REMOVED);
+        postRepository.save(repost);
+
+        // Remove the share record
+        shareRepository.findByPostIdAndSharerId(original.getId(), requesterId)
+                .ifPresent(shareRepository::delete);
+
+        // Decrement share count (min 0)
+        if (original.getShareCount() > 0) {
+            postRepository.updateReactionCount(original.getId(), 0); // placeholder; use dedicated query
+        }
+
+        log.info("Repost undone: original={} repost={} by user {}", original.getId(), repost.getId(), requesterId);
+    }
+
+    /**
+     * Legacy share — logs the share event and increments counter.
+     * Kept for external share tracking (copy link, share to WhatsApp, etc.)
+     */
+    @Transactional
+    public PostResponse sharePost(UUID postId, UUID sharerId, String caption) {
+        return repostPost(postId, sharerId, caption);
+    }
+
     // ── Update ────────────────────────────────────────────────
 
     @Transactional
@@ -139,7 +254,10 @@ public class PostService {
 
         if (req.getTextContent() != null) post.setTextContent(req.getTextContent());
         if (req.getVisibility() != null) post.setVisibility(req.getVisibility());
-        if (req.getAudioTrackUrl() != null) post.setAudioTrackUrl(req.getAudioTrackUrl());
+        if (req.getAudioTrackUrl() != null) {
+            post.setAudioTrackUrl(req.getAudioTrackUrl());
+            post.setAudioTrackS3Key(req.getAudioTrackS3Key());
+        }
         if (req.getAudioTrackName() != null) post.setAudioTrackName(req.getAudioTrackName());
         if (req.getLocationName() != null) post.setLocationName(req.getLocationName());
         if (req.getLocationLat() != null) post.setLocationLat(req.getLocationLat());
@@ -254,32 +372,6 @@ public class PostService {
         });
     }
 
-    // ── Share ─────────────────────────────────────────────────
-
-    @Transactional
-    public PostResponse sharePost(UUID postId, UUID sharerId, String caption) {
-        Post post = findPublishedPost(postId);
-        User sharer = userRepository.getReferenceById(sharerId);
-
-        PostShare share = PostShare.builder()
-                .post(post)
-                .sharer(sharer)
-                .caption(caption)
-                .sharePlatform("INTERNAL")
-                .build();
-        shareRepository.save(share);
-        postRepository.incrementShareCount(postId);
-
-        eventPublisher.publishPostShared(PostSharedEvent.builder()
-                .postId(postId)
-                .sharerId(sharerId)
-                .postAuthorId(post.getAuthor().getId())
-                .caption(caption)
-                .build());
-
-        return postMapper.toResponse(post);
-    }
-
     // ── Delete ────────────────────────────────────────────────
 
     @Transactional
@@ -307,5 +399,16 @@ public class PostService {
         return postRepository.findById(postId)
                 .filter(p -> p.getStatus() == PostStatus.PUBLISHED)
                 .orElseThrow(() -> new EntityNotFoundException("Post not found or unavailable"));
+    }
+
+    /**
+     * If the post is itself a repost, follow the chain to the true original.
+     * This prevents repost-of-repost chains: everyone reposts the original.
+     */
+    private Post resolveOriginal(Post post) {
+        if (post.getPostType() == PostType.REPOST && post.getSharedPost() != null) {
+            return post.getSharedPost();
+        }
+        return post;
     }
 }

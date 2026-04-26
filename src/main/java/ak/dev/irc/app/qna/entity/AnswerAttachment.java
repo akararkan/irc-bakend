@@ -78,4 +78,8 @@ public class AnswerAttachment extends BaseAuditEntity {
     /** Thumbnail URL (for video/document previews) */
     @Column(name = "thumbnail_url", columnDefinition = "TEXT")
     private String thumbnailUrl;
+
+    /** S3/R2 object key for the thumbnail */
+    @Column(name = "thumbnail_s3_key", columnDefinition = "TEXT")
+    private String thumbnailS3Key;
 }

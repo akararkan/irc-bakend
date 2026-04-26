@@ -17,8 +17,10 @@ public class CreateCommentRequest {
 
     // ── media attachment (image / video) ──────────────────────
     private String mediaUrl;
+    private String mediaS3Key;
     private String mediaType;          // IMAGE or VIDEO
     private String mediaThumbnailUrl;
+    private String mediaThumbnailS3Key;
 
     // (voice comment fields removed for posts)
 }

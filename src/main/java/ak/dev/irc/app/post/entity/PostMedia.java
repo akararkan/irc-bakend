@@ -29,9 +29,17 @@ public class PostMedia {
     @Column(name = "url", nullable = false)
     private String url;
 
+    /** S3/R2 object key for the media file */
+    @Column(name = "s3_key", columnDefinition = "TEXT")
+    private String s3Key;
+
     /** Thumbnail URL (video / reel) */
     @Column(name = "thumbnail_url")
     private String thumbnailUrl;
+
+    /** S3/R2 object key for the thumbnail */
+    @Column(name = "thumbnail_s3_key", columnDefinition = "TEXT")
+    private String thumbnailS3Key;
 
     /** Alt text for accessibility */
     @Column(name = "alt_text")

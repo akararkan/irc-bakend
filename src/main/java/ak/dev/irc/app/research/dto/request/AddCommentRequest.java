@@ -14,11 +14,14 @@ public record AddCommentRequest(
 
     // ── media attachment (image / video) ──────────────────────
     String mediaUrl,
+    String mediaS3Key,
     String mediaType,          // IMAGE or VIDEO
     String mediaThumbnailUrl,
+    String mediaThumbnailS3Key,
 
     // ── voice comment ─────────────────────────────────────────
     String voiceUrl,
+    String voiceS3Key,
     Integer voiceDurationSeconds,
     String voiceTranscript,
     String waveformData

@@ -23,6 +23,7 @@ public class CreatePostRequest {
 
     // ── background audio (reels / embedded) ──────────────────
     private String audioTrackUrl;
+    private String audioTrackS3Key;
     private String audioTrackName;
 
     // ── media attachments ─────────────────────────────────────

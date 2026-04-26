@@ -32,6 +32,10 @@ public class UserAttachment extends BaseAuditEntity {
     @Column(name = "file_url", nullable = false, columnDefinition = "TEXT")
     private String fileUrl;
 
+    /** S3/R2 object key for management (delete, re-sign) */
+    @Column(name = "s3_key", columnDefinition = "TEXT")
+    private String s3Key;
+
     /** Original filename shown to the user */
     @Column(name = "file_name", nullable = false, length = 255)
     private String fileName;

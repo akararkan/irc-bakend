@@ -18,6 +18,8 @@ public record QuestionResponse(
         boolean answersLocked,
         Integer maxAnswers,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        String timeAgo,
+        String formattedDate
 ) {
 }

@@ -15,7 +15,11 @@ public class MediaItemRequest {
     @NotBlank
     private String url;
 
+    private String s3Key;
+
     private String thumbnailUrl;
+
+    private String thumbnailS3Key;
     private String altText;
     private Integer durationSeconds;
     private Long fileSizeBytes;

@@ -64,11 +64,19 @@ public class ResearchComment extends BaseAuditEntity {
     @Column(name = "media_url")
     private String mediaUrl;
 
+    /** S3/R2 object key for the comment media */
+    @Column(name = "media_s3_key", columnDefinition = "TEXT")
+    private String mediaS3Key;
+
     @Column(name = "media_type")
     private String mediaType;          // IMAGE or VIDEO
 
     @Column(name = "media_thumbnail_url")
     private String mediaThumbnailUrl;
+
+    /** S3/R2 object key for the comment media thumbnail */
+    @Column(name = "media_thumbnail_s3_key", columnDefinition = "TEXT")
+    private String mediaThumbnailS3Key;
 
     /** Number of likes on this comment (denormalised) */
     @Column(name = "like_count", nullable = false)

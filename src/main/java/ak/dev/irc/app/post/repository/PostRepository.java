@@ -72,6 +72,17 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
         """)
     Page<Post> findFollowingReelFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
 
+    // Find a user's repost of a specific original post
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id = :authorId
+          AND p.sharedPost.id = :originalPostId
+          AND p.postType = 'REPOST'
+          AND p.status = 'PUBLISHED'
+        """)
+    Optional<Post> findRepostByAuthorAndOriginal(@Param("authorId") UUID authorId,
+                                                  @Param("originalPostId") UUID originalPostId);
+
     // Search (voice transcript removed from posts — search only by text content)
     @Query("SELECT p FROM Post p WHERE p.status = 'PUBLISHED' AND p.visibility = 'PUBLIC' " +
             "AND LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%'))")

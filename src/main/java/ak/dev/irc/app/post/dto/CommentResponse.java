@@ -37,6 +37,9 @@ public class CommentResponse {
     private boolean deleted;
     private LocalDateTime deletedAt;
 
+    // ── timestamps ────────────────────────────────────────────
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private String timeAgo;
+    private String formattedDate;
 }

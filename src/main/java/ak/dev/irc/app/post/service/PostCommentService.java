@@ -72,8 +72,10 @@ public class PostCommentService {
                 .parent(parent)
                 .textContent(req.getTextContent())
                 .mediaUrl(req.getMediaUrl())
+                .mediaS3Key(req.getMediaS3Key())
                 .mediaType(req.getMediaType())
                 .mediaThumbnailUrl(req.getMediaThumbnailUrl())
+                .mediaThumbnailS3Key(req.getMediaThumbnailS3Key())
                 // Voice comments are disabled for posts — do not set voice fields on the entity
                 .build();
 
@@ -109,6 +111,7 @@ public class PostCommentService {
         if (media != null && !media.isEmpty()) {
             String mediaKey = storageService.upload(media, "posts/comments/media");
             req.setMediaUrl(storageService.getPublicUrl(mediaKey));
+            req.setMediaS3Key(mediaKey);
             String contentType = media.getContentType();
             if (contentType != null && contentType.startsWith("video")) {
                 req.setMediaType("VIDEO");

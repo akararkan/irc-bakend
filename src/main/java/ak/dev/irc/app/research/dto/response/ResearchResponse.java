@@ -76,5 +76,9 @@ public record ResearchResponse(
 
     // ── Audit ────────────────────────────────────────────────────────────────
     LocalDateTime createdAt,
-    LocalDateTime updatedAt
+    LocalDateTime updatedAt,
+
+    // ── Display-friendly timestamps ──────────────────────────────────────
+    String timeAgo,
+    String formattedDate
 ) {}

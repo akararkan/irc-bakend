@@ -196,6 +196,7 @@ public class UserServiceImpl implements UserService {
         String imageUrl = s3.getPublicUrl(s3Key);
 
         user.setProfileImage(imageUrl);
+        user.setProfileImageS3Key(s3Key);
         user.audit(AuditAction.UPLOAD, "Profile image uploaded to R2: " + s3Key);
         userRepository.save(user);
 
@@ -216,6 +217,7 @@ public class UserServiceImpl implements UserService {
         deleteOldProfileImageIfExists(user);
 
         user.setProfileImage(null);
+        user.setProfileImageS3Key(null);
         user.audit(AuditAction.UPDATE, "Profile image removed");
         userRepository.save(user);
 
@@ -482,10 +484,24 @@ public class UserServiceImpl implements UserService {
      * Silently skips if the URL is from an external provider (e.g. Google OAuth2).
      */
     private void deleteOldProfileImageIfExists(User user) {
+        // Prefer the persisted S3 key for reliable deletion
+        String s3Key = user.getProfileImageS3Key();
+        if (s3Key != null && !s3Key.isBlank()) {
+            try {
+                s3.delete(s3Key);
+                user.setProfileImageS3Key(null);
+                log.debug("Deleted old profile image from R2: {}", s3Key);
+            } catch (Exception e) {
+                log.warn("Failed to delete old profile image from R2 — s3Key='{}': {}",
+                        s3Key, e.getMessage());
+            }
+            return;
+        }
+
+        // Fallback: extract key from URL for images uploaded before s3Key was persisted
         String existingUrl = user.getProfileImage();
         if (existingUrl == null || existingUrl.isBlank()) return;
 
-        // Only attempt deletion if the URL belongs to our R2 bucket
         if (!existingUrl.contains(PROFILE_IMAGE_PREFIX)) {
             log.debug("Skipping R2 deletion — profile image is from external provider: {}",
                     existingUrl);
@@ -493,14 +509,10 @@ public class UserServiceImpl implements UserService {
         }
 
         try {
-            // Extract S3 key: everything after the first '/' following the host
-            // e.g. https://pub-xxx.r2.dev/users/profile-images/uuid/uuid.jpg
-            //   → users/profile-images/uuid/uuid.jpg
-            String s3Key = existingUrl.substring(existingUrl.indexOf(PROFILE_IMAGE_PREFIX));
-            s3.delete(s3Key);
-            log.debug("Deleted old profile image from R2: {}", s3Key);
+            String extractedKey = existingUrl.substring(existingUrl.indexOf(PROFILE_IMAGE_PREFIX));
+            s3.delete(extractedKey);
+            log.debug("Deleted old profile image from R2 (legacy URL extraction): {}", extractedKey);
         } catch (Exception e) {
-            // Never block the upload because of a failed deletion
             log.warn("Failed to delete old profile image from R2 — url='{}': {}",
                     existingUrl, e.getMessage());
         }
