@@ -1,5 +1,7 @@
 package ak.dev.irc.app.rabbitmq.consumer;
 
+import ak.dev.irc.app.activity.service.UserActivityService;
+import ak.dev.irc.app.post.enums.PostReactionType;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCreatedEvent;
@@ -91,6 +93,7 @@ public class NotificationEventConsumer {
         private final PostCommentRepository  postCommentRepo;
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
+        private final UserActivityService    userActivityService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  User — Follow / Unfollow
@@ -519,6 +522,8 @@ public class NotificationEventConsumer {
         log.info("[CONSUMER] PostReacted — postId={} reactor={} type={}",
                 event.getPostId(), event.getReactorId(), event.getReactionType());
 
+        recordReactionActivity(event);
+
         // Don't notify people when they react to their own post
         if (event.getReactorId().equals(event.getPostAuthorId())) {
             log.debug("[CONSUMER] PostReacted skipped — reactor is the author");
@@ -569,6 +574,8 @@ public class NotificationEventConsumer {
     public void onPostCommented(PostCommentedEvent event) {
         log.info("[CONSUMER] PostCommented — postId={} commentId={} isReply={}",
                 event.getPostId(), event.getCommentId(), event.isReply());
+
+        recordCommentActivity(event);
 
                 Optional<User> commenterOpt = userRepo.findActiveById(event.getCommentAuthorId());
 
@@ -632,6 +639,8 @@ public class NotificationEventConsumer {
     public void onPostCommentReacted(PostCommentReactedEvent event) {
         log.info("[CONSUMER] PostCommentReacted — commentId={} reactor={}",
                 event.getCommentId(), event.getReactorId());
+
+        recordCommentReactionActivity(event);
 
         // Don't notify when someone reacts to their own comment
         if (event.getReactorId().equals(event.getCommentAuthorId())) {
@@ -853,5 +862,49 @@ public class NotificationEventConsumer {
         }
 
         return null;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  User-activity recording
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private void recordReactionActivity(PostReactedEvent event) {
+        try {
+            PostReactionType type = parseReactionType(event.getReactionType());
+            userActivityService.recordPostReaction(event.getReactorId(), event.getPostId(), type);
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record post reaction activity (postId={}, userId={}): {}",
+                    event.getPostId(), event.getReactorId(), e.getMessage());
+        }
+    }
+
+    private void recordCommentActivity(PostCommentedEvent event) {
+        try {
+            userActivityService.recordPostComment(
+                    event.getCommentAuthorId(), event.getPostId(), event.getCommentId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record post comment activity (postId={}, commentId={}): {}",
+                    event.getPostId(), event.getCommentId(), e.getMessage());
+        }
+    }
+
+    private void recordCommentReactionActivity(PostCommentReactedEvent event) {
+        try {
+            PostReactionType type = parseReactionType(event.getReactionType());
+            userActivityService.recordPostCommentReaction(
+                    event.getReactorId(), event.getPostId(), event.getCommentId(), type);
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record post comment reaction activity (commentId={}, userId={}): {}",
+                    event.getCommentId(), event.getReactorId(), e.getMessage());
+        }
+    }
+
+    private PostReactionType parseReactionType(String raw) {
+        if (raw == null) return null;
+        try {
+            return PostReactionType.valueOf(raw);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 }
