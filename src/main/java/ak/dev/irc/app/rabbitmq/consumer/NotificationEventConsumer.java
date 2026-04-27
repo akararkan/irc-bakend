@@ -687,6 +687,8 @@ public class NotificationEventConsumer {
         log.info("[CONSUMER] PostShared — postId={} sharer={}",
                 event.getPostId(), event.getSharerId());
 
+        recordShareActivity(event);
+
         // Don't notify when someone shares their own post
         if (event.getSharerId().equals(event.getPostAuthorId())) {
             log.debug("[CONSUMER] PostShared skipped — sharer is the author");
@@ -885,6 +887,15 @@ public class NotificationEventConsumer {
         } catch (Exception e) {
             log.warn("[ACTIVITY] failed to record post comment activity (postId={}, commentId={}): {}",
                     event.getPostId(), event.getCommentId(), e.getMessage());
+        }
+    }
+
+    private void recordShareActivity(PostSharedEvent event) {
+        try {
+            userActivityService.recordPostShare(event.getSharerId(), event.getPostId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record post share activity (postId={}, sharerId={}): {}",
+                    event.getPostId(), event.getSharerId(), e.getMessage());
         }
     }
 

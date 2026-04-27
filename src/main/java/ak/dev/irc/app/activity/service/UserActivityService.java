@@ -21,4 +21,6 @@ public interface UserActivityService {
     void recordPostComment(UUID userId, UUID postId, UUID commentId);
 
     void recordPostCommentReaction(UUID userId, UUID postId, UUID commentId, PostReactionType reactionType);
+
+    void recordPostShare(UUID userId, UUID postId);
 }
