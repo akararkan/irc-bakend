@@ -51,4 +51,7 @@ public class UserActivity extends BaseAuditEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "reaction_type", length = 30)
     private PostReactionType reactionType;
+
+    @Column(name = "watched_seconds")
+    private Integer watchedSeconds;
 }

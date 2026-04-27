@@ -16,6 +16,7 @@ public class UserActivityResponse {
     private UUID id;
     private UserActivityType activityType;
     private PostReactionType reactionType;
+    private Integer watchedSeconds;
 
     private PostSummary post;
     private CommentSummary comment;

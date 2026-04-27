@@ -689,9 +689,9 @@ public class NotificationEventConsumer {
 
         recordShareActivity(event);
 
-        // Don't notify when someone shares their own post
+        // Don't notify yourself when you repost your own post
         if (event.getSharerId().equals(event.getPostAuthorId())) {
-            log.debug("[CONSUMER] PostShared skipped — sharer is the author");
+            log.debug("[CONSUMER] PostShared notification skipped — sharer is the author");
             return;
         }
 

@@ -5,6 +5,7 @@ import ak.dev.irc.app.activity.entity.ReelView;
 import ak.dev.irc.app.activity.mapper.ReelViewMapper;
 import ak.dev.irc.app.activity.repository.ReelViewRepository;
 import ak.dev.irc.app.activity.service.ReelViewService;
+import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
@@ -31,6 +32,7 @@ public class ReelViewServiceImpl implements ReelViewService {
     private final UserRepository userRepo;
     private final PostRepository postRepo;
     private final ReelViewMapper mapper;
+    private final UserActivityService userActivityService;
 
     @Override
     @Transactional
@@ -52,6 +54,8 @@ public class ReelViewServiceImpl implements ReelViewService {
         ReelView saved = reelViewRepo.save(view);
 
         postRepo.incrementViewCount(post.getId());
+
+        userActivityService.recordReelWatch(userId, postId, watchedSeconds);
 
         return mapper.toResponse(saved);
     }

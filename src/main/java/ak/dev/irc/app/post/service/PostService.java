@@ -131,7 +131,7 @@ public class PostService {
      *
      * - If the target is itself a repost, we chain to the true original
      * - A user cannot repost the same original more than once
-     * - A user cannot repost their own post
+     * - A user CAN repost their own post (Twitter/Facebook-style self-share)
      */
     @Transactional
     public PostResponse repostPost(UUID postId, UUID sharerId, String caption) {
@@ -141,11 +141,6 @@ public class PostService {
 
         // Resolve to the true original (skip repost chains)
         Post original = resolveOriginal(target);
-
-        // Cannot repost your own post
-        if (original.getAuthor().getId().equals(sharerId)) {
-            throw new BadRequestException("You cannot repost your own post", "SELF_REPOST");
-        }
 
         // Cannot repost the same original twice
         if (postRepository.findRepostByAuthorAndOriginal(sharerId, original.getId()).isPresent()) {

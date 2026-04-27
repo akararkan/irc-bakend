@@ -4,5 +4,6 @@ public enum UserActivityType {
     POST_REACTION,
     POST_COMMENT,
     POST_COMMENT_REACTION,
-    POST_SHARE
+    POST_SHARE,
+    REEL_WATCH
 }

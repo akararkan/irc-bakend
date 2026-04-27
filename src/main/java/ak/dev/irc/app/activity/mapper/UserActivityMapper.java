@@ -21,6 +21,7 @@ public class UserActivityMapper {
                 .id(a.getId())
                 .activityType(a.getActivityType())
                 .reactionType(a.getReactionType())
+                .watchedSeconds(a.getWatchedSeconds())
                 .post(toPostSummary(a.getPost()))
                 .comment(toCommentSummary(a.getComment()))
                 .createdAt(a.getCreatedAt())

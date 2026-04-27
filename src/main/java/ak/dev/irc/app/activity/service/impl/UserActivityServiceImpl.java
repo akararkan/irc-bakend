@@ -117,6 +117,24 @@ public class UserActivityServiceImpl implements UserActivityService {
 
     @Override
     @Transactional
+    public void recordReelWatch(UUID userId, UUID postId, Integer watchedSeconds) {
+        User user = userRepo.findActiveById(userId).orElse(null);
+        Post post = postRepo.findById(postId).orElse(null);
+        if (user == null || post == null) {
+            log.warn("[ACTIVITY] recordReelWatch skipped — user/post not found (userId={}, postId={})", userId, postId);
+            return;
+        }
+        UserActivity activity = UserActivity.builder()
+                .user(user)
+                .activityType(UserActivityType.REEL_WATCH)
+                .post(post)
+                .watchedSeconds(watchedSeconds)
+                .build();
+        activityRepo.save(activity);
+    }
+
+    @Override
+    @Transactional
     public void recordPostCommentReaction(UUID userId, UUID postId, UUID commentId, PostReactionType reactionType) {
         User user = userRepo.findActiveById(userId).orElse(null);
         Post post = postRepo.findById(postId).orElse(null);
