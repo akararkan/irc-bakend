@@ -42,9 +42,11 @@ public class UserActivityController {
     }
 
     @DeleteMapping
-    public ResponseEntity<Map<String, Object>> deleteAll(@AuthenticationPrincipal User user) {
+    public ResponseEntity<Map<String, Object>> deleteAll(
+            @RequestParam(value = "type", required = false) UserActivityType type,
+            @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        int deleted = activityService.deleteAll(user.getId());
+        int deleted = activityService.deleteAll(user.getId(), type);
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }
 }

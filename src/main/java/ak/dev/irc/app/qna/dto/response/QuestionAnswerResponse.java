@@ -12,6 +12,9 @@ public record QuestionAnswerResponse(
         String authorFullName,
         String authorProfileImage,
         String body,
+        // threading
+        UUID parentAnswerId,
+        long replyCount,
         // media (legacy single media)
         String mediaUrl,
         String mediaType,
@@ -32,6 +35,7 @@ public record QuestionAnswerResponse(
         boolean deleted,
         LocalDateTime deletedAt,
         long feedbackCount,
+        long reactionCount,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
         String timeAgo,

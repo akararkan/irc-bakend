@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.util.List;
+import java.util.UUID;
 
 @Data
 public class CreateAnswerRequest {
@@ -13,6 +14,9 @@ public class CreateAnswerRequest {
     @NotBlank(message = "Answer body is required")
     @Size(max = 10000, message = "Answer must not exceed 10000 characters")
     private String body;
+
+    /** When set, this answer is a reanswer (reply) under the given parent answer. */
+    private UUID parentAnswerId;
 
     // ── Media (photo or video) — kept for backward compatibility ──
     private String mediaUrl;

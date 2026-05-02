@@ -14,7 +14,7 @@ public interface UserActivityService {
 
     void deleteOne(UUID userId, UUID activityId);
 
-    int deleteAll(UUID userId);
+    int deleteAll(UUID userId, UserActivityType filter);
 
     void recordPostReaction(UUID userId, UUID postId, PostReactionType reactionType);
 

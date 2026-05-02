@@ -40,6 +40,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final AnswerFeedbackRepository feedbackRepository;
     private final AnswerAttachmentRepository attachmentRepository;
     private final AnswerSourceRepository sourceRepository;
+    private final AnswerReactionRepository reactionRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
     private final UserBlockRepository blockRepository;
@@ -165,15 +166,26 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Answers are locked for this question", "ANSWERS_LOCKED");
         }
 
-        if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
-            throw new BadRequestException(
-                    "Maximum number of answers (" + question.getMaxAnswers() + ") reached",
-                    "ANSWER_LIMIT_REACHED");
+        // Resolve parent if this is a reanswer (reply to another answer)
+        QuestionAnswer parent = null;
+        if (request.getParentAnswerId() != null) {
+            parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(
+                            request.getParentAnswerId(), questionId)
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "Parent answer", "id", request.getParentAnswerId()));
+            // Reanswers do not count toward maxAnswers — only top-level answers do.
+        } else {
+            if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
+                throw new BadRequestException(
+                        "Maximum number of answers (" + question.getMaxAnswers() + ") reached",
+                        "ANSWER_LIMIT_REACHED");
+            }
         }
 
         QuestionAnswer answer = QuestionAnswer.builder()
                 .question(question)
                 .author(author)
+                .parentAnswer(parent)
                 .body(request.getBody().trim())
                 .mediaUrl(request.getMediaUrl())
                 .mediaType(request.getMediaType())
@@ -204,9 +216,12 @@ public class QuestionServiceImpl implements QuestionService {
             }
         }
 
-        question.setAnswerCount(question.getAnswerCount() + 1);
-        question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
-        questionRepository.save(question);
+        // Only top-level answers move the question into ANSWERED and bump the count.
+        if (parent == null) {
+            question.setAnswerCount(question.getAnswerCount() + 1);
+            question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
+            questionRepository.save(question);
+        }
 
         eventPublisher.publishQuestionAnswered(question, answer);
 
@@ -241,7 +256,19 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(readOnly = true)
     public Page<QuestionAnswerResponse> getAnswers(UUID questionId, Pageable pageable) {
         findQuestionOrThrow(questionId);
-        return answerRepository.findByQuestionIdAndDeletedAtIsNullOrderByCreatedAtAsc(questionId, pageable)
+        return answerRepository
+                .findByQuestionIdAndParentAnswerIsNullAndDeletedAtIsNullOrderByCreatedAtAsc(questionId, pageable)
+                .map(mapper::toAnswerResponse);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId, Pageable pageable) {
+        findQuestionOrThrow(questionId);
+        QuestionAnswer parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+        return answerRepository
+                .findByParentAnswerIdAndDeletedAtIsNullOrderByCreatedAtAsc(parent.getId(), pageable)
                 .map(mapper::toAnswerResponse);
     }
 
@@ -273,12 +300,15 @@ public class QuestionServiceImpl implements QuestionService {
         answer.audit(AuditAction.DELETE, "Deleted answer");
         answerRepository.save(answer);
 
-        long remainingAnswers = Math.max(0L, question.getAnswerCount() - 1);
-        question.setAnswerCount(remainingAnswers);
-        if (remainingAnswers == 0 && question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED) {
-            question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
+        // Reanswers don't count toward the question's answerCount, so only adjust for top-level deletions.
+        if (answer.getParentAnswer() == null) {
+            long remainingAnswers = Math.max(0L, question.getAnswerCount() - 1);
+            question.setAnswerCount(remainingAnswers);
+            if (remainingAnswers == 0 && question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED) {
+                question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
+            }
+            questionRepository.save(question);
         }
-        questionRepository.save(question);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -338,6 +368,10 @@ public class QuestionServiceImpl implements QuestionService {
 
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (answer.getParentAnswer() != null) {
+            throw new BadRequestException("Reanswers cannot be accepted as best answer", "REANSWER_NOT_ACCEPTABLE");
+        }
 
         answer.setAccepted(true);
         answer.audit(AuditAction.UPDATE, "Answer accepted as best answer");
@@ -509,6 +543,37 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     @Transactional
+    public AnswerAttachmentResponse updateAttachment(UUID questionId, UUID answerId, UUID attachmentId,
+                                                      UpdateAnswerAttachmentRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only edit attachments on your own answer");
+        }
+
+        AnswerAttachment attachment = attachmentRepository.findById(attachmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Attachment", "id", attachmentId));
+
+        if (!attachment.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Attachment does not belong to this answer", "ATTACHMENT_MISMATCH");
+        }
+
+        if (request.getCaption() != null) {
+            attachment.setCaption(request.getCaption().isBlank() ? null : request.getCaption().trim());
+        }
+        if (request.getDisplayOrder() != null) {
+            attachment.setDisplayOrder(request.getDisplayOrder());
+        }
+
+        attachment.audit(AuditAction.UPDATE, "Attachment metadata updated");
+        attachment = attachmentRepository.save(attachment);
+        return mapper.toAttachmentResponse(attachment);
+    }
+
+    @Override
+    @Transactional
     public void deleteAttachment(UUID questionId, UUID answerId, UUID attachmentId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
@@ -563,6 +628,45 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     @Override
+    @Transactional
+    public AnswerSourceResponse updateSource(UUID questionId, UUID answerId, UUID sourceId,
+                                              UpdateAnswerSourceRequest request, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only edit sources on your own answer");
+        }
+
+        AnswerSource source = sourceRepository.findById(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
+
+        if (!source.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+        }
+
+        if (request.getSourceType() != null) source.setSourceType(request.getSourceType());
+        if (request.getTitle() != null) {
+            if (request.getTitle().isBlank()) {
+                throw new BadRequestException("Source title cannot be empty", "EMPTY_TITLE");
+            }
+            source.setTitle(request.getTitle().trim());
+        }
+        if (request.getCitationText() != null) {
+            source.setCitationText(request.getCitationText().isBlank() ? null : request.getCitationText().trim());
+        }
+        if (request.getUrl() != null) source.setUrl(request.getUrl().isBlank() ? null : request.getUrl().trim());
+        if (request.getDoi() != null) source.setDoi(request.getDoi().isBlank() ? null : request.getDoi().trim());
+        if (request.getIsbn() != null) source.setIsbn(request.getIsbn().isBlank() ? null : request.getIsbn().trim());
+        if (request.getDisplayOrder() != null) source.setDisplayOrder(request.getDisplayOrder());
+
+        source.audit(AuditAction.UPDATE, "Source updated");
+        source = sourceRepository.save(source);
+        return mapper.toSourceResponse(source);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<AnswerSourceResponse> getSources(UUID questionId, UUID answerId) {
         findQuestionOrThrow(questionId);
@@ -595,6 +699,55 @@ public class QuestionServiceImpl implements QuestionService {
         }
 
         sourceRepository.delete(source);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  REACTIONS (apply to top-level answers AND reanswers)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse reactToAnswer(UUID questionId, UUID answerId,
+                                                 ReactToAnswerRequest request, UUID requesterId) {
+        findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        User user = userRepository.findById(requesterId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", requesterId));
+
+        reactionRepository.findByAnswerIdAndUserId(answerId, requesterId)
+                .ifPresentOrElse(existing -> {
+                    // Same user already reacted: switch the reaction type, no count change.
+                    existing.setReactionType(request.getReactionType());
+                    reactionRepository.save(existing);
+                }, () -> {
+                    AnswerReaction reaction = AnswerReaction.builder()
+                            .id(new AnswerReactionId(answerId, requesterId))
+                            .answer(answer)
+                            .user(user)
+                            .reactionType(request.getReactionType())
+                            .build();
+                    reactionRepository.save(reaction);
+                    answer.incrementReactions();
+                    answerRepository.save(answer);
+                });
+
+        return mapper.toAnswerResponse(answer);
+    }
+
+    @Override
+    @Transactional
+    public void removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId) {
+        findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).ifPresent(r -> {
+            reactionRepository.delete(r);
+            answer.decrementReactions();
+            answerRepository.save(answer);
+        });
     }
 
     // ══════════════════════════════════════════════════════════════════════════

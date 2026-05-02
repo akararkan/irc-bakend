@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 @Component
 public class QuestionMapper {
@@ -43,6 +44,13 @@ public class QuestionMapper {
         List<AnswerSourceResponse> sources = deleted ? Collections.emptyList()
                 : mapSources(answer.getSources());
 
+        UUID parentAnswerId = answer.getParentAnswer() != null
+                ? answer.getParentAnswer().getId()
+                : null;
+        long replyCount = answer.getReplies() != null
+                ? answer.getReplies().stream().filter(r -> !r.isDeleted()).count()
+                : 0L;
+
         return new QuestionAnswerResponse(
                 answer.getId(),
                 answer.getQuestion().getId(),
@@ -51,6 +59,8 @@ public class QuestionMapper {
                 author.getFullName(),
                 author.getProfileImage(),
                 deleted ? null : answer.getBody(),
+                parentAnswerId,
+                replyCount,
                 deleted ? null : answer.getMediaUrl(),
                 deleted ? null : answer.getMediaType(),
                 deleted ? null : answer.getMediaThumbnailUrl(),
@@ -65,6 +75,7 @@ public class QuestionMapper {
                 answer.isDeleted(),
                 answer.getDeletedAt(),
                 answer.getFeedbacks() != null ? answer.getFeedbacks().size() : 0L,
+                answer.getReactionCount() != null ? answer.getReactionCount() : 0L,
                 answer.getCreatedAt(),
                 answer.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(answer.getCreatedAt()),

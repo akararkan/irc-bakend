@@ -33,6 +33,8 @@ public interface QuestionService {
 
     Page<QuestionAnswerResponse> getAnswers(UUID questionId, Pageable pageable);
 
+    Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId, Pageable pageable);
+
     void deleteQuestion(UUID questionId, UUID requesterId);
 
     void deleteAnswer(UUID questionId, UUID answerId, UUID requesterId);
@@ -74,7 +76,22 @@ public interface QuestionService {
 
     AnswerSourceResponse addSource(UUID questionId, UUID answerId, CreateAnswerSourceRequest request, UUID requesterId);
 
+    AnswerSourceResponse updateSource(UUID questionId, UUID answerId, UUID sourceId,
+                                      UpdateAnswerSourceRequest request, UUID requesterId);
+
     List<AnswerSourceResponse> getSources(UUID questionId, UUID answerId);
 
     void deleteSource(UUID questionId, UUID answerId, UUID sourceId, UUID requesterId);
+
+    // ── Attachments update ──────────────────────────────────────────────────
+
+    AnswerAttachmentResponse updateAttachment(UUID questionId, UUID answerId, UUID attachmentId,
+                                              UpdateAnswerAttachmentRequest request, UUID requesterId);
+
+    // ── Reactions (apply to top-level answers AND reanswers) ────────────────
+
+    QuestionAnswerResponse reactToAnswer(UUID questionId, UUID answerId,
+                                         ReactToAnswerRequest request, UUID requesterId);
+
+    void removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId);
 }

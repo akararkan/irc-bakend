@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -20,7 +21,16 @@ public interface UserActivityRepository extends JpaRepository<UserActivity, UUID
     Page<UserActivity> findByUserIdAndActivityTypeOrderByCreatedAtDesc(
             UUID userId, UserActivityType activityType, Pageable pageable);
 
+    List<UserActivity> findAllByUserId(UUID userId);
+
+    List<UserActivity> findAllByUserIdAndActivityType(UUID userId, UserActivityType activityType);
+
     @Modifying
     @Query("DELETE FROM UserActivity a WHERE a.user.id = :userId")
     int deleteAllByUserId(@Param("userId") UUID userId);
+
+    @Modifying
+    @Query("DELETE FROM UserActivity a WHERE a.user.id = :userId AND a.activityType = :activityType")
+    int deleteAllByUserIdAndActivityType(@Param("userId") UUID userId,
+                                         @Param("activityType") UserActivityType activityType);
 }

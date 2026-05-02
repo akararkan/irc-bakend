@@ -16,7 +16,8 @@ import java.util.UUID;
         indexes = {
                 @Index(name = "idx_qanswer_question", columnList = "question_id"),
                 @Index(name = "idx_qanswer_author", columnList = "author_id"),
-                @Index(name = "idx_qanswer_deleted", columnList = "deleted_at")
+                @Index(name = "idx_qanswer_deleted", columnList = "deleted_at"),
+                @Index(name = "idx_qanswer_parent", columnList = "parent_answer_id")
         }
 )
 @Getter
@@ -40,6 +41,17 @@ public class QuestionAnswer extends BaseAuditEntity {
     @JoinColumn(name = "author_id", nullable = false,
             foreignKey = @ForeignKey(name = "fk_qanswer_author"))
     private User author;
+
+    /** Null = top-level answer; non-null = reanswer (reply) under another answer. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "parent_answer_id",
+            foreignKey = @ForeignKey(name = "fk_qanswer_parent"))
+    private QuestionAnswer parentAnswer;
+
+    @OneToMany(mappedBy = "parentAnswer", fetch = FetchType.LAZY)
+    @OrderBy("createdAt ASC")
+    @Builder.Default
+    private List<QuestionAnswer> replies = new ArrayList<>();
 
     @Column(name = "body", nullable = false, columnDefinition = "TEXT")
     private String body;
@@ -78,6 +90,10 @@ public class QuestionAnswer extends BaseAuditEntity {
     private String links;           // comma-separated URLs
 
     // ── Status ───────────────────────────────────────────────────
+    @Column(name = "reaction_count", nullable = false)
+    @Builder.Default
+    private Long reactionCount = 0L;
+
     @Column(name = "is_accepted", nullable = false)
     @Builder.Default
     private boolean accepted = false;
@@ -112,5 +128,15 @@ public class QuestionAnswer extends BaseAuditEntity {
 
     public boolean isDeleted() {
         return deletedAt != null;
+    }
+
+    public void incrementReactions() {
+        this.reactionCount = (this.reactionCount == null ? 0L : this.reactionCount) + 1L;
+    }
+
+    public void decrementReactions() {
+        if (this.reactionCount != null && this.reactionCount > 0) {
+            this.reactionCount--;
+        }
     }
 }

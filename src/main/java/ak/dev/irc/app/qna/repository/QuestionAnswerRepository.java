@@ -14,6 +14,16 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     Page<QuestionAnswer> findByQuestionIdAndDeletedAtIsNullOrderByCreatedAtAsc(UUID questionId, Pageable pageable);
 
+    /** Top-level answers only (no reanswers). */
+    Page<QuestionAnswer> findByQuestionIdAndParentAnswerIsNullAndDeletedAtIsNullOrderByCreatedAtAsc(
+            UUID questionId, Pageable pageable);
+
+    /** Reanswers (replies) under a given parent answer. */
+    Page<QuestionAnswer> findByParentAnswerIdAndDeletedAtIsNullOrderByCreatedAtAsc(
+            UUID parentAnswerId, Pageable pageable);
+
+    long countByParentAnswerIdAndDeletedAtIsNull(UUID parentAnswerId);
+
     Optional<QuestionAnswer> findByIdAndQuestionIdAndDeletedAtIsNull(UUID answerId, UUID questionId);
 
     Optional<QuestionAnswer> findByIdAndDeletedAtIsNull(UUID answerId);

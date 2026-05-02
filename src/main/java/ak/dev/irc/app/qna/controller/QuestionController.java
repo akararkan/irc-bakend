@@ -134,6 +134,33 @@ public class QuestionController {
                 .body(questionService.addAnswer(questionId, request, user.getId()));
     }
 
+    @GetMapping({
+            "/{questionId}/answers/{answerId}/reanswers",
+            "/{questionId}/answers/{answerId}/replies"
+    })
+    public ResponseEntity<Page<QuestionAnswerResponse>> getReanswers(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(questionService.getReanswers(questionId, answerId, pageable));
+    }
+
+    @PostMapping({
+            "/{questionId}/answers/{answerId}/reanswers",
+            "/{questionId}/answers/{answerId}/replies"
+    })
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> addReanswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @Valid @RequestBody CreateAnswerRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        request.setParentAnswerId(answerId);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(questionService.addAnswer(questionId, request, user.getId()));
+    }
+
     @PatchMapping("/{questionId}/answers/{answerId}")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<QuestionAnswerResponse> editAnswer(
@@ -153,6 +180,32 @@ public class QuestionController {
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         questionService.deleteAnswer(questionId, answerId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  REACTIONS (apply to top-level answers AND reanswers)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/{questionId}/answers/{answerId}/react")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> reactToAnswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @Valid @RequestBody ReactToAnswerRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.reactToAnswer(questionId, answerId, request, user.getId()));
+    }
+
+    @DeleteMapping("/{questionId}/answers/{answerId}/react")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> removeAnswerReaction(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        questionService.removeAnswerReaction(questionId, answerId, user.getId());
         return ResponseEntity.noContent().build();
     }
 
@@ -253,6 +306,18 @@ public class QuestionController {
         return ResponseEntity.ok(questionService.getAttachments(questionId, answerId));
     }
 
+    @PatchMapping("/{questionId}/answers/{answerId}/attachments/{attachmentId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<AnswerAttachmentResponse> updateAttachment(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @PathVariable UUID attachmentId,
+            @Valid @RequestBody UpdateAnswerAttachmentRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.updateAttachment(questionId, answerId, attachmentId, request, user.getId()));
+    }
+
     @DeleteMapping("/{questionId}/answers/{answerId}/attachments/{attachmentId}")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Void> deleteAttachment(
@@ -286,6 +351,18 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId) {
         return ResponseEntity.ok(questionService.getSources(questionId, answerId));
+    }
+
+    @PatchMapping("/{questionId}/answers/{answerId}/sources/{sourceId}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<AnswerSourceResponse> updateSource(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @PathVariable UUID sourceId,
+            @Valid @RequestBody UpdateAnswerSourceRequest request,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.updateSource(questionId, answerId, sourceId, request, user.getId()));
     }
 
     @DeleteMapping("/{questionId}/answers/{answerId}/sources/{sourceId}")
