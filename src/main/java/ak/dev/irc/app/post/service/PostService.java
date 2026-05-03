@@ -3,6 +3,7 @@ package ak.dev.irc.app.post.service;
 
 
 import ak.dev.irc.app.post.dto.CreatePostRequest;
+import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
@@ -21,15 +22,21 @@ import jakarta.persistence.EntityNotFoundException;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -47,6 +54,10 @@ public class PostService {
     private final UserBlockRepository    blockRepository;
     private final S3StorageService       storageService;
 
+    // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
+    @Autowired @Lazy
+    private PostService self;
+
     // ── Create ────────────────────────────────────────────────
 
     @Transactional
@@ -57,7 +68,7 @@ public class PostService {
         Post post = postMapper.toEntity(req, author);
 
         // Share link
-        post.setShareLink(UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+        post.setShareLink(generateUniqueShareLink());
 
         // Handle re-share via createPost (legacy path — prefer repostPost)
         if (req.getSharedPostId() != null) {
@@ -155,7 +166,7 @@ public class PostService {
                 .status(PostStatus.PUBLISHED)
                 .visibility(PostVisibility.PUBLIC)
                 .sharedPost(original)
-                .shareLink(UUID.randomUUID().toString().replace("-", "").substring(0, 12))
+                .shareLink(generateUniqueShareLink())
                 .build();
 
         repost = postRepository.save(repost);
@@ -215,10 +226,7 @@ public class PostService {
         shareRepository.findByPostIdAndSharerId(original.getId(), requesterId)
                 .ifPresent(shareRepository::delete);
 
-        // Decrement share count (min 0)
-        if (original.getShareCount() > 0) {
-            postRepository.updateReactionCount(original.getId(), 0); // placeholder; use dedicated query
-        }
+        postRepository.decrementShareCount(original.getId());
 
         log.info("Repost undone: original={} repost={} by user {}", original.getId(), repost.getId(), requesterId);
     }
@@ -265,10 +273,9 @@ public class PostService {
 
     // ── Read ──────────────────────────────────────────────────
 
-    @Transactional
+    @Transactional(readOnly = true)
     public PostResponse getPost(UUID postId, UUID requesterId) {
         Post post = findPublishedPost(postId);
-        postRepository.incrementViewCount(postId);
 
         PostReactionType myReaction = null;
         if (requesterId != null) {
@@ -276,7 +283,21 @@ public class PostService {
                     .map(PostReaction::getReactionType)
                     .orElse(null);
         }
+        // View counter bumped in a separate write transaction so the read path
+        // stays readOnly and never blocks on a write lock.
+        // Routed through the proxy (`self`) so REQUIRES_NEW actually applies.
+        self.recordView(postId);
         return postMapper.toResponse(post, myReaction);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordView(UUID postId) {
+        try {
+            postRepository.incrementViewCount(postId);
+        } catch (Exception e) {
+            // View counts are best-effort; never let a counter failure break a read.
+            log.warn("Failed to bump view count for post {}: {}", postId, e.getMessage());
+        }
     }
 
     @Transactional(readOnly = true)
@@ -284,6 +305,35 @@ public class PostService {
         return postRepository
                 .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
                 .map(postMapper::toResponse);
+    }
+
+    /**
+     * Cursor-paginated public feed. Pass {@code cursor=null} for the first page;
+     * for subsequent pages pass the {@code nextCursor} from the previous response.
+     * O(log n) deep paging — does not degrade as the user scrolls.
+     */
+    @Transactional(readOnly = true)
+    public CursorPage<PostResponse> getPublicFeedCursor(LocalDateTime cursor, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 50));
+        // Fetch one extra to determine if there are more pages without an extra COUNT.
+        var pageReq = org.springframework.data.domain.PageRequest.of(0, safeLimit + 1);
+        List<Post> rows = (cursor == null)
+                ? postRepository.findPublicFeedFirstPage(pageReq)
+                : postRepository.findPublicFeedAfter(cursor, pageReq);
+
+        boolean hasMore = rows.size() > safeLimit;
+        if (hasMore) rows = rows.subList(0, safeLimit);
+
+        List<PostResponse> items = rows.stream().map(postMapper::toResponse).toList();
+        LocalDateTime nextCursor = hasMore && !items.isEmpty()
+                ? rows.get(rows.size() - 1).getCreatedAt()
+                : null;
+
+        return CursorPage.<PostResponse>builder()
+                .items(items)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -385,9 +435,20 @@ public class PostService {
     private List<UUID> getFilteredFollowingIds(UUID userId) {
         List<UUID> followingIds = followRepository.findFollowingIds(userId);
         if (followingIds.isEmpty()) return followingIds;
-        // Remove users who have blocked the requester or whom the requester has blocked
-        followingIds.removeIf(id -> blockRepository.isBlockedBetween(userId, id));
+        // One DB call returns every blocked-related id within the candidate set.
+        Set<UUID> blocked = new HashSet<>(blockRepository.findBlockedAmong(userId, followingIds));
+        if (blocked.isEmpty()) return followingIds;
+        followingIds.removeIf(blocked::contains);
         return followingIds;
+    }
+
+    private String generateUniqueShareLink() {
+        for (int i = 0; i < 8; i++) {
+            String candidate = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+            if (!postRepository.existsByShareLink(candidate)) return candidate;
+        }
+        // Vanishingly unlikely fallback: full UUID is collision-resistant.
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     private Post findPublishedPost(UUID postId) {

@@ -3,6 +3,7 @@ package ak.dev.irc.app.post.controller;
 
 
 import ak.dev.irc.app.post.dto.CreatePostRequest;
+import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -20,6 +22,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -75,6 +78,20 @@ public class PostController {
     public ResponseEntity<Page<PostResponse>> getPublicFeed(
             @PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(postService.getPublicFeed(pageable));
+    }
+
+    /**
+     * Cursor-paginated public feed (preferred for infinite-scroll clients).
+     * - First page: omit {@code cursor}.
+     * - Next page: pass the {@code nextCursor} from the previous response.
+     * - End of feed: response body has {@code nextCursor: null} and {@code hasMore: false}.
+     */
+    @GetMapping("/feed/cursor")
+    public ResponseEntity<CursorPage<PostResponse>> getPublicFeedCursor(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ResponseEntity.ok(postService.getPublicFeedCursor(cursor, limit));
     }
 
     @GetMapping("/feed/following")

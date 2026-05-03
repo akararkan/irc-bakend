@@ -24,10 +24,10 @@ public interface PostCommentRepository extends JpaRepository<PostComment, UUID> 
             UUID parentId, Pageable pageable);
 
     @Modifying
-    @Query("UPDATE PostComment c SET c.reactionCount = c.reactionCount + :delta WHERE c.id = :id")
+    @Query("UPDATE PostComment c SET c.reactionCount = CASE WHEN c.reactionCount + :delta < 0 THEN 0 ELSE c.reactionCount + :delta END WHERE c.id = :id")
     void updateReactionCount(@Param("id") UUID id, @Param("delta") long delta);
 
     @Modifying
-    @Query("UPDATE PostComment c SET c.replyCount = c.replyCount + :delta WHERE c.id = :id")
+    @Query("UPDATE PostComment c SET c.replyCount = CASE WHEN c.replyCount + :delta < 0 THEN 0 ELSE c.replyCount + :delta END WHERE c.id = :id")
     void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
 }

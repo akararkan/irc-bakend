@@ -214,6 +214,9 @@ public class PostCommentService {
         comment.setDeletedAt(LocalDateTime.now());
         commentRepository.save(comment);
         postRepository.updateCommentCount(comment.getPost().getId(), -1);
+        if (comment.getParent() != null) {
+            commentRepository.updateReplyCount(comment.getParent().getId(), -1);
+        }
     }
 
     @Transactional

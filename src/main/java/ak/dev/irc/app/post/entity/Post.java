@@ -20,7 +20,9 @@ import java.util.UUID;
         @Index(name = "idx_post_author",  columnList = "author_id"),
         @Index(name = "idx_post_type",    columnList = "post_type"),
         @Index(name = "idx_post_status",  columnList = "status"),
-        @Index(name = "idx_post_created", columnList = "created_at")
+        @Index(name = "idx_post_created", columnList = "created_at"),
+        @Index(name = "idx_post_shared",  columnList = "shared_post_id"),
+        @Index(name = "idx_post_feed",    columnList = "status, visibility, created_at")
 })
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Post {
@@ -88,17 +90,18 @@ public class Post {
     @Builder.Default @Column(name = "view_count")     private Long viewCount     = 0L;
 
     // ── relations ─────────────────────────────────────────────
+    // NOTE: reactions and comments are intentionally NOT mapped as collections here.
+    // A viral post can have millions of rows; loading them via post.getReactions()
+    // would OOM the JVM. Always query PostReactionRepository / PostCommentRepository
+    // with explicit pagination instead.
     @OneToMany(mappedBy = "post", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<PostMedia> mediaList = new ArrayList<>();
 
-    @OneToMany(mappedBy = "post", cascade = CascadeType.ALL, orphanRemoval = true)
-    @Builder.Default
-    private List<PostReaction> reactions = new ArrayList<>();
-
-    @OneToMany(mappedBy = "post", cascade = CascadeType.ALL, orphanRemoval = true)
-    @Builder.Default
-    private List<PostComment> comments = new ArrayList<>();
+    // ── concurrency control ───────────────────────────────────
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     // ── audit ─────────────────────────────────────────────────
     @CreationTimestamp

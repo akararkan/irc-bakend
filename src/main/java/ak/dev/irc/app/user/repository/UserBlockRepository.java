@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -36,4 +38,29 @@ public interface UserBlockRepository extends JpaRepository<UserBlock, UserBlockI
           AND u.deletedAt IS NULL
         """)
     Page<UserBlock> findBlockedUsers(@Param("userId") UUID userId, Pageable pageable);
+
+    /**
+     * Returns the IDs of every user that has any block relationship with :userId
+     * (either direction). Single round-trip — caller can filter feed queries
+     * without per-row block checks.
+     */
+    @Query("""
+        SELECT CASE WHEN ub.blocker.id = :userId THEN ub.blocked.id ELSE ub.blocker.id END
+        FROM UserBlock ub
+        WHERE ub.blocker.id = :userId OR ub.blocked.id = :userId
+        """)
+    List<UUID> findAllRelatedBlockedIds(@Param("userId") UUID userId);
+
+    /**
+     * Returns the subset of :candidateIds that are in any block relationship with :userId.
+     * Used to filter a known set of follow-target IDs in one DB call.
+     */
+    @Query("""
+        SELECT CASE WHEN ub.blocker.id = :userId THEN ub.blocked.id ELSE ub.blocker.id END
+        FROM UserBlock ub
+        WHERE (ub.blocker.id = :userId AND ub.blocked.id IN :candidateIds)
+           OR (ub.blocked.id = :userId AND ub.blocker.id IN :candidateIds)
+        """)
+    List<UUID> findBlockedAmong(@Param("userId") UUID userId,
+                                @Param("candidateIds") Collection<UUID> candidateIds);
 }
