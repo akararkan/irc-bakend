@@ -2,11 +2,19 @@ package ak.dev.irc.app.post.service;
 
 
 
+import ak.dev.irc.app.common.service.FollowingIdsCache;
+import ak.dev.irc.app.common.service.MentionService;
+import ak.dev.irc.app.common.service.SocialGuard;
 import ak.dev.irc.app.post.dto.CreatePostRequest;
 import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
+import ak.dev.irc.app.post.realtime.PostRealtimeBroadcaster;
+import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
+import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
+import ak.dev.irc.app.post.realtime.PostViewTracker;
+import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.post.entity.*;
 import ak.dev.irc.app.post.enums.*;
 import ak.dev.irc.app.post.mapper.PostMapper;
@@ -20,6 +28,7 @@ import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityNotFoundException;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.exception.ForbiddenException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,9 +43,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -53,6 +60,11 @@ public class PostService {
     private final UserFollowRepository   followRepository;
     private final UserBlockRepository    blockRepository;
     private final S3StorageService       storageService;
+    private final MentionService         mentionService;
+    private final PostRealtimeBroadcaster realtime;
+    private final PostViewTracker        viewTracker;
+    private final SocialGuard            socialGuard;
+    private final FollowingIdsCache      followingIdsCache;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -88,6 +100,17 @@ public class PostService {
                 .visibility(post.getVisibility().name())
                 .hasVoice(false)
                 .build());
+
+        // Scan @mentions and @followers in the post body. @followers fan-out is
+        // allowed on creation only.
+        mentionService.scanAndPublish(
+                post.getTextContent(),
+                MentionSource.POST,
+                post.getId(),
+                null,
+                authorId,
+                author.getUsername(),
+                /* allowFollowersToken */ true);
 
         log.info("Post created: {} by user {}", post.getId(), authorId);
         return postMapper.toResponse(post);
@@ -153,6 +176,10 @@ public class PostService {
         // Resolve to the true original (skip repost chains)
         Post original = resolveOriginal(target);
 
+        // Block guard — never let either side share content across a block.
+        socialGuard.requireNotBlockedBetween(
+                sharerId, original.getAuthor().getId(), "REPOST_BLOCKED_RELATIONSHIP");
+
         // Cannot repost the same original twice
         if (postRepository.findRepostByAuthorAndOriginal(sharerId, original.getId()).isPresent()) {
             throw new BadRequestException("You have already reposted this post", "DUPLICATE_REPOST");
@@ -199,6 +226,17 @@ public class PostService {
                 .caption(caption)
                 .build());
 
+        Long freshShareCount = postRepository.findById(original.getId())
+                .map(Post::getShareCount).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
+                .postId(original.getId())
+                .actorId(sharerId)
+                .actorUsername(sharer.getUsername())
+                .actorAvatarUrl(sharer.getProfileImage())
+                .postShareCount(freshShareCount)
+                .build());
+
         log.info("Post reposted: original={} repost={} by user {}", original.getId(), repost.getId(), sharerId);
         return postMapper.toResponse(repost);
     }
@@ -228,6 +266,15 @@ public class PostService {
 
         postRepository.decrementShareCount(original.getId());
 
+        Long freshShareCount = postRepository.findById(original.getId())
+                .map(Post::getShareCount).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
+                .postId(original.getId())
+                .actorId(requesterId)
+                .postShareCount(freshShareCount)
+                .build());
+
         log.info("Repost undone: original={} repost={} by user {}", original.getId(), repost.getId(), requesterId);
     }
 
@@ -255,6 +302,10 @@ public class PostService {
             throw new BadRequestException("Cannot edit a removed post", "POST_REMOVED");
         }
 
+        // Capture body before mutation so the mention delta only fires for
+        // newly-added @-handles (the ones the author wasn't already tagging).
+        String previousBody = post.getTextContent();
+
         if (req.getTextContent() != null) post.setTextContent(req.getTextContent());
         if (req.getVisibility() != null) post.setVisibility(req.getVisibility());
         if (req.getAudioTrackUrl() != null) {
@@ -267,6 +318,29 @@ public class PostService {
         if (req.getLocationLng() != null) post.setLocationLng(req.getLocationLng());
 
         post = postRepository.save(post);
+
+        // Fan-out the edit so anyone reading the post sees the new content live.
+        User author = post.getAuthor();
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.POST_UPDATED)
+                .postId(post.getId())
+                .actorId(author.getId())
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .textContent(post.getTextContent())
+                .build());
+
+        // Notify any users newly @-mentioned by this edit (delta only — does
+        // not re-notify users that were already tagged in the previous body).
+        mentionService.scanAndPublishDelta(
+                previousBody,
+                post.getTextContent(),
+                MentionSource.POST,
+                post.getId(),
+                null,
+                requesterId,
+                author.getUsername());
+
         log.info("Post updated: {} by user {}", postId, requesterId);
         return postMapper.toResponse(post);
     }
@@ -275,7 +349,41 @@ public class PostService {
 
     @Transactional(readOnly = true)
     public PostResponse getPost(UUID postId, UUID requesterId) {
+        return getPost(postId, requesterId, requesterId != null ? requesterId.toString() : null);
+    }
+
+    /**
+     * Read a post and bump the live view counter.
+     *
+     * @param viewerKey opaque fingerprint used to dedupe rapid refresh hits
+     *                  (typically userId.toString() for authed users, the client
+     *                  IP for anonymous readers). Null disables dedupe entirely.
+     */
+    /**
+     * Visibility check shared between {@link #getPost} and the SSE stream
+     * endpoint. Throws {@link EntityNotFoundException} for missing or
+     * blocked-from-viewer posts so the response is identical in either case
+     * (no information leak about why the post is unavailable).
+     */
+    @Transactional(readOnly = true)
+    public void assertPostVisible(UUID postId, UUID requesterId) {
         Post post = findPublishedPost(postId);
+        if (requesterId != null
+                && socialGuard.isBlockedBetween(requesterId, post.getAuthor().getId())) {
+            throw new EntityNotFoundException("Post not found or unavailable");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public PostResponse getPost(UUID postId, UUID requesterId, String viewerKey) {
+        Post post = findPublishedPost(postId);
+
+        // Hide the post entirely from anyone in a block-relationship with the
+        // author — pretend the post does not exist so a blocker cannot probe.
+        if (requesterId != null
+                && socialGuard.isBlockedBetween(requesterId, post.getAuthor().getId())) {
+            throw new EntityNotFoundException("Post not found or unavailable");
+        }
 
         PostReactionType myReaction = null;
         if (requesterId != null) {
@@ -286,14 +394,29 @@ public class PostService {
         // View counter bumped in a separate write transaction so the read path
         // stays readOnly and never blocks on a write lock.
         // Routed through the proxy (`self`) so REQUIRES_NEW actually applies.
-        self.recordView(postId);
+        self.recordView(postId, requesterId, viewerKey);
         return postMapper.toResponse(post, myReaction);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void recordView(UUID postId) {
+    public void recordView(UUID postId, UUID viewerId, String viewerKey) {
         try {
+            // Dedupe: refresh-spam from the same viewer in the dedupe window is ignored.
+            if (!viewTracker.shouldCount(postId, viewerKey)) return;
+
             postRepository.incrementViewCount(postId);
+
+            // Read fresh count and broadcast — registered as afterCommit by the broadcaster
+            // so subscribers never see a count that the DB is about to roll back.
+            Long freshCount = postRepository.findById(postId).map(Post::getViewCount).orElse(null);
+            if (freshCount != null) {
+                realtime.broadcast(PostRealtimeEvent.builder()
+                        .eventType(PostRealtimeEventType.VIEW_COUNT_UPDATED)
+                        .postId(postId)
+                        .actorId(viewerId)
+                        .postViewCount(freshCount)
+                        .build());
+            }
         } catch (Exception e) {
             // View counts are best-effort; never let a counter failure break a read.
             log.warn("Failed to bump view count for post {}: {}", postId, e.getMessage());
@@ -302,8 +425,31 @@ public class PostService {
 
     @Transactional(readOnly = true)
     public Page<PostResponse> getPublicFeed(Pageable pageable) {
-        return postRepository
-                .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+        return getPublicFeed(null, pageable);
+    }
+
+    /**
+     * Public feed — block-aware when {@code viewerId} is provided.
+     *
+     * <p>Anonymous viewers ({@code viewerId == null}) see the unfiltered feed
+     * because there is no block relationship to honour. Authenticated viewers
+     * receive the same feed minus any author they are in a block-relationship
+     * with — done in one SQL via {@code findPublicFeedExcluding}.</p>
+     */
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getPublicFeed(UUID viewerId, Pageable pageable) {
+        if (viewerId == null) {
+            return postRepository
+                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                    .map(postMapper::toResponse);
+        }
+        List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
+        if (blocked.isEmpty()) {
+            return postRepository
+                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                    .map(postMapper::toResponse);
+        }
+        return postRepository.findPublicFeedExcluding(blocked, pageable)
                 .map(postMapper::toResponse);
     }
 
@@ -314,12 +460,28 @@ public class PostService {
      */
     @Transactional(readOnly = true)
     public CursorPage<PostResponse> getPublicFeedCursor(LocalDateTime cursor, int limit) {
+        return getPublicFeedCursor(null, cursor, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public CursorPage<PostResponse> getPublicFeedCursor(UUID viewerId, LocalDateTime cursor, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 50));
         // Fetch one extra to determine if there are more pages without an extra COUNT.
         var pageReq = org.springframework.data.domain.PageRequest.of(0, safeLimit + 1);
-        List<Post> rows = (cursor == null)
-                ? postRepository.findPublicFeedFirstPage(pageReq)
-                : postRepository.findPublicFeedAfter(cursor, pageReq);
+
+        List<UUID> blocked = viewerId != null ? socialGuard.findRelatedBlockedIds(viewerId) : List.of();
+        boolean useFilter = !blocked.isEmpty();
+
+        List<Post> rows;
+        if (cursor == null) {
+            rows = useFilter
+                    ? postRepository.findPublicFeedFirstPageExcluding(blocked, pageReq)
+                    : postRepository.findPublicFeedFirstPage(pageReq);
+        } else {
+            rows = useFilter
+                    ? postRepository.findPublicFeedAfterExcluding(cursor, blocked, pageReq)
+                    : postRepository.findPublicFeedAfter(cursor, pageReq);
+        }
 
         boolean hasMore = rows.size() > safeLimit;
         if (hasMore) rows = rows.subList(0, safeLimit);
@@ -338,6 +500,24 @@ public class PostService {
 
     @Transactional(readOnly = true)
     public Page<PostResponse> getUserPosts(UUID authorId, Pageable pageable) {
+        return getUserPosts(authorId, null, pageable);
+    }
+
+    /**
+     * Author profile feed — refuses to disclose anything when the requester is
+     * in a block-relationship with the author. Returns 403 instead of an
+     * empty page so the caller can render a clear "this profile is unavailable"
+     * state.
+     */
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getUserPosts(UUID authorId, UUID requesterId, Pageable pageable) {
+        if (requesterId != null
+                && !requesterId.equals(authorId)
+                && socialGuard.isBlockedBetween(requesterId, authorId)) {
+            throw new ForbiddenException(
+                    "This profile is not available.",
+                    "PROFILE_BLOCKED_RELATIONSHIP");
+        }
         return postRepository
                 .findByAuthorIdAndStatusAndVisibility(authorId, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
                 .map(postMapper::toResponse);
@@ -365,15 +545,43 @@ public class PostService {
 
     @Transactional(readOnly = true)
     public Page<PostResponse> getReelFeed(Pageable pageable) {
-        return postRepository
-                .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
-                        PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+        return getReelFeed(null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getReelFeed(UUID viewerId, Pageable pageable) {
+        if (viewerId == null) {
+            return postRepository
+                    .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
+                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                    .map(postMapper::toResponse);
+        }
+        List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
+        if (blocked.isEmpty()) {
+            return postRepository
+                    .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
+                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                    .map(postMapper::toResponse);
+        }
+        return postRepository.findReelFeedExcluding(blocked, pageable)
                 .map(postMapper::toResponse);
     }
 
     @Transactional(readOnly = true)
     public Page<PostResponse> searchPosts(String query, Pageable pageable) {
-        return postRepository.search(query, pageable).map(postMapper::toResponse);
+        return searchPosts(query, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> searchPosts(String query, UUID viewerId, Pageable pageable) {
+        if (viewerId == null) {
+            return postRepository.search(query, pageable).map(postMapper::toResponse);
+        }
+        List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
+        if (blocked.isEmpty()) {
+            return postRepository.search(query, pageable).map(postMapper::toResponse);
+        }
+        return postRepository.searchExcluding(query, blocked, pageable).map(postMapper::toResponse);
     }
 
     // ── React ─────────────────────────────────────────────────
@@ -382,12 +590,21 @@ public class PostService {
     public PostResponse reactToPost(UUID postId, UUID userId, ReactToPostRequest req) {
         Post post = findPublishedPost(postId);
 
-        reactionRepository.findByPostIdAndUserId(postId, userId).ifPresentOrElse(existing -> {
-            PostReactionType old = existing.getReactionType();
+        // Block guard — disallow reacting across any block edge.
+        socialGuard.requireNotBlockedBetween(
+                userId, post.getAuthor().getId(), "REACTION_BLOCKED_RELATIONSHIP");
+
+        // Track add-vs-change so we can fire the right realtime event.
+        var existingOpt = reactionRepository.findByPostIdAndUserId(postId, userId);
+        boolean isChange = existingOpt.isPresent();
+        PostReactionType previous = existingOpt.map(PostReaction::getReactionType).orElse(null);
+
+        if (isChange) {
+            PostReaction existing = existingOpt.get();
             existing.setReactionType(req.getReactionType());
             reactionRepository.save(existing);
-            log.debug("Reaction changed from {} to {} on post {}", old, req.getReactionType(), postId);
-        }, () -> {
+            log.debug("Reaction changed from {} to {} on post {}", previous, req.getReactionType(), postId);
+        } else {
             User user = userRepository.getReferenceById(userId);
             PostReaction reaction = PostReaction.builder()
                     .id(new PostReactionId(postId, userId))
@@ -397,7 +614,7 @@ public class PostService {
                     .build();
             reactionRepository.save(reaction);
             postRepository.updateReactionCount(postId, 1);
-        });
+        }
 
         eventPublisher.publishPostReacted(PostReactedEvent.builder()
                 .postId(postId)
@@ -406,14 +623,41 @@ public class PostService {
                 .reactionType(req.getReactionType().name())
                 .build());
 
-        return postMapper.toResponse(postRepository.findById(postId).orElseThrow());
+        Post fresh = postRepository.findById(postId).orElseThrow();
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(isChange ? PostRealtimeEventType.REACTION_CHANGED
+                                    : PostRealtimeEventType.REACTION_ADDED)
+                .postId(postId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .reactionType(req.getReactionType().name())
+                .previousReactionType(previous != null ? previous.name() : null)
+                .postReactionCount(fresh.getReactionCount())
+                .build());
+
+        return postMapper.toResponse(fresh);
     }
 
     @Transactional
     public void removeReaction(UUID postId, UUID userId) {
         reactionRepository.findByPostIdAndUserId(postId, userId).ifPresent(r -> {
+            PostReactionType previous = r.getReactionType();
             reactionRepository.delete(r);
             postRepository.updateReactionCount(postId, -1);
+
+            Post fresh = postRepository.findById(postId).orElse(null);
+            User actor = userRepository.findById(userId).orElse(null);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.REACTION_REMOVED)
+                    .postId(postId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .previousReactionType(previous.name())
+                    .postReactionCount(fresh != null ? fresh.getReactionCount() : null)
+                    .build());
         });
     }
 
@@ -428,18 +672,26 @@ public class PostService {
         }
         post.setStatus(PostStatus.REMOVED);
         postRepository.save(post);
+
+        User author = post.getAuthor();
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.POST_DELETED)
+                .postId(postId)
+                .actorId(author.getId())
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .build());
+
+        log.info("Post deleted: {} by user {}", postId, requesterId);
     }
 
     // ── Helpers ───────────────────────────────────────────────
 
     private List<UUID> getFilteredFollowingIds(UUID userId) {
-        List<UUID> followingIds = followRepository.findFollowingIds(userId);
-        if (followingIds.isEmpty()) return followingIds;
-        // One DB call returns every blocked-related id within the candidate set.
-        Set<UUID> blocked = new HashSet<>(blockRepository.findBlockedAmong(userId, followingIds));
-        if (blocked.isEmpty()) return followingIds;
-        followingIds.removeIf(blocked::contains);
-        return followingIds;
+        // Routes through the Spring proxy on FollowingIdsCache so the
+        // 1-minute Redis cache is honoured. Cache is evicted on
+        // follow / unfollow / (un)block in UserSocialServiceImpl.
+        return followingIdsCache.getFilteredFollowingIds(userId);
     }
 
     private String generateUniqueShareLink() {

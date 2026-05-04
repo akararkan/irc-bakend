@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -54,6 +55,27 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     @Query("SELECT u FROM User u WHERE u.id = :id AND u.deletedAt IS NULL")
     Optional<User> findActiveById(@Param("id") UUID id);
+
+    /**
+     * Batch resolve a set of usernames to {id, username} tuples.
+     * Used by the mention extractor to turn @-handles into recipients in one
+     * round trip. Usernames are case-insensitive — extractor lower-cases them
+     * before passing in.
+     */
+    @Query("""
+        SELECT u FROM User u
+        WHERE u.deletedAt IS NULL
+          AND LOWER(u.username) IN :usernames
+        """)
+    List<User> findActiveByUsernameIn(@Param("usernames") Collection<String> usernames);
+
+    /** Batch fetch active users by id — single round trip for the consumer side. */
+    @Query("""
+        SELECT u FROM User u
+        WHERE u.id IN :ids
+          AND u.deletedAt IS NULL
+        """)
+    List<User> findActiveByIdIn(@Param("ids") Collection<UUID> ids);
 
     @Modifying
     @Query("UPDATE User u SET u.lastLoginAt = CURRENT_TIMESTAMP WHERE u.id = :id")

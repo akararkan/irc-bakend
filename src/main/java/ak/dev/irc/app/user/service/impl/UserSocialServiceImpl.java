@@ -13,6 +13,8 @@ import ak.dev.irc.app.user.repository.*;
 import ak.dev.irc.app.user.service.UserSocialService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -40,6 +42,11 @@ public class UserSocialServiceImpl implements UserSocialService {
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
+    @Caching(evict = {
+            // Evict the per-user following cache for both sides — coarse but
+            // correct, and follow events are infrequent compared to feed reads.
+            @CacheEvict(value = "user-following-ids", allEntries = true)
+    })
     public SocialActionResponse follow(UUID targetId) {
         UUID me = authenticatedUserId();
         log.info("User [{}] attempting to follow user [{}]", me, targetId);
@@ -87,6 +94,9 @@ public class UserSocialServiceImpl implements UserSocialService {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(value = "user-following-ids", allEntries = true)
+    })
     public SocialActionResponse unfollow(UUID targetId) {
         UUID me = authenticatedUserId();
         log.info("User [{}] attempting to unfollow user [{}]", me, targetId);
@@ -116,6 +126,12 @@ public class UserSocialServiceImpl implements UserSocialService {
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
+    @Caching(evict = {
+            // Block tears down follow-edges and changes the blocked-id set on
+            // both sides — invalidate both caches so feeds re-read fresh state.
+            @CacheEvict(value = "user-blocked-ids",   allEntries = true),
+            @CacheEvict(value = "user-following-ids", allEntries = true)
+    })
     public SocialActionResponse block(UUID targetId) {
         UUID me = authenticatedUserId();
         log.info("User [{}] attempting to block user [{}]", me, targetId);
@@ -159,6 +175,9 @@ public class UserSocialServiceImpl implements UserSocialService {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(value = "user-blocked-ids", allEntries = true)
+    })
     public SocialActionResponse unblock(UUID targetId) {
         UUID me = authenticatedUserId();
         log.info("User [{}] attempting to unblock user [{}]", me, targetId);

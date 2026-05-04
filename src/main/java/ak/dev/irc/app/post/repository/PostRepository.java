@@ -26,15 +26,39 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     Page<Post> findByAuthorIdAndStatusAndVisibility(
             UUID authorId, PostStatus status, PostVisibility visibility, Pageable pageable);
 
-    // Public feed (latest)
+    // Public feed (latest) — anonymous viewers (no block filter applied).
     @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
     Page<Post> findByStatusAndVisibilityOrderByCreatedAtDesc(
             PostStatus status, PostVisibility visibility, Pageable pageable);
 
-    // By type (e.g. REEL feed)
+    // Public feed excluding any author the requester is in a block-relationship with.
+    // One covering filter per query — no per-row isBlockedBetween scans.
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.author.id NOT IN :blockedIds
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findPublicFeedExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+
+    // By type (e.g. REEL feed) — anonymous variant.
     @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
     Page<Post> findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
             PostType postType, PostStatus status, PostVisibility visibility, Pageable pageable);
+
+    // Reel feed excluding blocked authors.
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.postType = 'REEL'
+          AND p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.author.id NOT IN :blockedIds
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findReelFeedExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
 
     // Cursor pagination: O(log n) deep paging.
     // Split into two methods so the cursor parameter has a concrete type bound
@@ -58,6 +82,31 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
         ORDER BY p.createdAt DESC
         """)
     List<Post> findPublicFeedAfter(@Param("cursor") LocalDateTime cursor, Pageable pageable);
+
+    // Block-aware cursor pagination — same shape as the anonymous variants but
+    // excludes any post whose author is in a block-relationship with the viewer.
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.author.id NOT IN :blockedIds
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findPublicFeedFirstPageExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.createdAt < :cursor
+          AND p.author.id NOT IN :blockedIds
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findPublicFeedAfterExcluding(@Param("cursor") LocalDateTime cursor,
+                                            @Param("blockedIds") List<UUID> blockedIds,
+                                            Pageable pageable);
 
     // Share link lookup
     Optional<Post> findByShareLink(String shareLink);
@@ -124,4 +173,16 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("SELECT p FROM Post p WHERE p.status = 'PUBLISHED' AND p.visibility = 'PUBLIC' " +
             "AND LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%'))")
     Page<Post> search(@Param("q") String query, Pageable pageable);
+
+    // Block-aware search — drops blocked authors in the same query.
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.author.id NOT IN :blockedIds
+          AND LOWER(p.textContent) LIKE LOWER(CONCAT('%', :q, '%'))
+        """)
+    Page<Post> searchExcluding(@Param("q") String query,
+                               @Param("blockedIds") List<UUID> blockedIds,
+                               Pageable pageable);
 }

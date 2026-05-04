@@ -1,13 +1,19 @@
 package ak.dev.irc.app.post.service;
 
+import ak.dev.irc.app.common.service.MentionService;
+import ak.dev.irc.app.common.service.SocialGuard;
 import ak.dev.irc.app.post.dto.CreateCommentRequest;
 import ak.dev.irc.app.post.dto.EditCommentRequest;
+import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.CommentResponse;
 import ak.dev.irc.app.post.entity.*;
 import ak.dev.irc.app.post.enums.PostReactionType;
 import ak.dev.irc.app.post.enums.PostStatus;
 import ak.dev.irc.app.post.mapper.PostMapper;
+import ak.dev.irc.app.post.realtime.PostRealtimeBroadcaster;
+import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
+import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
 import ak.dev.irc.app.post.repository.*;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentedEvent;
@@ -41,6 +47,9 @@ public class PostCommentService {
     private final PostEventPublisher          eventPublisher;
     private final UserRepository              userRepository;
     private final S3StorageService            storageService;
+    private final MentionService              mentionService;
+    private final PostRealtimeBroadcaster     realtime;
+    private final SocialGuard                 socialGuard;
 
     // ── Add comment / reply ───────────────────────────────────
 
@@ -53,6 +62,10 @@ public class PostCommentService {
         User author = userRepository.findById(authorId)
                 .orElseThrow(() -> new EntityNotFoundException("User not found"));
 
+        // Block guard — refuse comments / replies across any block edge.
+        socialGuard.requireNotBlockedBetween(
+                authorId, post.getAuthor().getId(), "COMMENT_BLOCKED_RELATIONSHIP");
+
         PostComment parent = null;
         if (req.getParentId() != null) {
             parent = commentRepository.findById(req.getParentId())
@@ -63,6 +76,9 @@ public class PostCommentService {
             if (parent.isDeleted()) {
                 throw new BadRequestException("Cannot reply to a deleted comment", "PARENT_DELETED");
             }
+            // A reply must also clear the block check against the parent comment author.
+            socialGuard.requireNotBlockedBetween(
+                    authorId, parent.getAuthor().getId(), "REPLY_BLOCKED_RELATIONSHIP");
             commentRepository.updateReplyCount(parent.getId(), 1);
         }
 
@@ -94,6 +110,39 @@ public class PostCommentService {
                 .parentCommentAuthorId(parentCommentAuthorId)
                 .isReply(isReply)
                 .hasVoice(false)
+                .build());
+
+        // @mentions inside comments. @followers is intentionally NOT honoured
+        // here — comments would otherwise become a spam vector.
+        mentionService.scanAndPublish(
+                comment.getTextContent(),
+                MentionSource.POST_COMMENT,
+                comment.getId(),
+                postId,
+                authorId,
+                author.getUsername(),
+                /* allowFollowersToken */ false);
+
+        Post fresh = postRepository.findById(postId).orElse(post);
+        Long parentReplyCount = parent != null
+                ? commentRepository.findById(parent.getId()).map(PostComment::getReplyCount).orElse(null)
+                : null;
+
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(isReply ? PostRealtimeEventType.REPLY_CREATED
+                                   : PostRealtimeEventType.COMMENT_CREATED)
+                .postId(postId)
+                .actorId(authorId)
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .commentId(comment.getId())
+                .parentCommentId(parentCommentId)
+                .textContent(comment.getTextContent())
+                .mediaUrl(comment.getMediaUrl())
+                .mediaType(comment.getMediaType())
+                .mediaThumbnailUrl(comment.getMediaThumbnailUrl())
+                .postCommentCount(fresh.getCommentCount())
+                .commentReplyCount(parentReplyCount)
                 .build());
 
         return postMapper.toCommentResponse(comment);
@@ -136,7 +185,7 @@ public class PostCommentService {
     @Transactional(readOnly = true)
     public Page<CommentResponse> getTopLevelComments(UUID postId, UUID requesterId, Pageable pageable) {
         return commentRepository
-                .findByPostIdAndParentIsNullAndIsDeletedFalseOrderByCreatedAtDesc(postId, pageable)
+                .findVisibleTopLevelComments(postId, requesterId, pageable)
                 .map(c -> {
                     PostReactionType myReaction = requesterId != null
                             ? commentReactionRepository.findByCommentIdAndUserId(c.getId(), requesterId)
@@ -149,8 +198,14 @@ public class PostCommentService {
     @Transactional(readOnly = true)
     public Page<CommentResponse> getReplies(UUID commentId, UUID requesterId, Pageable pageable) {
         return commentRepository
-                .findByParentIdAndIsDeletedFalseOrderByCreatedAtAsc(commentId, pageable)
-                .map(c -> postMapper.toCommentResponse(c));
+                .findVisibleReplies(commentId, requesterId, pageable)
+                .map(c -> {
+                    PostReactionType myReaction = requesterId != null
+                            ? commentReactionRepository.findByCommentIdAndUserId(c.getId(), requesterId)
+                            .map(PostCommentReaction::getReactionType).orElse(null)
+                            : null;
+                    return postMapper.toCommentResponse(c, myReaction);
+                });
     }
 
     // ── React to comment ──────────────────────────────────────
@@ -160,21 +215,32 @@ public class PostCommentService {
         PostComment comment = commentRepository.findById(commentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found"));
 
-        commentReactionRepository.findByCommentIdAndUserId(commentId, userId)
-                .ifPresentOrElse(existing -> {
-                    existing.setReactionType(req.getReactionType());
-                    commentReactionRepository.save(existing);
-                }, () -> {
-                    User user = userRepository.getReferenceById(userId);
-                    PostCommentReaction reaction = PostCommentReaction.builder()
-                            .id(new PostCommentReactionId(commentId, userId))
-                            .comment(comment)
-                            .user(user)
-                            .reactionType(req.getReactionType())
-                            .build();
-                    commentReactionRepository.save(reaction);
-                    commentRepository.updateReactionCount(commentId, 1);
-                });
+        // Block guards — disallow reacting either to a blocked comment author
+        // or to a comment on a blocked post author's post.
+        socialGuard.requireNotBlockedBetween(
+                userId, comment.getAuthor().getId(), "COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+        socialGuard.requireNotBlockedBetween(
+                userId, comment.getPost().getAuthor().getId(), "COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+
+        var existingOpt = commentReactionRepository.findByCommentIdAndUserId(commentId, userId);
+        boolean isChange = existingOpt.isPresent();
+        PostReactionType previous = existingOpt.map(PostCommentReaction::getReactionType).orElse(null);
+
+        if (isChange) {
+            PostCommentReaction existing = existingOpt.get();
+            existing.setReactionType(req.getReactionType());
+            commentReactionRepository.save(existing);
+        } else {
+            User user = userRepository.getReferenceById(userId);
+            PostCommentReaction reaction = PostCommentReaction.builder()
+                    .id(new PostCommentReactionId(commentId, userId))
+                    .comment(comment)
+                    .user(user)
+                    .reactionType(req.getReactionType())
+                    .build();
+            commentReactionRepository.save(reaction);
+            commentRepository.updateReactionCount(commentId, 1);
+        }
 
         eventPublisher.publishCommentReacted(PostCommentReactedEvent.builder()
                 .commentId(commentId)
@@ -184,14 +250,44 @@ public class PostCommentService {
                 .reactionType(req.getReactionType().name())
                 .build());
 
-        return postMapper.toCommentResponse(commentRepository.findById(commentId).orElseThrow());
+        PostComment fresh = commentRepository.findById(commentId).orElseThrow();
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(isChange ? PostRealtimeEventType.COMMENT_REACTION_CHANGED
+                                    : PostRealtimeEventType.COMMENT_REACTION_ADDED)
+                .postId(comment.getPost().getId())
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .commentId(commentId)
+                .reactionType(req.getReactionType().name())
+                .previousReactionType(previous != null ? previous.name() : null)
+                .commentReactionCount(fresh.getReactionCount())
+                .build());
+
+        return postMapper.toCommentResponse(fresh);
     }
 
     @Transactional
     public void removeCommentReaction(UUID commentId, UUID userId) {
         commentReactionRepository.findByCommentIdAndUserId(commentId, userId).ifPresent(r -> {
+            PostReactionType previous = r.getReactionType();
+            UUID postId = r.getComment().getPost().getId();
             commentReactionRepository.delete(r);
             commentRepository.updateReactionCount(commentId, -1);
+
+            PostComment fresh = commentRepository.findById(commentId).orElse(null);
+            User actor = userRepository.findById(userId).orElse(null);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.COMMENT_REACTION_REMOVED)
+                    .postId(postId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .commentId(commentId)
+                    .previousReactionType(previous.name())
+                    .commentReactionCount(fresh != null ? fresh.getReactionCount() : null)
+                    .build());
         });
     }
 
@@ -214,9 +310,28 @@ public class PostCommentService {
         comment.setDeletedAt(LocalDateTime.now());
         commentRepository.save(comment);
         postRepository.updateCommentCount(comment.getPost().getId(), -1);
+        UUID parentId = null;
+        Long parentReplyCount = null;
         if (comment.getParent() != null) {
-            commentRepository.updateReplyCount(comment.getParent().getId(), -1);
+            parentId = comment.getParent().getId();
+            commentRepository.updateReplyCount(parentId, -1);
+            parentReplyCount = commentRepository.findById(parentId)
+                    .map(PostComment::getReplyCount).orElse(null);
         }
+
+        Post fresh = postRepository.findById(postId).orElse(null);
+        User actor = userRepository.findById(requesterId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.COMMENT_DELETED)
+                .postId(postId)
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .commentId(commentId)
+                .parentCommentId(parentId)
+                .postCommentCount(fresh != null ? fresh.getCommentCount() : null)
+                .commentReplyCount(parentReplyCount)
+                .build());
     }
 
     @Transactional
@@ -234,10 +349,32 @@ public class PostCommentService {
             throw new AccessDeniedException("You can only edit your own comments");
         }
 
+        String previousBody = comment.getTextContent();
         comment.setTextContent(req.getTextContent().trim());
         comment.setEdited(true);
         comment.setEditedAt(LocalDateTime.now());
         commentRepository.save(comment);
+
+        User actor = userRepository.findById(requesterId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.COMMENT_EDITED)
+                .postId(postId)
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .commentId(commentId)
+                .textContent(comment.getTextContent())
+                .build());
+
+        // Notify any newly @-mentioned users introduced by this edit only.
+        mentionService.scanAndPublishDelta(
+                previousBody,
+                comment.getTextContent(),
+                MentionSource.POST_COMMENT,
+                comment.getId(),
+                postId,
+                requesterId,
+                actor != null ? actor.getUsername() : null);
 
         return postMapper.toCommentResponse(comment);
     }

@@ -1,5 +1,7 @@
 package ak.dev.irc.app.qna.dto.response;
 
+import ak.dev.irc.app.qna.enums.AnswerReactionType;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -36,6 +38,8 @@ public record QuestionAnswerResponse(
         LocalDateTime deletedAt,
         long feedbackCount,
         long reactionCount,
+        /** Current viewer's reaction — null if not reacted or anonymous. */
+        AnswerReactionType myReaction,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
         String timeAgo,

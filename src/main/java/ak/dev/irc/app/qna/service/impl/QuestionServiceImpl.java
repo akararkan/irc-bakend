@@ -5,10 +5,19 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.service.FollowingIdsCache;
+import ak.dev.irc.app.common.service.MentionService;
+import ak.dev.irc.app.common.service.SocialGuard;
+import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.qna.dto.request.*;
+import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
+import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import ak.dev.irc.app.qna.mapper.QuestionMapper;
+import ak.dev.irc.app.qna.realtime.QnaRealtimeBroadcaster;
+import ak.dev.irc.app.qna.realtime.QnaRealtimeEvent;
+import ak.dev.irc.app.qna.realtime.QnaRealtimeEventType;
 import ak.dev.irc.app.qna.repository.*;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.rabbitmq.publisher.QuestionEventPublisher;
@@ -28,7 +37,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -47,6 +58,10 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionMapper mapper;
     private final QuestionEventPublisher eventPublisher;
     private final S3StorageService storageService;
+    private final MentionService mentionService;
+    private final SocialGuard socialGuard;
+    private final FollowingIdsCache followingIdsCache;
+    private final QnaRealtimeBroadcaster realtime;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -69,6 +84,24 @@ public class QuestionServiceImpl implements QuestionService {
 
         question = questionRepository.save(question);
         eventPublisher.publishQuestionCreated(question);
+
+        // @mentions in the question title + body — @followers fan-out allowed
+        // because creating a question is a top-level publication.
+        StringBuilder mentionText = new StringBuilder();
+        if (question.getTitle() != null) mentionText.append(question.getTitle());
+        if (question.getBody() != null) {
+            if (mentionText.length() > 0) mentionText.append(' ');
+            mentionText.append(question.getBody());
+        }
+        mentionService.scanAndPublish(
+                mentionText.toString(),
+                MentionSource.QUESTION,
+                question.getId(),
+                null,
+                authorId,
+                author.getUsername(),
+                /* allowFollowersToken */ true);
+
         return mapper.toQuestionResponse(question);
     }
 
@@ -80,6 +113,10 @@ public class QuestionServiceImpl implements QuestionService {
         if (!canManageQuestion(question, requesterId)) {
             throw new ForbiddenException("You can only edit your own question");
         }
+
+        // Capture the prior text (title + body) so the mention delta scan
+        // ignores handles that were already in the question.
+        String previousMentionText = joinForMention(question.getTitle(), question.getBody());
 
         if (request.getTitle() != null) {
             if (request.getTitle().isBlank()) {
@@ -102,6 +139,27 @@ public class QuestionServiceImpl implements QuestionService {
 
         question.audit(AuditAction.UPDATE, "Edited question");
         question = questionRepository.save(question);
+
+        User author = question.getAuthor();
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.QUESTION_UPDATED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .body(question.getBody())
+                .build());
+
+        // Mention delta — only newly added @-handles get a notification.
+        mentionService.scanAndPublishDelta(
+                previousMentionText,
+                joinForMention(question.getTitle(), question.getBody()),
+                MentionSource.QUESTION,
+                question.getId(),
+                null,
+                requesterId,
+                author.getUsername());
+
         return mapper.toQuestionResponse(question);
     }
 
@@ -126,12 +184,34 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     @Transactional(readOnly = true)
+    public CursorPage<QuestionResponse> getFeedCursor(LocalDateTime cursor, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 50));
+        var pageReq = org.springframework.data.domain.PageRequest.of(0, safeLimit + 1);
+        List<Question> rows = (cursor == null)
+                ? questionRepository.findFeedFirstPage(pageReq)
+                : questionRepository.findFeedAfter(cursor, pageReq);
+
+        boolean hasMore = rows.size() > safeLimit;
+        if (hasMore) rows = rows.subList(0, safeLimit);
+
+        List<QuestionResponse> items = rows.stream().map(mapper::toQuestionResponse).toList();
+        LocalDateTime nextCursor = hasMore && !items.isEmpty()
+                ? rows.get(rows.size() - 1).getCreatedAt()
+                : null;
+
+        return CursorPage.<QuestionResponse>builder()
+                .items(items)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .build();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable) {
-        List<UUID> followingIds = followRepository.findFollowingIds(userId);
-        if (followingIds.isEmpty()) {
-            return Page.empty(pageable);
-        }
-        followingIds.removeIf(id -> blockRepository.isBlockedBetween(userId, id));
+        // Cached, block-filtered following set — no per-row block scan and a
+        // 1-min Redis hit on the hot scroll path.
+        List<UUID> followingIds = followingIdsCache.getFilteredFollowingIds(userId);
         if (followingIds.isEmpty()) {
             return Page.empty(pageable);
         }
@@ -166,6 +246,11 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Answers are locked for this question", "ANSWERS_LOCKED");
         }
 
+        // Block guard — refuse answers / reanswers across any block edge with
+        // the question author (and, for reanswers, the parent answer author).
+        socialGuard.requireNotBlockedBetween(
+                authorId, question.getAuthor().getId(), "ANSWER_BLOCKED_RELATIONSHIP");
+
         // Resolve parent if this is a reanswer (reply to another answer)
         QuestionAnswer parent = null;
         if (request.getParentAnswerId() != null) {
@@ -173,6 +258,8 @@ public class QuestionServiceImpl implements QuestionService {
                             request.getParentAnswerId(), questionId)
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Parent answer", "id", request.getParentAnswerId()));
+            socialGuard.requireNotBlockedBetween(
+                    authorId, parent.getAuthor().getId(), "REANSWER_BLOCKED_RELATIONSHIP");
             // Reanswers do not count toward maxAnswers — only top-level answers do.
         } else {
             if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
@@ -225,6 +312,34 @@ public class QuestionServiceImpl implements QuestionService {
 
         eventPublisher.publishQuestionAnswered(question, answer);
 
+        // @mentions in the answer body — no @followers fan-out from answers.
+        mentionService.scanAndPublish(
+                answer.getBody(),
+                MentionSource.QUESTION_ANSWER,
+                answer.getId(),
+                question.getId(),
+                authorId,
+                author.getUsername(),
+                /* allowFollowersToken */ false);
+
+        boolean isReanswer = parent != null;
+        Long replyCount = isReanswer
+                ? answerRepository.countByParentAnswerIdAndDeletedAtIsNull(parent.getId())
+                : 0L;
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(isReanswer ? QnaRealtimeEventType.REANSWER_CREATED
+                                      : QnaRealtimeEventType.ANSWER_CREATED)
+                .questionId(question.getId())
+                .actorId(authorId)
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .answerId(answer.getId())
+                .parentAnswerId(isReanswer ? parent.getId() : null)
+                .body(answer.getBody())
+                .questionAnswerCount(question.getAnswerCount())
+                .answerReplyCount(replyCount)
+                .build());
+
         return mapper.toAnswerResponse(answer);
     }
 
@@ -243,11 +358,34 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Answer body cannot be empty", "EMPTY_ANSWER");
         }
 
+        String previousBody = answer.getBody();
         answer.setBody(request.getBody().trim());
         answer.setEdited(true);
         answer.setEditedAt(LocalDateTime.now());
         answer.audit(AuditAction.UPDATE, "Edited answer");
         answer = answerRepository.save(answer);
+
+        User actor = answer.getAuthor();
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.ANSWER_EDITED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .body(answer.getBody())
+                .build());
+
+        // Notify newly @-mentioned users introduced by this answer edit.
+        mentionService.scanAndPublishDelta(
+                previousBody,
+                answer.getBody(),
+                MentionSource.QUESTION_ANSWER,
+                answer.getId(),
+                question.getId(),
+                requesterId,
+                actor != null ? actor.getUsername() : null);
 
         return mapper.toAnswerResponse(answer);
     }
@@ -255,21 +393,45 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionAnswerResponse> getAnswers(UUID questionId, Pageable pageable) {
+        return getAnswers(questionId, null, pageable);
+    }
+
+    /**
+     * Restriction-aware top-level answer listing. The viewer's own and the
+     * question author's view always include every answer; everyone else has
+     * answers from restricted authors filtered out.
+     *
+     * <p>Single SQL with EntityGraph fetch on author + parent, plus one batch
+     * lookup of {@code myReaction} for the page — no N+1 round trips.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionAnswerResponse> getAnswers(UUID questionId, UUID requesterId, Pageable pageable) {
         findQuestionOrThrow(questionId);
-        return answerRepository
-                .findByQuestionIdAndParentAnswerIsNullAndDeletedAtIsNullOrderByCreatedAtAsc(questionId, pageable)
-                .map(mapper::toAnswerResponse);
+        Page<QuestionAnswer> page = answerRepository.findVisibleTopLevelAnswers(
+                questionId, requesterId, pageable);
+        Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
+        Map<UUID, Long> replyCounts = batchReplyCounts(page.getContent());
+        return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), replyCounts.get(a.getId())));
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId, Pageable pageable) {
+        return getReanswers(questionId, answerId, null, pageable);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId,
+                                                     UUID requesterId, Pageable pageable) {
         findQuestionOrThrow(questionId);
         QuestionAnswer parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
-        return answerRepository
-                .findByParentAnswerIdAndDeletedAtIsNullOrderByCreatedAtAsc(parent.getId(), pageable)
-                .map(mapper::toAnswerResponse);
+        Page<QuestionAnswer> page = answerRepository.findVisibleReanswers(
+                parent.getId(), requesterId, pageable);
+        Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
+        return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), 0L));
     }
 
     @Override
@@ -283,6 +445,15 @@ public class QuestionServiceImpl implements QuestionService {
         question.setDeletedAt(LocalDateTime.now());
         question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED);
         questionRepository.save(question);
+
+        User author = question.getAuthor();
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.QUESTION_DELETED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .build());
     }
 
     @Override
@@ -300,6 +471,8 @@ public class QuestionServiceImpl implements QuestionService {
         answer.audit(AuditAction.DELETE, "Deleted answer");
         answerRepository.save(answer);
 
+        UUID parentId = answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null;
+
         // Reanswers don't count toward the question's answerCount, so only adjust for top-level deletions.
         if (answer.getParentAnswer() == null) {
             long remainingAnswers = Math.max(0L, question.getAnswerCount() - 1);
@@ -309,6 +482,22 @@ public class QuestionServiceImpl implements QuestionService {
             }
             questionRepository.save(question);
         }
+
+        Long parentReplyCount = parentId != null
+                ? answerRepository.countByParentAnswerIdAndDeletedAtIsNull(parentId)
+                : null;
+        User actor = userRepository.findById(requesterId).orElse(null);
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.ANSWER_DELETED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .parentAnswerId(parentId)
+                .questionAnswerCount(question.getAnswerCount())
+                .answerReplyCount(parentReplyCount)
+                .build());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -325,6 +514,8 @@ public class QuestionServiceImpl implements QuestionService {
         question.setAnswersLocked(true);
         question.audit(AuditAction.UPDATE, "Answers locked");
         question = questionRepository.save(question);
+
+        broadcastQuestionLifecycle(question, requesterId, QnaRealtimeEventType.QUESTION_LOCKED);
         return mapper.toQuestionResponse(question);
     }
 
@@ -338,6 +529,8 @@ public class QuestionServiceImpl implements QuestionService {
         question.setAnswersLocked(false);
         question.audit(AuditAction.UPDATE, "Answers unlocked");
         question = questionRepository.save(question);
+
+        broadcastQuestionLifecycle(question, requesterId, QnaRealtimeEventType.QUESTION_UNLOCKED);
         return mapper.toQuestionResponse(question);
     }
 
@@ -379,6 +572,7 @@ public class QuestionServiceImpl implements QuestionService {
 
         eventPublisher.publishAnswerAccepted(question, answer);
 
+        broadcastAnswerStatus(question, answer, requesterId, QnaRealtimeEventType.ANSWER_ACCEPTED);
         return mapper.toAnswerResponse(answer);
     }
 
@@ -396,6 +590,8 @@ public class QuestionServiceImpl implements QuestionService {
         answer.setAccepted(false);
         answer.audit(AuditAction.UPDATE, "Answer unaccepted");
         answer = answerRepository.save(answer);
+
+        broadcastAnswerStatus(question, answer, requesterId, QnaRealtimeEventType.ANSWER_UNACCEPTED);
         return mapper.toAnswerResponse(answer);
     }
 
@@ -436,6 +632,9 @@ public class QuestionServiceImpl implements QuestionService {
 
         eventPublisher.publishFeedbackAdded(question, answer, feedback);
 
+        broadcastFeedback(question, answer, feedback, requesterId,
+                QnaRealtimeEventType.ANSWER_FEEDBACK_ADDED);
+
         return mapper.toFeedbackResponse(feedback);
     }
 
@@ -463,6 +662,9 @@ public class QuestionServiceImpl implements QuestionService {
 
         feedback.audit(AuditAction.UPDATE, "Feedback updated");
         feedback = feedbackRepository.save(feedback);
+
+        broadcastFeedback(question, feedback.getAnswer(), feedback, requesterId,
+                QnaRealtimeEventType.ANSWER_FEEDBACK_EDITED);
         return mapper.toFeedbackResponse(feedback);
     }
 
@@ -490,7 +692,19 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Feedback does not belong to this answer", "FEEDBACK_MISMATCH");
         }
 
+        QuestionAnswer answer = feedback.getAnswer();
         feedbackRepository.delete(feedback);
+
+        User actor = userRepository.findById(requesterId).orElse(null);
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.ANSWER_FEEDBACK_DELETED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .feedbackId(feedbackId)
+                .build());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -709,44 +923,87 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional
     public QuestionAnswerResponse reactToAnswer(UUID questionId, UUID answerId,
                                                  ReactToAnswerRequest request, UUID requesterId) {
-        findQuestionOrThrow(questionId);
+        Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        // Block guards — refuse to react across any block edge with either the
+        // answer author or the question author.
+        socialGuard.requireNotBlockedBetween(
+                requesterId, answer.getAuthor().getId(), "ANSWER_REACTION_BLOCKED_RELATIONSHIP");
+        socialGuard.requireNotBlockedBetween(
+                requesterId, question.getAuthor().getId(), "ANSWER_REACTION_BLOCKED_RELATIONSHIP");
 
         User user = userRepository.findById(requesterId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", requesterId));
 
-        reactionRepository.findByAnswerIdAndUserId(answerId, requesterId)
-                .ifPresentOrElse(existing -> {
-                    // Same user already reacted: switch the reaction type, no count change.
-                    existing.setReactionType(request.getReactionType());
-                    reactionRepository.save(existing);
-                }, () -> {
-                    AnswerReaction reaction = AnswerReaction.builder()
-                            .id(new AnswerReactionId(answerId, requesterId))
-                            .answer(answer)
-                            .user(user)
-                            .reactionType(request.getReactionType())
-                            .build();
-                    reactionRepository.save(reaction);
-                    answer.incrementReactions();
-                    answerRepository.save(answer);
-                });
+        var existingOpt = reactionRepository.findByAnswerIdAndUserId(answerId, requesterId);
+        boolean isChange = existingOpt.isPresent();
+        AnswerReactionType previous = existingOpt.map(AnswerReaction::getReactionType).orElse(null);
 
-        return mapper.toAnswerResponse(answer);
+        if (isChange) {
+            AnswerReaction existing = existingOpt.get();
+            existing.setReactionType(request.getReactionType());
+            reactionRepository.save(existing);
+        } else {
+            AnswerReaction reaction = AnswerReaction.builder()
+                    .id(new AnswerReactionId(answerId, requesterId))
+                    .answer(answer)
+                    .user(user)
+                    .reactionType(request.getReactionType())
+                    .build();
+            reactionRepository.save(reaction);
+            answer.incrementReactions();
+            answerRepository.save(answer);
+        }
+
+        // Notification + activity recording.
+        eventPublisher.publishAnswerReacted(question, answer, user, request.getReactionType().name());
+
+        // Realtime — broadcast on the question's stream so every viewer sees
+        // the count change live.
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(isChange ? QnaRealtimeEventType.ANSWER_REACTION_CHANGED
+                                    : QnaRealtimeEventType.ANSWER_REACTION_ADDED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(user.getUsername())
+                .actorAvatarUrl(user.getProfileImage())
+                .answerId(answer.getId())
+                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .reactionType(request.getReactionType().name())
+                .previousReactionType(previous != null ? previous.name() : null)
+                .answerReactionCount(answer.getReactionCount())
+                .build());
+
+        return mapper.toAnswerResponse(answer, request.getReactionType(), null);
     }
 
     @Override
     @Transactional
     public void removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId) {
-        findQuestionOrThrow(questionId);
+        Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).ifPresent(r -> {
+            AnswerReactionType previous = r.getReactionType();
             reactionRepository.delete(r);
             answer.decrementReactions();
             answerRepository.save(answer);
+
+            User actor = userRepository.findById(requesterId).orElse(null);
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.ANSWER_REACTION_REMOVED)
+                    .questionId(question.getId())
+                    .actorId(requesterId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .answerId(answer.getId())
+                    .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                    .previousReactionType(previous.name())
+                    .answerReactionCount(answer.getReactionCount())
+                    .build());
         });
     }
 
@@ -793,6 +1050,82 @@ public class QuestionServiceImpl implements QuestionService {
                 || question.getAuthor().getId().equals(requesterId)
                 || requester.getRole() == Role.ADMIN
                 || requester.getRole() == Role.SUPER_ADMIN;
+    }
+
+    private void broadcastQuestionLifecycle(Question question, UUID actorId, QnaRealtimeEventType type) {
+        User author = question.getAuthor();
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(type)
+                .questionId(question.getId())
+                .actorId(actorId)
+                .actorUsername(author.getUsername())
+                .actorAvatarUrl(author.getProfileImage())
+                .build());
+    }
+
+    private void broadcastAnswerStatus(Question question, QuestionAnswer answer,
+                                        UUID actorId, QnaRealtimeEventType type) {
+        User actor = userRepository.findById(actorId).orElse(null);
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(type)
+                .questionId(question.getId())
+                .actorId(actorId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .build());
+    }
+
+    private void broadcastFeedback(Question question, QuestionAnswer answer,
+                                    AnswerFeedback feedback, UUID actorId,
+                                    QnaRealtimeEventType type) {
+        User actor = feedback.getAuthor();
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(type)
+                .questionId(question.getId())
+                .actorId(actorId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .feedbackId(feedback.getId())
+                .feedbackType(feedback.getFeedbackType() != null ? feedback.getFeedbackType().name() : null)
+                .body(feedback.getBody())
+                .build());
+    }
+
+    /**
+     * Single-query lookup of {@code (answerId → reactionType)} for the page —
+     * avoids N round trips when the viewer wants {@code myReaction} per answer.
+     */
+    private Map<UUID, AnswerReactionType> batchMyReactions(List<QuestionAnswer> answers, UUID requesterId) {
+        if (requesterId == null || answers == null || answers.isEmpty()) return Map.of();
+        List<UUID> ids = answers.stream().map(QuestionAnswer::getId).toList();
+        Map<UUID, AnswerReactionType> map = new HashMap<>();
+        for (Object[] row : answerRepository.findMyReactionsForAnswers(requesterId, ids)) {
+            map.put((UUID) row[0], (AnswerReactionType) row[1]);
+        }
+        return map;
+    }
+
+    private Map<UUID, Long> batchReplyCounts(List<QuestionAnswer> parents) {
+        if (parents == null || parents.isEmpty()) return Map.of();
+        List<UUID> ids = parents.stream().map(QuestionAnswer::getId).toList();
+        Map<UUID, Long> map = new HashMap<>();
+        for (Object[] row : answerRepository.countRepliesByParentIds(ids)) {
+            map.put((UUID) row[0], (Long) row[1]);
+        }
+        return map;
+    }
+
+    private static String joinForMention(String... parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            if (p == null || p.isBlank()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(p);
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     private MediaType resolveMediaType(String mimeType) {

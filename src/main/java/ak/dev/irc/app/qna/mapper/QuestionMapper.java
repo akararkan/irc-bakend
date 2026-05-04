@@ -3,6 +3,7 @@ package ak.dev.irc.app.qna.mapper;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
+import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import ak.dev.irc.app.user.entity.User;
 import org.springframework.stereotype.Component;
 
@@ -35,6 +36,17 @@ public class QuestionMapper {
     }
 
     public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer) {
+        return toAnswerResponse(answer, null, null);
+    }
+
+    /**
+     * Block-aware overload that accepts pre-resolved {@code myReaction} and
+     * {@code replyCount} so listing endpoints can avoid touching lazy
+     * collections (which would each trigger a SELECT).
+     */
+    public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer,
+                                                   AnswerReactionType myReaction,
+                                                   Long replyCountOverride) {
         User author = answer.getAuthor();
         boolean deleted = answer.isDeleted();
 
@@ -47,9 +59,14 @@ public class QuestionMapper {
         UUID parentAnswerId = answer.getParentAnswer() != null
                 ? answer.getParentAnswer().getId()
                 : null;
-        long replyCount = answer.getReplies() != null
-                ? answer.getReplies().stream().filter(r -> !r.isDeleted()).count()
-                : 0L;
+        long replyCount;
+        if (replyCountOverride != null) {
+            replyCount = replyCountOverride;
+        } else if (answer.getReplies() != null) {
+            replyCount = answer.getReplies().stream().filter(r -> !r.isDeleted()).count();
+        } else {
+            replyCount = 0L;
+        }
 
         return new QuestionAnswerResponse(
                 answer.getId(),
@@ -76,6 +93,7 @@ public class QuestionMapper {
                 answer.getDeletedAt(),
                 answer.getFeedbacks() != null ? answer.getFeedbacks().size() : 0L,
                 answer.getReactionCount() != null ? answer.getReactionCount() : 0L,
+                myReaction,
                 answer.getCreatedAt(),
                 answer.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(answer.getCreatedAt()),

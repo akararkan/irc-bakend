@@ -1,7 +1,9 @@
 package ak.dev.irc.app.qna.controller;
 
+import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
+import ak.dev.irc.app.qna.realtime.QnaRealtimeService;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
@@ -9,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -16,7 +19,9 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -26,6 +31,7 @@ import java.util.UUID;
 public class QuestionController {
 
     private final QuestionService questionService;
+    private final QnaRealtimeService qnaRealtimeService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -45,6 +51,20 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getFeed(
             @PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(questionService.getFeed(pageable));
+    }
+
+    /**
+     * Cursor-paginated question feed (preferred for infinite-scroll clients).
+     * - First page: omit {@code cursor}.
+     * - Next page: pass {@code nextCursor} from the previous response.
+     * - End of feed: response body has {@code nextCursor: null} and {@code hasMore: false}.
+     */
+    @GetMapping("/feed/cursor")
+    public ResponseEntity<CursorPage<QuestionResponse>> getFeedCursor(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ResponseEntity.ok(questionService.getFeedCursor(cursor, limit));
     }
 
     @GetMapping("/feed/following")
@@ -78,6 +98,25 @@ public class QuestionController {
     @GetMapping("/{questionId}")
     public ResponseEntity<QuestionResponse> getQuestion(@PathVariable UUID questionId) {
         return ResponseEntity.ok(questionService.getQuestion(questionId));
+    }
+
+    /**
+     * Live event stream for a single question.
+     *
+     * <p>Subscribers receive every answer, reanswer, reaction, accept/unaccept,
+     * feedback and lifecycle update on this question in near real time.
+     * Event names mirror {@code QnaRealtimeEventType}; payload schema is
+     * {@code QnaRealtimeEvent}. A {@code connected} handshake fires on
+     * subscribe and a {@code heartbeat} every 25 s.</p>
+     */
+    @GetMapping(value = "/{questionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamQuestion(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        // Touch the question first so a missing/deleted question fails fast
+        // with the standard 404 instead of opening a zombie SSE.
+        questionService.getQuestion(questionId);
+        return qnaRealtimeService.subscribe(questionId, user != null ? user.getId() : null);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -119,8 +158,10 @@ public class QuestionController {
     @GetMapping("/{questionId}/answers")
     public ResponseEntity<Page<QuestionAnswerResponse>> getAnswers(
             @PathVariable UUID questionId,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(questionService.getAnswers(questionId, pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(questionService.getAnswers(questionId, requesterId, pageable));
     }
 
     @PostMapping("/{questionId}/answers")
@@ -141,8 +182,10 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionAnswerResponse>> getReanswers(
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(questionService.getReanswers(questionId, answerId, pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(questionService.getReanswers(questionId, answerId, requesterId, pageable));
     }
 
     @PostMapping({

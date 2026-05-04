@@ -33,6 +33,7 @@ public final class RabbitMQConstants {
     public static final String USER_UNFOLLOWED = "user.social.unfollowed";
     public static final String USER_BLOCKED    = "user.social.blocked";
     public static final String USER_UNBLOCKED  = "user.social.unblocked";
+    public static final String USER_MENTIONED  = "user.social.mentioned";
 
     // ── Routing keys — Research Lifecycle ─────────────────────────────────────
 
@@ -52,6 +53,7 @@ public final class RabbitMQConstants {
 
     public static final String QNA_QUESTION_CREATED   = "qna.lifecycle.created";
     public static final String QNA_QUESTION_ANSWERED  = "qna.social.answered";
+    public static final String QNA_ANSWER_REACTED     = "qna.social.answer.reacted";
     public static final String QNA_ANSWER_ACCEPTED    = "qna.social.accepted";
     public static final String QNA_FEEDBACK_ADDED     = "qna.social.feedback";
 

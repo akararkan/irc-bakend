@@ -9,13 +9,16 @@ import ak.dev.irc.app.rabbitmq.event.post.PostReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchPublishedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchReactedEvent;
+import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.rabbitmq.event.user.UserBlockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserFollowedEvent;
+import ak.dev.irc.app.rabbitmq.event.user.UserMentionedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnblockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnfollowedEvent;
 import ak.dev.irc.app.post.repository.PostCommentRepository;
@@ -28,6 +31,7 @@ import ak.dev.irc.app.user.realtime.NotificationPushedEvent;
 import ak.dev.irc.app.user.repository.NotificationRepository;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
+import ak.dev.irc.app.user.repository.UserRestrictionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -37,8 +41,11 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -90,6 +97,7 @@ public class NotificationEventConsumer {
         private final NotificationRepository notifRepo;
         private final UserRepository         userRepo;
         private final UserFollowRepository   followRepo;
+        private final UserRestrictionRepository restrictionRepo;
         private final PostCommentRepository  postCommentRepo;
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
@@ -354,6 +362,10 @@ public class NotificationEventConsumer {
             return;
         }
 
+        if (isSilencedByRestriction(event.questionAuthorId(), event.answerAuthorId(), "QuestionAnswered")) {
+            return;
+        }
+
         Optional<User> questionAuthorOpt = userRepo.findActiveById(event.questionAuthorId());
         Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
 
@@ -382,6 +394,55 @@ public class NotificationEventConsumer {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  Q&A — Answer Reacted (notify the answer author)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onAnswerReacted(AnswerReactedEvent event) {
+        log.info("[CONSUMER] AnswerReacted — questionId={} answerId={} reactor={} type={}",
+                event.questionId(), event.answerId(), event.reactorId(), event.reactionType());
+
+        // Self-reactions never notify.
+        if (event.reactorId().equals(event.answerAuthorId())) {
+            log.debug("[CONSUMER] AnswerReacted skipped — reactor is the answer author");
+            return;
+        }
+
+        if (isSilencedByRestriction(event.answerAuthorId(), event.reactorId(), "AnswerReacted")) {
+            return;
+        }
+
+        Optional<User> reactorOpt = userRepo.findActiveById(event.reactorId());
+        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
+
+        if (reactorOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
+            log.warn("[CONSUMER] AnswerReacted skipped — user not found");
+            return;
+        }
+
+        User reactor = reactorOpt.get();
+        User answerAuthor = answerAuthorOpt.get();
+
+        String reactionLabel = toReadableAnswerReaction(event.reactionType());
+        String suffix = event.reanswer() ? " on your reanswer." : " on your answer.";
+
+        Notification notification = Notification.builder()
+                .user(answerAuthor)
+                .actor(reactor)
+                .type(NotificationType.ANSWER_REACTED)
+                .title("Someone reacted to your answer")
+                .body(reactor.getFullName() + " (@" + reactor.getUsername()
+                        + ") reacted " + reactionLabel + suffix)
+                .resourceId(event.questionId())
+                .resourceType("Question")
+                .build();
+
+        notifRepo.save(notification);
+        pushRealtime(answerAuthor.getId(), notification);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  Q&A — Answer Accepted (notify the answer author)
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -394,6 +455,10 @@ public class NotificationEventConsumer {
         // Don't notify if the question author accepted their own answer
         if (event.questionAuthorId().equals(event.answerAuthorId())) {
             log.debug("[CONSUMER] AnswerAccepted skipped — answer author is the question author");
+            return;
+        }
+
+        if (isSilencedByRestriction(event.answerAuthorId(), event.questionAuthorId(), "AnswerAccepted")) {
             return;
         }
 
@@ -437,6 +502,10 @@ public class NotificationEventConsumer {
         // Don't notify if the question author gave feedback to their own answer
         if (event.questionAuthorId().equals(event.answerAuthorId())) {
             log.debug("[CONSUMER] AnswerFeedbackAdded skipped — answer author is the question author");
+            return;
+        }
+
+        if (isSilencedByRestriction(event.answerAuthorId(), event.questionAuthorId(), "AnswerFeedbackAdded")) {
             return;
         }
 
@@ -530,6 +599,12 @@ public class NotificationEventConsumer {
             return;
         }
 
+        // IG-style restriction: activity is recorded, but the recipient is
+        // never told. Silent for the actor too.
+        if (isSilencedByRestriction(event.getPostAuthorId(), event.getReactorId(), "PostReacted")) {
+            return;
+        }
+
         Optional<User> reactorOpt = userRepo.findActiveById(event.getReactorId());
         Optional<User> authorOpt  = userRepo.findActiveById(event.getPostAuthorId());
 
@@ -608,6 +683,11 @@ public class NotificationEventConsumer {
             return;
         }
 
+        // Silent restriction: recipient has restricted the commenter.
+        if (isSilencedByRestriction(recipient.getId(), commenter.getId(), "PostCommented")) {
+            return;
+        }
+
         NotificationType type  = event.isReply() ? NotificationType.POST_COMMENT_REPLIED
                 : NotificationType.POST_COMMENTED;
         String title = event.isReply() ? "New reply on your comment"
@@ -645,6 +725,10 @@ public class NotificationEventConsumer {
         // Don't notify when someone reacts to their own comment
         if (event.getReactorId().equals(event.getCommentAuthorId())) {
             log.debug("[CONSUMER] PostCommentReacted skipped — reactor is the comment author");
+            return;
+        }
+
+        if (isSilencedByRestriction(event.getCommentAuthorId(), event.getReactorId(), "PostCommentReacted")) {
             return;
         }
 
@@ -695,6 +779,10 @@ public class NotificationEventConsumer {
             return;
         }
 
+        if (isSilencedByRestriction(event.getPostAuthorId(), event.getSharerId(), "PostShared")) {
+            return;
+        }
+
         Optional<User> sharerOpt = userRepo.findActiveById(event.getSharerId());
         Optional<User> authorOpt = userRepo.findActiveById(event.getPostAuthorId());
 
@@ -721,7 +809,132 @@ public class NotificationEventConsumer {
         log.debug("[CONSUMER] POST_SHARED notification saved & queued for SSE → author={}", author.getId());
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    //  User — @-mentions (any source: post / comment / research / answer …)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Single handler for {@code @username} and {@code @followers} mentions
+     * across every text-bearing resource. The publisher already resolved
+     * direct recipients (skipping self + blocked), so this method just:
+     * fetches actor + recipients in batch, writes notifications, expands
+     * {@code @followers} via {@link #fanOutToFollowers}, and pushes realtime.
+     */
+    @RabbitHandler
+    @Transactional
+    public void onUserMentioned(UserMentionedEvent event) {
+        log.info("[CONSUMER] UserMentioned — source={} sourceId={} mentioner={} direct={} followers={}",
+                event.getSourceType(), event.getSourceId(), event.getMentionerId(),
+                event.getMentionedUserIds() == null ? 0 : event.getMentionedUserIds().size(),
+                event.isNotifyFollowers());
+
+        Optional<User> actorOpt = userRepo.findActiveById(event.getMentionerId());
+        if (actorOpt.isEmpty()) {
+            log.warn("[CONSUMER] UserMentioned skipped — actor not found id={}", event.getMentionerId());
+            return;
+        }
+        User actor = actorOpt.get();
+
+        Set<UUID> directIds = event.getMentionedUserIds() == null
+                ? new HashSet<>()
+                : new HashSet<>(event.getMentionedUserIds());
+        // Belt-and-braces: never notify the author of their own content.
+        directIds.remove(actor.getId());
+
+        String resourceType = toResourceType(event.getSourceType());
+        UUID resourceId = event.getSourceParentId() != null ? event.getSourceParentId() : event.getSourceId();
+        String title = "You were mentioned";
+        String body = buildMentionBody(actor, event.getSourceType(), event.getSnippet());
+
+        // ── direct mentions ──────────────────────────────────────────────
+        Set<UUID> alreadyNotified = new HashSet<>();
+        if (!directIds.isEmpty()) {
+            List<User> recipients = userRepo.findActiveByIdIn(directIds);
+            List<Notification> notifs = new ArrayList<>(recipients.size());
+            for (User recipient : recipients) {
+                Notification n = Notification.builder()
+                        .user(recipient)
+                        .actor(actor)
+                        .type(NotificationType.USER_MENTIONED)
+                        .title(title)
+                        .body(body)
+                        .resourceId(resourceId)
+                        .resourceType(resourceType)
+                        .build();
+                notifs.add(n);
+                alreadyNotified.add(recipient.getId());
+            }
+            if (!notifs.isEmpty()) {
+                notifRepo.saveAll(notifs);
+                notifs.forEach(n -> pushRealtime(n.getUser().getId(), n));
+            }
+        }
+
+        // ── @followers fan-out ───────────────────────────────────────────
+        if (event.isNotifyFollowers()) {
+            int sent = fanOutToFollowers(actor.getId(), follower -> {
+                if (alreadyNotified.contains(follower.getId())) return null; // dedupe vs direct mentions
+                if (follower.getId().equals(actor.getId())) return null;
+                return Notification.builder()
+                        .user(follower)
+                        .actor(actor)
+                        .type(NotificationType.USER_MENTIONED)
+                        .title(title)
+                        .body(body)
+                        .resourceId(resourceId)
+                        .resourceType(resourceType)
+                        .build();
+            });
+            log.info("[CONSUMER] UserMentioned — {} follower notification(s) saved & queued", sent);
+        }
+    }
+
+    private static String toResourceType(MentionSource source) {
+        return switch (source) {
+            case POST              -> "Post";
+            case POST_COMMENT      -> "PostComment";
+            case RESEARCH          -> "Research";
+            case RESEARCH_COMMENT  -> "ResearchComment";
+            case QUESTION          -> "Question";
+            case QUESTION_ANSWER   -> "QuestionAnswer";
+        };
+    }
+
+    private static String buildMentionBody(User actor, MentionSource source, String snippet) {
+        String where = switch (source) {
+            case POST              -> "in a post";
+            case POST_COMMENT      -> "in a comment";
+            case RESEARCH          -> "in a research publication";
+            case RESEARCH_COMMENT  -> "in a research comment";
+            case QUESTION          -> "in a question";
+            case QUESTION_ANSWER   -> "in an answer";
+        };
+        String head = actor.getFullName() + " (@" + actor.getUsername() + ") mentioned you " + where;
+        return (snippet == null || snippet.isBlank()) ? (head + ".") : (head + ": \"" + snippet + "\"");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns {@code true} when {@code recipientId} has restricted
+     * {@code actorId} — IG-style restriction silently swallows the
+     * notification while preserving the underlying activity record.
+     * Defaults to {@code false} on any unexpected error so a bad
+     * restriction-table read never blocks legitimate notifications.
+     */
+    private boolean isSilencedByRestriction(UUID recipientId, UUID actorId, String tag) {
+        if (recipientId == null || actorId == null || recipientId.equals(actorId)) return false;
+        try {
+            if (restrictionRepo.isRestricting(recipientId, actorId)) {
+                log.debug("[CONSUMER] {} muted by restriction recipient={} actor={}",
+                        tag, recipientId, actorId);
+                return true;
+            }
+        } catch (Exception ex) {
+            log.warn("[CONSUMER] {} restriction check failed: {}", tag, ex.getMessage());
+        }
+        return false;
+    }
 
     /**
      * Fires a {@link NotificationPushedEvent} that is picked up
@@ -744,6 +957,20 @@ public class NotificationEventConsumer {
             case "CURIOUS"    -> "🤔";
             case "SUPPORT"    -> "🤝";
             default           -> reactionType;
+        };
+    }
+
+    /** Maps AnswerReactionType enum names to display emoji */
+    private String toReadableAnswerReaction(String reactionType) {
+        if (reactionType == null) return "";
+        return switch (reactionType) {
+            case "LIKE"        -> "👍";
+            case "INSIGHTFUL"  -> "💡";
+            case "BENEFICIAL"  -> "✨";
+            case "AGREE"       -> "✅";
+            case "DISAGREE"    -> "❌";
+            case "THANKS"      -> "🙏";
+            default            -> reactionType;
         };
     }
 
@@ -799,6 +1026,7 @@ public class NotificationEventConsumer {
                     .map(userRepo::findActiveById)
                     .flatMap(Optional::stream)
                     .map(notificationFactory)
+                    .filter(java.util.Objects::nonNull)
                     .toList();
 
             if (!notifications.isEmpty()) {

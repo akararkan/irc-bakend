@@ -1,11 +1,13 @@
 package ak.dev.irc.app.qna.service;
 
+import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -21,6 +23,13 @@ public interface QuestionService {
 
     Page<QuestionResponse> getFeed(Pageable pageable);
 
+    /**
+     * Cursor-paginated question feed. Pass {@code cursor=null} for the first
+     * page; subsequent pages pass the {@code nextCursor} from the previous
+     * response. Doesn't degrade with deep paging.
+     */
+    CursorPage<QuestionResponse> getFeedCursor(LocalDateTime cursor, int limit);
+
     Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable);
 
     Page<QuestionResponse> getMyQuestions(UUID authorId, Pageable pageable);
@@ -33,7 +42,16 @@ public interface QuestionService {
 
     Page<QuestionAnswerResponse> getAnswers(UUID questionId, Pageable pageable);
 
+    /**
+     * Restriction-aware top-level answer listing — answers from users the
+     * question author has restricted are hidden from everyone except the
+     * question author and the answer author themselves.
+     */
+    Page<QuestionAnswerResponse> getAnswers(UUID questionId, UUID requesterId, Pageable pageable);
+
     Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId, Pageable pageable);
+
+    Page<QuestionAnswerResponse> getReanswers(UUID questionId, UUID answerId, UUID requesterId, Pageable pageable);
 
     void deleteQuestion(UUID questionId, UUID requesterId);
 

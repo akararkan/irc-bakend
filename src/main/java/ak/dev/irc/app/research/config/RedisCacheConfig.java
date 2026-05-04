@@ -18,14 +18,17 @@ import java.time.Duration;
 import java.util.Map;
 
 /**
- * Redis cache configuration for the research module.
+ * Redis cache configuration for the research module + cross-cutting social caches
+ * used by the feed paths.
  *
  * <p>Cache names and TTLs:
  * <ul>
- *   <li>{@code research-by-id}   — 5 min  (evict on update / publish / delete)</li>
- *   <li>{@code research-by-slug} — 5 min  (evict on update)</li>
- *   <li>{@code research-feed}    — 2 min  (evict on publish / delete)</li>
- *   <li>{@code trending-tags}    — 10 min (changes slowly)</li>
+ *   <li>{@code research-by-id}      — 5 min  (evict on update / publish / delete)</li>
+ *   <li>{@code research-by-slug}    — 5 min  (evict on update)</li>
+ *   <li>{@code research-feed}       — 2 min  (evict on publish / delete)</li>
+ *   <li>{@code trending-tags}       — 10 min (changes slowly)</li>
+ *   <li>{@code user-blocked-ids}    — 1 min  (evict on (un)block)</li>
+ *   <li>{@code user-following-ids}  — 1 min  (evict on (un)follow / block)</li>
  * </ul>
  */
 @Configuration
@@ -56,10 +59,12 @@ public class RedisCacheConfig {
         return RedisCacheManager.builder(factory)
                 .cacheDefaults(defaults.entryTtl(Duration.ofMinutes(5)))
                 .withInitialCacheConfigurations(Map.of(
-                        "research-by-id",   defaults.entryTtl(Duration.ofMinutes(5)),
-                        "research-by-slug", defaults.entryTtl(Duration.ofMinutes(5)),
-                        "research-feed",    defaults.entryTtl(Duration.ofMinutes(2)),
-                        "trending-tags",    defaults.entryTtl(Duration.ofMinutes(10))
+                        "research-by-id",     defaults.entryTtl(Duration.ofMinutes(5)),
+                        "research-by-slug",   defaults.entryTtl(Duration.ofMinutes(5)),
+                        "research-feed",      defaults.entryTtl(Duration.ofMinutes(2)),
+                        "trending-tags",      defaults.entryTtl(Duration.ofMinutes(10)),
+                        "user-blocked-ids",   defaults.entryTtl(Duration.ofMinutes(1)),
+                        "user-following-ids", defaults.entryTtl(Duration.ofMinutes(1))
                 ))
                 .build();
     }

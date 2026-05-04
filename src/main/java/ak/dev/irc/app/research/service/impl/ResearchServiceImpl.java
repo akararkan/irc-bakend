@@ -2,6 +2,8 @@ package ak.dev.irc.app.research.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.*;
+import ak.dev.irc.app.common.service.MentionService;
+import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.rabbitmq.publisher.ResearchEventPublisher;
 import ak.dev.irc.app.research.dto.request.*;
 import ak.dev.irc.app.research.dto.response.*;
@@ -71,6 +73,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchMapper         mapper;
     private final IrcIdentifierService   ircIdentifierService;
     private final ResearchEventPublisher researchEventPublisher;
+    private final MentionService         mentionService;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -262,6 +265,11 @@ public class ResearchServiceImpl implements ResearchService {
 
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
 
+        // Capture pre-edit text so the mention delta scan only fires for
+        // newly added @-handles.
+        String previousMentionText = joinNonBlank(
+                research.getTitle(), research.getAbstractText(), research.getDescription());
+
         try {
             updateResearchFields(research, req);
 
@@ -278,6 +286,17 @@ public class ResearchServiceImpl implements ResearchService {
             }
 
             research = researchRepo.save(research);
+
+            // Mention delta — pings only handles freshly introduced by the edit.
+            mentionService.scanAndPublishDelta(
+                    previousMentionText,
+                    joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription()),
+                    MentionSource.RESEARCH,
+                    research.getId(),
+                    null,
+                    researcherId,
+                    research.getResearcher() != null ? research.getResearcher().getUsername() : null);
+
             return mapper.toResponse(research, researcherId);
 
         } catch (OptimisticLockingFailureException e) {
@@ -368,6 +387,19 @@ public class ResearchServiceImpl implements ResearchService {
         research = researchRepo.save(research);
 
         researchEventPublisher.publishResearchPublished(research);
+
+        // Scan title + abstract + description for @mentions / @followers.
+        // Concatenate so a single event covers all three text fields.
+        String mentionSource = joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription());
+        mentionService.scanAndPublish(
+                mentionSource,
+                MentionSource.RESEARCH,
+                research.getId(),
+                null,
+                researcherId,
+                research.getResearcher().getUsername(),
+                /* allowFollowersToken */ true);
+
         log.info("Research published: {} [{}] DOI={}", research.getId(), research.getIrcId(), research.getDoi());
         return mapper.toResponse(research, researcherId);
     }
@@ -439,6 +471,18 @@ public class ResearchServiceImpl implements ResearchService {
                 research.setPublishedAt(now);
                 researchRepo.save(research);
                 researchEventPublisher.publishResearchPublished(research);
+
+                String autoMentionText = joinNonBlank(
+                        research.getTitle(), research.getAbstractText(), research.getDescription());
+                mentionService.scanAndPublish(
+                        autoMentionText,
+                        MentionSource.RESEARCH,
+                        research.getId(),
+                        null,
+                        research.getResearcher().getId(),
+                        research.getResearcher().getUsername(),
+                        /* allowFollowersToken */ true);
+
                 log.info("Scheduled research auto-published: {} [{}]", research.getId(), research.getIrcId());
             } catch (Exception e) {
                 log.error("Failed to auto-publish scheduled research {}: {}", research.getId(), e.getMessage());
@@ -888,6 +932,17 @@ public class ResearchServiceImpl implements ResearchService {
             comment = commentRepo.save(comment);
             researchRepo.adjustCommentCount(researchId, 1);
             researchEventPublisher.publishCommented(research, user, comment);
+
+            // @mentions in research comments — no @followers fan-out from comments.
+            mentionService.scanAndPublish(
+                    comment.getContent(),
+                    MentionSource.RESEARCH_COMMENT,
+                    comment.getId(),
+                    researchId,
+                    userId,
+                    user.getUsername(),
+                    /* allowFollowersToken */ false);
+
             // return full view for the commenter (they should see their own comment even if hidden)
             return mapper.toCommentResponse(comment, true);
 
@@ -957,11 +1012,23 @@ public class ResearchServiceImpl implements ResearchService {
         if (comment.getDeletedAt() != null)
             throw new BadRequestException("Cannot edit a deleted comment", "COMMENT_DELETED");
 
+        String previousContent = comment.getContent();
         comment.setContent(request.content().trim());
         comment.setEdited(true);
         comment.setEditedAt(LocalDateTime.now());
         comment.audit(AuditAction.UPDATE, "Edited comment");
         ResearchComment saved = commentRepo.save(comment);
+
+        // Notify newly @-mentioned users introduced by this comment edit only.
+        mentionService.scanAndPublishDelta(
+                previousContent,
+                saved.getContent(),
+                MentionSource.RESEARCH_COMMENT,
+                saved.getId(),
+                researchId,
+                userId,
+                comment.getUser() != null ? comment.getUser().getUsername() : null);
+
         // commenter should see their edited comment
         return mapper.toCommentResponse(saved, true);
     }
@@ -1397,5 +1464,16 @@ public class ResearchServiceImpl implements ResearchService {
         if (lower.contains("spreadsheet") || lower.contains("csv")) return MediaType.SPREADSHEET;
         if (lower.contains("zip") || lower.contains("tar") || lower.contains("gzip")) return MediaType.ARCHIVE;
         return MediaType.OTHER;
+    }
+
+    /** Joins non-null, non-blank strings with a single space — used to feed the mention extractor. */
+    private static String joinNonBlank(String... parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            if (p == null || p.isBlank()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(p);
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 }

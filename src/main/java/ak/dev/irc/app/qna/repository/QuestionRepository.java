@@ -18,6 +18,24 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     Page<Question> findByDeletedAtIsNullOrderByCreatedAtDesc(Pageable pageable);
 
+    // Cursor-paginated feed — O(log n) deep paging that does not degrade as
+    // the user scrolls. Split into two methods so :cursor has a concrete type
+    // bound on Postgres.
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+        ORDER BY q.createdAt DESC
+        """)
+    List<Question> findFeedFirstPage(Pageable pageable);
+
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND q.createdAt < :cursor
+        ORDER BY q.createdAt DESC
+        """)
+    List<Question> findFeedAfter(@Param("cursor") java.time.LocalDateTime cursor, Pageable pageable);
+
     // Following feed: questions from followed users
     @Query("""
         SELECT q FROM Question q

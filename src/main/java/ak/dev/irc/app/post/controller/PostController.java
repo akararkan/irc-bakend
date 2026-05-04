@@ -7,8 +7,10 @@ import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.post.dto.UpdatePostRequest;
 import ak.dev.irc.app.post.dto.ReactToPostRequest;
 import ak.dev.irc.app.post.dto.PostResponse;
+import ak.dev.irc.app.post.realtime.PostRealtimeService;
 import ak.dev.irc.app.post.service.PostService;
 import ak.dev.irc.app.user.entity.User;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -21,6 +23,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -32,6 +35,7 @@ import java.util.UUID;
 public class PostController {
 
     private final PostService postService;
+    private final PostRealtimeService realtimeService;
 
     // ── Create ────────────────────────────────────────────────
 
@@ -70,14 +74,52 @@ public class PostController {
     @GetMapping("/{postId}")
     public ResponseEntity<PostResponse> getPost(
             @PathVariable UUID postId,
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
+        UUID requesterId = user != null ? user.getId() : null;
+        String viewerKey = requesterId != null ? requesterId.toString() : clientFingerprint(request);
+        return ResponseEntity.ok(postService.getPost(postId, requesterId, viewerKey));
+    }
+
+    /**
+     * Live event stream for a single post.
+     *
+     * <p>Subscribers receive every reaction, comment, reply, comment-reaction,
+     * view-count and share-count update on this post in near real time.</p>
+     *
+     * <p>Event names mirror {@code PostRealtimeEventType}; payload schema is
+     * the {@code PostRealtimeEvent} DTO. A {@code connected} handshake fires
+     * on subscribe and a {@code heartbeat} every 25 s.</p>
+     */
+    @GetMapping(value = "/{postId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamPost(
+            @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(postService.getPost(postId, user != null ? user.getId() : null));
+        // Reject the SSE handshake when the viewer can't read the post (block,
+        // missing, removed). assertVisible(...) bypasses the view-count bump.
+        UUID requesterId = user != null ? user.getId() : null;
+        postService.assertPostVisible(postId, requesterId);
+        return realtimeService.subscribe(postId, requesterId);
+    }
+
+    /**
+     * Best-effort client fingerprint for view-count dedupe of anonymous viewers.
+     * Honours {@code X-Forwarded-For} so we don't deduplicate every visitor
+     * down to a single proxy IP behind a load balancer.
+     */
+    private static String clientFingerprint(HttpServletRequest request) {
+        if (request == null) return null;
+        String fwd = request.getHeader("X-Forwarded-For");
+        if (fwd != null && !fwd.isBlank()) return fwd.split(",")[0].trim();
+        return request.getRemoteAddr();
     }
 
     @GetMapping("/feed")
     public ResponseEntity<Page<PostResponse>> getPublicFeed(
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(postService.getPublicFeed(pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(postService.getPublicFeed(viewerId, pageable));
     }
 
     /**
@@ -90,8 +132,10 @@ public class PostController {
     public ResponseEntity<CursorPage<PostResponse>> getPublicFeedCursor(
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
-            @RequestParam(defaultValue = "20") int limit) {
-        return ResponseEntity.ok(postService.getPublicFeedCursor(cursor, limit));
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(postService.getPublicFeedCursor(viewerId, cursor, limit));
     }
 
     @GetMapping("/feed/following")
@@ -104,8 +148,10 @@ public class PostController {
 
     @GetMapping("/feed/reels")
     public ResponseEntity<Page<PostResponse>> getReelFeed(
-            @PageableDefault(size = 10) Pageable pageable) {
-        return ResponseEntity.ok(postService.getReelFeed(pageable));
+            @PageableDefault(size = 10) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(postService.getReelFeed(viewerId, pageable));
     }
 
     @GetMapping("/feed/reels/following")
@@ -119,15 +165,19 @@ public class PostController {
     @GetMapping("/user/{authorId}")
     public ResponseEntity<Page<PostResponse>> getUserPosts(
             @PathVariable UUID authorId,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(postService.getUserPosts(authorId, pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(postService.getUserPosts(authorId, requesterId, pageable));
     }
 
     @GetMapping("/search")
     public ResponseEntity<Page<PostResponse>> searchPosts(
             @RequestParam String q,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(postService.searchPosts(q, pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(postService.searchPosts(q, viewerId, pageable));
     }
 
     // ── React ─────────────────────────────────────────────────

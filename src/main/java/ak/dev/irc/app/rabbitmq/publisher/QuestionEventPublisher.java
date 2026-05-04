@@ -3,9 +3,11 @@ package ak.dev.irc.app.rabbitmq.publisher;
 import ak.dev.irc.app.qna.entity.AnswerFeedback;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
+import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
 import lombok.RequiredArgsConstructor;
@@ -69,6 +71,25 @@ public class QuestionEventPublisher {
 
         publish(RabbitMQConstants.QNA_ANSWER_ACCEPTED, event,
                 "ANSWER_ACCEPTED questionId=" + question.getId() + " answerId=" + answer.getId());
+    }
+
+    public void publishAnswerReacted(Question question, QuestionAnswer answer, User reactor, String reactionType) {
+        AnswerReactedEvent event = AnswerReactedEvent.of(
+                question.getId(),
+                question.getTitle(),
+                answer.getId(),
+                answer.getAuthor().getId(),
+                answer.getAuthor().getUsername(),
+                answer.getAuthor().getFullName(),
+                reactor.getId(),
+                reactor.getUsername(),
+                reactor.getFullName(),
+                reactionType,
+                answer.getParentAnswer() != null
+        );
+
+        publish(RabbitMQConstants.QNA_ANSWER_REACTED, event,
+                "ANSWER_REACTED questionId=" + question.getId() + " answerId=" + answer.getId());
     }
 
     public void publishFeedbackAdded(Question question, QuestionAnswer answer, AnswerFeedback feedback) {
