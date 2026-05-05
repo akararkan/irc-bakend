@@ -118,6 +118,32 @@ spring:
     serialization:
       write-dates-as-timestamps: false
 
+  # ── Mail (SMTP) ──────────────────────────────────────────────────────────────
+  # Gmail / Google Workspace:
+  #   1. Turn on 2-Step Verification on the sending Google account.
+  #   2. Generate an "App password" — use that as MAIL_PASSWORD (not the login password).
+  #   3. Set MAIL_USERNAME = <full email address>.
+  # Custom SMTP: override MAIL_HOST / MAIL_PORT.
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:ika.center26@gmail.com}
+    password: ${MAIL_PASSWORD:dbfrczyhfkxqylwn}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+        transport:
+          protocol: smtp
+        debug: false
+
   # ── File Upload ───────────────────────────────────────────────────────────────
   servlet:
     multipart:
@@ -141,6 +167,19 @@ irc:
     prefix: "10.12345"
 
   base-url: "https://irc.example.com"
+
+  # Notification email branding + reply-to.
+  email:
+    # Resolves to ${MAIL_FROM} → ${spring.mail.username} (which itself defaults
+    # to MAIL_USERNAME from the spring.mail block) → a no-reply placeholder.
+    # Reading spring.mail.username here (instead of MAIL_USERNAME directly)
+    # means the YAML default chain is honoured even when the env var is unset.
+    from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
+    from-name: ${MAIL_FROM_NAME:IRC Platform}
+    enabled: ${MAIL_ENABLED:true}
+    # Throttle window — same (recipient, groupKey) won't be emailed twice
+    # inside this duration. Mirrors the in-app aggregation window.
+    throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
 
   verification:
     secret: ${IRC_VERIFICATION_SECRET:9fK2LmQ7xA4vZpR8sD1cYwN5TgH3UeB6}

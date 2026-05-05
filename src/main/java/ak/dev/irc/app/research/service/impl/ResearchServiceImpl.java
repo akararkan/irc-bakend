@@ -74,6 +74,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final IrcIdentifierService   ircIdentifierService;
     private final ResearchEventPublisher researchEventPublisher;
     private final MentionService         mentionService;
+    private final ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster researchRealtime;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -845,7 +846,8 @@ public class ResearchServiceImpl implements ResearchService {
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
         try {
             Optional<ResearchReaction> existing = reactionRepo.findById(rId);
-            if (existing.isPresent()) {
+            boolean isChange = existing.isPresent();
+            if (isChange) {
                 existing.get().setReactionType(request.reactionType());
                 reactionRepo.save(existing.get());
             } else {
@@ -855,6 +857,13 @@ public class ResearchServiceImpl implements ResearchService {
                 researchRepo.adjustReactionCount(researchId, 1);
                 researchEventPublisher.publishReacted(research, user, request.reactionType());
             }
+            // Realtime fan-out — every viewer of the research detail page
+            // sees the new count without re-fetching.
+            broadcastCounters(researchId,
+                    isChange
+                            ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_CHANGED
+                            : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
+                    user);
         } catch (DataIntegrityViolationException e) {
             throw new BadRequestException("Invalid reaction data", "REACTION_ERROR");
         } catch (OptimisticLockingFailureException e) {
@@ -870,6 +879,10 @@ public class ResearchServiceImpl implements ResearchService {
         if (reactionRepo.existsById(rId)) {
             reactionRepo.deleteById(rId);
             researchRepo.adjustReactionCount(researchId, -1);
+            User actor = userRepo.findById(userId).orElse(null);
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_REMOVED,
+                    actor);
         }
     }
 
@@ -932,6 +945,34 @@ public class ResearchServiceImpl implements ResearchService {
             comment = commentRepo.save(comment);
             researchRepo.adjustCommentCount(researchId, 1);
             researchEventPublisher.publishCommented(research, user, comment);
+
+            // Realtime — broadcast on the research stream so every reader
+            // sees the new comment + fresh comment count live.
+            ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.ResearchRealtimeEventBuilder evt =
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                            .eventType(comment.getParent() == null
+                                    ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_CREATED
+                                    : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REPLY_CREATED)
+                            .researchId(researchId)
+                            .actorId(user.getId())
+                            .actorUsername(user.getUsername())
+                            .actorAvatarUrl(user.getProfileImage())
+                            .commentId(comment.getId())
+                            .body(comment.getContent());
+            if (comment.getParent() != null) {
+                evt.parentCommentId(comment.getParent().getId())
+                        .commentReplyCount(comment.getParent().getReplyCount());
+            }
+            // Re-read counts so the broadcast carries the post-increment value.
+            researchRepo.findById(researchId).ifPresent(r ->
+                    evt.commentCount(r.getCommentCount())
+                       .reactionCount(r.getReactionCount())
+                       .shareCount(r.getShareCount())
+                       .saveCount(r.getSaveCount())
+                       .viewCount(r.getViewCount())
+                       .downloadCount(r.getDownloadCount())
+                       .citationCount(r.getCitationCount()));
+            researchRealtime.broadcast(evt.build());
 
             // @mentions in research comments — no @followers fan-out from comments.
             mentionService.scanAndPublish(
@@ -1054,6 +1095,40 @@ public class ResearchServiceImpl implements ResearchService {
         comment.audit(AuditAction.DELETE, "Deleted comment");
         commentRepo.save(comment);
         researchRepo.adjustCommentCount(researchId, -1);
+
+        // If the deleted row was a reply, drop the parent's denormalised
+        // replyCount so threads stay consistent.
+        UUID parentId = null;
+        Long parentReplyCount = null;
+        if (comment.getParent() != null) {
+            ResearchComment parent = comment.getParent();
+            parentId = parent.getId();
+            long current = parent.getReplyCount() == null ? 0L : parent.getReplyCount();
+            parent.setReplyCount(Math.max(0L, current - 1));
+            commentRepo.save(parent);
+            parentReplyCount = parent.getReplyCount();
+        }
+
+        User actor = userRepo.findById(userId).orElse(null);
+        ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.ResearchRealtimeEventBuilder evt =
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_DELETED)
+                        .researchId(researchId)
+                        .actorId(userId)
+                        .actorUsername(actor != null ? actor.getUsername() : null)
+                        .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                        .commentId(commentId)
+                        .parentCommentId(parentId)
+                        .commentReplyCount(parentReplyCount);
+        researchRepo.findById(researchId).ifPresent(r ->
+                evt.commentCount(r.getCommentCount())
+                   .reactionCount(r.getReactionCount())
+                   .shareCount(r.getShareCount())
+                   .saveCount(r.getSaveCount())
+                   .viewCount(r.getViewCount())
+                   .downloadCount(r.getDownloadCount())
+                   .citationCount(r.getCitationCount()));
+        researchRealtime.broadcast(evt.build());
     }
 
     @Override
@@ -1179,6 +1254,9 @@ public class ResearchServiceImpl implements ResearchService {
                 .id(sId).research(research).user(user)
                 .collectionName(collectionName != null ? collectionName.trim() : "Default").build());
         researchRepo.adjustSaveCount(researchId, 1);
+        broadcastCounters(researchId,
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
+                user);
     }
 
     @Override
@@ -1189,6 +1267,10 @@ public class ResearchServiceImpl implements ResearchService {
         if (saveRepo.existsById(sId)) {
             saveRepo.deleteById(sId);
             researchRepo.adjustSaveCount(researchId, -1);
+            User actor = userRepo.findById(userId).orElse(null);
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
+                    actor);
         }
     }
 
@@ -1285,7 +1367,12 @@ public class ResearchServiceImpl implements ResearchService {
     public String getShareLink(UUID researchId) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
         Research research = findPublishedOrThrow(researchId);
-        try { researchRepo.incrementShareCount(researchId); }
+        try {
+            researchRepo.incrementShareCount(researchId);
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SHARE_COUNT_UPDATED,
+                    null);
+        }
         catch (DataAccessException e) { log.error("Error incrementing share count: {}", e.getMessage()); }
         return ircIdentifierService.buildShareUrl(research.getShareToken());
     }
@@ -1295,6 +1382,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
         findPublishedOrThrow(researchId);
         researchRepo.incrementCitationCount(researchId);
+        broadcastCounters(researchId,
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.CITATION_COUNT_UPDATED,
+                null);
         log.info("Citation count incremented for research {}", researchId);
     }
 
@@ -1443,6 +1533,33 @@ public class ResearchServiceImpl implements ResearchService {
             throw new AppException("Failed to upload file to storage",
                     HttpStatus.SERVICE_UNAVAILABLE, errorCode);
         }
+    }
+
+    /**
+     * Re-read the freshly committed counters and broadcast them on the
+     * research's realtime channel. Always populates every counter field on
+     * the wire — payload stays small and clients can patch any of them
+     * without an extra fetch. The broadcaster defers to {@code afterCommit}
+     * so subscribers never see a value the DB is about to roll back.
+     */
+    private void broadcastCounters(UUID researchId,
+                                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType type,
+                                    User actor) {
+        researchRepo.findById(researchId).ifPresent(r -> researchRealtime.broadcast(
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(type)
+                        .researchId(researchId)
+                        .actorId(actor != null ? actor.getId() : null)
+                        .actorUsername(actor != null ? actor.getUsername() : null)
+                        .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                        .reactionCount(r.getReactionCount())
+                        .commentCount(r.getCommentCount())
+                        .shareCount(r.getShareCount())
+                        .saveCount(r.getSaveCount())
+                        .viewCount(r.getViewCount())
+                        .downloadCount(r.getDownloadCount())
+                        .citationCount(r.getCitationCount())
+                        .build()));
     }
 
     private String getPublicUrlFromS3(String s3Key) {

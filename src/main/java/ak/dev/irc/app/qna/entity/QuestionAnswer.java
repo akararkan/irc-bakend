@@ -94,6 +94,15 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Builder.Default
     private Long reactionCount = 0L;
 
+    /**
+     * Denormalised count of non-deleted reanswers under this answer — mirrors
+     * {@code PostComment.replyCount} so listings can render thread sizes
+     * without a per-row count query.
+     */
+    @Column(name = "reply_count", nullable = false)
+    @Builder.Default
+    private Long replyCount = 0L;
+
     @Column(name = "is_accepted", nullable = false)
     @Builder.Default
     private boolean accepted = false;
@@ -137,6 +146,16 @@ public class QuestionAnswer extends BaseAuditEntity {
     public void decrementReactions() {
         if (this.reactionCount != null && this.reactionCount > 0) {
             this.reactionCount--;
+        }
+    }
+
+    public void incrementReplies() {
+        this.replyCount = (this.replyCount == null ? 0L : this.replyCount) + 1L;
+    }
+
+    public void decrementReplies() {
+        if (this.replyCount != null && this.replyCount > 0) {
+            this.replyCount--;
         }
     }
 }

@@ -174,6 +174,72 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             "AND LOWER(p.textContent) LIKE LOWER(CONCAT('%',:q,'%'))")
     Page<Post> search(@Param("q") String query, Pageable pageable);
 
+    // ── Postgres FTS — sub-millisecond on millions of rows with the GIN index.
+    // Returns (id, ts_rank_cd) tuples; the service hydrates entities in one batch.
+    // websearch_to_tsquery accepts user input as-is ("foo bar", "foo OR bar", -exclude).
+    // {@code reelsOnly}: null = any post type, true = only REEL, false = exclude REEL.
+    @Query(value = """
+        SELECT p.id, ts_rank_cd(to_tsvector('simple', coalesce(p.text_content, '')),
+                                websearch_to_tsquery('simple', :q)) AS score
+        FROM posts p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND to_tsvector('simple', coalesce(p.text_content, '')) @@ websearch_to_tsquery('simple', :q)
+          AND (:reelsOnly IS NULL
+               OR (:reelsOnly = TRUE  AND p.post_type = 'REEL')
+               OR (:reelsOnly = FALSE AND p.post_type <> 'REEL'))
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR p.author_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, p.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchFts(@Param("q") String q,
+                              @Param("reelsOnly") Boolean reelsOnly,
+                              @Param("blockedIds") java.util.UUID[] blockedIds,
+                              @Param("limit") int limit);
+
+    /**
+     * Tag search — finds posts that contain a {@code #tag} literal in their
+     * text content. Uses the trigram GIN index for sub-millisecond lookup
+     * and is anchored on the {@code #} prefix so partial matches in normal
+     * text don't pollute the result.
+     */
+    @Query(value = """
+        SELECT p.id, ts_rank_cd(to_tsvector('simple', coalesce(p.text_content, '')),
+                                websearch_to_tsquery('simple', :tag)) AS score
+        FROM posts p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND p.text_content ILIKE CONCAT('%#', :tag, '%')
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR p.author_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, p.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchByHashtag(@Param("tag") String tag,
+                                    @Param("blockedIds") java.util.UUID[] blockedIds,
+                                    @Param("limit") int limit);
+
+    // Trigram fallback for typo tolerance — uses the % operator + similarity().
+    @Query(value = """
+        SELECT p.id, similarity(coalesce(p.text_content, ''), :q) AS score
+        FROM posts p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND coalesce(p.text_content, '') %% :q
+          AND (:reelsOnly IS NULL
+               OR (:reelsOnly = TRUE  AND p.post_type = 'REEL')
+               OR (:reelsOnly = FALSE AND p.post_type <> 'REEL'))
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR p.author_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, p.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchTrgm(@Param("q") String q,
+                               @Param("reelsOnly") Boolean reelsOnly,
+                               @Param("blockedIds") java.util.UUID[] blockedIds,
+                               @Param("limit") int limit);
+
     // Block-aware search — drops blocked authors in the same query.
     @Query("""
         SELECT p FROM Post p

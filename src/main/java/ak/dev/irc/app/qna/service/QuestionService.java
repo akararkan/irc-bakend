@@ -38,6 +38,17 @@ public interface QuestionService {
 
     QuestionAnswerResponse addAnswer(UUID questionId, CreateAnswerRequest request, UUID authorId);
 
+    /**
+     * Comment-style multipart create: upload one media file (image or video)
+     * and one optional voice note in the same request, then delegate to
+     * {@link #addAnswer}. Mirrors {@code PostCommentService.addCommentWithMedia}
+     * so the answer endpoint feels exactly like the post-comment endpoint —
+     * answers just keep the richer set of attachments + sources as defaults.
+     */
+    QuestionAnswerResponse addAnswerWithMedia(UUID questionId, CreateAnswerRequest request, UUID authorId,
+                                              org.springframework.web.multipart.MultipartFile media,
+                                              org.springframework.web.multipart.MultipartFile voice);
+
     QuestionAnswerResponse editAnswer(UUID questionId, UUID answerId, EditAnswerRequest request, UUID requesterId);
 
     Page<QuestionAnswerResponse> getAnswers(UUID questionId, Pageable pageable);

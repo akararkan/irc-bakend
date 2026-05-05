@@ -251,7 +251,8 @@ public class QuestionServiceImpl implements QuestionService {
         socialGuard.requireNotBlockedBetween(
                 authorId, question.getAuthor().getId(), "ANSWER_BLOCKED_RELATIONSHIP");
 
-        // Resolve parent if this is a reanswer (reply to another answer)
+        // Resolve parent if this is a reanswer (reply to another answer) —
+        // mirrors the post-comment top-level-vs-reply branching.
         QuestionAnswer parent = null;
         if (request.getParentAnswerId() != null) {
             parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(
@@ -260,6 +261,9 @@ public class QuestionServiceImpl implements QuestionService {
                             "Parent answer", "id", request.getParentAnswerId()));
             socialGuard.requireNotBlockedBetween(
                     authorId, parent.getAuthor().getId(), "REANSWER_BLOCKED_RELATIONSHIP");
+            // Bump the parent's denormalised replyCount up front so it's
+            // visible immediately on the parent's row in the listing query.
+            answerRepository.updateReplyCount(parent.getId(), 1);
             // Reanswers do not count toward maxAnswers — only top-level answers do.
         } else {
             if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
@@ -323,8 +327,10 @@ public class QuestionServiceImpl implements QuestionService {
                 /* allowFollowersToken */ false);
 
         boolean isReanswer = parent != null;
+        // Re-read the parent so the broadcast carries the post-increment count.
         Long replyCount = isReanswer
-                ? answerRepository.countByParentAnswerIdAndDeletedAtIsNull(parent.getId())
+                ? answerRepository.findById(parent.getId())
+                        .map(QuestionAnswer::getReplyCount).orElse(null)
                 : 0L;
         realtime.broadcast(QnaRealtimeEvent.builder()
                 .eventType(isReanswer ? QnaRealtimeEventType.REANSWER_CREATED
@@ -341,6 +347,32 @@ public class QuestionServiceImpl implements QuestionService {
                 .build());
 
         return mapper.toAnswerResponse(answer);
+    }
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse addAnswerWithMedia(UUID questionId, CreateAnswerRequest request, UUID authorId,
+                                                     MultipartFile media,
+                                                     MultipartFile voice) {
+        // One-shot upload that mirrors PostCommentService.addCommentWithMedia —
+        // upload the media (or voice) to R2 and stamp the URLs onto the request
+        // before delegating to addAnswer, so the rest of the answer pipeline
+        // (block guards, mentions, realtime, dispatch) runs unchanged.
+        if (media != null && !media.isEmpty()) {
+            String prefix = "qna/" + questionId + "/answers/inline";
+            String key = storageService.upload(media, prefix);
+            String url = storageService.getPublicUrl(key);
+            request.setMediaUrl(url);
+            String contentType = media.getContentType();
+            request.setMediaType(contentType != null && contentType.startsWith("video") ? "VIDEO" : "IMAGE");
+        }
+        if (voice != null && !voice.isEmpty()) {
+            String prefix = "qna/" + questionId + "/answers/voice";
+            String key = storageService.upload(voice, prefix);
+            String url = storageService.getPublicUrl(key);
+            request.setVoiceUrl(url);
+        }
+        return addAnswer(questionId, request, authorId);
     }
 
     @Override
@@ -410,9 +442,10 @@ public class QuestionServiceImpl implements QuestionService {
         findQuestionOrThrow(questionId);
         Page<QuestionAnswer> page = answerRepository.findVisibleTopLevelAnswers(
                 questionId, requesterId, pageable);
+        // replyCount comes from the denormalised column on the entity now —
+        // no extra GROUP-BY query per page.
         Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
-        Map<UUID, Long> replyCounts = batchReplyCounts(page.getContent());
-        return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), replyCounts.get(a.getId())));
+        return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), a.getReplyCount()));
     }
 
     @Override
@@ -481,10 +514,14 @@ public class QuestionServiceImpl implements QuestionService {
                 question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
             }
             questionRepository.save(question);
+        } else {
+            // Reanswer deletion drops the parent's denormalised counter.
+            answerRepository.updateReplyCount(parentId, -1);
         }
 
         Long parentReplyCount = parentId != null
-                ? answerRepository.countByParentAnswerIdAndDeletedAtIsNull(parentId)
+                ? answerRepository.findById(parentId)
+                        .map(QuestionAnswer::getReplyCount).orElse(null)
                 : null;
         User actor = userRepository.findById(requesterId).orElse(null);
         realtime.broadcast(QnaRealtimeEvent.builder()
@@ -1104,16 +1141,6 @@ public class QuestionServiceImpl implements QuestionService {
         Map<UUID, AnswerReactionType> map = new HashMap<>();
         for (Object[] row : answerRepository.findMyReactionsForAnswers(requesterId, ids)) {
             map.put((UUID) row[0], (AnswerReactionType) row[1]);
-        }
-        return map;
-    }
-
-    private Map<UUID, Long> batchReplyCounts(List<QuestionAnswer> parents) {
-        if (parents == null || parents.isEmpty()) return Map.of();
-        List<UUID> ids = parents.stream().map(QuestionAnswer::getId).toList();
-        Map<UUID, Long> map = new HashMap<>();
-        for (Object[] row : answerRepository.countRepliesByParentIds(ids)) {
-            map.put((UUID) row[0], (Long) row[1]);
         }
         return map;
     }

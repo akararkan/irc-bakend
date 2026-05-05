@@ -102,6 +102,29 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "two_factor_secret", length = 255)
     private String twoFactorSecret;
 
+    // ── Email notification preferences ──────────────────────────────────
+    /** Master toggle — when false, no activity emails are ever sent. */
+    @Column(name = "email_notifications_enabled", nullable = false)
+    @Builder.Default
+    private boolean emailNotificationsEnabled = true;
+
+    /**
+     * Per-category opt-out bitmask is overkill at this stage — three coarse
+     * toggles cover the common UX needs (mute social spam, mute marketing,
+     * always keep security emails on).
+     */
+    @Column(name = "email_social_enabled", nullable = false)
+    @Builder.Default
+    private boolean emailSocialEnabled = true;
+
+    @Column(name = "email_mentions_enabled", nullable = false)
+    @Builder.Default
+    private boolean emailMentionsEnabled = true;
+
+    @Column(name = "email_system_enabled", nullable = false)
+    @Builder.Default
+    private boolean emailSystemEnabled = true;
+
     // ── Session ───────────────────────────────────────────────────────────────
 
     @Column(name = "last_login_at")

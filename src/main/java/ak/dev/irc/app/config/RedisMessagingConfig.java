@@ -1,14 +1,19 @@
 package ak.dev.irc.app.config;
 
+import ak.dev.irc.app.audit.realtime.AuditRealtimePublisher;
+import ak.dev.irc.app.audit.realtime.AuditRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import ak.dev.irc.app.post.realtime.PostRealtimeSubscriber;
 import ak.dev.irc.app.qna.realtime.QnaRealtimePublisher;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeSubscriber;
+import ak.dev.irc.app.research.realtime.ResearchRealtimePublisher;
+import ak.dev.irc.app.research.realtime.ResearchRealtimeSubscriber;
 import ak.dev.irc.app.user.realtime.NotificationRedisSubscriber;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 
@@ -39,7 +44,9 @@ public class RedisMessagingConfig {
             RedisConnectionFactory connectionFactory,
             NotificationRedisSubscriber notificationSubscriber,
             PostRealtimeSubscriber postSubscriber,
-            QnaRealtimeSubscriber qnaSubscriber) {
+            QnaRealtimeSubscriber qnaSubscriber,
+            ResearchRealtimeSubscriber researchSubscriber,
+            AuditRealtimeSubscriber auditSubscriber) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
@@ -55,6 +62,16 @@ public class RedisMessagingConfig {
         // Per-question realtime channels (answers, reanswers, reactions, accepts).
         container.addMessageListener(qnaSubscriber,
                 new PatternTopic(QnaRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Per-research realtime channels (reactions, comments, view/download/
+        // share/save/citation counts, lifecycle).
+        container.addMessageListener(researchSubscriber,
+                new PatternTopic(ResearchRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Single global audit-stream channel — admin SSE clients tap into
+        // this to see every user action across every running instance.
+        container.addMessageListener(auditSubscriber,
+                new ChannelTopic(AuditRealtimePublisher.CHANNEL));
 
         return container;
     }

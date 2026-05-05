@@ -287,6 +287,61 @@ public class PostService {
         return repostPost(postId, sharerId, caption);
     }
 
+    /**
+     * Copy-link UX: atomically bumps the post's {@code shareCount}, broadcasts
+     * the fresh count on the post realtime channel, and returns the canonical
+     * share URL. Distinct from {@link #repostPost} — does NOT create a new
+     * post in the sharer's feed; it just records that the link was copied
+     * out for an external share (chat, email, social network, …).
+     *
+     * <p>Author can copy their own share link without a self-share record;
+     * the count still bumps so they see external interest in their post.</p>
+     */
+    @Transactional
+    public ShareLinkInfo copyShareLink(UUID postId, UUID requesterId, String baseUrl) {
+        Post post = findPublishedPost(postId);
+        // Always operate on the canonical original — copying a link to a
+        // repost should still bump the original's share counter.
+        Post original = resolveOriginal(post);
+
+        if (requesterId != null) {
+            socialGuard.requireNotBlockedBetween(
+                    requesterId, original.getAuthor().getId(), "SHARE_BLOCKED_RELATIONSHIP");
+        }
+
+        postRepository.incrementShareCount(original.getId());
+
+        Long fresh = postRepository.findById(original.getId())
+                .map(Post::getShareCount).orElse(null);
+        User actor = requesterId != null
+                ? userRepository.findById(requesterId).orElse(null)
+                : null;
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
+                .postId(original.getId())
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .postShareCount(fresh)
+                .build());
+
+        // Canonical short URL — uses the post's pre-generated 12-char token,
+        // falls back to id if (somehow) missing.
+        String token = original.getShareLink() != null && !original.getShareLink().isBlank()
+                ? original.getShareLink()
+                : original.getId().toString();
+        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+                ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        return new ShareLinkInfo(
+                trimmedBase + "/p/" + token,
+                trimmedBase + "/posts/" + original.getId(),
+                token,
+                fresh == null ? 0L : fresh);
+    }
+
+    /** Lightweight payload for the copy-link endpoint. */
+    public record ShareLinkInfo(String shortUrl, String canonicalUrl, String token, long shareCount) {}
+
     // ── Update ────────────────────────────────────────────────
 
     @Transactional

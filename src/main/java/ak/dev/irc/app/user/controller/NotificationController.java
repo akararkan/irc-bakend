@@ -4,6 +4,8 @@ import ak.dev.irc.app.common.exception.UnauthorizedException;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import ak.dev.irc.app.user.dto.response.NotificationResponse;
+import ak.dev.irc.app.user.enums.NotificationCategory;
+import ak.dev.irc.app.user.enums.NotificationType;
 import ak.dev.irc.app.user.realtime.NotificationSseService;
 import ak.dev.irc.app.user.service.NotificationService;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +20,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -37,45 +40,24 @@ public class NotificationController {
     /**
      * Establishes a Server-Sent Events stream for the authenticated user.
      *
-     * <p>Because the browser {@code EventSource} API does <strong>not</strong>
-     * support custom HTTP headers, this endpoint also accepts the JWT access
-     * token as a query parameter: {@code ?token=<accessToken>}.</p>
+     * <p>Browser {@code EventSource} cannot send custom headers, so the JWT
+     * access token can also be passed as {@code ?token=<accessToken>}.</p>
      *
-     * <p>Authentication resolution order:
-     * <ol>
-     *   <li>SecurityContext (populated by JwtAuthenticationFilter if header/cookie present)</li>
-     *   <li>Query parameter {@code token} (fallback for EventSource clients)</li>
-     * </ol>
-     *
-     * <p>The client receives three event types:
+     * <p>Event types delivered on this stream:
      * <ul>
-     *   <li>{@code connected}    — sent immediately on connect (handshake).</li>
-     *   <li>{@code notification} — a new {@link NotificationResponse} JSON object.</li>
-     *   <li>{@code heartbeat}    — a lightweight ping every ~25 s to keep the
-     *       connection alive through load balancers and proxies.</li>
+     *   <li>{@code connected}    — handshake on subscribe.</li>
+     *   <li>{@code notification} — a new (or coalesced) {@link NotificationResponse}.</li>
+     *   <li>{@code unread-count} — {@code {count: N}} after every state change.</li>
+     *   <li>{@code read}         — {@code {ids:[...], allRead, deleted:false}} so other tabs sync.</li>
+     *   <li>{@code deleted}      — {@code {ids:[...], allRead, deleted:true}} after delete actions.</li>
+     *   <li>{@code heartbeat}    — keepalive every ~25 s.</li>
      * </ul>
-     *
-     * <p><strong>Client usage (JavaScript):</strong>
-     * <pre>{@code
-     * const token = localStorage.getItem('accessToken');
-     * const url   = `/api/v1/notifications/stream?token=${token}`;
-     * const evtSource = new EventSource(url, { withCredentials: true });
-     * evtSource.addEventListener('notification', e => {
-     *     const notification = JSON.parse(e.data);
-     *     // update UI
-     * });
-     * evtSource.addEventListener('heartbeat', () => { // keep-alive });
-     * evtSource.onerror = () => { evtSource.close(); // reconnect };
-     * }</pre>
      */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @PreAuthorize("permitAll()")                 // ← override class-level @PreAuthorize; we do manual auth below
+    @PreAuthorize("permitAll()")
     public SseEmitter stream(@RequestParam(value = "token", required = false) String token) {
-
-        // 1) Try SecurityContext first (normal flow when JwtAuthenticationFilter is active)
         UUID userId = SecurityUtils.getCurrentUserId().orElse(null);
 
-        // 2) Fallback: resolve from query-param token (EventSource can't send headers)
         if (userId == null && StringUtils.hasText(token)) {
             try {
                 if (jwtTokenProvider.validateToken(token)
@@ -98,11 +80,32 @@ public class NotificationController {
         return sseService.subscribe(userId);
     }
 
-    // ── REST polling endpoints (complement to SSE) ────────────────────────────
+    // ── REST: listing ─────────────────────────────────────────────────────────
 
+    /**
+     * List notifications. Optional filters:
+     * <ul>
+     *   <li>{@code category=POSTS|QNA|RESEARCH|MENTIONS|SOCIAL|SYSTEM}</li>
+     *   <li>{@code type=POST_REACTED} (repeatable)</li>
+     *   <li>{@code unread=true} — only unread.</li>
+     * </ul>
+     */
     @GetMapping
     public ResponseEntity<Page<NotificationResponse>> getAll(
+            @RequestParam(required = false) NotificationCategory category,
+            @RequestParam(required = false) List<NotificationType> type,
+            @RequestParam(required = false) Boolean unread,
             @PageableDefault(size = 20) Pageable pageable) {
+
+        if (Boolean.TRUE.equals(unread)) {
+            return ResponseEntity.ok(notificationService.getMyUnread(pageable));
+        }
+        if (category != null) {
+            return ResponseEntity.ok(notificationService.getMyNotificationsByCategory(category, pageable));
+        }
+        if (type != null && !type.isEmpty()) {
+            return ResponseEntity.ok(notificationService.getMyNotificationsByTypes(type, pageable));
+        }
         return ResponseEntity.ok(notificationService.getMyNotifications(pageable));
     }
 
@@ -113,9 +116,15 @@ public class NotificationController {
     }
 
     @GetMapping("/unread/count")
-    public ResponseEntity<Map<String, Long>> countUnread() {
-        return ResponseEntity.ok(Map.of("count", notificationService.countUnread()));
+    public ResponseEntity<Map<String, Long>> countUnread(
+            @RequestParam(required = false) NotificationCategory category) {
+        long count = category != null
+                ? notificationService.countUnreadByCategory(category)
+                : notificationService.countUnread();
+        return ResponseEntity.ok(Map.of("count", count));
     }
+
+    // ── REST: mark as read ────────────────────────────────────────────────────
 
     @PatchMapping("/read-all")
     public ResponseEntity<Void> markAllRead() {
@@ -128,4 +137,41 @@ public class NotificationController {
         notificationService.markOneRead(id);
         return ResponseEntity.ok().build();
     }
+
+    /**
+     * Bulk mark — POST {@code {"ids": [...]}}. Returns count actually updated
+     * (already-read rows are skipped).
+     */
+    @PatchMapping("/read")
+    public ResponseEntity<Map<String, Integer>> markManyRead(@RequestBody MarkReadRequest body) {
+        int updated = notificationService.markManyRead(
+                body == null ? null : body.ids());
+        return ResponseEntity.ok(Map.of("updated", updated));
+    }
+
+    @PatchMapping("/category/{category}/read")
+    public ResponseEntity<Map<String, Integer>> markCategoryRead(
+            @PathVariable NotificationCategory category) {
+        int updated = notificationService.markCategoryRead(category);
+        return ResponseEntity.ok(Map.of("updated", updated));
+    }
+
+    // ── REST: delete ──────────────────────────────────────────────────────────
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteOne(@PathVariable UUID id) {
+        notificationService.deleteOne(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    /** Purge all already-read notifications for the current user. */
+    @DeleteMapping("/read")
+    public ResponseEntity<Map<String, Integer>> deleteAllRead() {
+        int deleted = notificationService.deleteAllRead();
+        return ResponseEntity.ok(Map.of("deleted", deleted));
+    }
+
+    // ── DTO ───────────────────────────────────────────────────────────────────
+
+    public record MarkReadRequest(List<UUID> ids) {}
 }

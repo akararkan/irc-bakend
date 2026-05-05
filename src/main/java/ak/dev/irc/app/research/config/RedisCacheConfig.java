@@ -64,7 +64,14 @@ public class RedisCacheConfig {
                         "research-feed",      defaults.entryTtl(Duration.ofMinutes(2)),
                         "trending-tags",      defaults.entryTtl(Duration.ofMinutes(10)),
                         "user-blocked-ids",   defaults.entryTtl(Duration.ofMinutes(1)),
-                        "user-following-ids", defaults.entryTtl(Duration.ofMinutes(1))
+                        "user-following-ids", defaults.entryTtl(Duration.ofMinutes(1)),
+                        // Search hits — short TTL so a hammered query collapses
+                        // to one DB hit per minute while content is still fresh.
+                        "search-results",     defaults.entryTtl(Duration.ofSeconds(60)),
+                        "mention-suggestions", defaults.entryTtl(Duration.ofSeconds(30)),
+                        // Hot-path cache for email-pipeline reads — collapses
+                        // a fan-out burst to one DB read per recipient.
+                        "user-email-ctx",     defaults.entryTtl(Duration.ofSeconds(60))
                 ))
                 .build();
     }

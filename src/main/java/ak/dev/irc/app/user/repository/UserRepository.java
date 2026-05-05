@@ -41,6 +41,73 @@ public interface UserRepository extends JpaRepository<User, UUID> {
         """)
     Page<User> searchUsers(@Param("q") String query, Pageable pageable);
 
+    /**
+     * Indexed full-text search across username + fname + lname + bio. Uses
+     * the GIN function index installed by {@code SearchInfrastructureInitializer}.
+     */
+    @Query(value = """
+        SELECT u.id, ts_rank_cd(to_tsvector('simple',
+                  coalesce(u.username,'') || ' ' || coalesce(u.fname,'') || ' ' ||
+                  coalesce(u.lname,'')    || ' ' || coalesce(u.profile_bio,'')),
+                websearch_to_tsquery('simple', :q)) AS score
+        FROM users u
+        WHERE u.deleted_at IS NULL
+          AND to_tsvector('simple',
+                  coalesce(u.username,'') || ' ' || coalesce(u.fname,'') || ' ' ||
+                  coalesce(u.lname,'')    || ' ' || coalesce(u.profile_bio,''))
+              @@ websearch_to_tsquery('simple', :q)
+        ORDER BY score DESC, u.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchUsersFts(@Param("q") String q, @Param("limit") int limit);
+
+    /**
+     * Trigram fuzzy fallback — typo-tolerant. Uses {@code gin_trgm_ops}
+     * indexes so partial / misspelled names still come back fast.
+     */
+    @Query(value = """
+        SELECT u.id, GREATEST(similarity(coalesce(u.username,''), :q),
+                              similarity(coalesce(u.fname,''),    :q),
+                              similarity(coalesce(u.lname,''),    :q)) AS score
+        FROM users u
+        WHERE u.deleted_at IS NULL
+          AND (coalesce(u.username,'') %% :q
+            OR coalesce(u.fname,'')    %% :q
+            OR coalesce(u.lname,'')    %% :q)
+        ORDER BY score DESC, u.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchUsersTrgm(@Param("q") String q, @Param("limit") int limit);
+
+    /**
+     * Mention-picker autocomplete — optimised for keystroke-by-keystroke
+     * typing. Prefix matches on username win first (Twitter / Slack style),
+     * then prefix matches on first/last name, and finally trigram-similar
+     * fallbacks pick up typos. Trigram + LIKE both ride the existing GIN
+     * indexes from {@code SearchInfrastructureInitializer}.
+     */
+    @Query(value = """
+        SELECT u.id,
+               CASE WHEN LOWER(u.username) LIKE LOWER(:q || '%') THEN 3.0
+                    WHEN LOWER(u.fname)    LIKE LOWER(:q || '%') THEN 2.0
+                    WHEN LOWER(u.lname)    LIKE LOWER(:q || '%') THEN 2.0
+                    ELSE GREATEST(similarity(coalesce(u.username,''), :q),
+                                  similarity(coalesce(u.fname,''),    :q),
+                                  similarity(coalesce(u.lname,''),    :q))
+               END AS score
+        FROM users u
+        WHERE u.deleted_at IS NULL
+          AND (LOWER(u.username) LIKE LOWER(:q || '%')
+            OR LOWER(u.fname)    LIKE LOWER(:q || '%')
+            OR LOWER(u.lname)    LIKE LOWER(:q || '%')
+            OR coalesce(u.username,'') %% :q
+            OR coalesce(u.fname,'')    %% :q
+            OR coalesce(u.lname,'')    %% :q)
+        ORDER BY score DESC, length(u.username) ASC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> findMentionCandidates(@Param("q") String q, @Param("limit") int limit);
+
     @Query("SELECT u FROM User u WHERE u.deletedAt IS NULL")
     Page<User> findAllActive(Pageable pageable);
 
@@ -76,6 +143,25 @@ public interface UserRepository extends JpaRepository<User, UUID> {
           AND u.deletedAt IS NULL
         """)
     List<User> findActiveByIdIn(@Param("ids") Collection<UUID> ids);
+
+    /**
+     * Slim projection for the email pipeline — just enough fields to decide
+     * whether to send and where. Avoids loading the full User entity (with
+     * all its {@code @ManyToOne}/{@code @OneToMany} fields and the audit
+     * envelope) on every notification.
+     */
+    @Query("""
+        SELECT new ak.dev.irc.app.email.UserEmailContext(
+            u.id, u.email,
+            CONCAT(COALESCE(u.fname, ''), ' ', COALESCE(u.lname, '')),
+            u.emailNotificationsEnabled,
+            u.emailSocialEnabled,
+            u.emailMentionsEnabled,
+            u.emailSystemEnabled)
+        FROM User u
+        WHERE u.id = :id AND u.deletedAt IS NULL
+        """)
+    Optional<ak.dev.irc.app.email.UserEmailContext> findEmailContextById(@Param("id") UUID id);
 
     @Modifying
     @Query("UPDATE User u SET u.lastLoginAt = CURRENT_TIMESTAMP WHERE u.id = :id")

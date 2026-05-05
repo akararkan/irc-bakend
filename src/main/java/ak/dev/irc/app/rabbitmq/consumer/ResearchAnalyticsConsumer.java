@@ -6,6 +6,9 @@ import ak.dev.irc.app.research.entity.Research;
 import ak.dev.irc.app.research.entity.ResearchDownload;
 import ak.dev.irc.app.research.entity.ResearchMedia;
 import ak.dev.irc.app.research.entity.ResearchView;
+import ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster;
+import ak.dev.irc.app.research.realtime.ResearchRealtimeEvent;
+import ak.dev.irc.app.research.realtime.ResearchRealtimeEventType;
 import ak.dev.irc.app.research.repository.ResearchDownloadRepository;
 import ak.dev.irc.app.research.repository.ResearchMediaRepository;
 import ak.dev.irc.app.research.repository.ResearchRepository;
@@ -48,6 +51,7 @@ public class ResearchAnalyticsConsumer {
     private final ResearchDownloadRepository downloadRepo;
     private final ResearchMediaRepository mediaRepo;
     private final UserRepository          userRepo;
+    private final ResearchRealtimeBroadcaster realtime;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  View tracking
@@ -90,6 +94,8 @@ public class ResearchAnalyticsConsumer {
 
         viewRepo.save(view);
         researchRepo.incrementViewCount(event.researchId());
+
+        broadcastFreshCounters(event.researchId(), ResearchRealtimeEventType.VIEW_COUNT_UPDATED);
 
         log.debug("[ANALYTICS] View saved and viewCount incremented for researchId={}",
                 event.researchId());
@@ -142,7 +148,34 @@ public class ResearchAnalyticsConsumer {
         downloadRepo.save(download);
         researchRepo.incrementDownloadCount(event.researchId());
 
+        broadcastFreshCounters(event.researchId(), ResearchRealtimeEventType.DOWNLOAD_COUNT_UPDATED);
+
         log.debug("[ANALYTICS] Download saved and downloadCount incremented for researchId={}",
                 event.researchId());
+    }
+
+    /**
+     * Re-read the freshly-incremented counters and emit a research-channel
+     * event so every connected reader sees view / download numbers update
+     * live without reloading the page. Fail-safe — analytics writes never
+     * propagate broadcast errors.
+     */
+    private void broadcastFreshCounters(java.util.UUID researchId, ResearchRealtimeEventType type) {
+        try {
+            researchRepo.findById(researchId).ifPresent(r -> realtime.broadcast(
+                    ResearchRealtimeEvent.builder()
+                            .eventType(type)
+                            .researchId(researchId)
+                            .reactionCount(r.getReactionCount())
+                            .commentCount(r.getCommentCount())
+                            .shareCount(r.getShareCount())
+                            .saveCount(r.getSaveCount())
+                            .viewCount(r.getViewCount())
+                            .downloadCount(r.getDownloadCount())
+                            .citationCount(r.getCitationCount())
+                            .build()));
+        } catch (Exception ex) {
+            log.debug("[ANALYTICS] broadcast skipped: {}", ex.getMessage());
+        }
     }
 }

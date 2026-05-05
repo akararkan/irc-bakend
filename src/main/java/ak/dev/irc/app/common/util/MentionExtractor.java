@@ -3,8 +3,10 @@ package ak.dev.irc.app.common.util;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -84,5 +86,42 @@ public final class MentionExtractor {
         public boolean isEmpty() {
             return usernames.isEmpty() && !hasFollowersToken;
         }
+    }
+
+    /**
+     * Position-aware tokenisation — same regex as {@link #extract} but returns
+     * each match with its {@code [start, end)} offset in the original text and
+     * a flag for the {@code @followers} sentinel. Clients use this to render
+     * highlighted previews (rich-text editors, comment cards) without
+     * re-parsing the body.
+     */
+    public static List<MentionToken> tokens(String text) {
+        if (text == null || text.isEmpty()) return Collections.emptyList();
+        List<MentionToken> out = new ArrayList<>();
+        Matcher m = PATTERN.matcher(text);
+        while (m.find()) {
+            String handle = m.group(1);
+            boolean isFollowers = FOLLOWERS_TOKEN.equalsIgnoreCase(handle);
+            out.add(new MentionToken(
+                    isFollowers ? "followers" : handle.toLowerCase(),
+                    m.start(),
+                    m.end(),
+                    isFollowers));
+        }
+        return out;
+    }
+
+    /** Single mention occurrence — the {@code @} sign is included in the offsets. */
+    @Getter
+    @AllArgsConstructor
+    public static final class MentionToken {
+        /** The lower-cased handle (or the literal "followers" for the sentinel). */
+        private final String handle;
+        /** Inclusive start offset in the source text — points at the {@code @}. */
+        private final int start;
+        /** Exclusive end offset. */
+        private final int end;
+        /** True for the {@code @followers} sentinel; never a regular user. */
+        private final boolean followersSentinel;
     }
 }

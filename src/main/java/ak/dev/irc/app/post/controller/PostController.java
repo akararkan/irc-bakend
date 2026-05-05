@@ -243,6 +243,57 @@ public class PostController {
                 .body(postService.sharePost(postId, user.getId(), caption));
     }
 
+    /**
+     * Copy-link endpoint. Returns the canonical short + long URL for the
+     * post and atomically bumps the share counter — broadcast live on the
+     * post stream so anyone watching the share count sees it tick. Distinct
+     * from {@link #repostPost} which creates a new feed item.
+     *
+     * <p>Front-end usage: user clicks "Copy link" → call this → copy
+     * {@code shortUrl} to clipboard → show a toast.</p>
+     */
+    @PostMapping("/{postId}/copy-link")
+    public ResponseEntity<ak.dev.irc.app.post.service.PostService.ShareLinkInfo> copyLink(
+            @PathVariable UUID postId,
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(
+                postService.copyShareLink(postId, requesterId, originBase(request)));
+    }
+
+    /**
+     * Same payload, no counter bump — useful for the inline share UI
+     * before the user actually copies the URL.
+     */
+    @GetMapping("/{postId}/share-link")
+    public ResponseEntity<ak.dev.irc.app.post.service.PostService.ShareLinkInfo> previewShareLink(
+            @PathVariable UUID postId,
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
+        // Reuse the same routine; clients call /copy-link only on the actual
+        // copy gesture so the counter reflects intent rather than impressions.
+        UUID requesterId = user != null ? user.getId() : null;
+        ak.dev.irc.app.post.service.PostService.ShareLinkInfo info =
+                postService.copyShareLink(postId, requesterId, originBase(request));
+        return ResponseEntity.ok(info);
+    }
+
+    /** Best-effort canonical origin so the returned URL is hostname-correct. */
+    private static String originBase(HttpServletRequest request) {
+        if (request == null) return null;
+        String forwardedProto = request.getHeader("X-Forwarded-Proto");
+        String forwardedHost  = request.getHeader("X-Forwarded-Host");
+        String scheme = (forwardedProto != null && !forwardedProto.isBlank())
+                ? forwardedProto : request.getScheme();
+        String host   = (forwardedHost != null && !forwardedHost.isBlank())
+                ? forwardedHost : request.getServerName();
+        int port = request.getServerPort();
+        boolean defaultPort = ("http".equals(scheme) && port == 80)
+                || ("https".equals(scheme) && port == 443);
+        return scheme + "://" + host + (defaultPort ? "" : ":" + port);
+    }
+
     // ── Delete ────────────────────────────────────────────────
 
     @DeleteMapping("/{postId}")

@@ -45,6 +45,26 @@ import java.util.UUID;
 public class ResearchController {
 
     private final ResearchService researchService;
+    private final ak.dev.irc.app.research.realtime.ResearchRealtimeService researchRealtimeService;
+
+    /**
+     * Live event stream for a single research publication.
+     *
+     * <p>Subscribers receive every reaction, comment, reply, view-count,
+     * download-count, share-count, save-count, and citation-count update on
+     * this research in near real time. Event names mirror
+     * {@code ResearchRealtimeEventType}; payload schema is
+     * {@code ResearchRealtimeEvent}. A {@code connected} handshake fires on
+     * subscribe and a {@code heartbeat} every 25 s.</p>
+     */
+    @org.springframework.web.bind.annotation.GetMapping(
+            value = "/{researchId}/stream",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter streamResearch(
+            @org.springframework.web.bind.annotation.PathVariable java.util.UUID researchId,
+            @AuthenticationPrincipal User user) {
+        return researchRealtimeService.subscribe(researchId, user != null ? user.getId() : null);
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     //  CREATE — single multipart/form-data call, files included

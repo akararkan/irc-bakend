@@ -48,4 +48,28 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     Page<Question> findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(UUID authorId, Pageable pageable);
 
     Optional<Question> findByIdAndDeletedAtIsNull(UUID id);
+
+    // ── Full-text search ──────────────────────────────────────────────
+    @Query(value = """
+        SELECT q.id, ts_rank_cd(to_tsvector('simple',
+                  coalesce(q.title,'') || ' ' || coalesce(q.body,'')),
+                websearch_to_tsquery('simple', :q)) AS score
+        FROM questions q
+        WHERE q.deleted_at IS NULL
+          AND to_tsvector('simple', coalesce(q.title,'') || ' ' || coalesce(q.body,''))
+              @@ websearch_to_tsquery('simple', :q)
+        ORDER BY score DESC, q.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchFts(@Param("q") String q, @Param("limit") int limit);
+
+    @Query(value = """
+        SELECT q.id, similarity(coalesce(q.title,''), :q) AS score
+        FROM questions q
+        WHERE q.deleted_at IS NULL
+          AND coalesce(q.title,'') %% :q
+        ORDER BY score DESC, q.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchTrgm(@Param("q") String q, @Param("limit") int limit);
 }

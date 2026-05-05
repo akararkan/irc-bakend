@@ -5,6 +5,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -84,17 +85,18 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
                                               Pageable pageable);
 
     /**
-     * Bulk reply-count fetch for a page of top-level answers — single query
-     * instead of N {@code countByParentAnswerIdAndDeletedAtIsNull} calls.
+     * Atomic clamp-at-zero increment/decrement of the denormalised
+     * {@code replyCount}. Mirrors {@code PostCommentRepository.updateReplyCount}
+     * so a high-traffic question never produces negative counters.
      */
+    @Modifying
     @Query("""
-        SELECT a.parentAnswer.id, COUNT(a)
-        FROM QuestionAnswer a
-        WHERE a.parentAnswer.id IN :parentIds
-          AND a.deletedAt IS NULL
-        GROUP BY a.parentAnswer.id
+        UPDATE QuestionAnswer a
+        SET a.replyCount = CASE WHEN a.replyCount + :delta < 0 THEN 0
+                                ELSE a.replyCount + :delta END
+        WHERE a.id = :id
         """)
-    List<Object[]> countRepliesByParentIds(@Param("parentIds") List<UUID> parentIds);
+    void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
 
     /**
      * Bulk fetch of {@code (answerId, reactionType)} for a viewer over a page
@@ -108,4 +110,17 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         """)
     List<Object[]> findMyReactionsForAnswers(@Param("userId") UUID userId,
                                               @Param("answerIds") List<UUID> answerIds);
+
+    // ── Full-text search on answer body ─────────────────────────────
+    @Query(value = """
+        SELECT a.id, ts_rank_cd(to_tsvector('simple', coalesce(a.body, '')),
+                                websearch_to_tsquery('simple', :q)) AS score
+        FROM question_answers a
+        WHERE a.deleted_at IS NULL
+          AND to_tsvector('simple', coalesce(a.body, ''))
+              @@ websearch_to_tsquery('simple', :q)
+        ORDER BY score DESC, a.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchFts(@Param("q") String q, @Param("limit") int limit);
 }

@@ -175,6 +175,45 @@ public class QuestionController {
                 .body(questionService.addAnswer(questionId, request, user.getId()));
     }
 
+    /**
+     * Comment-style one-shot create — upload an inline media file (image or
+     * video) and an optional voice note alongside the answer body in a single
+     * multipart request. Same shape as {@code POST /api/v1/posts/{id}/comments/upload}
+     * so the front-end can reuse its comment composer for answers.
+     */
+    @PostMapping(value = "/{questionId}/answers/upload",
+                 consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> addAnswerWithMedia(
+            @PathVariable UUID questionId,
+            @Valid @RequestPart("data") CreateAnswerRequest request,
+            @RequestPart(value = "media", required = false) org.springframework.web.multipart.MultipartFile media,
+            @RequestPart(value = "voice", required = false) org.springframework.web.multipart.MultipartFile voice,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(questionService.addAnswerWithMedia(questionId, request, user.getId(), media, voice));
+    }
+
+    /** Reanswer multipart variant — same shape, sets {@code parentAnswerId} on the request. */
+    @PostMapping(value = {
+            "/{questionId}/answers/{answerId}/reanswers/upload",
+            "/{questionId}/answers/{answerId}/replies/upload"
+    }, consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> addReanswerWithMedia(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @Valid @RequestPart("data") CreateAnswerRequest request,
+            @RequestPart(value = "media", required = false) org.springframework.web.multipart.MultipartFile media,
+            @RequestPart(value = "voice", required = false) org.springframework.web.multipart.MultipartFile voice,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        request.setParentAnswerId(answerId);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(questionService.addAnswerWithMedia(questionId, request, user.getId(), media, voice));
+    }
+
     @GetMapping({
             "/{questionId}/answers/{answerId}/reanswers",
             "/{questionId}/answers/{answerId}/replies"

@@ -102,6 +102,7 @@ public class NotificationEventConsumer {
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
         private final UserActivityService    userActivityService;
+        private final ak.dev.irc.app.user.service.NotificationDispatcher dispatcher;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  User — Follow / Unfollow
@@ -135,9 +136,8 @@ public class NotificationEventConsumer {
                 .resourceType("User")
                 .build();
 
-        notifRepo.save(notification);
-        pushRealtime(target.getId(), notification);
-        log.debug("[CONSUMER] NEW_FOLLOWER notification saved & queued for SSE push → user={}", target.getId());
+        dispatcher.dispatch(notification);
+        log.debug("[CONSUMER] NEW_FOLLOWER dispatched → user={}", target.getId());
     }
 
     @RabbitHandler
@@ -198,9 +198,8 @@ public class NotificationEventConsumer {
                 .resourceType("User")
                 .build();
 
-        notifRepo.save(notification);
-        pushRealtime(target.getId(), notification);
-        log.debug("[CONSUMER] UNBLOCKED notification saved & queued for SSE push → user={}", target.getId());
+        dispatcher.dispatch(notification);
+        log.debug("[CONSUMER] UNBLOCKED dispatched → user={}", target.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -259,20 +258,17 @@ public class NotificationEventConsumer {
 
         String reactionLabel = toReadableReaction(event.reactionType());
 
-        Notification notification = Notification.builder()
-                .user(researcher)
-                .actor(actor)
-                .type(NotificationType.PUBLICATION_LIKED)
-                .title("Someone reacted to your research")
-                .body(actor.getFullName() + " (@" + actor.getUsername()
-                        + ") reacted " + reactionLabel + " to: \"" + event.researchTitle() + "\"")
-                .resourceId(event.researchId())
-                .resourceType("Research")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(researcher.getId(), notification);
-        log.debug("[CONSUMER] PUBLICATION_LIKED notification saved & queued for SSE → researcher={}", researcher.getId());
+        dispatcher.dispatchAggregated(
+                researcher,
+                actor,
+                NotificationType.PUBLICATION_LIKED,
+                "PUBLICATION_LIKED:" + event.researchId(),
+                "Someone reacted to your research",
+                actor.getFullName() + " (@" + actor.getUsername()
+                        + ") reacted " + reactionLabel + " to: \"" + event.researchTitle() + "\"",
+                event.researchId(),
+                "Research");
+        log.debug("[CONSUMER] PUBLICATION_LIKED dispatched → researcher={}", researcher.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -296,20 +292,17 @@ public class NotificationEventConsumer {
         User actor      = actorOpt.get();
         User researcher = researcherOpt.get();
 
-        Notification notification = Notification.builder()
-                .user(researcher)
-                .actor(actor)
-                .type(NotificationType.PUBLICATION_COMMENTED)
-                .title("New comment on your research")
-                .body(actor.getFullName() + " (@" + actor.getUsername()
-                        + ") commented: \"" + event.commentPreview() + "\"")
-                .resourceId(event.researchId())
-                .resourceType("Research")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(researcher.getId(), notification);
-        log.debug("[CONSUMER] PUBLICATION_COMMENTED notification saved & queued for SSE → researcher={}", researcher.getId());
+        dispatcher.dispatchAggregated(
+                researcher,
+                actor,
+                NotificationType.PUBLICATION_COMMENTED,
+                "PUBLICATION_COMMENTED:" + event.researchId(),
+                "New comment on your research",
+                actor.getFullName() + " (@" + actor.getUsername()
+                        + ") commented: \"" + event.commentPreview() + "\"",
+                event.researchId(),
+                "Research");
+        log.debug("[CONSUMER] PUBLICATION_COMMENTED dispatched → researcher={}", researcher.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -330,21 +323,46 @@ public class NotificationEventConsumer {
 
         User author = authorOpt.get();
 
-        int savedNotifications = fanOutToRoles(
+        // Track who has been notified so a scholar who is also a follower of
+        // the author still receives exactly one inbox row + one email.
+        Set<UUID> notified = new HashSet<>();
+
+        // ── Pass 1: scholars / mods who can actually answer questions ──
+        int scholarCount = fanOutToRoles(
                 List.of(Role.SCHOLAR, Role.ADMIN, Role.SUPER_ADMIN),
                 author.getId(),
-                recipient -> Notification.builder()
-                        .user(recipient)
-                        .actor(author)
-                        .type(NotificationType.QUESTION_NEW)
-                        .title("New question to answer")
-                        .body(author.getFullName() + " (@" + author.getUsername()
-                                + ") asked: \"" + event.questionTitle() + "\"")
-                        .resourceId(event.questionId())
-                        .resourceType("Question")
-                        .build());
+                recipient -> {
+                    if (!notified.add(recipient.getId())) return null;
+                    return Notification.builder()
+                            .user(recipient)
+                            .actor(author)
+                            .type(NotificationType.QUESTION_NEW)
+                            .title("New question to answer")
+                            .body(author.getFullName() + " (@" + author.getUsername()
+                                    + ") asked: \"" + event.questionTitle() + "\"")
+                            .resourceId(event.questionId())
+                            .resourceType("Question")
+                            .build();
+                });
 
-        log.info("[CONSUMER] QuestionCreated — {} notification(s) saved & queued for SSE", savedNotifications);
+        // ── Pass 2: every follower of the author (mirrors post / research) ──
+        int followerCount = fanOutToFollowers(author.getId(), follower -> {
+            if (follower.getId().equals(author.getId())) return null;
+            if (!notified.add(follower.getId())) return null;
+            return Notification.builder()
+                    .user(follower)
+                    .actor(author)
+                    .type(NotificationType.QUESTION_NEW)
+                    .title("New question from " + author.getFullName())
+                    .body(author.getFullName() + " (@" + author.getUsername()
+                            + ") asked: \"" + event.questionTitle() + "\"")
+                    .resourceId(event.questionId())
+                    .resourceType("Question")
+                    .build();
+        });
+
+        log.info("[CONSUMER] QuestionCreated — {} scholar + {} follower notification(s) saved",
+                scholarCount, followerCount);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -377,20 +395,18 @@ public class NotificationEventConsumer {
         User questionAuthor = questionAuthorOpt.get();
         User answerAuthor = answerAuthorOpt.get();
 
-        Notification notification = Notification.builder()
-                .user(questionAuthor)
-                .actor(answerAuthor)
-                .type(NotificationType.QUESTION_ANSWERED)
-                .title("Your question has an answer")
-                .body(answerAuthor.getFullName() + " (@" + answerAuthor.getUsername()
-                        + ") answered: \"" + event.questionTitle() + "\"")
-                .resourceId(event.questionId())
-                .resourceType("Question")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(questionAuthor.getId(), notification);
-        log.debug("[CONSUMER] QUESTION_ANSWERED notification saved & queued for SSE → questionAuthor={}", questionAuthor.getId());
+        // Aggregate by question — many users answering the same question merge.
+        dispatcher.dispatchAggregated(
+                questionAuthor,
+                answerAuthor,
+                NotificationType.QUESTION_ANSWERED,
+                "QUESTION_ANSWERED:" + event.questionId(),
+                "Your question has an answer",
+                answerAuthor.getFullName() + " (@" + answerAuthor.getUsername()
+                        + ") answered: \"" + event.questionTitle() + "\"",
+                event.questionId(),
+                "Question");
+        log.debug("[CONSUMER] QUESTION_ANSWERED dispatched → questionAuthor={}", questionAuthor.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -427,19 +443,16 @@ public class NotificationEventConsumer {
         String reactionLabel = toReadableAnswerReaction(event.reactionType());
         String suffix = event.reanswer() ? " on your reanswer." : " on your answer.";
 
-        Notification notification = Notification.builder()
-                .user(answerAuthor)
-                .actor(reactor)
-                .type(NotificationType.ANSWER_REACTED)
-                .title("Someone reacted to your answer")
-                .body(reactor.getFullName() + " (@" + reactor.getUsername()
-                        + ") reacted " + reactionLabel + suffix)
-                .resourceId(event.questionId())
-                .resourceType("Question")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(answerAuthor.getId(), notification);
+        dispatcher.dispatchAggregated(
+                answerAuthor,
+                reactor,
+                NotificationType.ANSWER_REACTED,
+                "ANSWER_REACTED:" + event.answerId(),
+                "Someone reacted to your answer",
+                reactor.getFullName() + " (@" + reactor.getUsername()
+                        + ") reacted " + reactionLabel + suffix,
+                event.questionId(),
+                "Question");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -484,9 +497,8 @@ public class NotificationEventConsumer {
                 .resourceType("Question")
                 .build();
 
-        notifRepo.save(notification);
-        pushRealtime(answerAuthor.getId(), notification);
-        log.debug("[CONSUMER] ANSWER_ACCEPTED notification saved & queued for SSE → answerAuthor={}", answerAuthor.getId());
+        dispatcher.dispatch(notification);
+        log.debug("[CONSUMER] ANSWER_ACCEPTED dispatched → answerAuthor={}", answerAuthor.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -533,9 +545,8 @@ public class NotificationEventConsumer {
                 .resourceType("Question")
                 .build();
 
-        notifRepo.save(notification);
-        pushRealtime(answerAuthor.getId(), notification);
-        log.debug("[CONSUMER] ANSWER_FEEDBACK_RECEIVED notification saved & queued for SSE → answerAuthor={}", answerAuthor.getId());
+        dispatcher.dispatch(notification);
+        log.debug("[CONSUMER] ANSWER_FEEDBACK_RECEIVED dispatched → answerAuthor={}", answerAuthor.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -619,20 +630,19 @@ public class NotificationEventConsumer {
 
         String reactionLabel = toReadablePostReaction(event.getReactionType());
 
-        Notification notification = Notification.builder()
-                .user(author)
-                .actor(reactor)
-            .type(NotificationType.POST_REACTED)
-            .title("Someone reacted to your post")
-                .body(reactor.getFullName() + " (@" + reactor.getUsername()
-                + ") reacted " + reactionLabel + " to your post.")
-                .resourceId(event.getPostId())
-            .resourceType("Post")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(author.getId(), notification);
-        log.debug("[CONSUMER] POST_REACTED notification saved & queued for SSE → author={}", author.getId());
+        // Coalesce repeated reactions on the same post within an hour into one
+        // inbox row — the latest reactor becomes the avatar, count++.
+        dispatcher.dispatchAggregated(
+                author,
+                reactor,
+                NotificationType.POST_REACTED,
+                "POST_REACTED:" + event.getPostId(),
+                "Someone reacted to your post",
+                reactor.getFullName() + " (@" + reactor.getUsername()
+                        + ") reacted " + reactionLabel + " to your post.",
+                event.getPostId(),
+                "Post");
+        log.debug("[CONSUMER] POST_REACTED dispatched → author={}", author.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -695,19 +705,22 @@ public class NotificationEventConsumer {
         String body  = commenter.getFullName() + " (@" + commenter.getUsername()
                 + (event.isReply() ? ") replied to your comment." : ") commented on your post.");
 
-        Notification notification = Notification.builder()
-                .user(recipient)
-                .actor(commenter)
-                .type(type)
-                .title(title)
-                .body(body)
-                .resourceId(event.getPostId())
-                .resourceType("Post")
-                .build();
+        // Comments aggregate per-post; replies aggregate per parent-comment so
+        // different comment threads stay distinct in the inbox.
+        String groupKey = event.isReply()
+                ? "POST_COMMENT_REPLIED:" + event.getParentCommentId()
+                : "POST_COMMENTED:" + event.getPostId();
 
-        notifRepo.save(notification);
-        pushRealtime(recipient.getId(), notification);
-        log.debug("[CONSUMER] {} notification saved & queued for SSE → user={}", type, recipient.getId());
+        dispatcher.dispatchAggregated(
+                recipient,
+                commenter,
+                type,
+                groupKey,
+                title,
+                body,
+                event.getPostId(),
+                "Post");
+        log.debug("[CONSUMER] {} dispatched → user={}", type, recipient.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -745,20 +758,17 @@ public class NotificationEventConsumer {
 
         String reactionLabel = toReadablePostReaction(event.getReactionType());
 
-        Notification notification = Notification.builder()
-                .user(commentAuthor)
-                .actor(reactor)
-            .type(NotificationType.POST_COMMENT_REACTED)
-            .title("Someone reacted to your comment")
-                .body(reactor.getFullName() + " (@" + reactor.getUsername()
-                + ") reacted " + reactionLabel + " to your comment.")
-                .resourceId(event.getPostId())
-            .resourceType("Post")
-                .build();
-
-        notifRepo.save(notification);
-        pushRealtime(commentAuthor.getId(), notification);
-        log.debug("[CONSUMER] POST_COMMENT_REACTED notification saved & queued for SSE → user={}", commentAuthor.getId());
+        dispatcher.dispatchAggregated(
+                commentAuthor,
+                reactor,
+                NotificationType.POST_COMMENT_REACTED,
+                "POST_COMMENT_REACTED:" + event.getCommentId(),
+                "Someone reacted to your comment",
+                reactor.getFullName() + " (@" + reactor.getUsername()
+                        + ") reacted " + reactionLabel + " to your comment.",
+                event.getPostId(),
+                "Post");
+        log.debug("[CONSUMER] POST_COMMENT_REACTED dispatched → user={}", commentAuthor.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -794,19 +804,17 @@ public class NotificationEventConsumer {
 
         User sharer = sharerOpt.get();
         User author = authorOpt.get();
-        Notification notification = Notification.builder()
-                .user(author)
-                .actor(sharer)
-                .type(NotificationType.POST_SHARED)
-                .title("Someone shared your post")
-                .body(sharer.getFullName() + " (@" + sharer.getUsername() + ") shared your post.")
-                .resourceId(event.getPostId())
-                .resourceType("Post")
-                .build();
 
-        notifRepo.save(notification);
-        pushRealtime(author.getId(), notification);
-        log.debug("[CONSUMER] POST_SHARED notification saved & queued for SSE → author={}", author.getId());
+        dispatcher.dispatchAggregated(
+                author,
+                sharer,
+                NotificationType.POST_SHARED,
+                "POST_SHARED:" + event.getPostId(),
+                "Someone shared your post",
+                sharer.getFullName() + " (@" + sharer.getUsername() + ") shared your post.",
+                event.getPostId(),
+                "Post");
+        log.debug("[CONSUMER] POST_SHARED dispatched → author={}", author.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
