@@ -1,5 +1,6 @@
 package ak.dev.irc.app.common.search;
 
+import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -10,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Single search entry point — fast, ranked, multi-corpus.
@@ -37,6 +39,7 @@ public class SearchController {
     private static final int DEFAULT_LIMIT = 20;
 
     private final UnifiedSearchService service;
+    private final UserActivityService activityService;
 
     @GetMapping
     public ResponseEntity<UnifiedSearchResult> search(
@@ -46,7 +49,15 @@ public class SearchController {
             @AuthenticationPrincipal User user) {
         Set<SearchType> requested = (type == null || type.isEmpty()) ? null : new HashSet<>(type);
         UUID viewerId = user != null ? user.getId() : null;
-        return ResponseEntity.ok(service.search(q, requested, limit, viewerId));
+        UnifiedSearchResult result = service.search(q, requested, limit, viewerId);
+        if (viewerId != null) {
+            int hits = result.getBuckets() == null ? 0
+                    : result.getBuckets().values().stream().mapToInt(List::size).sum();
+            String scope = (requested == null || requested.isEmpty()) ? null
+                    : requested.stream().map(Enum::name).collect(Collectors.joining(","));
+            activityService.recordGlobalSearch(viewerId, q, scope, hits);
+        }
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/posts")
@@ -103,7 +114,25 @@ public class SearchController {
             @PathVariable String tag,
             @RequestParam(value = "limit", required = false, defaultValue = "20") int limit,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(
-                service.searchByHashtag(tag, user != null ? user.getId() : null, limit));
+        UUID viewerId = user != null ? user.getId() : null;
+        List<SearchHit> hits = service.searchByHashtag(tag, viewerId, limit);
+        if (viewerId != null) {
+            activityService.recordHashtagSearch(viewerId, tag, hits.size());
+        }
+        return ResponseEntity.ok(hits);
+    }
+
+    /**
+     * Search-as-you-type prefix-only endpoint — the absolute fastest path.
+     * Skips FTS / trgm fuzzy, only the prefix index ride. Use this from the
+     * compose box / search dropdown so every keystroke costs &lt;5ms.
+     */
+    @GetMapping("/instant")
+    public ResponseEntity<UnifiedSearchResult> instant(
+            @RequestParam("q") String q,
+            @RequestParam(value = "limit", required = false, defaultValue = "8") int limit,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(service.searchInstant(q, limit, viewerId));
     }
 }

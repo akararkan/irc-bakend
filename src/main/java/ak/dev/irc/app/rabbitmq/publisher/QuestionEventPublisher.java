@@ -6,10 +6,14 @@ import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerUnreactedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.BestAnswerVotedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.QuestionDeletedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -108,6 +112,49 @@ public class QuestionEventPublisher {
 
         publish(RabbitMQConstants.QNA_FEEDBACK_ADDED, event,
                 "FEEDBACK_ADDED questionId=" + question.getId() + " answerId=" + answer.getId());
+    }
+
+    public void publishQuestionDeleted(java.util.UUID questionId, java.util.UUID actorId) {
+        publish(RabbitMQConstants.QNA_QUESTION_DELETED,
+                QuestionDeletedEvent.of(questionId, actorId),
+                "QUESTION_DELETED questionId=" + questionId);
+    }
+
+    public void publishAnswerDeleted(java.util.UUID questionId, java.util.UUID answerId,
+                                      java.util.UUID parentAnswerId, java.util.UUID actorId) {
+        publish(RabbitMQConstants.QNA_ANSWER_DELETED,
+                AnswerDeletedEvent.of(questionId, answerId, parentAnswerId, actorId),
+                "ANSWER_DELETED questionId=" + questionId + " answerId=" + answerId);
+    }
+
+    public void publishAnswerUnreacted(java.util.UUID questionId, java.util.UUID answerId,
+                                        java.util.UUID actorId, String previousReactionType) {
+        publish(RabbitMQConstants.QNA_ANSWER_UNREACTED,
+                AnswerUnreactedEvent.of(questionId, answerId, actorId, previousReactionType),
+                "ANSWER_UNREACTED questionId=" + questionId + " answerId=" + answerId);
+    }
+
+    public void publishBestAnswerVoted(Question question, QuestionAnswer answer, User voter,
+                                        long bestAnswerVoteCount, boolean voted) {
+        BestAnswerVotedEvent event = BestAnswerVotedEvent.of(
+                question.getId(),
+                question.getTitle(),
+                answer.getId(),
+                answer.getAuthor().getId(),
+                answer.getAuthor().getUsername(),
+                answer.getAuthor().getFullName(),
+                voter.getId(),
+                voter.getUsername(),
+                voter.getFullName(),
+                bestAnswerVoteCount,
+                voted
+        );
+        String routingKey = voted
+                ? RabbitMQConstants.QNA_BEST_ANSWER_VOTED
+                : RabbitMQConstants.QNA_BEST_ANSWER_UNVOTED;
+        publish(routingKey, event,
+                (voted ? "BEST_ANSWER_VOTED" : "BEST_ANSWER_UNVOTED")
+                        + " questionId=" + question.getId() + " answerId=" + answer.getId());
     }
 
     private void publish(String routingKey, Object event, String label) {

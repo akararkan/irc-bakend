@@ -19,9 +19,15 @@ public interface QuestionService {
 
     QuestionResponse getQuestion(UUID questionId);
 
+    /** Block-aware fetch — returns 404 to a blocked viewer. */
+    QuestionResponse getQuestion(UUID questionId, UUID viewerId);
+
     Page<QuestionResponse> getQuestionFeed(Pageable pageable);
 
     Page<QuestionResponse> getFeed(Pageable pageable);
+
+    /** Block-aware feed: drops questions from authors the viewer is in a block edge with. */
+    Page<QuestionResponse> getFeed(UUID viewerId, Pageable pageable);
 
     /**
      * Cursor-paginated question feed. Pass {@code cursor=null} for the first
@@ -29,6 +35,9 @@ public interface QuestionService {
      * response. Doesn't degrade with deep paging.
      */
     CursorPage<QuestionResponse> getFeedCursor(LocalDateTime cursor, int limit);
+
+    /** Block-aware cursor variant. */
+    CursorPage<QuestionResponse> getFeedCursor(UUID viewerId, LocalDateTime cursor, int limit);
 
     Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable);
 
@@ -76,11 +85,24 @@ public interface QuestionService {
 
     QuestionResponse setAnswerLimit(UUID questionId, Integer maxAnswers, UUID requesterId);
 
-    // ── Accept / unaccept (multiple best answers) ───────────────────────────
+    // ── Accept / unaccept (question-author flag, kept for back-compat) ──────
 
     QuestionAnswerResponse acceptAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
     QuestionAnswerResponse unacceptAnswer(UUID questionId, UUID answerId, UUID requesterId);
+
+    // ── Multi-scholar best-answer voting ────────────────────────────────────
+
+    /**
+     * Mark an answer as a best answer. Any account with the SCHOLAR role
+     * (plus admins) may vote. Multiple scholars may independently vote for
+     * the same answer; multiple answers per question may all be marked best.
+     * Reanswers (replies) are not eligible.
+     */
+    QuestionAnswerResponse markBestAnswer(UUID questionId, UUID answerId, UUID requesterId);
+
+    /** Remove the caller's own best-answer vote. */
+    QuestionAnswerResponse unmarkBestAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
     // ── Feedback ─────────────────────────────────────────────────────────────
 

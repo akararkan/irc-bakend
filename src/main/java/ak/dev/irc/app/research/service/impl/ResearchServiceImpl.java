@@ -75,6 +75,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchEventPublisher researchEventPublisher;
     private final MentionService         mentionService;
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster researchRealtime;
+    private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -727,6 +728,12 @@ public class ResearchServiceImpl implements ResearchService {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
         Research research = researchRepo.findByIdAndDeletedAtIsNull(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+        // Block-aware: hide existence from a viewer in a block edge with the researcher.
+        if (currentUserId != null
+                && research.getResearcher() != null
+                && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
+            throw new ResourceNotFoundException("Research", "id", researchId);
+        }
         return mapper.toResponse(research, currentUserId);
     }
 
@@ -738,6 +745,11 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Slug is required", "MISSING_SLUG");
         Research research = researchRepo.findBySlugAndDeletedAtIsNull(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "slug", slug));
+        if (currentUserId != null
+                && research.getResearcher() != null
+                && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
+            throw new ResourceNotFoundException("Research", "slug", slug);
+        }
         return mapper.toResponse(research, currentUserId);
     }
 
@@ -754,9 +766,13 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getFeed(Pageable pageable, UUID currentUserId) {
-        return researchRepo
-                .findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(ResearchStatus.PUBLISHED, pageable)
-                .map(r -> mapper.toSummary(r, currentUserId));
+        List<UUID> blocked = currentUserId == null
+                ? List.of()
+                : socialGuard.findRelatedBlockedIds(currentUserId);
+        Page<ak.dev.irc.app.research.entity.Research> page = blocked.isEmpty()
+                ? researchRepo.findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(ResearchStatus.PUBLISHED, pageable)
+                : researchRepo.findFeedExcluding(ResearchStatus.PUBLISHED, blocked, pageable);
+        return page.map(r -> mapper.toSummary(r, currentUserId));
     }
 
     @Override

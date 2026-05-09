@@ -64,13 +64,13 @@ public class SearchInfrastructureInitializer {
 
             // ── Research: title + abstract + description + keywords ──────
             "CREATE INDEX IF NOT EXISTS idx_research_fts " +
-                    "ON research USING GIN (to_tsvector('simple', " +
+                    "ON researches USING GIN (to_tsvector('simple', " +
                     "  coalesce(title, '') || ' ' || coalesce(abstract_text, '') || ' ' || " +
                     "  coalesce(description, '') || ' ' || coalesce(keywords, '')))",
             "CREATE INDEX IF NOT EXISTS idx_research_title_trgm " +
-                    "ON research USING GIN (title gin_trgm_ops)",
+                    "ON researches USING GIN (title gin_trgm_ops)",
             "CREATE INDEX IF NOT EXISTS idx_research_keywords_trgm " +
-                    "ON research USING GIN (keywords gin_trgm_ops)",
+                    "ON researches USING GIN (keywords gin_trgm_ops)",
 
             // ── Questions: title + body ─────────────────────────────────
             "CREATE INDEX IF NOT EXISTS idx_question_fts " +

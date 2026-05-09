@@ -6,6 +6,8 @@ import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.post.entity.Post;
 import ak.dev.irc.app.post.entity.PostComment;
 import ak.dev.irc.app.post.entity.PostMedia;
+import ak.dev.irc.app.qna.entity.Question;
+import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.user.entity.User;
 import org.springframework.stereotype.Component;
 
@@ -24,6 +26,13 @@ public class UserActivityMapper {
                 .watchedSeconds(a.getWatchedSeconds())
                 .post(toPostSummary(a.getPost()))
                 .comment(toCommentSummary(a.getComment()))
+                .query(a.getQuery())
+                .searchScope(a.getSearchScope())
+                .hitCount(a.getHitCount())
+                .targetUser(toAuthorSummary(a.getTargetUser()))
+                .question(toQuestionSummary(a.getQuestion()))
+                .answer(toAnswerSummary(a.getAnswer()))
+                .qnaReactionType(a.getQnaReactionType() != null ? a.getQnaReactionType().name() : null)
                 .createdAt(a.getCreatedAt())
                 .timeAgo(TimeDisplayUtil.timeAgo(a.getCreatedAt()))
                 .formattedDate(TimeDisplayUtil.formattedDate(a.getCreatedAt()))
@@ -56,6 +65,27 @@ public class UserActivityMapper {
                 .username(u.getUsername())
                 .fullName(u.getFullName())
                 .avatarUrl(u.getProfileImage())
+                .build();
+    }
+
+    private UserActivityResponse.QuestionSummary toQuestionSummary(Question q) {
+        if (q == null) return null;
+        return UserActivityResponse.QuestionSummary.builder()
+                .id(q.getId())
+                .title(q.getTitle())
+                .author(toAuthorSummary(q.getAuthor()))
+                .build();
+    }
+
+    private UserActivityResponse.AnswerSummary toAnswerSummary(QuestionAnswer a) {
+        if (a == null) return null;
+        return UserActivityResponse.AnswerSummary.builder()
+                .id(a.getId())
+                .parentAnswerId(a.getParentAnswer() != null ? a.getParentAnswer().getId() : null)
+                .bodyPreview(a.isDeleted() ? null : truncate(a.getBody()))
+                .accepted(a.isAccepted())
+                .bestAnswerVoteCount(a.getBestAnswerVoteCount() != null ? a.getBestAnswerVoteCount() : 0L)
+                .author(toAuthorSummary(a.getAuthor()))
                 .build();
     }
 

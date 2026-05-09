@@ -5,6 +5,9 @@ import ak.dev.irc.app.common.BaseAuditEntity;
 import ak.dev.irc.app.post.entity.Post;
 import ak.dev.irc.app.post.entity.PostComment;
 import ak.dev.irc.app.post.enums.PostReactionType;
+import ak.dev.irc.app.qna.entity.Question;
+import ak.dev.irc.app.qna.entity.QuestionAnswer;
+import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.persistence.*;
 import lombok.*;
@@ -18,7 +21,11 @@ import java.util.UUID;
                 @Index(name = "idx_uact_user_created", columnList = "user_id, created_at DESC"),
                 @Index(name = "idx_uact_user_type",    columnList = "user_id, activity_type"),
                 @Index(name = "idx_uact_post",         columnList = "post_id"),
-                @Index(name = "idx_uact_comment",      columnList = "comment_id")
+                @Index(name = "idx_uact_comment",      columnList = "comment_id"),
+                @Index(name = "idx_uact_target_user",  columnList = "target_user_id"),
+                @Index(name = "idx_uact_user_query",   columnList = "user_id, query"),
+                @Index(name = "idx_uact_question",     columnList = "question_id"),
+                @Index(name = "idx_uact_answer",       columnList = "answer_id")
         }
 )
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -54,4 +61,42 @@ public class UserActivity extends BaseAuditEntity {
 
     @Column(name = "watched_seconds")
     private Integer watchedSeconds;
+
+    /** Search / mention query text — used by GLOBAL_SEARCH, HASHTAG_SEARCH, MENTION_LOOKUP. */
+    @Column(name = "query", length = 200)
+    private String query;
+
+    /**
+     * Comma-separated requested {@code SearchType}s for GLOBAL_SEARCH (e.g. "POST,USER").
+     * Null means "all corpora".
+     */
+    @Column(name = "search_scope", length = 120)
+    private String searchScope;
+
+    /** Number of hits the search / mention lookup returned. */
+    @Column(name = "hit_count")
+    private Integer hitCount;
+
+    /** Target user for MENTION_LOOKUP (the user that was clicked) and PROFILE_VIEW. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "target_user_id",
+            foreignKey = @ForeignKey(name = "fk_uact_target_user"))
+    private User targetUser;
+
+    /** Question for QNA_* activity types. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "question_id",
+            foreignKey = @ForeignKey(name = "fk_uact_question"))
+    private Question question;
+
+    /** Answer / reanswer for QNA_ANSWER_* / QNA_REANSWER_* / QNA_BEST_ANSWER_VOTE / QNA_ANSWER_REACTION. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "answer_id",
+            foreignKey = @ForeignKey(name = "fk_uact_answer"))
+    private QuestionAnswer answer;
+
+    /** Reaction emoji for QNA_ANSWER_REACTION. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "qna_reaction_type", length = 30)
+    private AnswerReactionType qnaReactionType;
 }

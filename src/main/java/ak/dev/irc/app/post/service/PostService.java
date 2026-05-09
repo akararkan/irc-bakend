@@ -702,6 +702,8 @@ public class PostService {
             reactionRepository.delete(r);
             postRepository.updateReactionCount(postId, -1);
 
+            eventPublisher.publishPostUnreacted(postId, userId, previous.name());
+
             Post fresh = postRepository.findById(postId).orElse(null);
             User actor = userRepository.findById(userId).orElse(null);
             realtime.broadcast(PostRealtimeEvent.builder()
@@ -727,6 +729,8 @@ public class PostService {
         }
         post.setStatus(PostStatus.REMOVED);
         postRepository.save(post);
+
+        eventPublisher.publishPostDeleted(postId, requesterId);
 
         User author = post.getAuthor();
         realtime.broadcast(PostRealtimeEvent.builder()

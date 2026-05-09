@@ -36,6 +36,37 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         """)
     List<Question> findFeedAfter(@Param("cursor") java.time.LocalDateTime cursor, Pageable pageable);
 
+    // ── Block-aware feed variants ────────────────────────────────────
+    // Drop questions whose author is in any block-relationship with the
+    // viewer in the same query — no per-row scan, single index hit.
+
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND q.author.id NOT IN :blockedIds
+        ORDER BY q.createdAt DESC
+        """)
+    Page<Question> findFeedExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND q.author.id NOT IN :blockedIds
+        ORDER BY q.createdAt DESC
+        """)
+    List<Question> findFeedFirstPageExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND q.createdAt < :cursor
+          AND q.author.id NOT IN :blockedIds
+        ORDER BY q.createdAt DESC
+        """)
+    List<Question> findFeedAfterExcluding(@Param("cursor") java.time.LocalDateTime cursor,
+                                          @Param("blockedIds") List<UUID> blockedIds,
+                                          Pageable pageable);
+
     // Following feed: questions from followed users
     @Query("""
         SELECT q FROM Question q
@@ -49,7 +80,8 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     Optional<Question> findByIdAndDeletedAtIsNull(UUID id);
 
-    // ── Full-text search ──────────────────────────────────────────────
+    // ── Full-text search (block-aware) ─────────────────────────────────
+    // Per-query block exclusion — pass null/empty for anonymous viewers.
     @Query(value = """
         SELECT q.id, ts_rank_cd(to_tsvector('simple',
                   coalesce(q.title,'') || ' ' || coalesce(q.body,'')),
@@ -58,18 +90,45 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         WHERE q.deleted_at IS NULL
           AND to_tsvector('simple', coalesce(q.title,'') || ' ' || coalesce(q.body,''))
               @@ websearch_to_tsquery('simple', :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, q.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchFts(@Param("q") String q, @Param("limit") int limit);
+    List<Object[]> searchFts(@Param("q") String q,
+                              @Param("blockedIds") java.util.UUID[] blockedIds,
+                              @Param("limit") int limit);
 
     @Query(value = """
         SELECT q.id, similarity(coalesce(q.title,''), :q) AS score
         FROM questions q
         WHERE q.deleted_at IS NULL
           AND coalesce(q.title,'') %% :q
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, q.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchTrgm(@Param("q") String q, @Param("limit") int limit);
+    List<Object[]> searchTrgm(@Param("q") String q,
+                               @Param("blockedIds") java.util.UUID[] blockedIds,
+                               @Param("limit") int limit);
+
+    /** Prefix-only typeahead for the instant search dropdown — block-aware. */
+    @Query(value = """
+        SELECT q.id,
+               CASE WHEN LOWER(q.title) LIKE LOWER(:q || '%') THEN 1.0
+                    ELSE similarity(coalesce(q.title,''), :q)
+               END AS score
+        FROM questions q
+        WHERE q.deleted_at IS NULL
+          AND (LOWER(q.title) LIKE LOWER(:q || '%')
+            OR coalesce(q.title,'') %% :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, q.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchPrefix(@Param("q") String q,
+                                 @Param("blockedIds") java.util.UUID[] blockedIds,
+                                 @Param("limit") int limit);
 }

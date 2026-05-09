@@ -49,8 +49,10 @@ public class QuestionController {
 
     @GetMapping
     public ResponseEntity<Page<QuestionResponse>> getFeed(
-            @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(questionService.getFeed(pageable));
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(questionService.getFeed(viewerId, pageable));
     }
 
     /**
@@ -63,8 +65,10 @@ public class QuestionController {
     public ResponseEntity<CursorPage<QuestionResponse>> getFeedCursor(
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
-            @RequestParam(defaultValue = "20") int limit) {
-        return ResponseEntity.ok(questionService.getFeedCursor(cursor, limit));
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(questionService.getFeedCursor(viewerId, cursor, limit));
     }
 
     @GetMapping("/feed/following")
@@ -96,8 +100,11 @@ public class QuestionController {
     }
 
     @GetMapping("/{questionId}")
-    public ResponseEntity<QuestionResponse> getQuestion(@PathVariable UUID questionId) {
-        return ResponseEntity.ok(questionService.getQuestion(questionId));
+    public ResponseEntity<QuestionResponse> getQuestion(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(questionService.getQuestion(questionId, viewerId));
     }
 
     /**
@@ -313,6 +320,32 @@ public class QuestionController {
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(questionService.unacceptAnswer(questionId, answerId, user.getId()));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  MULTI-SCHOLAR BEST-ANSWER VOTING
+    //  Any scholar may vote any top-level answer as a best answer; multiple
+    //  answers per question may be marked best by multiple voters.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @PostMapping("/{questionId}/answers/{answerId}/best")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> markBestAnswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.markBestAnswer(questionId, answerId, user.getId()));
+    }
+
+    @DeleteMapping("/{questionId}/answers/{answerId}/best")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionAnswerResponse> unmarkBestAnswer(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.unmarkBestAnswer(questionId, answerId, user.getId()));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

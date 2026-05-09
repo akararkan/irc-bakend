@@ -114,15 +114,15 @@ public class UnifiedSearchService {
         }
         if (wanted.contains(SearchType.RESEARCH)) {
             futures.put(SearchType.RESEARCH,
-                    CompletableFuture.supplyAsync(() -> searchResearch(query, limit)));
+                    CompletableFuture.supplyAsync(() -> searchResearch(query, blocked, limit)));
         }
         if (wanted.contains(SearchType.QUESTION)) {
             futures.put(SearchType.QUESTION,
-                    CompletableFuture.supplyAsync(() -> searchQuestions(query, limit)));
+                    CompletableFuture.supplyAsync(() -> searchQuestions(query, blocked, limit)));
         }
         if (wanted.contains(SearchType.ANSWER)) {
             futures.put(SearchType.ANSWER,
-                    CompletableFuture.supplyAsync(() -> searchAnswers(query, limit)));
+                    CompletableFuture.supplyAsync(() -> searchAnswers(query, blocked, limit)));
         }
         if (wanted.contains(SearchType.USER)) {
             futures.put(SearchType.USER,
@@ -196,8 +196,13 @@ public class UnifiedSearchService {
 
     @Transactional(readOnly = true)
     public List<SearchHit> searchResearch(String q, int limit) {
-        List<Object[]> rows = researchRepo.searchFts(q, clamp(limit));
-        if (rows.isEmpty()) rows = researchRepo.searchTrgm(q, clamp(limit));
+        return searchResearch(q, /* blocked */ null, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SearchHit> searchResearch(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = researchRepo.searchFts(q, blocked, clamp(limit));
+        if (rows.isEmpty()) rows = researchRepo.searchTrgm(q, blocked, clamp(limit));
         if (rows.isEmpty()) return List.of();
         Map<UUID, Double> scoreById = scoreMap(rows);
         List<Research> entities = researchRepo.findAllById(scoreById.keySet());
@@ -222,8 +227,13 @@ public class UnifiedSearchService {
 
     @Transactional(readOnly = true)
     public List<SearchHit> searchQuestions(String q, int limit) {
-        List<Object[]> rows = questionRepo.searchFts(q, clamp(limit));
-        if (rows.isEmpty()) rows = questionRepo.searchTrgm(q, clamp(limit));
+        return searchQuestions(q, /* blocked */ null, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SearchHit> searchQuestions(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = questionRepo.searchFts(q, blocked, clamp(limit));
+        if (rows.isEmpty()) rows = questionRepo.searchTrgm(q, blocked, clamp(limit));
         if (rows.isEmpty()) return List.of();
         Map<UUID, Double> scoreById = scoreMap(rows);
         List<Question> entities = questionRepo.findAllById(scoreById.keySet());
@@ -247,7 +257,12 @@ public class UnifiedSearchService {
 
     @Transactional(readOnly = true)
     public List<SearchHit> searchAnswers(String q, int limit) {
-        List<Object[]> rows = answerRepo.searchFts(q, clamp(limit));
+        return searchAnswers(q, /* blocked */ null, limit);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SearchHit> searchAnswers(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = answerRepo.searchFts(q, blocked, clamp(limit));
         if (rows.isEmpty()) return List.of();
         Map<UUID, Double> scoreById = scoreMap(rows);
         List<QuestionAnswer> entities = answerRepo.findAllById(scoreById.keySet());
@@ -265,6 +280,148 @@ public class UnifiedSearchService {
                         .deepLink("/questions/" + a.getQuestion().getId())
                         .score(scoreById.getOrDefault(a.getId(), 0.0))
                         .createdAt(a.getCreatedAt())
+                        .build())
+                .toList();
+    }
+
+    /**
+     * Search-as-you-type prefix-only fan-out — drops FTS / trgm fuzzy and
+     * runs a per-corpus prefix query. Used by the search dropdown so every
+     * keystroke is &lt;5ms warm, even on multi-million row corpora.
+     */
+    @Transactional(readOnly = true)
+    @Cacheable(value = "search-results",
+               key = "'instant:' + T(java.util.Objects).hash(#query, #limitEach, #viewerId)",
+               unless = "#query == null || #query.isBlank()")
+    public UnifiedSearchResult searchInstant(String query, int limitEach, UUID viewerId) {
+        long started = System.currentTimeMillis();
+        if (query == null || query.isBlank()) {
+            return UnifiedSearchResult.builder()
+                    .query(query)
+                    .buckets(new EnumMap<>(SearchType.class))
+                    .elapsedMs(0)
+                    .build();
+        }
+
+        int limit = Math.max(1, Math.min(limitEach, MAX_LIMIT_PER_TYPE));
+        UUID[] blocked = blockedIdsFor(viewerId);
+
+        Map<SearchType, CompletableFuture<List<SearchHit>>> futures = new EnumMap<>(SearchType.class);
+        futures.put(SearchType.USER,
+                CompletableFuture.supplyAsync(() -> instantUsers(query, limit)));
+        futures.put(SearchType.POST,
+                CompletableFuture.supplyAsync(() -> instantPosts(query, blocked, limit)));
+        futures.put(SearchType.RESEARCH,
+                CompletableFuture.supplyAsync(() -> instantResearch(query, blocked, limit)));
+        futures.put(SearchType.QUESTION,
+                CompletableFuture.supplyAsync(() -> instantQuestions(query, blocked, limit)));
+
+        Map<SearchType, List<SearchHit>> buckets = new EnumMap<>(SearchType.class);
+        futures.forEach((type, fut) -> {
+            try {
+                buckets.put(type, fut.join());
+            } catch (Exception ex) {
+                log.warn("[SEARCH-INSTANT] {} failed: {}", type, ex.getMessage());
+                buckets.put(type, List.of());
+            }
+        });
+
+        return UnifiedSearchResult.builder()
+                .query(query)
+                .buckets(buckets)
+                .elapsedMs(System.currentTimeMillis() - started)
+                .build();
+    }
+
+    private List<SearchHit> instantUsers(String q, int limit) {
+        List<Object[]> rows = userRepo.findMentionCandidates(q.startsWith("@") ? q.substring(1) : q, limit);
+        if (rows.isEmpty()) return List.of();
+        Map<UUID, Double> scoreById = scoreMap(rows);
+        List<User> entities = userRepo.findAllById(scoreById.keySet());
+        return entities.stream()
+                .filter(u -> u.getDeletedAt() == null)
+                .sorted(Comparator.comparingDouble((User u) -> -scoreById.getOrDefault(u.getId(), 0.0)))
+                .map(u -> SearchHit.builder()
+                        .type(SearchType.USER)
+                        .id(u.getId())
+                        .title(u.getFullName())
+                        .snippet("@" + u.getUsername())
+                        .authorId(u.getId())
+                        .authorUsername(u.getUsername())
+                        .authorFullName(u.getFullName())
+                        .authorAvatarUrl(u.getProfileImage())
+                        .deepLink("/users/" + u.getId())
+                        .score(scoreById.getOrDefault(u.getId(), 0.0))
+                        .createdAt(u.getCreatedAt())
+                        .build())
+                .toList();
+    }
+
+    private List<SearchHit> instantPosts(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = postRepo.searchPrefix(q, blocked, limit);
+        if (rows.isEmpty()) return List.of();
+        Map<UUID, Double> scoreById = scoreMap(rows);
+        List<Post> entities = postRepo.findAllById(scoreById.keySet());
+        return entities.stream()
+                .sorted(Comparator.comparingDouble((Post p) -> -scoreById.getOrDefault(p.getId(), 0.0)))
+                .map(p -> SearchHit.builder()
+                        .type(p.getPostType() == PostType.REEL ? SearchType.REEL : SearchType.POST)
+                        .id(p.getId())
+                        .title(snippet(p.getTextContent()))
+                        .authorId(p.getAuthor() != null ? p.getAuthor().getId() : null)
+                        .authorUsername(p.getAuthor() != null ? p.getAuthor().getUsername() : null)
+                        .authorFullName(p.getAuthor() != null ? p.getAuthor().getFullName() : null)
+                        .authorAvatarUrl(p.getAuthor() != null ? p.getAuthor().getProfileImage() : null)
+                        .deepLink("/posts/" + p.getId())
+                        .score(scoreById.getOrDefault(p.getId(), 0.0))
+                        .createdAt(p.getCreatedAt())
+                        .build())
+                .toList();
+    }
+
+    private List<SearchHit> instantResearch(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = researchRepo.searchPrefix(q, blocked, limit);
+        if (rows.isEmpty()) return List.of();
+        Map<UUID, Double> scoreById = scoreMap(rows);
+        List<Research> entities = researchRepo.findAllById(scoreById.keySet());
+        return entities.stream()
+                .sorted(Comparator.comparingDouble((Research r) -> -scoreById.getOrDefault(r.getId(), 0.0)))
+                .map(r -> SearchHit.builder()
+                        .type(SearchType.RESEARCH)
+                        .id(r.getId())
+                        .title(r.getTitle())
+                        .snippet(snippet(r.getAbstractText()))
+                        .authorId(r.getResearcher() != null ? r.getResearcher().getId() : null)
+                        .authorUsername(r.getResearcher() != null ? r.getResearcher().getUsername() : null)
+                        .authorFullName(r.getResearcher() != null ? r.getResearcher().getFullName() : null)
+                        .authorAvatarUrl(r.getResearcher() != null ? r.getResearcher().getProfileImage() : null)
+                        .thumbnailUrl(r.getCoverImageUrl())
+                        .deepLink("/research/" + r.getId())
+                        .score(scoreById.getOrDefault(r.getId(), 0.0))
+                        .createdAt(r.getCreatedAt())
+                        .build())
+                .toList();
+    }
+
+    private List<SearchHit> instantQuestions(String q, UUID[] blocked, int limit) {
+        List<Object[]> rows = questionRepo.searchPrefix(q, blocked, limit);
+        if (rows.isEmpty()) return List.of();
+        Map<UUID, Double> scoreById = scoreMap(rows);
+        List<Question> entities = questionRepo.findAllById(scoreById.keySet());
+        return entities.stream()
+                .sorted(Comparator.comparingDouble((Question x) -> -scoreById.getOrDefault(x.getId(), 0.0)))
+                .map(x -> SearchHit.builder()
+                        .type(SearchType.QUESTION)
+                        .id(x.getId())
+                        .title(x.getTitle())
+                        .snippet(snippet(x.getBody()))
+                        .authorId(x.getAuthor() != null ? x.getAuthor().getId() : null)
+                        .authorUsername(x.getAuthor() != null ? x.getAuthor().getUsername() : null)
+                        .authorFullName(x.getAuthor() != null ? x.getAuthor().getFullName() : null)
+                        .authorAvatarUrl(x.getAuthor() != null ? x.getAuthor().getProfileImage() : null)
+                        .deepLink("/questions/" + x.getId())
+                        .score(scoreById.getOrDefault(x.getId(), 0.0))
+                        .createdAt(x.getCreatedAt())
                         .build())
                 .toList();
     }

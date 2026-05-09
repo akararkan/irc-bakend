@@ -43,12 +43,21 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
      * <p>{@code requesterId} may be null for anonymous viewers; the existence
      * sub-query then enforces full restriction.</p>
      */
+    /**
+     * Restriction- AND block-aware top-level answer listing.
+     * - Restriction (asymmetric, set by question author) hides restricted authors.
+     * - Block (symmetric, between viewer and answer author) hides each from the other.
+     * The viewer always sees their own answers and the question author always
+     * sees every answer, regardless of restriction. Block is enforced even on
+     * the question author when the answer author has them in a block edge.
+     */
     @EntityGraph(attributePaths = {"author", "parentAnswer"})
     @Query("""
         SELECT a FROM QuestionAnswer a
         WHERE a.question.id = :questionId
           AND a.parentAnswer IS NULL
           AND a.deletedAt IS NULL
+          AND (:blockedIds IS NULL OR a.author.id NOT IN :blockedIds)
           AND (
             (:requesterId IS NOT NULL AND a.question.author.id = :requesterId)
             OR (:requesterId IS NOT NULL AND a.author.id = :requesterId)
@@ -62,6 +71,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         """)
     Page<QuestionAnswer> findVisibleTopLevelAnswers(@Param("questionId") UUID questionId,
                                                     @Param("requesterId") UUID requesterId,
+                                                    @Param("blockedIds") List<UUID> blockedIds,
                                                     Pageable pageable);
 
     @EntityGraph(attributePaths = {"author", "parentAnswer"})
@@ -69,6 +79,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         SELECT a FROM QuestionAnswer a
         WHERE a.parentAnswer.id = :parentAnswerId
           AND a.deletedAt IS NULL
+          AND (:blockedIds IS NULL OR a.author.id NOT IN :blockedIds)
           AND (
             (:requesterId IS NOT NULL AND a.question.author.id = :requesterId)
             OR (:requesterId IS NOT NULL AND a.author.id = :requesterId)
@@ -82,6 +93,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         """)
     Page<QuestionAnswer> findVisibleReanswers(@Param("parentAnswerId") UUID parentAnswerId,
                                               @Param("requesterId") UUID requesterId,
+                                              @Param("blockedIds") List<UUID> blockedIds,
                                               Pageable pageable);
 
     /**
@@ -111,7 +123,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
     List<Object[]> findMyReactionsForAnswers(@Param("userId") UUID userId,
                                               @Param("answerIds") List<UUID> answerIds);
 
-    // ── Full-text search on answer body ─────────────────────────────
+    // ── Full-text search on answer body (block-aware) ──────────────
     @Query(value = """
         SELECT a.id, ts_rank_cd(to_tsvector('simple', coalesce(a.body, '')),
                                 websearch_to_tsquery('simple', :q)) AS score
@@ -119,8 +131,12 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         WHERE a.deleted_at IS NULL
           AND to_tsvector('simple', coalesce(a.body, ''))
               @@ websearch_to_tsquery('simple', :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR a.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, a.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchFts(@Param("q") String q, @Param("limit") int limit);
+    List<Object[]> searchFts(@Param("q") String q,
+                              @Param("blockedIds") java.util.UUID[] blockedIds,
+                              @Param("limit") int limit);
 }

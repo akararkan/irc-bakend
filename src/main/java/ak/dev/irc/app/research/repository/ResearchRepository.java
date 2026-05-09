@@ -31,6 +31,18 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     Page<Research> findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(
             ResearchStatus status, Pageable pageable);
 
+    /** Block-aware feed: hides researches whose author is in a block edge with the viewer. */
+    @Query("""
+        SELECT r FROM Research r
+        WHERE r.status = :status
+          AND r.deletedAt IS NULL
+          AND r.researcher.id NOT IN :blockedIds
+        ORDER BY r.publishedAt DESC
+        """)
+    Page<Research> findFeedExcluding(@Param("status") ResearchStatus status,
+                                     @Param("blockedIds") List<UUID> blockedIds,
+                                     Pageable pageable);
+
     Page<Research> findByResearcherIdAndDeletedAtIsNull(UUID researcherId, Pageable pageable);
 
     Page<Research> findByResearcherIdAndStatusAndDeletedAtIsNull(
@@ -144,32 +156,64 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
 
     // ── Full-text search (Postgres FTS + trigram fallback) ─────────────
     // Indexed by SearchInfrastructureInitializer; sub-100ms on millions of rows.
+    // Block-aware via :blockedIds — pass null/empty for anonymous viewers.
     @Query(value = """
         SELECT r.id, ts_rank_cd(to_tsvector('simple',
                   coalesce(r.title, '') || ' ' || coalesce(r.abstract_text, '') || ' ' ||
                   coalesce(r.description, '') || ' ' || coalesce(r.keywords, '')),
                 websearch_to_tsquery('simple', :q)) AS score
-        FROM research r
+        FROM researches r
         WHERE r.deleted_at IS NULL
           AND r.status = 'PUBLISHED'
           AND to_tsvector('simple',
                   coalesce(r.title, '') || ' ' || coalesce(r.abstract_text, '') || ' ' ||
                   coalesce(r.description, '') || ' ' || coalesce(r.keywords, ''))
               @@ websearch_to_tsquery('simple', :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, r.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchFts(@Param("q") String q, @Param("limit") int limit);
+    List<Object[]> searchFts(@Param("q") String q,
+                              @Param("blockedIds") java.util.UUID[] blockedIds,
+                              @Param("limit") int limit);
 
     @Query(value = """
         SELECT r.id, GREATEST(similarity(coalesce(r.title,''), :q),
                               similarity(coalesce(r.keywords,''), :q)) AS score
-        FROM research r
+        FROM researches r
         WHERE r.deleted_at IS NULL
           AND r.status = 'PUBLISHED'
           AND (coalesce(r.title,'') %% :q OR coalesce(r.keywords,'') %% :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, r.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchTrgm(@Param("q") String q, @Param("limit") int limit);
+    List<Object[]> searchTrgm(@Param("q") String q,
+                               @Param("blockedIds") java.util.UUID[] blockedIds,
+                               @Param("limit") int limit);
+
+    /** Prefix-only typeahead for the instant search dropdown — block-aware. */
+    @Query(value = """
+        SELECT r.id,
+               CASE WHEN LOWER(r.title) LIKE LOWER(:q || '%') THEN 1.0
+                    WHEN LOWER(r.keywords) LIKE LOWER(:q || '%') THEN 0.8
+                    ELSE GREATEST(similarity(coalesce(r.title,''), :q),
+                                  similarity(coalesce(r.keywords,''), :q))
+               END AS score
+        FROM researches r
+        WHERE r.deleted_at IS NULL
+          AND r.status = 'PUBLISHED'
+          AND (LOWER(r.title) LIKE LOWER(:q || '%')
+            OR LOWER(r.keywords) LIKE LOWER(:q || '%')
+            OR coalesce(r.title,'') %% :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, r.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchPrefix(@Param("q") String q,
+                                 @Param("blockedIds") java.util.UUID[] blockedIds,
+                                 @Param("limit") int limit);
 }

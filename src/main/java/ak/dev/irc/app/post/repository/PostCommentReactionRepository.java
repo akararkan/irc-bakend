@@ -4,6 +4,9 @@ package ak.dev.irc.app.post.repository;
 import ak.dev.irc.app.post.entity.PostCommentReaction;
 import ak.dev.irc.app.post.entity.PostCommentReactionId;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -15,4 +18,9 @@ public interface PostCommentReactionRepository extends JpaRepository<PostComment
     Optional<PostCommentReaction> findByCommentIdAndUserId(UUID commentId, UUID userId);
 
     boolean existsByCommentIdAndUserId(UUID commentId, UUID userId);
+
+    /** Bulk-purge reactions when the comment is soft-deleted. */
+    @Modifying
+    @Query("DELETE FROM PostCommentReaction r WHERE r.id.commentId = :commentId")
+    int deleteAllByCommentId(@Param("commentId") UUID commentId);
 }

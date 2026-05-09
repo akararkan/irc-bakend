@@ -1,5 +1,6 @@
 package ak.dev.irc.app.common.controller;
 
+import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.service.MentionSuggestionService;
 import ak.dev.irc.app.common.service.MentionSuggestionService.Suggestion;
 import ak.dev.irc.app.common.util.MentionExtractor;
@@ -31,6 +32,7 @@ import java.util.UUID;
 public class MentionController {
 
     private final MentionSuggestionService suggestions;
+    private final UserActivityService activityService;
 
     @GetMapping("/suggest")
     public ResponseEntity<List<Suggestion>> suggest(
@@ -38,8 +40,30 @@ public class MentionController {
             @RequestParam(value = "limit", required = false, defaultValue = "10") int limit,
             @AuthenticationPrincipal User user) {
         UUID viewerId = user != null ? user.getId() : null;
-        return ResponseEntity.ok(suggestions.suggest(q, limit, viewerId));
+        List<Suggestion> hits = suggestions.suggest(q, limit, viewerId);
+        if (viewerId != null) {
+            activityService.recordMentionLookup(viewerId, q, null, hits.size());
+        }
+        return ResponseEntity.ok(hits);
     }
+
+    /**
+     * Lock-in a clicked mention — called by the front-end when the user
+     * actually selects a candidate from the picker. Records the chosen
+     * target so the activity row can be rebuilt as a "you mentioned @x".
+     */
+    @PostMapping("/click")
+    public ResponseEntity<Map<String, Object>> click(
+            @RequestBody ClickRequest req,
+            @AuthenticationPrincipal User user) {
+        if (user == null || req == null || req.targetUserId() == null) {
+            return ResponseEntity.ok(Map.of("recorded", false));
+        }
+        activityService.recordMentionLookup(user.getId(), req.query(), req.targetUserId(), 1);
+        return ResponseEntity.ok(Map.of("recorded", true));
+    }
+
+    public record ClickRequest(String query, UUID targetUserId) {}
 
     @PostMapping("/parse")
     public ResponseEntity<Map<String, Object>> parse(@RequestBody ParseRequest req) {

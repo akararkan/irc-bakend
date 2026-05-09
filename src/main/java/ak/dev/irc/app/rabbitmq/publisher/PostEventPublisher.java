@@ -42,6 +42,25 @@ public class PostEventPublisher {
                 "POST_SHARED postId=" + event.getPostId() + " sharerId=" + event.getSharerId());
     }
 
+    public void publishPostDeleted(java.util.UUID postId, java.util.UUID actorId) {
+        publish(RabbitMQConstants.POST_DELETED,
+                PostDeletedEvent.of(postId, actorId),
+                "POST_DELETED postId=" + postId);
+    }
+
+    public void publishPostUnreacted(java.util.UUID postId, java.util.UUID actorId, String previousReactionType) {
+        publish(RabbitMQConstants.POST_UNREACTED,
+                PostUnreactedEvent.of(postId, actorId, previousReactionType),
+                "POST_UNREACTED postId=" + postId);
+    }
+
+    public void publishPostCommentDeleted(java.util.UUID postId, java.util.UUID commentId,
+                                           java.util.UUID parentCommentId, java.util.UUID actorId) {
+        publish(RabbitMQConstants.POST_COMMENT_DELETED,
+                PostCommentDeletedEvent.of(postId, commentId, parentCommentId, actorId),
+                "POST_COMMENT_DELETED postId=" + postId + " commentId=" + commentId);
+    }
+
     private void publish(String routingKey, Object event, String label) {
         Runnable publishAction = () -> {
             try {

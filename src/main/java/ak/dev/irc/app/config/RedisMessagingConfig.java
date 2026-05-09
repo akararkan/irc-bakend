@@ -1,5 +1,7 @@
 package ak.dev.irc.app.config;
 
+import ak.dev.irc.app.activity.realtime.UserActivityRealtimePublisher;
+import ak.dev.irc.app.activity.realtime.UserActivityRealtimeSubscriber;
 import ak.dev.irc.app.audit.realtime.AuditRealtimePublisher;
 import ak.dev.irc.app.audit.realtime.AuditRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
@@ -46,7 +48,8 @@ public class RedisMessagingConfig {
             PostRealtimeSubscriber postSubscriber,
             QnaRealtimeSubscriber qnaSubscriber,
             ResearchRealtimeSubscriber researchSubscriber,
-            AuditRealtimeSubscriber auditSubscriber) {
+            AuditRealtimeSubscriber auditSubscriber,
+            UserActivityRealtimeSubscriber activitySubscriber) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
@@ -72,6 +75,12 @@ public class RedisMessagingConfig {
         // this to see every user action across every running instance.
         container.addMessageListener(auditSubscriber,
                 new ChannelTopic(AuditRealtimePublisher.CHANNEL));
+
+        // Per-user activity channels — every user's tabs/devices receive
+        // their own events (search, mention lookup, reactions, comments…)
+        // the moment a row is written, on any instance.
+        container.addMessageListener(activitySubscriber,
+                new PatternTopic(UserActivityRealtimePublisher.CHANNEL_PREFIX + "*"));
 
         return container;
     }

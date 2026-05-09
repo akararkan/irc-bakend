@@ -251,4 +251,29 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     Page<Post> searchExcluding(@Param("q") String query,
                                @Param("blockedIds") List<UUID> blockedIds,
                                Pageable pageable);
+
+    /**
+     * Prefix-only search-as-you-type — rides the trgm GIN index for
+     * sub-millisecond lookup. Score weights an exact-prefix hit higher than
+     * a generic substring so the typeahead lands on what the user is
+     * literally typing.
+     */
+    @Query(value = """
+        SELECT p.id,
+               CASE WHEN LOWER(p.text_content) LIKE LOWER(:q || '%') THEN 1.0
+                    ELSE similarity(coalesce(p.text_content, ''), :q)
+               END AS score
+        FROM posts p
+        WHERE p.status = 'PUBLISHED'
+          AND p.visibility = 'PUBLIC'
+          AND (LOWER(p.text_content) LIKE LOWER(:q || '%')
+            OR coalesce(p.text_content, '') %% :q)
+          AND (CAST(:blockedIds AS uuid[]) IS NULL
+               OR p.author_id <> ALL(CAST(:blockedIds AS uuid[])))
+        ORDER BY score DESC, p.created_at DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchPrefix(@Param("q") String q,
+                                 @Param("blockedIds") java.util.UUID[] blockedIds,
+                                 @Param("limit") int limit);
 }

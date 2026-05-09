@@ -1,5 +1,6 @@
 package ak.dev.irc.app.qna.service.impl;
 
+import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
@@ -52,6 +53,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final AnswerAttachmentRepository attachmentRepository;
     private final AnswerSourceRepository sourceRepository;
     private final AnswerReactionRepository reactionRepository;
+    private final BestAnswerVoteRepository bestAnswerVoteRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
     private final UserBlockRepository blockRepository;
@@ -62,6 +64,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final SocialGuard socialGuard;
     private final FollowingIdsCache followingIdsCache;
     private final QnaRealtimeBroadcaster realtime;
+    private final UserActivityService userActivityService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -84,6 +87,8 @@ public class QuestionServiceImpl implements QuestionService {
 
         question = questionRepository.save(question);
         eventPublisher.publishQuestionCreated(question);
+
+        userActivityService.recordQnaQuestionCreated(authorId, question.getId());
 
         // @mentions in the question title + body — @followers fan-out allowed
         // because creating a question is a top-level publication.
@@ -166,7 +171,20 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(readOnly = true)
     public QuestionResponse getQuestion(UUID questionId) {
-        return mapper.toQuestionResponse(findQuestionOrThrow(questionId));
+        return getQuestion(questionId, null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public QuestionResponse getQuestion(UUID questionId, UUID viewerId) {
+        Question q = findQuestionOrThrow(questionId);
+        if (viewerId != null
+                && q.getAuthor() != null
+                && socialGuard.isBlockedBetween(viewerId, q.getAuthor().getId())) {
+            // Hide existence — same shape as a missing question for blocked viewers.
+            throw new ResourceNotFoundException("Question", "id", questionId);
+        }
+        return mapper.toQuestionResponse(q);
     }
 
     @Override
@@ -178,18 +196,41 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getFeed(Pageable pageable) {
-        return questionRepository.findByDeletedAtIsNullOrderByCreatedAtDesc(pageable)
-                .map(mapper::toQuestionResponse);
+        return getFeed(null, pageable);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionResponse> getFeed(UUID viewerId, Pageable pageable) {
+        List<UUID> blocked = viewerId == null ? List.of() : socialGuard.findRelatedBlockedIds(viewerId);
+        Page<Question> page = blocked.isEmpty()
+                ? questionRepository.findByDeletedAtIsNullOrderByCreatedAtDesc(pageable)
+                : questionRepository.findFeedExcluding(blocked, pageable);
+        return page.map(mapper::toQuestionResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public CursorPage<QuestionResponse> getFeedCursor(LocalDateTime cursor, int limit) {
+        return getFeedCursor(null, cursor, limit);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CursorPage<QuestionResponse> getFeedCursor(UUID viewerId, LocalDateTime cursor, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 50));
         var pageReq = org.springframework.data.domain.PageRequest.of(0, safeLimit + 1);
-        List<Question> rows = (cursor == null)
-                ? questionRepository.findFeedFirstPage(pageReq)
-                : questionRepository.findFeedAfter(cursor, pageReq);
+        List<UUID> blocked = viewerId == null ? List.of() : socialGuard.findRelatedBlockedIds(viewerId);
+        List<Question> rows;
+        if (blocked.isEmpty()) {
+            rows = (cursor == null)
+                    ? questionRepository.findFeedFirstPage(pageReq)
+                    : questionRepository.findFeedAfter(cursor, pageReq);
+        } else {
+            rows = (cursor == null)
+                    ? questionRepository.findFeedFirstPageExcluding(blocked, pageReq)
+                    : questionRepository.findFeedAfterExcluding(cursor, blocked, pageReq);
+        }
 
         boolean hasMore = rows.size() > safeLimit;
         if (hasMore) rows = rows.subList(0, safeLimit);
@@ -234,7 +275,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional
     public QuestionAnswerResponse addAnswer(UUID questionId, CreateAnswerRequest request, UUID authorId) {
-        User author = findScholarOrThrow(authorId);
+        User author = findAnswerAuthorOrThrow(authorId);
         Question question = findQuestionOrThrow(questionId);
 
         if (question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.CLOSED
@@ -315,6 +356,10 @@ public class QuestionServiceImpl implements QuestionService {
         }
 
         eventPublisher.publishQuestionAnswered(question, answer);
+
+        userActivityService.recordQnaAnswerCreated(
+                authorId, question.getId(), answer.getId(),
+                parent != null ? parent.getId() : null);
 
         // @mentions in the answer body — no @followers fan-out from answers.
         mentionService.scanAndPublish(
@@ -440,12 +485,16 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(readOnly = true)
     public Page<QuestionAnswerResponse> getAnswers(UUID questionId, UUID requesterId, Pageable pageable) {
         findQuestionOrThrow(questionId);
+        List<UUID> blocked = requesterId == null ? null : socialGuard.findRelatedBlockedIds(requesterId);
+        if (blocked != null && blocked.isEmpty()) blocked = null;
         Page<QuestionAnswer> page = answerRepository.findVisibleTopLevelAnswers(
-                questionId, requesterId, pageable);
+                questionId, requesterId, blocked, pageable);
         // replyCount comes from the denormalised column on the entity now —
         // no extra GROUP-BY query per page.
         Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
-        return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), a.getReplyCount()));
+        java.util.Set<UUID> myVotes = batchMyBestAnswerVotes(page.getContent(), requesterId);
+        return page.map(a -> mapper.toAnswerResponse(
+                a, mine.get(a.getId()), a.getReplyCount(), myVotes.contains(a.getId())));
     }
 
     @Override
@@ -461,8 +510,10 @@ public class QuestionServiceImpl implements QuestionService {
         findQuestionOrThrow(questionId);
         QuestionAnswer parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+        List<UUID> blocked = requesterId == null ? null : socialGuard.findRelatedBlockedIds(requesterId);
+        if (blocked != null && blocked.isEmpty()) blocked = null;
         Page<QuestionAnswer> page = answerRepository.findVisibleReanswers(
-                parent.getId(), requesterId, pageable);
+                parent.getId(), requesterId, blocked, pageable);
         Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
         return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), 0L));
     }
@@ -478,6 +529,8 @@ public class QuestionServiceImpl implements QuestionService {
         question.setDeletedAt(LocalDateTime.now());
         question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED);
         questionRepository.save(question);
+
+        eventPublisher.publishQuestionDeleted(question.getId(), requesterId);
 
         User author = question.getAuthor();
         realtime.broadcast(QnaRealtimeEvent.builder()
@@ -500,11 +553,22 @@ public class QuestionServiceImpl implements QuestionService {
             throw new ForbiddenException("You can only delete your own answer or answers on your question");
         }
 
+        // Counter cleanup — purge dependent rows BEFORE the soft-delete flips
+        // visibility, so denormalised counts on the answer (and aggregate
+        // counts on the question) settle back to clean baselines.
+        reactionRepository.deleteAllByAnswerId(answer.getId());
+        bestAnswerVoteRepository.deleteAllByAnswerId(answer.getId());
+        answer.setReactionCount(0L);
+        answer.setBestAnswerVoteCount(0L);
+        answer.setAccepted(false);
+
         answer.setDeletedAt(LocalDateTime.now());
         answer.audit(AuditAction.DELETE, "Deleted answer");
         answerRepository.save(answer);
 
         UUID parentId = answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null;
+
+        eventPublisher.publishAnswerDeleted(question.getId(), answer.getId(), parentId, requesterId);
 
         // Reanswers don't count toward the question's answerCount, so only adjust for top-level deletions.
         if (answer.getParentAnswer() == null) {
@@ -633,6 +697,86 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  MULTI-SCHOLAR BEST-ANSWER VOTING
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse markBestAnswer(UUID questionId, UUID answerId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        User voter = findBestAnswerVoterOrThrow(requesterId);
+
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        if (answer.getParentAnswer() != null) {
+            throw new BadRequestException("Reanswers cannot be marked as a best answer",
+                    "REANSWER_NOT_ELIGIBLE");
+        }
+
+        // Block guards — refuse votes across any block edge with the answer
+        // author or the question author so a blocked viewer can't game ranking.
+        socialGuard.requireNotBlockedBetween(
+                requesterId, answer.getAuthor().getId(), "BEST_ANSWER_BLOCKED_RELATIONSHIP");
+        socialGuard.requireNotBlockedBetween(
+                requesterId, question.getAuthor().getId(), "BEST_ANSWER_BLOCKED_RELATIONSHIP");
+
+        if (bestAnswerVoteRepository.existsByAnswerIdAndVoterId(answerId, requesterId)) {
+            // Idempotent — already voted, return the current state.
+            return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), true);
+        }
+
+        bestAnswerVoteRepository.save(BestAnswerVote.of(answer, voter));
+        answer.incrementBestAnswerVotes();
+        answer = answerRepository.save(answer);
+
+        eventPublisher.publishBestAnswerVoted(question, answer, voter, answer.getBestAnswerVoteCount(), true);
+        userActivityService.recordQnaBestAnswerVote(requesterId, question.getId(), answer.getId(), true);
+
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.BEST_ANSWER_VOTED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(voter.getUsername())
+                .actorAvatarUrl(voter.getProfileImage())
+                .answerId(answer.getId())
+                .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
+                .build());
+
+        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), true);
+    }
+
+    @Override
+    @Transactional
+    public QuestionAnswerResponse unmarkBestAnswer(UUID questionId, UUID answerId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        User voter = findBestAnswerVoterOrThrow(requesterId);
+
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+
+        int removed = bestAnswerVoteRepository.deleteByAnswerIdAndVoterId(answerId, requesterId);
+        if (removed > 0) {
+            answer.decrementBestAnswerVotes();
+            answer = answerRepository.save(answer);
+
+            eventPublisher.publishBestAnswerVoted(question, answer, voter, answer.getBestAnswerVoteCount(), false);
+            userActivityService.recordQnaBestAnswerVote(requesterId, question.getId(), answer.getId(), false);
+
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.BEST_ANSWER_UNVOTED)
+                    .questionId(question.getId())
+                    .actorId(requesterId)
+                    .actorUsername(voter.getUsername())
+                    .actorAvatarUrl(voter.getProfileImage())
+                    .answerId(answer.getId())
+                    .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
+                    .build());
+        }
+        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), false);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  FEEDBACK
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -668,6 +812,8 @@ public class QuestionServiceImpl implements QuestionService {
         feedback = feedbackRepository.save(feedback);
 
         eventPublisher.publishFeedbackAdded(question, answer, feedback);
+
+        userActivityService.recordQnaAnswerFeedback(requesterId, question.getId(), answer.getId());
 
         broadcastFeedback(question, answer, feedback, requesterId,
                 QnaRealtimeEventType.ANSWER_FEEDBACK_ADDED);
@@ -996,6 +1142,8 @@ public class QuestionServiceImpl implements QuestionService {
 
         // Notification + activity recording.
         eventPublisher.publishAnswerReacted(question, answer, user, request.getReactionType().name());
+        userActivityService.recordQnaAnswerReaction(
+                requesterId, question.getId(), answer.getId(), request.getReactionType());
 
         // Realtime — broadcast on the question's stream so every viewer sees
         // the count change live.
@@ -1029,6 +1177,9 @@ public class QuestionServiceImpl implements QuestionService {
             answer.decrementReactions();
             answerRepository.save(answer);
 
+            eventPublisher.publishAnswerUnreacted(question.getId(), answer.getId(),
+                    requesterId, previous.name());
+
             User actor = userRepository.findById(requesterId).orElse(null);
             realtime.broadcast(QnaRealtimeEvent.builder()
                     .eventType(QnaRealtimeEventType.ANSWER_REACTION_REMOVED)
@@ -1053,6 +1204,11 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Question", "id", questionId));
     }
 
+    /**
+     * Gate for question authoring + question-author actions. Researchers are
+     * intentionally excluded — only scholars (and admins) may post questions,
+     * lock answers, give feedback, accept answers, etc.
+     */
     private User findScholarOrThrow(UUID userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
@@ -1060,9 +1216,44 @@ public class QuestionServiceImpl implements QuestionService {
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.ADMIN
                 && user.getRole() != Role.SUPER_ADMIN) {
-            throw new ForbiddenException("Only scholars can use the Q&A area");
+            throw new ForbiddenException("Only scholars can post questions");
         }
 
+        return user;
+    }
+
+    /**
+     * Gate for answer / reanswer authoring. Both scholars and researchers are
+     * allowed (plus admins). Researchers cannot post questions but they can
+     * answer them.
+     */
+    private User findAnswerAuthorOrThrow(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+
+        if (user.getRole() != Role.SCHOLAR
+                && user.getRole() != Role.RESEARCHER
+                && user.getRole() != Role.ADMIN
+                && user.getRole() != Role.SUPER_ADMIN) {
+            throw new ForbiddenException("Only scholars and researchers can answer questions");
+        }
+
+        return user;
+    }
+
+    /**
+     * Gate for best-answer voting — only scholars (and admins). Researchers
+     * may answer but are not authoritative on which answer is "best".
+     */
+    private User findBestAnswerVoterOrThrow(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+
+        if (user.getRole() != Role.SCHOLAR
+                && user.getRole() != Role.ADMIN
+                && user.getRole() != Role.SUPER_ADMIN) {
+            throw new ForbiddenException("Only scholars can mark best answers");
+        }
         return user;
     }
 
@@ -1143,6 +1334,13 @@ public class QuestionServiceImpl implements QuestionService {
             map.put((UUID) row[0], (AnswerReactionType) row[1]);
         }
         return map;
+    }
+
+    /** Single-query lookup of the answers in {@code answers} the viewer has voted as best. */
+    private java.util.Set<UUID> batchMyBestAnswerVotes(List<QuestionAnswer> answers, UUID requesterId) {
+        if (requesterId == null || answers == null || answers.isEmpty()) return java.util.Set.of();
+        List<UUID> ids = answers.stream().map(QuestionAnswer::getId).toList();
+        return java.util.Set.copyOf(bestAnswerVoteRepository.findVotedAnswerIds(requesterId, ids));
     }
 
     private static String joinForMention(String... parts) {

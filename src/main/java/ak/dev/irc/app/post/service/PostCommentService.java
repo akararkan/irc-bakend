@@ -306,6 +306,12 @@ public class PostCommentService {
         if (!comment.getAuthor().getId().equals(requesterId)) {
             throw new AccessDeniedException("You can only delete your own comments");
         }
+        // Counter cleanup — drop every reaction on this comment so the
+        // soft-deleted comment shows reactionCount=0 if ever re-rendered, and
+        // the per-user "I reacted" state for other viewers goes away too.
+        commentReactionRepository.deleteAllByCommentId(commentId);
+        comment.setReactionCount(0L);
+
         comment.setIsDeleted(true);
         comment.setDeletedAt(LocalDateTime.now());
         commentRepository.save(comment);
@@ -318,6 +324,8 @@ public class PostCommentService {
             parentReplyCount = commentRepository.findById(parentId)
                     .map(PostComment::getReplyCount).orElse(null);
         }
+
+        eventPublisher.publishPostCommentDeleted(postId, commentId, parentId, requesterId);
 
         Post fresh = postRepository.findById(postId).orElse(null);
         User actor = userRepository.findById(requesterId).orElse(null);
