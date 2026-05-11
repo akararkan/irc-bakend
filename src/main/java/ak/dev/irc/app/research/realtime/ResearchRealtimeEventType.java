@@ -17,6 +17,11 @@ public enum ResearchRealtimeEventType {
     COMMENT_DELETED,
     REPLY_CREATED,
 
+    // ── comment reactions (multi-reaction — parity with PostRealtimeEventType.COMMENT_REACTION_*) ──
+    COMMENT_REACTION_ADDED,
+    COMMENT_REACTION_CHANGED,
+    COMMENT_REACTION_REMOVED,
+
     // ── live counters (one event per counter so clients can patch
     //     individual numbers without re-fetching the whole research) ─
     VIEW_COUNT_UPDATED,

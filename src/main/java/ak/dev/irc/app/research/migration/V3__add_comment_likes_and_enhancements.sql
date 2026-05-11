@@ -16,6 +16,14 @@ CREATE TABLE IF NOT EXISTS research_comment_likes (
 CREATE INDEX IF NOT EXISTS idx_rcomment_likes_comment ON research_comment_likes (comment_id);
 CREATE INDEX IF NOT EXISTS idx_rcomment_likes_user    ON research_comment_likes (user_id);
 
+-- 1b. Multi-reaction upgrade (V5, recorded here for schema-history clarity).
+--     Existing rows keep reaction_type=NULL and are treated as LIKE by
+--     ResearchServiceImpl for back-compat. Hibernate ddl-auto=update will
+--     add this column automatically when the new ResearchCommentReaction
+--     entity is registered.
+ALTER TABLE research_comment_likes
+    ADD COLUMN IF NOT EXISTS reaction_type VARCHAR(20);
+
 -- 2. Ensure citation_count column exists (may already be present from V1)
 ALTER TABLE researches
     ADD COLUMN IF NOT EXISTS citation_count BIGINT NOT NULL DEFAULT 0;

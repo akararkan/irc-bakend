@@ -153,10 +153,15 @@ public class ResearchMapper {
     // ── Comment ──────────────────────────────────────────────────────────────
 
     public CommentResponse toCommentResponse(ResearchComment c) {
-        return toCommentResponse(c, false);
+        return toCommentResponse(c, false, null);
     }
 
     public CommentResponse toCommentResponse(ResearchComment c, boolean canViewHidden) {
+        return toCommentResponse(c, canViewHidden, null);
+    }
+
+    public CommentResponse toCommentResponse(ResearchComment c, boolean canViewHidden,
+                                              ak.dev.irc.app.research.enums.ReactionType myReaction) {
         User u = c.getUser();
         List<CommentResponse> replies = c.getReplies() != null
                 ? c.getReplies().stream()
@@ -171,6 +176,7 @@ public class ResearchMapper {
                 c.getContent(),
                 c.getMediaUrl(), c.getMediaType(), c.getMediaThumbnailUrl(),
                 c.getLikeCount(), c.getReplyCount(),
+                myReaction,
                 c.isEdited(), c.getEditedAt(),
                 c.isHidden(), c.getHiddenAt(),
                 c.getParent() != null ? c.getParent().getId() : null,

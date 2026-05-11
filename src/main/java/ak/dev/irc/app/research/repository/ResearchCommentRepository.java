@@ -49,4 +49,16 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
         WHERE comment_id = :commentId AND user_id = :userId
     """, nativeQuery = true)
     void deleteCommentLike(@Param("commentId") UUID commentId, @Param("userId") UUID userId);
+
+    /**
+     * Drop every like on a comment in one statement — used when a comment is
+     * soft-deleted so the join table doesn't leak rows pointing at a hidden
+     * comment. Mirrors {@code PostCommentReactionRepository.deleteAllByCommentId}.
+     */
+    @Modifying
+    @Query(value = """
+        DELETE FROM research_comment_likes
+        WHERE comment_id = :commentId
+    """, nativeQuery = true)
+    void deleteAllLikesByCommentId(@Param("commentId") UUID commentId);
 }

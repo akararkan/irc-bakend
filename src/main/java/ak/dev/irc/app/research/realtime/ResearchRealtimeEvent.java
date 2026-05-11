@@ -41,6 +41,11 @@ public class ResearchRealtimeEvent {
     /** Snippet for COMMENT_CREATED / EDITED / REPLY_CREATED. */
     private String body;
 
+    /** Inline media on the comment (image / video) — populated on COMMENT_* / REPLY_* events. */
+    private String mediaUrl;
+    private String mediaType;
+    private String mediaThumbnailUrl;
+
     // ── Fresh denormalised counters after the event was applied ──────
     private Long reactionCount;
     private Long commentCount;
@@ -50,6 +55,15 @@ public class ResearchRealtimeEvent {
     private Long downloadCount;
     private Long citationCount;
     private Long commentReplyCount;
+    /**
+     * Fresh total-reactions count on the comment for COMMENT_REACTION_* events
+     * (also published on the legacy {@code commentLikeCount} alias below for
+     * any frontend that hasn't migrated to the new key yet).
+     */
+    private Long commentReactionCount;
+    /** @deprecated use {@link #commentReactionCount}. Kept on the wire for back-compat. */
+    @Deprecated
+    private Long commentLikeCount;
 
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();

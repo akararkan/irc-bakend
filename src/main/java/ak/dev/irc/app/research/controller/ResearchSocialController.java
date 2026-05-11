@@ -135,7 +135,36 @@ public class ResearchSocialController {
         return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 
-    // ── Comment likes ─────────────────────────────────────────────────────────
+    // ── Comment reactions (multi-reaction — mirrors posts) ───────────────────
+
+    /**
+     * Add or change the viewer's reaction on a comment. Mirrors
+     * {@code POST /api/v1/posts/{postId}/comments/{commentId}/reactions} —
+     * idempotent on same-type, updates type on different-type, inserts on
+     * first-time.
+     */
+    @PostMapping("/comments/{commentId}/reactions")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> reactToComment(
+            @PathVariable UUID researchId,
+            @PathVariable UUID commentId,
+            @Valid @RequestBody ReactRequest request,
+            @AuthenticationPrincipal User user) {
+        researchService.reactToComment(researchId, commentId, request, user.getId());
+        return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
+
+    @DeleteMapping("/comments/{commentId}/reactions")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> removeCommentReaction(
+            @PathVariable UUID researchId,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal User user) {
+        researchService.removeCommentReaction(researchId, commentId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Comment likes (back-compat — LIKE-typed shortcut over /reactions) ────
 
     @PostMapping("/comments/{commentId}/like")
     @PreAuthorize("isAuthenticated()")

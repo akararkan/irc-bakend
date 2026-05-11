@@ -60,6 +60,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchSourceRepository   sourceRepo;
     private final ResearchTagRepository      tagRepo;
     private final ResearchCommentRepository  commentRepo;
+    private final ak.dev.irc.app.research.repository.ResearchCommentReactionRepository commentReactionRepo;
     private final ResearchReactionRepository reactionRepo;
     private final ResearchSaveRepository     saveRepo;
     private final ResearchViewRepository     viewRepo;
@@ -953,6 +954,11 @@ public class ResearchServiceImpl implements ResearchService {
                     throw new BadRequestException("Parent comment does not belong to this research", "INVALID_PARENT");
                 if (parent.getDeletedAt() != null)
                     throw new BadRequestException("Cannot reply to a deleted comment", "PARENT_DELETED");
+                // Flat-at-1 server-side guard — if the caller passes the id of a
+                // depth-1 reply, hoist the parent up to the top-level comment so
+                // every reply is a sibling under the root. Mirrors the UI rule
+                // and prevents a misbehaving client from producing depth-2 trees.
+                if (parent.getParent() != null) parent = parent.getParent();
                 comment.setParent(parent);
                 parent.setReplyCount(parent.getReplyCount() + 1);
                 commentRepo.save(parent);
@@ -974,7 +980,10 @@ public class ResearchServiceImpl implements ResearchService {
                             .actorUsername(user.getUsername())
                             .actorAvatarUrl(user.getProfileImage())
                             .commentId(comment.getId())
-                            .body(comment.getContent());
+                            .body(comment.getContent())
+                            .mediaUrl(comment.getMediaUrl())
+                            .mediaType(comment.getMediaType())
+                            .mediaThumbnailUrl(comment.getMediaThumbnailUrl());
             if (comment.getParent() != null) {
                 evt.parentCommentId(comment.getParent().getId())
                         .commentReplyCount(comment.getParent().getReplyCount());
@@ -1076,6 +1085,24 @@ public class ResearchServiceImpl implements ResearchService {
         comment.audit(AuditAction.UPDATE, "Edited comment");
         ResearchComment saved = commentRepo.save(comment);
 
+        // Realtime — push the edited body on the research stream so every
+        // viewer sees the change live. Mirrors PostCommentService.editComment.
+        User actor = saved.getUser();
+        researchRealtime.broadcast(
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_EDITED)
+                        .researchId(researchId)
+                        .actorId(userId)
+                        .actorUsername(actor != null ? actor.getUsername() : null)
+                        .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                        .commentId(saved.getId())
+                        .parentCommentId(saved.getParent() != null ? saved.getParent().getId() : null)
+                        .body(saved.getContent())
+                        .mediaUrl(saved.getMediaUrl())
+                        .mediaType(saved.getMediaType())
+                        .mediaThumbnailUrl(saved.getMediaThumbnailUrl())
+                        .build());
+
         // Notify newly @-mentioned users introduced by this comment edit only.
         mentionService.scanAndPublishDelta(
                 previousContent,
@@ -1084,7 +1111,7 @@ public class ResearchServiceImpl implements ResearchService {
                 saved.getId(),
                 researchId,
                 userId,
-                comment.getUser() != null ? comment.getUser().getUsername() : null);
+                actor != null ? actor.getUsername() : null);
 
         // commenter should see their edited comment
         return mapper.toCommentResponse(saved, true);
@@ -1106,6 +1133,12 @@ public class ResearchServiceImpl implements ResearchService {
             throw new ForbiddenException("You can only delete your own comments or comments on your research");
         if (comment.getDeletedAt() != null)
             throw new BadRequestException("Comment is already deleted", "ALREADY_DELETED");
+
+        // Counter cleanup — drop every reaction on this comment so the soft-
+        // deleted row reports likeCount=0 if ever re-rendered, and the per-user
+        // "I reacted" state goes away for everyone. Mirrors PostCommentService.deleteComment.
+        commentReactionRepo.deleteAllByCommentId(commentId);
+        comment.setLikeCount(0L);
 
         comment.setDeletedAt(LocalDateTime.now());
         comment.audit(AuditAction.DELETE, "Deleted comment");
@@ -1218,39 +1251,116 @@ public class ResearchServiceImpl implements ResearchService {
                 : commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(researchId, pageable);
 
         final boolean canViewHidden = isResearchOwner;
-        return page.map(c -> mapper.toCommentResponse(c, canViewHidden));
+        final UUID viewerId = currentUserId;
+        return page.map(c -> {
+            ReactionType myReaction = viewerId == null ? null
+                    : commentReactionRepo.findByCommentIdAndUserId(c.getId(), viewerId)
+                            .map(ResearchCommentReaction::getReactionType)
+                            .orElse(null);
+            return mapper.toCommentResponse(c, canViewHidden, myReaction);
+        });
     }
 
     @Override
     public void likeComment(UUID researchId, UUID commentId, UUID userId) {
+        // Back-compat facade — old /like endpoint becomes a LIKE-typed reaction.
+        reactToComment(researchId, commentId, new ReactRequest(ReactionType.LIKE), userId);
+    }
+
+    @Override
+    public void unlikeComment(UUID researchId, UUID commentId, UUID userId) {
+        // Back-compat facade — old DELETE /like becomes a generic remove-reaction.
+        removeCommentReaction(researchId, commentId, userId);
+    }
+
+    @Override
+    public void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId) {
         if (commentId == null || userId == null)
             throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+        if (request == null || request.reactionType() == null)
+            throw new BadRequestException("Reaction type is required", "MISSING_REACTION_TYPE");
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
             throw new ForbiddenException("Comment does not belong to this research");
         if (comment.getDeletedAt() != null)
-            throw new BadRequestException("Cannot like a deleted comment", "COMMENT_DELETED");
-        if (commentRepo.existsLikeByCommentIdAndUserId(commentId, userId))
-            throw new DuplicateResourceException("Comment like", "user_comment", userId + "_" + commentId);
-        commentRepo.insertCommentLike(commentId, userId);
-        comment.setLikeCount(comment.getLikeCount() + 1);
-        commentRepo.save(comment);
+            throw new BadRequestException("Cannot react to a deleted comment", "COMMENT_DELETED");
+
+        var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
+        boolean isChange = existingOpt.isPresent();
+        ReactionType previous = existingOpt.map(ResearchCommentReaction::getReactionType).orElse(null);
+        // Idempotent — same reaction twice is a no-op. Don't bump counters, don't broadcast a duplicate.
+        if (isChange && previous == request.reactionType()) {
+            return;
+        }
+
+        if (isChange) {
+            ResearchCommentReaction existing = existingOpt.get();
+            existing.setReactionType(request.reactionType());
+            commentReactionRepo.save(existing);
+        } else {
+            User user = userRepo.getReferenceById(userId);
+            ResearchCommentReaction reaction = ResearchCommentReaction.builder()
+                    .id(new ak.dev.irc.app.research.entity.ResearchCommentReactionId(commentId, userId))
+                    .comment(comment)
+                    .user(user)
+                    .reactionType(request.reactionType())
+                    .build();
+            commentReactionRepo.save(reaction);
+            comment.setLikeCount(comment.getLikeCount() + 1);
+            commentRepo.save(comment);
+        }
+
+        User actor = userRepo.findById(userId).orElse(null);
+        researchRealtime.broadcast(
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(isChange
+                                ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_CHANGED
+                                : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_ADDED)
+                        .researchId(researchId)
+                        .actorId(userId)
+                        .actorUsername(actor != null ? actor.getUsername() : null)
+                        .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                        .commentId(commentId)
+                        .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
+                        .reactionType(request.reactionType().name())
+                        .previousReactionType(previous != null ? previous.name() : null)
+                        .commentReactionCount(comment.getLikeCount())
+                        .commentLikeCount(comment.getLikeCount())
+                        .build());
     }
 
     @Override
-    public void unlikeComment(UUID researchId, UUID commentId, UUID userId) {
+    public void removeCommentReaction(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
             throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
             throw new ForbiddenException("Comment does not belong to this research");
-        if (commentRepo.existsLikeByCommentIdAndUserId(commentId, userId)) {
-            commentRepo.deleteCommentLike(commentId, userId);
-            comment.setLikeCount(Math.max(0, comment.getLikeCount() - 1));
-            commentRepo.save(comment);
-        }
+
+        var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
+        if (existingOpt.isEmpty()) return; // idempotent — nothing to remove
+
+        ReactionType previous = existingOpt.get().getReactionType();
+        commentReactionRepo.delete(existingOpt.get());
+        comment.setLikeCount(Math.max(0, comment.getLikeCount() - 1));
+        commentRepo.save(comment);
+
+        User actor = userRepo.findById(userId).orElse(null);
+        researchRealtime.broadcast(
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_REMOVED)
+                        .researchId(researchId)
+                        .actorId(userId)
+                        .actorUsername(actor != null ? actor.getUsername() : null)
+                        .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                        .commentId(commentId)
+                        .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
+                        .previousReactionType(previous != null ? previous.name() : null)
+                        .commentReactionCount(comment.getLikeCount())
+                        .commentLikeCount(comment.getLikeCount())
+                        .build());
     }
 
     // ══════════════════════════════════════════════════════════════════════════

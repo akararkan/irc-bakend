@@ -300,6 +300,11 @@ public class QuestionServiceImpl implements QuestionService {
                             request.getParentAnswerId(), questionId)
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Parent answer", "id", request.getParentAnswerId()));
+            // Flat-at-1 server-side guard — if the caller passes the id of a
+            // depth-1 reanswer, hoist the parent up to the top-level answer so
+            // every reanswer is a sibling under the root. Mirrors the UI rule
+            // and prevents a misbehaving client from producing depth-2 trees.
+            if (parent.getParentAnswer() != null) parent = parent.getParentAnswer();
             socialGuard.requireNotBlockedBetween(
                     authorId, parent.getAuthor().getId(), "REANSWER_BLOCKED_RELATIONSHIP");
             // Bump the parent's denormalised replyCount up front so it's

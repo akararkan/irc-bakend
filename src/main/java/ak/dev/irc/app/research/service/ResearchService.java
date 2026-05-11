@@ -112,9 +112,25 @@ public interface ResearchService {
 
     Page<CommentResponse> getComments(UUID researchId, Pageable pageable, UUID currentUserId);
 
+    /** @deprecated use {@link #reactToComment} with {@code ReactionType.LIKE}. Kept idempotent for back-compat. */
+    @Deprecated
     void likeComment(UUID researchId, UUID commentId, UUID userId);
 
+    /** @deprecated use {@link #removeCommentReaction}. Kept for back-compat. */
+    @Deprecated
     void unlikeComment(UUID researchId, UUID commentId, UUID userId);
+
+    /**
+     * Add or change the viewer's reaction on a comment. Mirrors
+     * {@code PostCommentService.reactToComment} — idempotent on same-type
+     * (counter unchanged), updates type on different-type (counter unchanged),
+     * inserts on first-time (counter +1). Broadcasts {@code COMMENT_REACTION_ADDED}
+     * or {@code COMMENT_REACTION_CHANGED} on the research realtime channel.
+     */
+    void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId);
+
+    /** Remove the viewer's reaction on a comment. Broadcasts {@code COMMENT_REACTION_REMOVED}. */
+    void removeCommentReaction(UUID researchId, UUID commentId, UUID userId);
 
     void hideComment(UUID researchId, UUID commentId, UUID userId);
 
