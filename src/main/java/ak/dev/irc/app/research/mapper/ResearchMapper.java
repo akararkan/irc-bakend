@@ -1,9 +1,11 @@
 package ak.dev.irc.app.research.mapper;
 
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.entity.*;
 import ak.dev.irc.app.user.entity.User;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -12,15 +14,36 @@ import java.util.List;
 import java.util.UUID;
 
 @Component
+@RequiredArgsConstructor
 public class ResearchMapper {
 
     @Value("${irc.base-url:https://irc.example.com}")
     private String baseUrl;
 
+    private final CounterCache counterCache;
+
+    private static long nz(Long v) { return v == null ? 0L : v; }
+
+    /** Pulls all seven research counters from Redis with DB fallback in one call. */
+    private long[] resolveCounters(Research r) {
+        var k = CounterCache.Kind.RESEARCH;
+        UUID id = r.getId();
+        return new long[] {
+                counterCache.getOr(k, id, CounterCache.F_VIEWS,      () -> nz(r.getViewCount())),
+                counterCache.getOr(k, id, CounterCache.F_DOWNLOADS,  () -> nz(r.getDownloadCount())),
+                counterCache.getOr(k, id, CounterCache.F_REACTIONS,  () -> nz(r.getReactionCount())),
+                counterCache.getOr(k, id, CounterCache.F_COMMENTS,   () -> nz(r.getCommentCount())),
+                counterCache.getOr(k, id, CounterCache.F_SAVES,      () -> nz(r.getSaveCount())),
+                counterCache.getOr(k, id, CounterCache.F_SHARES,     () -> nz(r.getShareCount())),
+                counterCache.getOr(k, id, CounterCache.F_CITATIONS,  () -> nz(r.getCitationCount())),
+        };
+    }
+
     // ── Full detail ──────────────────────────────────────────────────────────
 
     public ResearchResponse toResponse(Research r, UUID currentUserId) {
         User author = r.getResearcher();
+        long[] c = resolveCounters(r);
 
         boolean reacted = false;
         String reactionType = null;
@@ -60,13 +83,13 @@ public class ResearchMapper {
                 r.getVisibility(),
                 r.getScheduledPublishAt(),
                 r.getPublishedAt(),
-                r.getViewCount(),
-                r.getDownloadCount(),
-                r.getReactionCount(),
-                r.getCommentCount(),
-                r.getSaveCount(),
-                r.getShareCount(),
-                r.getCitationCount(),
+                c[0], // views
+                c[1], // downloads
+                c[2], // reactions
+                c[3], // comments
+                c[4], // saves
+                c[5], // shares
+                c[6], // citations
                 r.isCommentsEnabled(),
                 r.isDownloadsEnabled(),
                 r.getShareToken(),
@@ -88,6 +111,7 @@ public class ResearchMapper {
 
     public ResearchSummaryResponse toSummary(Research r, UUID currentUserId) {
         User author = r.getResearcher();
+        long[] c = resolveCounters(r);
 
         boolean reacted = false;
         boolean saved   = false;
@@ -113,13 +137,13 @@ public class ResearchMapper {
                 author.getProfileImage(),
                 r.getStatus(),
                 r.getPublishedAt(),
-                r.getViewCount(),
-                r.getReactionCount(),
-                r.getCommentCount(),
-                r.getDownloadCount(),
-                r.getSaveCount(),
-                r.getShareCount(),
-                r.getCitationCount(),
+                c[0], // views
+                c[2], // reactions
+                c[3], // comments
+                c[1], // downloads
+                c[4], // saves
+                c[5], // shares
+                c[6], // citations
                 r.getTags().stream().map(ResearchTag::getTagName).toList(),
                 buildShareUrl(r.getShareToken()),
                 reacted,

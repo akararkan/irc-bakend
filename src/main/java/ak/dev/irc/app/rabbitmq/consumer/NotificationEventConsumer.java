@@ -5,7 +5,14 @@ import ak.dev.irc.app.post.enums.PostReactionType;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostCreatedEvent;
+import ak.dev.irc.app.rabbitmq.event.post.PostCommentDeletedEvent;
+import ak.dev.irc.app.rabbitmq.event.post.PostDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostReactedEvent;
+import ak.dev.irc.app.rabbitmq.event.post.PostUnreactedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerDeletedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.AnswerUnreactedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.BestAnswerVotedEvent;
+import ak.dev.irc.app.rabbitmq.event.qna.QuestionDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
@@ -595,6 +602,66 @@ public class NotificationEventConsumer {
     // ══════════════════════════════════════════════════════════════════════════
     //  Post — Reacted
     // ══════════════════════════════════════════════════════════════════════════
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Lifecycle / "no notification" events
+    //
+    //  The notifications queue is bound to {@code post.lifecycle.#},
+    //  {@code post.social.#}, {@code qna.lifecycle.#} and {@code qna.social.#},
+    //  so EVERY event in those families lands here. Most of these are reversals
+    //  (un-react, un-vote) or deletions that we intentionally don't notify on
+    //  (un-liking should not poke the author; delete is silent), but Spring AMQP
+    //  still needs a handler so it can deserialize + ack each message —
+    //  otherwise it retries 3× and dead-letters with a NoSuchMethodException.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    public void onPostUnreacted(PostUnreactedEvent event) {
+        log.debug("[CONSUMER] PostUnreacted — postId={} actor={} (no notification)",
+                event.postId(), event.actorId());
+    }
+
+    @RabbitHandler
+    public void onPostDeleted(PostDeletedEvent event) {
+        log.debug("[CONSUMER] PostDeleted — postId={} actor={} (no notification)",
+                event.postId(), event.actorId());
+    }
+
+    @RabbitHandler
+    public void onPostCommentDeleted(PostCommentDeletedEvent event) {
+        log.debug("[CONSUMER] PostCommentDeleted — postId={} commentId={} actor={} (no notification)",
+                event.postId(), event.commentId(), event.actorId());
+    }
+
+    @RabbitHandler
+    public void onQuestionDeleted(QuestionDeletedEvent event) {
+        log.debug("[CONSUMER] QuestionDeleted — questionId={} actor={} (no notification)",
+                event.questionId(), event.actorId());
+    }
+
+    @RabbitHandler
+    public void onAnswerDeleted(AnswerDeletedEvent event) {
+        log.debug("[CONSUMER] AnswerDeleted — questionId={} answerId={} actor={} (no notification)",
+                event.questionId(), event.answerId(), event.actorId());
+    }
+
+    @RabbitHandler
+    public void onAnswerUnreacted(AnswerUnreactedEvent event) {
+        log.debug("[CONSUMER] AnswerUnreacted — questionId={} answerId={} actor={} (no notification)",
+                event.questionId(), event.answerId(), event.actorId());
+    }
+
+    /**
+     * Best-answer vote/un-vote — same record is published for both routing keys
+     * ({@code qna.social.best.voted} and {@code qna.social.best.unvoted}). The
+     * up-vote could become notify-worthy later; for now we just ack so the
+     * message doesn't dead-letter.
+     */
+    @RabbitHandler
+    public void onBestAnswerVoted(BestAnswerVotedEvent event) {
+        log.debug("[CONSUMER] BestAnswerVoted/Unvoted — questionId={} answerId={} voter={}",
+                event.questionId(), event.answerId(), event.voterId());
+    }
 
     @RabbitHandler
     @Transactional

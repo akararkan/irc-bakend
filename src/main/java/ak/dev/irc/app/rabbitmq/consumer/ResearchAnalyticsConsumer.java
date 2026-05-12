@@ -54,6 +54,7 @@ public class ResearchAnalyticsConsumer {
     private final ResearchMediaRepository mediaRepo;
     private final UserRepository          userRepo;
     private final ResearchRealtimeBroadcaster realtime;
+    private final ak.dev.irc.app.common.cache.CounterCache counterCache;
 
     // Used to drop the L1 cache between a JPQL UPDATE and the re-read so the
     // broadcast carries the post-increment value, not the pre-increment entity
@@ -176,7 +177,17 @@ public class ResearchAnalyticsConsumer {
             // this transaction.
             em.flush();
             em.clear();
-            researchRepo.findById(researchId).ifPresent(r -> realtime.broadcast(
+            researchRepo.findById(researchId).ifPresent(r -> {
+                java.util.Map<String, Long> counters = new java.util.HashMap<>();
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, r.getReactionCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS,  r.getCommentCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_SHARES,    r.getShareCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_SAVES,     r.getSaveCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_VIEWS,     r.getViewCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_DOWNLOADS, r.getDownloadCount());
+                counters.put(ak.dev.irc.app.common.cache.CounterCache.F_CITATIONS, r.getCitationCount());
+                counterCache.setAll(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId, counters);
+                realtime.broadcast(
                     ResearchRealtimeEvent.builder()
                             .eventType(type)
                             .researchId(researchId)
@@ -187,7 +198,8 @@ public class ResearchAnalyticsConsumer {
                             .viewCount(r.getViewCount())
                             .downloadCount(r.getDownloadCount())
                             .citationCount(r.getCitationCount())
-                            .build()));
+                            .build());
+            });
         } catch (Exception ex) {
             log.debug("[ANALYTICS] broadcast skipped: {}", ex.getMessage());
         }

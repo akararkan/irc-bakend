@@ -31,6 +31,8 @@ import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,6 +74,10 @@ public class QuestionServiceImpl implements QuestionService {
     private final QnaRealtimeBroadcaster realtime;
     private final QuestionViewTracker viewTracker;
     private final UserActivityService userActivityService;
+    private final ak.dev.irc.app.common.cache.CounterCache counterCache;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -222,12 +228,14 @@ public class QuestionServiceImpl implements QuestionService {
 
             questionRepository.incrementViewCount(questionId);
 
-            // Read fresh count and broadcast — deferred to afterCommit by the
-            // broadcaster so subscribers never see a count the DB rolls back.
+            // Read fresh count, write through to Redis (so feeds and detail
+            // pages read the live number), then broadcast.
             Long freshCount = questionRepository.findById(questionId)
                     .map(Question::getViewCount)
                     .orElse(null);
             if (freshCount != null) {
+                counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
+                        questionId, ak.dev.irc.app.common.cache.CounterCache.F_VIEWS, freshCount);
                 realtime.broadcast(QnaRealtimeEvent.builder()
                         .eventType(QnaRealtimeEventType.VIEW_COUNT_UPDATED)
                         .questionId(questionId)
@@ -412,6 +420,13 @@ public class QuestionServiceImpl implements QuestionService {
             question.setAnswerCount(question.getAnswerCount() + 1);
             question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
             questionRepository.save(question);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
+                    question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
+                    question.getAnswerCount());
+        } else {
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER,
+                    parent.getId(), ak.dev.irc.app.common.cache.CounterCache.F_REPLIES,
+                    parent.getReplyCount() != null ? parent.getReplyCount() : 0L);
         }
 
         eventPublisher.publishQuestionAnswered(question, answer);
@@ -637,9 +652,16 @@ public class QuestionServiceImpl implements QuestionService {
                 question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
             }
             questionRepository.save(question);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
+                    question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
+                    remainingAnswers);
         } else {
             // Reanswer deletion drops the parent's denormalised counter.
             answerRepository.updateReplyCount(parentId, -1);
+            entityManager.flush(); entityManager.refresh(answer.getParentAnswer());
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER,
+                    parentId, ak.dev.irc.app.common.cache.CounterCache.F_REPLIES,
+                    answer.getParentAnswer().getReplyCount());
         }
 
         Long parentReplyCount = parentId != null
@@ -1179,8 +1201,25 @@ public class QuestionServiceImpl implements QuestionService {
         User user = userRepository.findById(requesterId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", requesterId));
 
-        // Single LIKE-style reaction — repeated calls are idempotent.
+        // Re-react is a no-op at the DB layer; still emit the authoritative
+        // count on the question's stream so an SSE-driven UI can reconcile
+        // its optimistic bump against the real number.
         if (reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).isPresent()) {
+            long current = counterCache.getOr(
+                    ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
+                    answer::getReactionCount);
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.ANSWER_REACTION_ADDED)
+                    .questionId(question.getId())
+                    .actorId(requesterId)
+                    .actorUsername(user.getUsername())
+                    .actorAvatarUrl(user.getProfileImage())
+                    .answerId(answer.getId())
+                    .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                    .reactionType(AnswerReactionType.LIKE.name())
+                    .answerReactionCount(current)
+                    .build());
             return mapper.toAnswerResponse(answer, AnswerReactionType.LIKE, null);
         }
 
@@ -1193,6 +1232,8 @@ public class QuestionServiceImpl implements QuestionService {
         reactionRepository.save(reaction);
         answer.incrementReactions();
         answerRepository.save(answer);
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
+                ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, answer.getReactionCount());
 
         // Notification + activity recording.
         eventPublisher.publishAnswerReacted(question, answer, user, AnswerReactionType.LIKE.name());
@@ -1227,6 +1268,8 @@ public class QuestionServiceImpl implements QuestionService {
             reactionRepository.delete(r);
             answer.decrementReactions();
             answerRepository.save(answer);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, answer.getReactionCount());
 
             eventPublisher.publishAnswerUnreacted(question.getId(), answer.getId(),
                     requesterId, AnswerReactionType.LIKE.name());

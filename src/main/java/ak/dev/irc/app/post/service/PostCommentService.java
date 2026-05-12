@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.service;
 
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
 import ak.dev.irc.app.post.dto.CreateCommentRequest;
@@ -22,7 +23,9 @@ import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
+import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -50,6 +53,12 @@ public class PostCommentService {
     private final MentionService              mentionService;
     private final PostRealtimeBroadcaster     realtime;
     private final SocialGuard                 socialGuard;
+    private final CounterCache                counterCache;
+
+    // Needed to refresh entities after JPQL bulk-updates so SSE broadcasts
+    // carry the post-increment counter, not the pre-increment cached value.
+    @PersistenceContext
+    private EntityManager em;
 
     // ── Add comment / reply ───────────────────────────────────
 
@@ -123,10 +132,18 @@ public class PostCommentService {
                 author.getUsername(),
                 /* allowFollowersToken */ false);
 
-        Post fresh = postRepository.findById(postId).orElse(post);
-        Long parentReplyCount = parent != null
-                ? commentRepository.findById(parent.getId()).map(PostComment::getReplyCount).orElse(null)
-                : null;
+        // Refresh the L1 cache so we read post-increment counters, then write
+        // through to Redis so the feed and detail pages see the live numbers.
+        em.refresh(post);
+        counterCache.set(CounterCache.Kind.POST, postId,
+                CounterCache.F_COMMENTS, post.getCommentCount());
+        Long parentReplyCount = null;
+        if (parent != null) {
+            em.refresh(parent);
+            parentReplyCount = parent.getReplyCount();
+            counterCache.set(CounterCache.Kind.POST_COMMENT, parent.getId(),
+                    CounterCache.F_REPLIES, parentReplyCount);
+        }
 
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(isReply ? PostRealtimeEventType.REPLY_CREATED
@@ -141,7 +158,7 @@ public class PostCommentService {
                 .mediaUrl(comment.getMediaUrl())
                 .mediaType(comment.getMediaType())
                 .mediaThumbnailUrl(comment.getMediaThumbnailUrl())
-                .postCommentCount(fresh.getCommentCount())
+                .postCommentCount(post.getCommentCount())
                 .commentReplyCount(parentReplyCount)
                 .build());
 
@@ -222,8 +239,23 @@ public class PostCommentService {
         socialGuard.requireNotBlockedBetween(
                 userId, comment.getPost().getAuthor().getId(), "COMMENT_REACTION_BLOCKED_RELATIONSHIP");
 
-        // Single LIKE-style reaction — repeated calls are idempotent.
+        User actor = userRepository.findById(userId).orElse(null);
+
+        // Re-react is a no-op at the DB layer; still emit the authoritative
+        // count so an SSE-driven UI can reconcile.
         if (commentReactionRepository.findByCommentIdAndUserId(commentId, userId).isPresent()) {
+            long current = counterCache.getOr(CounterCache.Kind.POST_COMMENT, commentId,
+                    CounterCache.F_REACTIONS, comment::getReactionCount);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.COMMENT_REACTION_ADDED)
+                    .postId(comment.getPost().getId())
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .commentId(commentId)
+                    .reactionType(PostReactionType.LIKE.name())
+                    .commentReactionCount(current)
+                    .build());
             return postMapper.toCommentResponse(comment, PostReactionType.LIKE);
         }
 
@@ -236,6 +268,10 @@ public class PostCommentService {
                 .build();
         commentReactionRepository.save(reaction);
         commentRepository.updateReactionCount(commentId, 1);
+        // JPQL bulk UPDATE bypasses the L1 cache — refresh, then write through.
+        em.refresh(comment);
+        counterCache.set(CounterCache.Kind.POST_COMMENT, commentId,
+                CounterCache.F_REACTIONS, comment.getReactionCount());
 
         eventPublisher.publishCommentReacted(PostCommentReactedEvent.builder()
                 .commentId(commentId)
@@ -245,8 +281,6 @@ public class PostCommentService {
                 .reactionType(PostReactionType.LIKE.name())
                 .build());
 
-        PostComment fresh = commentRepository.findById(commentId).orElseThrow();
-        User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.COMMENT_REACTION_ADDED)
                 .postId(comment.getPost().getId())
@@ -255,20 +289,23 @@ public class PostCommentService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .commentId(commentId)
                 .reactionType(PostReactionType.LIKE.name())
-                .commentReactionCount(fresh.getReactionCount())
+                .commentReactionCount(comment.getReactionCount())
                 .build());
 
-        return postMapper.toCommentResponse(fresh, PostReactionType.LIKE);
+        return postMapper.toCommentResponse(comment, PostReactionType.LIKE);
     }
 
     @Transactional
     public void removeCommentReaction(UUID commentId, UUID userId) {
         commentReactionRepository.findByCommentIdAndUserId(commentId, userId).ifPresent(r -> {
-            UUID postId = r.getComment().getPost().getId();
+            PostComment comment = r.getComment();
+            UUID postId = comment.getPost().getId();
             commentReactionRepository.delete(r);
             commentRepository.updateReactionCount(commentId, -1);
+            em.refresh(comment);
+            counterCache.set(CounterCache.Kind.POST_COMMENT, commentId,
+                    CounterCache.F_REACTIONS, comment.getReactionCount());
 
-            PostComment fresh = commentRepository.findById(commentId).orElse(null);
             User actor = userRepository.findById(userId).orElse(null);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.COMMENT_REACTION_REMOVED)
@@ -277,7 +314,7 @@ public class PostCommentService {
                     .actorUsername(actor != null ? actor.getUsername() : null)
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .commentId(commentId)
-                    .commentReactionCount(fresh != null ? fresh.getReactionCount() : null)
+                    .commentReactionCount(comment.getReactionCount())
                     .build());
         });
     }
@@ -306,19 +343,28 @@ public class PostCommentService {
         comment.setIsDeleted(true);
         comment.setDeletedAt(LocalDateTime.now());
         commentRepository.save(comment);
-        postRepository.updateCommentCount(comment.getPost().getId(), -1);
+        Post post = comment.getPost();
+        postRepository.updateCommentCount(post.getId(), -1);
+        em.refresh(post);
+        counterCache.set(CounterCache.Kind.POST, post.getId(),
+                CounterCache.F_COMMENTS, post.getCommentCount());
+        // The deleted comment's own reaction counter is zeroed above.
+        counterCache.set(CounterCache.Kind.POST_COMMENT, commentId,
+                CounterCache.F_REACTIONS, 0L);
         UUID parentId = null;
         Long parentReplyCount = null;
         if (comment.getParent() != null) {
-            parentId = comment.getParent().getId();
+            PostComment parent = comment.getParent();
+            parentId = parent.getId();
             commentRepository.updateReplyCount(parentId, -1);
-            parentReplyCount = commentRepository.findById(parentId)
-                    .map(PostComment::getReplyCount).orElse(null);
+            em.refresh(parent);
+            parentReplyCount = parent.getReplyCount();
+            counterCache.set(CounterCache.Kind.POST_COMMENT, parentId,
+                    CounterCache.F_REPLIES, parentReplyCount);
         }
 
         eventPublisher.publishPostCommentDeleted(postId, commentId, parentId, requesterId);
 
-        Post fresh = postRepository.findById(postId).orElse(null);
         User actor = userRepository.findById(requesterId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.COMMENT_DELETED)
@@ -328,7 +374,7 @@ public class PostCommentService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .commentId(commentId)
                 .parentCommentId(parentId)
-                .postCommentCount(fresh != null ? fresh.getCommentCount() : null)
+                .postCommentCount(post.getCommentCount())
                 .commentReplyCount(parentReplyCount)
                 .build());
     }

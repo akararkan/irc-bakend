@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.mapper;
 
 
 
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.post.dto.CreatePostRequest;
 import ak.dev.irc.app.post.dto.MediaItemRequest;
@@ -11,6 +12,7 @@ import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.entity.*;
 import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.user.entity.User;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
@@ -18,7 +20,12 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Component
+@RequiredArgsConstructor
 public class PostMapper {
+
+    private final CounterCache counterCache;
+
+    private static long nz(Long v) { return v == null ? 0L : v; }
 
     // ── Post ──────────────────────────────────────────────────
 
@@ -86,11 +93,18 @@ public class PostMapper {
                 .sharedPost(post.getSharedPost() != null ? toResponse(post.getSharedPost()) : null)
                 .shareLink(post.getShareLink())
                 .isRepost(isRepost)
-                .reactionCount(post.getReactionCount())
-                .commentCount(post.getCommentCount())
-                .shareCount(post.getShareCount())
-                .viewCount(post.getViewCount())
-                .saveCount(post.getSaveCount())
+                // Counters read from Redis with DB fallback. Cache hit = sub-ms;
+                // cache miss = one Postgres column read which then warms Redis.
+                .reactionCount(counterCache.getOr(CounterCache.Kind.POST, post.getId(),
+                        CounterCache.F_REACTIONS, () -> nz(post.getReactionCount())))
+                .commentCount(counterCache.getOr(CounterCache.Kind.POST, post.getId(),
+                        CounterCache.F_COMMENTS, () -> nz(post.getCommentCount())))
+                .shareCount(counterCache.getOr(CounterCache.Kind.POST, post.getId(),
+                        CounterCache.F_SHARES, () -> nz(post.getShareCount())))
+                .viewCount(counterCache.getOr(CounterCache.Kind.POST, post.getId(),
+                        CounterCache.F_VIEWS, () -> nz(post.getViewCount())))
+                .saveCount(counterCache.getOr(CounterCache.Kind.POST, post.getId(),
+                        CounterCache.F_SAVES, () -> nz(post.getSaveCount())))
                 .myReaction(myReaction)
                 .isSaved(isSaved)
                 .createdAt(post.getCreatedAt())
@@ -157,8 +171,10 @@ public class PostMapper {
                 .mediaType(c.isDeleted() ? null : c.getMediaType())
                 .mediaThumbnailUrl(c.isDeleted() ? null : c.getMediaThumbnailUrl())
                 // voice/comment audio removed for posts
-                .reactionCount(c.getReactionCount())
-                .replyCount(c.getReplyCount())
+                .reactionCount(counterCache.getOr(CounterCache.Kind.POST_COMMENT, c.getId(),
+                        CounterCache.F_REACTIONS, () -> nz(c.getReactionCount())))
+                .replyCount(counterCache.getOr(CounterCache.Kind.POST_COMMENT, c.getId(),
+                        CounterCache.F_REPLIES, () -> nz(c.getReplyCount())))
                 .myReaction(myReaction)
                 .edited(c.isEdited())
                 .editedAt(c.getEditedAt())

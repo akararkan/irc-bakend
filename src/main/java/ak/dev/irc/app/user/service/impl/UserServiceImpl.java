@@ -143,6 +143,7 @@ public class UserServiceImpl implements UserService {
         if (req.lname()         != null) { user.setLname(req.lname());               changes++; }
         if (req.location()      != null) { user.setLocation(req.location());         changes++; }
         if (req.profileBio()    != null) { user.setProfileBio(req.profileBio());     changes++; }
+        if (req.profileImage()  != null) { user.setProfileImage(req.profileImage()); changes++; }
         if (req.selfDescriber() != null) { user.setSelfDescriber(req.selfDescriber()); changes++; }
 
         if (req.username() != null && !req.username().equalsIgnoreCase(user.getUsername())) {

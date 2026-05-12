@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.service;
 
 
 
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.service.FollowingIdsCache;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
@@ -26,7 +27,9 @@ import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
+import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.PersistenceContext;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import lombok.RequiredArgsConstructor;
@@ -66,10 +69,16 @@ public class PostService {
     private final PostViewTracker        viewTracker;
     private final SocialGuard            socialGuard;
     private final FollowingIdsCache      followingIdsCache;
+    private final CounterCache           counterCache;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
     private PostService self;
+
+    // Needed to refresh entities after JPQL bulk-updates so SSE broadcasts
+    // carry the post-increment counter instead of the stale L1-cache value.
+    @PersistenceContext
+    private EntityManager em;
 
     // ── Create ────────────────────────────────────────────────
 
@@ -464,10 +473,13 @@ public class PostService {
 
             postRepository.incrementViewCount(postId);
 
-            // Read fresh count and broadcast — registered as afterCommit by the broadcaster
-            // so subscribers never see a count that the DB is about to roll back.
+            // Read fresh count and write through to Redis — feeds and detail pages
+            // read from Redis, so the live counter is the same number every viewer
+            // sees regardless of which instance handles their request.
             Long freshCount = postRepository.findById(postId).map(Post::getViewCount).orElse(null);
             if (freshCount != null) {
+                counterCache.set(CounterCache.Kind.POST, postId,
+                        CounterCache.F_VIEWS, freshCount);
                 realtime.broadcast(PostRealtimeEvent.builder()
                         .eventType(PostRealtimeEventType.VIEW_COUNT_UPDATED)
                         .postId(postId)
@@ -652,8 +664,24 @@ public class PostService {
         socialGuard.requireNotBlockedBetween(
                 userId, post.getAuthor().getId(), "REACTION_BLOCKED_RELATIONSHIP");
 
-        // Single LIKE-style reaction — repeated calls are idempotent.
+        User actor = userRepository.findById(userId).orElse(null);
+
+        // Single LIKE-style reaction — repeated calls are idempotent at the DB
+        // layer, but we still broadcast the authoritative current count so an
+        // SSE-driven UI that did an optimistic bump can reconcile against the
+        // real value instead of "regretting" back to a stale local guess.
         if (reactionRepository.findByPostIdAndUserId(postId, userId).isPresent()) {
+            long current = counterCache.getOr(CounterCache.Kind.POST, postId,
+                    CounterCache.F_REACTIONS, post::getReactionCount);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.REACTION_ADDED)
+                    .postId(postId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .reactionType(PostReactionType.LIKE.name())
+                    .postReactionCount(current)
+                    .build());
             return postMapper.toResponse(post, PostReactionType.LIKE);
         }
 
@@ -667,6 +695,13 @@ public class PostService {
         reactionRepository.save(reaction);
         postRepository.updateReactionCount(postId, 1);
 
+        // JPQL bulk UPDATE bypasses Hibernate's L1 cache — refresh the entity
+        // to pull the post-increment count, then write it through to Redis so
+        // every subscriber (incl. the feed) reads the same fresh number.
+        em.refresh(post);
+        counterCache.set(CounterCache.Kind.POST, postId,
+                CounterCache.F_REACTIONS, post.getReactionCount());
+
         eventPublisher.publishPostReacted(PostReactedEvent.builder()
                 .postId(postId)
                 .reactorId(userId)
@@ -674,8 +709,6 @@ public class PostService {
                 .reactionType(PostReactionType.LIKE.name())
                 .build());
 
-        Post fresh = postRepository.findById(postId).orElseThrow();
-        User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.REACTION_ADDED)
                 .postId(postId)
@@ -683,22 +716,25 @@ public class PostService {
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .reactionType(PostReactionType.LIKE.name())
-                .postReactionCount(fresh.getReactionCount())
+                .postReactionCount(post.getReactionCount())
                 .build());
 
-        return postMapper.toResponse(fresh, PostReactionType.LIKE);
+        return postMapper.toResponse(post, PostReactionType.LIKE);
     }
 
     @Transactional
     public void removeReaction(UUID postId, UUID userId) {
         reactionRepository.findByPostIdAndUserId(postId, userId).ifPresent(r -> {
             PostReactionType previous = r.getReactionType();
+            Post post = r.getPost();
             reactionRepository.delete(r);
             postRepository.updateReactionCount(postId, -1);
+            em.refresh(post);
+            counterCache.set(CounterCache.Kind.POST, postId,
+                    CounterCache.F_REACTIONS, post.getReactionCount());
 
             eventPublisher.publishPostUnreacted(postId, userId, previous.name());
 
-            Post fresh = postRepository.findById(postId).orElse(null);
             User actor = userRepository.findById(userId).orElse(null);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.REACTION_REMOVED)
@@ -707,7 +743,7 @@ public class PostService {
                     .actorUsername(actor != null ? actor.getUsername() : null)
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .previousReactionType(previous.name())
-                    .postReactionCount(fresh != null ? fresh.getReactionCount() : null)
+                    .postReactionCount(post.getReactionCount())
                     .build());
         });
     }

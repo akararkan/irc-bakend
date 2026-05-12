@@ -1,10 +1,12 @@
 package ak.dev.irc.app.qna.mapper;
 
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import ak.dev.irc.app.user.entity.User;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
@@ -12,7 +14,12 @@ import java.util.List;
 import java.util.UUID;
 
 @Component
+@RequiredArgsConstructor
 public class QuestionMapper {
+
+    private final CounterCache counterCache;
+
+    private static long nz(Long v) { return v == null ? 0L : v; }
 
     public QuestionResponse toQuestionResponse(Question question) {
         User author = question.getAuthor();
@@ -25,8 +32,10 @@ public class QuestionMapper {
                 question.getTitle(),
                 question.getBody(),
                 question.getStatus(),
-                question.getAnswerCount(),
-                question.getViewCount() != null ? question.getViewCount() : 0L,
+                counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
+                        CounterCache.F_ANSWERS, () -> nz(question.getAnswerCount())),
+                counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
+                        CounterCache.F_VIEWS, () -> nz(question.getViewCount())),
                 question.isAnswersLocked(),
                 question.getMaxAnswers(),
                 question.getCreatedAt(),
@@ -103,7 +112,8 @@ public class QuestionMapper {
                 answer.isDeleted(),
                 answer.getDeletedAt(),
                 answer.getFeedbacks() != null ? answer.getFeedbacks().size() : 0L,
-                answer.getReactionCount() != null ? answer.getReactionCount() : 0L,
+                counterCache.getOr(CounterCache.Kind.ANSWER, answer.getId(),
+                        CounterCache.F_REACTIONS, () -> nz(answer.getReactionCount())),
                 myReaction,
                 answer.getCreatedAt(),
                 answer.getUpdatedAt(),
