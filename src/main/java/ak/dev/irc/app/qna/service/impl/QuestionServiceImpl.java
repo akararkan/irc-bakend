@@ -19,6 +19,7 @@ import ak.dev.irc.app.qna.mapper.QuestionMapper;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeBroadcaster;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeEvent;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeEventType;
+import ak.dev.irc.app.qna.realtime.QuestionViewTracker;
 import ak.dev.irc.app.qna.repository.*;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.rabbitmq.publisher.QuestionEventPublisher;
@@ -31,9 +32,13 @@ import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -43,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class QuestionServiceImpl implements QuestionService {
@@ -64,7 +70,12 @@ public class QuestionServiceImpl implements QuestionService {
     private final SocialGuard socialGuard;
     private final FollowingIdsCache followingIdsCache;
     private final QnaRealtimeBroadcaster realtime;
+    private final QuestionViewTracker viewTracker;
     private final UserActivityService userActivityService;
+
+    // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
+    @Autowired @Lazy
+    private QuestionService self;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -185,6 +196,49 @@ public class QuestionServiceImpl implements QuestionService {
             throw new ResourceNotFoundException("Question", "id", questionId);
         }
         return mapper.toQuestionResponse(q);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public QuestionResponse getQuestion(UUID questionId, UUID viewerId, String viewerKey) {
+        Question q = findQuestionOrThrow(questionId);
+        if (viewerId != null
+                && q.getAuthor() != null
+                && socialGuard.isBlockedBetween(viewerId, q.getAuthor().getId())) {
+            throw new ResourceNotFoundException("Question", "id", questionId);
+        }
+        // View bump runs in a separate write tx so the read path stays readOnly.
+        // Routed through the proxy so REQUIRES_NEW actually applies.
+        self.recordView(questionId, viewerId, viewerKey);
+        return mapper.toQuestionResponse(q);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordView(UUID questionId, UUID viewerId, String viewerKey) {
+        try {
+            // Dedupe: refresh-spam from the same viewer in the window is ignored.
+            if (!viewTracker.shouldCount(questionId, viewerKey)) return;
+
+            questionRepository.incrementViewCount(questionId);
+
+            // Read fresh count and broadcast — deferred to afterCommit by the
+            // broadcaster so subscribers never see a count the DB rolls back.
+            Long freshCount = questionRepository.findById(questionId)
+                    .map(Question::getViewCount)
+                    .orElse(null);
+            if (freshCount != null) {
+                realtime.broadcast(QnaRealtimeEvent.builder()
+                        .eventType(QnaRealtimeEventType.VIEW_COUNT_UPDATED)
+                        .questionId(questionId)
+                        .actorId(viewerId)
+                        .questionViewCount(freshCount)
+                        .build());
+            }
+        } catch (Exception e) {
+            // View counts are best-effort; never let a counter failure break a read.
+            log.warn("Failed to bump view count for question {}: {}", questionId, e.getMessage());
+        }
     }
 
     @Override
@@ -1125,48 +1179,41 @@ public class QuestionServiceImpl implements QuestionService {
         User user = userRepository.findById(requesterId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", requesterId));
 
-        var existingOpt = reactionRepository.findByAnswerIdAndUserId(answerId, requesterId);
-        boolean isChange = existingOpt.isPresent();
-        AnswerReactionType previous = existingOpt.map(AnswerReaction::getReactionType).orElse(null);
-
-        if (isChange) {
-            AnswerReaction existing = existingOpt.get();
-            existing.setReactionType(request.getReactionType());
-            reactionRepository.save(existing);
-        } else {
-            AnswerReaction reaction = AnswerReaction.builder()
-                    .id(new AnswerReactionId(answerId, requesterId))
-                    .answer(answer)
-                    .user(user)
-                    .reactionType(request.getReactionType())
-                    .build();
-            reactionRepository.save(reaction);
-            answer.incrementReactions();
-            answerRepository.save(answer);
+        // Single LIKE-style reaction — repeated calls are idempotent.
+        if (reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).isPresent()) {
+            return mapper.toAnswerResponse(answer, AnswerReactionType.LIKE, null);
         }
 
+        AnswerReaction reaction = AnswerReaction.builder()
+                .id(new AnswerReactionId(answerId, requesterId))
+                .answer(answer)
+                .user(user)
+                .reactionType(AnswerReactionType.LIKE)
+                .build();
+        reactionRepository.save(reaction);
+        answer.incrementReactions();
+        answerRepository.save(answer);
+
         // Notification + activity recording.
-        eventPublisher.publishAnswerReacted(question, answer, user, request.getReactionType().name());
+        eventPublisher.publishAnswerReacted(question, answer, user, AnswerReactionType.LIKE.name());
         userActivityService.recordQnaAnswerReaction(
-                requesterId, question.getId(), answer.getId(), request.getReactionType());
+                requesterId, question.getId(), answer.getId(), AnswerReactionType.LIKE);
 
         // Realtime — broadcast on the question's stream so every viewer sees
         // the count change live.
         realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(isChange ? QnaRealtimeEventType.ANSWER_REACTION_CHANGED
-                                    : QnaRealtimeEventType.ANSWER_REACTION_ADDED)
+                .eventType(QnaRealtimeEventType.ANSWER_REACTION_ADDED)
                 .questionId(question.getId())
                 .actorId(requesterId)
                 .actorUsername(user.getUsername())
                 .actorAvatarUrl(user.getProfileImage())
                 .answerId(answer.getId())
                 .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
-                .reactionType(request.getReactionType().name())
-                .previousReactionType(previous != null ? previous.name() : null)
+                .reactionType(AnswerReactionType.LIKE.name())
                 .answerReactionCount(answer.getReactionCount())
                 .build());
 
-        return mapper.toAnswerResponse(answer, request.getReactionType(), null);
+        return mapper.toAnswerResponse(answer, AnswerReactionType.LIKE, null);
     }
 
     @Override
@@ -1177,13 +1224,12 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).ifPresent(r -> {
-            AnswerReactionType previous = r.getReactionType();
             reactionRepository.delete(r);
             answer.decrementReactions();
             answerRepository.save(answer);
 
             eventPublisher.publishAnswerUnreacted(question.getId(), answer.getId(),
-                    requesterId, previous.name());
+                    requesterId, AnswerReactionType.LIKE.name());
 
             User actor = userRepository.findById(requesterId).orElse(null);
             realtime.broadcast(QnaRealtimeEvent.builder()
@@ -1194,7 +1240,6 @@ public class QuestionServiceImpl implements QuestionService {
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .answerId(answer.getId())
                     .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
-                    .previousReactionType(previous.name())
                     .answerReactionCount(answer.getReactionCount())
                     .build());
         });

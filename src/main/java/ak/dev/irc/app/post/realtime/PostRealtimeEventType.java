@@ -17,6 +17,7 @@ public enum PostRealtimeEventType {
 
     VIEW_COUNT_UPDATED,
     SHARE_COUNT_UPDATED,
+    SAVE_COUNT_UPDATED,
 
     // ── post lifecycle (broadcast on the post's own stream) ───────────
     /** Post body / visibility / metadata was edited by the author. */

@@ -4,6 +4,7 @@ import ak.dev.irc.app.qna.entity.Question;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.stereotype.Repository;
 
 import org.springframework.data.jpa.repository.Query;
@@ -79,6 +80,11 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     Page<Question> findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(UUID authorId, Pageable pageable);
 
     Optional<Question> findByIdAndDeletedAtIsNull(UUID id);
+
+    /** Atomic view-count bump — runs in its own write tx so the read path can stay readOnly. */
+    @Modifying
+    @Query("UPDATE Question q SET q.viewCount = q.viewCount + 1 WHERE q.id = :id")
+    void incrementViewCount(@Param("id") UUID id);
 
     // ── Full-text search (block-aware) ─────────────────────────────────
     // Per-query block exclusion — pass null/empty for anonymous viewers.

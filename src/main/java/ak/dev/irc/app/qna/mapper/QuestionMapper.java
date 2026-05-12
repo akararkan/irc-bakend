@@ -26,6 +26,7 @@ public class QuestionMapper {
                 question.getBody(),
                 question.getStatus(),
                 question.getAnswerCount(),
+                question.getViewCount() != null ? question.getViewCount() : 0L,
                 question.isAnswersLocked(),
                 question.getMaxAnswers(),
                 question.getCreatedAt(),

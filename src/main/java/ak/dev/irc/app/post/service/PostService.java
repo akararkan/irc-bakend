@@ -54,6 +54,7 @@ public class PostService {
     private final PostRepository         postRepository;
     private final PostReactionRepository reactionRepository;
     private final PostShareRepository    shareRepository;
+    private final PostSaveRepository     saveRepository;
     private final PostMapper             postMapper;
     private final PostEventPublisher     eventPublisher;
     private final UserRepository         userRepository;
@@ -441,16 +442,18 @@ public class PostService {
         }
 
         PostReactionType myReaction = null;
+        boolean isSaved = false;
         if (requesterId != null) {
             myReaction = reactionRepository.findByPostIdAndUserId(postId, requesterId)
                     .map(PostReaction::getReactionType)
                     .orElse(null);
+            isSaved = saveRepository.existsById(new PostSaveId(postId, requesterId));
         }
         // View counter bumped in a separate write transaction so the read path
         // stays readOnly and never blocks on a write lock.
         // Routed through the proxy (`self`) so REQUIRES_NEW actually applies.
         self.recordView(postId, requesterId, viewerKey);
-        return postMapper.toResponse(post, myReaction);
+        return postMapper.toResponse(post, myReaction, isSaved);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -649,50 +652,41 @@ public class PostService {
         socialGuard.requireNotBlockedBetween(
                 userId, post.getAuthor().getId(), "REACTION_BLOCKED_RELATIONSHIP");
 
-        // Track add-vs-change so we can fire the right realtime event.
-        var existingOpt = reactionRepository.findByPostIdAndUserId(postId, userId);
-        boolean isChange = existingOpt.isPresent();
-        PostReactionType previous = existingOpt.map(PostReaction::getReactionType).orElse(null);
-
-        if (isChange) {
-            PostReaction existing = existingOpt.get();
-            existing.setReactionType(req.getReactionType());
-            reactionRepository.save(existing);
-            log.debug("Reaction changed from {} to {} on post {}", previous, req.getReactionType(), postId);
-        } else {
-            User user = userRepository.getReferenceById(userId);
-            PostReaction reaction = PostReaction.builder()
-                    .id(new PostReactionId(postId, userId))
-                    .post(post)
-                    .user(user)
-                    .reactionType(req.getReactionType())
-                    .build();
-            reactionRepository.save(reaction);
-            postRepository.updateReactionCount(postId, 1);
+        // Single LIKE-style reaction — repeated calls are idempotent.
+        if (reactionRepository.findByPostIdAndUserId(postId, userId).isPresent()) {
+            return postMapper.toResponse(post, PostReactionType.LIKE);
         }
+
+        User user = userRepository.getReferenceById(userId);
+        PostReaction reaction = PostReaction.builder()
+                .id(new PostReactionId(postId, userId))
+                .post(post)
+                .user(user)
+                .reactionType(PostReactionType.LIKE)
+                .build();
+        reactionRepository.save(reaction);
+        postRepository.updateReactionCount(postId, 1);
 
         eventPublisher.publishPostReacted(PostReactedEvent.builder()
                 .postId(postId)
                 .reactorId(userId)
                 .postAuthorId(post.getAuthor().getId())
-                .reactionType(req.getReactionType().name())
+                .reactionType(PostReactionType.LIKE.name())
                 .build());
 
         Post fresh = postRepository.findById(postId).orElseThrow();
         User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
-                .eventType(isChange ? PostRealtimeEventType.REACTION_CHANGED
-                                    : PostRealtimeEventType.REACTION_ADDED)
+                .eventType(PostRealtimeEventType.REACTION_ADDED)
                 .postId(postId)
                 .actorId(userId)
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .reactionType(req.getReactionType().name())
-                .previousReactionType(previous != null ? previous.name() : null)
+                .reactionType(PostReactionType.LIKE.name())
                 .postReactionCount(fresh.getReactionCount())
                 .build());
 
-        return postMapper.toResponse(fresh);
+        return postMapper.toResponse(fresh, PostReactionType.LIKE);
     }
 
     @Transactional
@@ -727,6 +721,17 @@ public class PostService {
         if (!post.getAuthor().getId().equals(requesterId)) {
             throw new AccessDeniedException("You can only delete your own posts");
         }
+
+        // If the deleted post is a repost, roll back the share-count bump on the
+        // original so the original's share counter reflects only live reposts.
+        Post original = null;
+        if (post.getPostType() == PostType.REPOST && post.getSharedPost() != null) {
+            original = post.getSharedPost();
+            shareRepository.findByPostIdAndSharerId(original.getId(), requesterId)
+                    .ifPresent(shareRepository::delete);
+            postRepository.decrementShareCount(original.getId());
+        }
+
         post.setStatus(PostStatus.REMOVED);
         postRepository.save(post);
 
@@ -741,7 +746,107 @@ public class PostService {
                 .actorAvatarUrl(author.getProfileImage())
                 .build());
 
+        // Fan the fresh share count out on the original's stream so anyone
+        // looking at the original sees the counter drop live.
+        if (original != null) {
+            UUID originalId = original.getId();
+            Long freshShareCount = postRepository.findById(originalId)
+                    .map(Post::getShareCount).orElse(null);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
+                    .postId(originalId)
+                    .actorId(requesterId)
+                    .actorUsername(author.getUsername())
+                    .actorAvatarUrl(author.getProfileImage())
+                    .postShareCount(freshShareCount)
+                    .build());
+        }
+
         log.info("Post deleted: {} by user {}", postId, requesterId);
+    }
+
+    // ── Save / Bookmark ───────────────────────────────────────
+
+    @Transactional
+    public void savePost(UUID postId, UUID userId, String collectionName) {
+        Post post = findPublishedPost(postId);
+
+        socialGuard.requireNotBlockedBetween(
+                userId, post.getAuthor().getId(), "SAVE_BLOCKED_RELATIONSHIP");
+
+        PostSaveId sid = new PostSaveId(postId, userId);
+        if (saveRepository.existsById(sid)) return; // idempotent
+
+        User user = userRepository.getReferenceById(userId);
+        saveRepository.save(PostSave.builder()
+                .id(sid).post(post).user(user)
+                .collectionName(collectionName != null && !collectionName.isBlank()
+                        ? collectionName.trim() : "Default")
+                .build());
+        postRepository.adjustSaveCount(postId, 1);
+
+        Long freshSaveCount = postRepository.findById(postId)
+                .map(Post::getSaveCount).orElse(null);
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
+                .postId(postId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .postSaveCount(freshSaveCount)
+                .build());
+    }
+
+    @Transactional
+    public void unsavePost(UUID postId, UUID userId) {
+        PostSaveId sid = new PostSaveId(postId, userId);
+        if (!saveRepository.existsById(sid)) return; // idempotent
+        saveRepository.deleteById(sid);
+        postRepository.adjustSaveCount(postId, -1);
+
+        Long freshSaveCount = postRepository.findById(postId)
+                .map(Post::getSaveCount).orElse(null);
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
+                .postId(postId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .postSaveCount(freshSaveCount)
+                .build());
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getSavedPosts(UUID userId, Pageable pageable) {
+        return saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
+                .map(s -> postMapper.toResponse(s.getPost(), null, true));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostResponse> getSavedPostsByCollection(UUID userId, String collectionName,
+                                                       Pageable pageable) {
+        if (collectionName == null || collectionName.isBlank()) {
+            throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
+        }
+        return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
+                        userId, collectionName.trim(), pageable)
+                .map(s -> postMapper.toResponse(s.getPost(), null, true));
+    }
+
+    @Transactional(readOnly = true)
+    public List<String> getUserPostCollections(UUID userId) {
+        return saveRepository.findDistinctCollectionNamesByUserId(userId);
+    }
+
+    @Transactional
+    public void renamePostCollection(UUID userId, String oldName, String newName) {
+        if (oldName == null || oldName.isBlank())
+            throw new BadRequestException("Old collection name is required", "MISSING_OLD_NAME");
+        if (newName == null || newName.isBlank())
+            throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
+        saveRepository.renameCollection(userId, oldName, newName.trim());
     }
 
     // ── Helpers ───────────────────────────────────────────────

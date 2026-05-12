@@ -88,6 +88,7 @@ public class Post {
     @Builder.Default @Column(name = "comment_count")  private Long commentCount  = 0L;
     @Builder.Default @Column(name = "share_count")    private Long shareCount    = 0L;
     @Builder.Default @Column(name = "view_count")     private Long viewCount     = 0L;
+    @Builder.Default @Column(name = "save_count")     private Long saveCount     = 0L;
 
     // ── relations ─────────────────────────────────────────────
     // NOTE: reactions and comments are intentionally NOT mapped as collections here.

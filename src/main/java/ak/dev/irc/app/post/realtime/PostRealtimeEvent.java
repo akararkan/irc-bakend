@@ -55,6 +55,7 @@ public class PostRealtimeEvent {
     private Long postCommentCount;
     private Long postShareCount;
     private Long postViewCount;
+    private Long postSaveCount;
     private Long commentReactionCount;
     private Long commentReplyCount;
 

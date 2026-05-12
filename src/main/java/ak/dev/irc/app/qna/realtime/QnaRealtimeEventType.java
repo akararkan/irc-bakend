@@ -35,5 +35,9 @@ public enum QnaRealtimeEventType {
     QUESTION_UPDATED,
     QUESTION_DELETED,
     QUESTION_LOCKED,
-    QUESTION_UNLOCKED
+    QUESTION_UNLOCKED,
+
+    // ── live counters (one event per counter so clients can patch
+    //     individual numbers without re-fetching the whole question) ────
+    VIEW_COUNT_UPDATED
 }

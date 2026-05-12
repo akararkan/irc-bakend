@@ -15,6 +15,8 @@ import ak.dev.irc.app.research.repository.ResearchRepository;
 import ak.dev.irc.app.research.repository.ResearchViewRepository;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -52,6 +54,12 @@ public class ResearchAnalyticsConsumer {
     private final ResearchMediaRepository mediaRepo;
     private final UserRepository          userRepo;
     private final ResearchRealtimeBroadcaster realtime;
+
+    // Used to drop the L1 cache between a JPQL UPDATE and the re-read so the
+    // broadcast carries the post-increment value, not the pre-increment entity
+    // that Hibernate still holds in the persistence context.
+    @PersistenceContext
+    private EntityManager em;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  View tracking
@@ -162,6 +170,12 @@ public class ResearchAnalyticsConsumer {
      */
     private void broadcastFreshCounters(java.util.UUID researchId, ResearchRealtimeEventType type) {
         try {
+            // Flush pending writes and drop the persistence context so the
+            // findById below reads the post-increment row from the DB instead
+            // of returning the cached pre-increment entity loaded earlier in
+            // this transaction.
+            em.flush();
+            em.clear();
             researchRepo.findById(researchId).ifPresent(r -> realtime.broadcast(
                     ResearchRealtimeEvent.builder()
                             .eventType(type)

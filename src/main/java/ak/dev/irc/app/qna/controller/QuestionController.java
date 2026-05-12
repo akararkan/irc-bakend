@@ -6,6 +6,7 @@ import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeService;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.user.entity.User;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -102,9 +103,25 @@ public class QuestionController {
     @GetMapping("/{questionId}")
     public ResponseEntity<QuestionResponse> getQuestion(
             @PathVariable UUID questionId,
-            @AuthenticationPrincipal User user) {
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
         UUID viewerId = user != null ? user.getId() : null;
-        return ResponseEntity.ok(questionService.getQuestion(questionId, viewerId));
+        // Dedupe key: authenticated viewers by user id, anonymous by client IP
+        // so refreshing the same tab doesn't inflate the counter.
+        String viewerKey = viewerId != null ? viewerId.toString() : clientFingerprint(request);
+        return ResponseEntity.ok(questionService.getQuestion(questionId, viewerId, viewerKey));
+    }
+
+    /**
+     * Best-effort client fingerprint for view-count dedupe of anonymous viewers.
+     * Honours {@code X-Forwarded-For} so we don't deduplicate every visitor down
+     * to a single proxy IP behind a load balancer.
+     */
+    private static String clientFingerprint(HttpServletRequest request) {
+        if (request == null) return null;
+        String fwd = request.getHeader("X-Forwarded-For");
+        if (fwd != null && !fwd.isBlank()) return fwd.split(",")[0].trim();
+        return request.getRemoteAddr();
     }
 
     /**
@@ -281,10 +298,13 @@ public class QuestionController {
     public ResponseEntity<QuestionAnswerResponse> reactToAnswer(
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
-            @Valid @RequestBody ReactToAnswerRequest request,
+            @RequestBody(required = false) ReactToAnswerRequest request,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        return ResponseEntity.ok(questionService.reactToAnswer(questionId, answerId, request, user.getId()));
+        return ResponseEntity.ok(questionService.reactToAnswer(
+                questionId, answerId,
+                request != null ? request : new ReactToAnswerRequest(),
+                user.getId()));
     }
 
     @DeleteMapping("/{questionId}/answers/{answerId}/react")

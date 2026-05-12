@@ -15,6 +15,7 @@ public record QuestionResponse(
         String body,
         QuestionStatus status,
         Long answerCount,
+        Long viewCount,
         boolean answersLocked,
         Integer maxAnswers,
         LocalDateTime createdAt,

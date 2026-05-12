@@ -22,6 +22,22 @@ public interface QuestionService {
     /** Block-aware fetch — returns 404 to a blocked viewer. */
     QuestionResponse getQuestion(UUID questionId, UUID viewerId);
 
+    /**
+     * Block-aware fetch that also records a (deduped) view and broadcasts a
+     * fresh {@code VIEW_COUNT_UPDATED} event on the question's realtime channel.
+     * {@code viewerKey} is the dedupe identity — user id for authenticated
+     * viewers, client fingerprint (e.g. IP) for anonymous ones.
+     */
+    QuestionResponse getQuestion(UUID questionId, UUID viewerId, String viewerKey);
+
+    /**
+     * Bump the question's view count in its own write transaction and
+     * broadcast the fresh number. Idempotent within the dedupe window.
+     * Called via the Spring proxy from the read path so {@code REQUIRES_NEW}
+     * actually applies.
+     */
+    void recordView(UUID questionId, UUID viewerId, String viewerKey);
+
     Page<QuestionResponse> getQuestionFeed(Pageable pageable);
 
     Page<QuestionResponse> getFeed(Pageable pageable);

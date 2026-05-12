@@ -185,10 +185,11 @@ public class PostController {
     @PostMapping("/{postId}/react")
     public ResponseEntity<PostResponse> react(
             @PathVariable UUID postId,
-            @Valid @RequestBody ReactToPostRequest req,
+            @RequestBody(required = false) ReactToPostRequest req,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        return ResponseEntity.ok(postService.reactToPost(postId, user.getId(), req));
+        return ResponseEntity.ok(postService.reactToPost(
+                postId, user.getId(), req != null ? req : new ReactToPostRequest()));
     }
 
     @DeleteMapping("/{postId}/react")
@@ -197,6 +198,61 @@ public class PostController {
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         postService.removeReaction(postId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Save / Bookmark ───────────────────────────────────────
+
+    @PostMapping("/{postId}/save")
+    public ResponseEntity<Void> savePost(
+            @PathVariable UUID postId,
+            @RequestParam(required = false) String collection,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        postService.savePost(postId, user.getId(), collection);
+        return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
+
+    @DeleteMapping("/{postId}/save")
+    public ResponseEntity<Void> unsavePost(
+            @PathVariable UUID postId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        postService.unsavePost(postId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/me/saved")
+    public ResponseEntity<Page<PostResponse>> getSavedPosts(
+            @AuthenticationPrincipal User user,
+            @PageableDefault(size = 20) Pageable pageable) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getSavedPosts(user.getId(), pageable));
+    }
+
+    @GetMapping("/me/saved/collection")
+    public ResponseEntity<Page<PostResponse>> getSavedPostsByCollection(
+            @RequestParam String name,
+            @AuthenticationPrincipal User user,
+            @PageableDefault(size = 20) Pageable pageable) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getSavedPostsByCollection(user.getId(), name, pageable));
+    }
+
+    @GetMapping("/me/saved/collections")
+    public ResponseEntity<List<String>> getUserPostCollections(
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getUserPostCollections(user.getId()));
+    }
+
+    @PatchMapping("/me/saved/collections")
+    public ResponseEntity<Void> renamePostCollection(
+            @RequestParam String oldName,
+            @RequestParam String newName,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        postService.renamePostCollection(user.getId(), oldName, newName);
         return ResponseEntity.noContent().build();
     }
 

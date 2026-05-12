@@ -70,9 +70,10 @@ public class PostCommentController {
     public ResponseEntity<CommentResponse> reactToComment(
             @PathVariable UUID postId,
             @PathVariable UUID commentId,
-            @Valid @RequestBody ReactToPostRequest req,
+            @RequestBody(required = false) ReactToPostRequest req,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(commentService.reactToComment(commentId, user.getId(), req));
+        return ResponseEntity.ok(commentService.reactToComment(
+                commentId, user.getId(), req != null ? req : new ReactToPostRequest()));
     }
 
     @DeleteMapping("/{commentId}/react")

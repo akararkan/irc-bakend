@@ -133,6 +133,10 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("UPDATE Post p SET p.viewCount = p.viewCount + 1 WHERE p.id = :id")
     void incrementViewCount(@Param("id") UUID id);
 
+    @Modifying
+    @Query("UPDATE Post p SET p.saveCount = CASE WHEN p.saveCount + :delta < 0 THEN 0 ELSE p.saveCount + :delta END WHERE p.id = :id")
+    void adjustSaveCount(@Param("id") UUID id, @Param("delta") long delta);
+
     boolean existsByShareLink(String shareLink);
 
     // Following feed: posts from followed users (PUBLIC + FOLLOWERS_ONLY)

@@ -44,6 +44,7 @@ public class PostResponse {
     private Long commentCount;
     private Long shareCount;
     private Long viewCount;
+    private Long saveCount;
 
     // ── current user context ──────────────────────────────────
     private PostReactionType myReaction;   // null if not reacted

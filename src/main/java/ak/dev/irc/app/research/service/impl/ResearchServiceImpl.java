@@ -856,30 +856,23 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public void react(UUID researchId, ReactRequest request, UUID userId) {
-        if (researchId == null || request == null || request.reactionType() == null)
-            throw new BadRequestException("Research ID and reaction type are required", "INVALID_REACTION");
+        if (researchId == null)
+            throw new BadRequestException("Research ID is required", "INVALID_REACTION");
         Research research = findPublishedOrThrow(researchId);
         User user = findUserOrThrow(userId);
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
         try {
-            Optional<ResearchReaction> existing = reactionRepo.findById(rId);
-            boolean isChange = existing.isPresent();
-            if (isChange) {
-                existing.get().setReactionType(request.reactionType());
-                reactionRepo.save(existing.get());
-            } else {
-                reactionRepo.save(ResearchReaction.builder()
-                        .id(rId).research(research).user(user)
-                        .reactionType(request.reactionType()).build());
-                researchRepo.adjustReactionCount(researchId, 1);
-                researchEventPublisher.publishReacted(research, user, request.reactionType());
-            }
-            // Realtime fan-out — every viewer of the research detail page
-            // sees the new count without re-fetching.
+            // Single LIKE-style reaction — repeated calls are idempotent.
+            if (reactionRepo.existsById(rId)) return;
+
+            reactionRepo.save(ResearchReaction.builder()
+                    .id(rId).research(research).user(user)
+                    .reactionType(ReactionType.LIKE).build());
+            researchRepo.adjustReactionCount(researchId, 1);
+            researchEventPublisher.publishReacted(research, user, ReactionType.LIKE);
+
             broadcastCounters(researchId,
-                    isChange
-                            ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_CHANGED
-                            : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
                     user);
         } catch (DataIntegrityViolationException e) {
             throw new BadRequestException("Invalid reaction data", "REACTION_ERROR");
@@ -1277,8 +1270,6 @@ public class ResearchServiceImpl implements ResearchService {
     public void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId) {
         if (commentId == null || userId == null)
             throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
-        if (request == null || request.reactionType() == null)
-            throw new BadRequestException("Reaction type is required", "MISSING_REACTION_TYPE");
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
@@ -1286,45 +1277,31 @@ public class ResearchServiceImpl implements ResearchService {
         if (comment.getDeletedAt() != null)
             throw new BadRequestException("Cannot react to a deleted comment", "COMMENT_DELETED");
 
-        var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
-        boolean isChange = existingOpt.isPresent();
-        ReactionType previous = existingOpt.map(ResearchCommentReaction::getReactionType).orElse(null);
-        // Idempotent — same reaction twice is a no-op. Don't bump counters, don't broadcast a duplicate.
-        if (isChange && previous == request.reactionType()) {
-            return;
-        }
+        // Single LIKE-style reaction — repeated calls are idempotent.
+        if (commentReactionRepo.findByCommentIdAndUserId(commentId, userId).isPresent()) return;
 
-        if (isChange) {
-            ResearchCommentReaction existing = existingOpt.get();
-            existing.setReactionType(request.reactionType());
-            commentReactionRepo.save(existing);
-        } else {
-            User user = userRepo.getReferenceById(userId);
-            ResearchCommentReaction reaction = ResearchCommentReaction.builder()
-                    .id(new ak.dev.irc.app.research.entity.ResearchCommentReactionId(commentId, userId))
-                    .comment(comment)
-                    .user(user)
-                    .reactionType(request.reactionType())
-                    .build();
-            commentReactionRepo.save(reaction);
-            comment.setLikeCount(comment.getLikeCount() + 1);
-            commentRepo.save(comment);
-        }
+        User user = userRepo.getReferenceById(userId);
+        ResearchCommentReaction reaction = ResearchCommentReaction.builder()
+                .id(new ak.dev.irc.app.research.entity.ResearchCommentReactionId(commentId, userId))
+                .comment(comment)
+                .user(user)
+                .reactionType(ReactionType.LIKE)
+                .build();
+        commentReactionRepo.save(reaction);
+        comment.setLikeCount(comment.getLikeCount() + 1);
+        commentRepo.save(comment);
 
         User actor = userRepo.findById(userId).orElse(null);
         researchRealtime.broadcast(
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
-                        .eventType(isChange
-                                ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_CHANGED
-                                : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_ADDED)
+                        .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_ADDED)
                         .researchId(researchId)
                         .actorId(userId)
                         .actorUsername(actor != null ? actor.getUsername() : null)
                         .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                         .commentId(commentId)
                         .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
-                        .reactionType(request.reactionType().name())
-                        .previousReactionType(previous != null ? previous.name() : null)
+                        .reactionType(ReactionType.LIKE.name())
                         .commentReactionCount(comment.getLikeCount())
                         .commentLikeCount(comment.getLikeCount())
                         .build());
@@ -1342,7 +1319,6 @@ public class ResearchServiceImpl implements ResearchService {
         var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
         if (existingOpt.isEmpty()) return; // idempotent — nothing to remove
 
-        ReactionType previous = existingOpt.get().getReactionType();
         commentReactionRepo.delete(existingOpt.get());
         comment.setLikeCount(Math.max(0, comment.getLikeCount() - 1));
         commentRepo.save(comment);
@@ -1357,7 +1333,6 @@ public class ResearchServiceImpl implements ResearchService {
                         .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                         .commentId(commentId)
                         .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
-                        .previousReactionType(previous != null ? previous.name() : null)
                         .commentReactionCount(comment.getLikeCount())
                         .commentLikeCount(comment.getLikeCount())
                         .build());

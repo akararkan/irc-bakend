@@ -1,6 +1,7 @@
 package ak.dev.irc.app.common.exception;
 
 import ak.dev.irc.app.common.dto.ApiErrorResponse;
+import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -329,6 +330,32 @@ public class GlobalExceptionHandler {
                         request.getMethod(), request.getRequestURI()))
                 .path(request.getRequestURI())
                 .errorCode("ENDPOINT_NOT_FOUND")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    /**
+     * Legacy JPA-style "not found" exception. Several services still throw
+     * {@code jakarta.persistence.EntityNotFoundException} when an entity
+     * lookup misses; without an explicit handler it leaks as a 500. Map it
+     * to the same 404 shape the catalogue uses for {@link ResourceNotFoundException}.
+     */
+    @ExceptionHandler(EntityNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleEntityNotFound(
+            EntityNotFoundException ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Entity not found on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getMessage());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .error("Not Found")
+                .message(ex.getMessage() != null ? ex.getMessage() : "Resource not found")
+                .path(request.getRequestURI())
+                .errorCode("RESOURCE_NOT_FOUND")
                 .traceId(traceId)
                 .build();
 

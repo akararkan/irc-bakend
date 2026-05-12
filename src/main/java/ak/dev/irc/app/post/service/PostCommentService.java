@@ -222,56 +222,48 @@ public class PostCommentService {
         socialGuard.requireNotBlockedBetween(
                 userId, comment.getPost().getAuthor().getId(), "COMMENT_REACTION_BLOCKED_RELATIONSHIP");
 
-        var existingOpt = commentReactionRepository.findByCommentIdAndUserId(commentId, userId);
-        boolean isChange = existingOpt.isPresent();
-        PostReactionType previous = existingOpt.map(PostCommentReaction::getReactionType).orElse(null);
-
-        if (isChange) {
-            PostCommentReaction existing = existingOpt.get();
-            existing.setReactionType(req.getReactionType());
-            commentReactionRepository.save(existing);
-        } else {
-            User user = userRepository.getReferenceById(userId);
-            PostCommentReaction reaction = PostCommentReaction.builder()
-                    .id(new PostCommentReactionId(commentId, userId))
-                    .comment(comment)
-                    .user(user)
-                    .reactionType(req.getReactionType())
-                    .build();
-            commentReactionRepository.save(reaction);
-            commentRepository.updateReactionCount(commentId, 1);
+        // Single LIKE-style reaction — repeated calls are idempotent.
+        if (commentReactionRepository.findByCommentIdAndUserId(commentId, userId).isPresent()) {
+            return postMapper.toCommentResponse(comment, PostReactionType.LIKE);
         }
+
+        User user = userRepository.getReferenceById(userId);
+        PostCommentReaction reaction = PostCommentReaction.builder()
+                .id(new PostCommentReactionId(commentId, userId))
+                .comment(comment)
+                .user(user)
+                .reactionType(PostReactionType.LIKE)
+                .build();
+        commentReactionRepository.save(reaction);
+        commentRepository.updateReactionCount(commentId, 1);
 
         eventPublisher.publishCommentReacted(PostCommentReactedEvent.builder()
                 .commentId(commentId)
                 .reactorId(userId)
                 .commentAuthorId(comment.getAuthor().getId())
                 .postId(comment.getPost().getId())
-                .reactionType(req.getReactionType().name())
+                .reactionType(PostReactionType.LIKE.name())
                 .build());
 
         PostComment fresh = commentRepository.findById(commentId).orElseThrow();
         User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
-                .eventType(isChange ? PostRealtimeEventType.COMMENT_REACTION_CHANGED
-                                    : PostRealtimeEventType.COMMENT_REACTION_ADDED)
+                .eventType(PostRealtimeEventType.COMMENT_REACTION_ADDED)
                 .postId(comment.getPost().getId())
                 .actorId(userId)
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .commentId(commentId)
-                .reactionType(req.getReactionType().name())
-                .previousReactionType(previous != null ? previous.name() : null)
+                .reactionType(PostReactionType.LIKE.name())
                 .commentReactionCount(fresh.getReactionCount())
                 .build());
 
-        return postMapper.toCommentResponse(fresh);
+        return postMapper.toCommentResponse(fresh, PostReactionType.LIKE);
     }
 
     @Transactional
     public void removeCommentReaction(UUID commentId, UUID userId) {
         commentReactionRepository.findByCommentIdAndUserId(commentId, userId).ifPresent(r -> {
-            PostReactionType previous = r.getReactionType();
             UUID postId = r.getComment().getPost().getId();
             commentReactionRepository.delete(r);
             commentRepository.updateReactionCount(commentId, -1);
@@ -285,7 +277,6 @@ public class PostCommentService {
                     .actorUsername(actor != null ? actor.getUsername() : null)
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .commentId(commentId)
-                    .previousReactionType(previous.name())
                     .commentReactionCount(fresh != null ? fresh.getReactionCount() : null)
                     .build());
         });

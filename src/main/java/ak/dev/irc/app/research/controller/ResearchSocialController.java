@@ -39,9 +39,11 @@ public class ResearchSocialController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Void> react(
             @PathVariable UUID researchId,
-            @Valid @RequestBody ReactRequest request,
+            @RequestBody(required = false) ReactRequest request,
             @AuthenticationPrincipal User user) {
-        researchService.react(researchId, request, user.getId());
+        researchService.react(researchId,
+                request != null ? request : new ReactRequest(),
+                user.getId());
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 
@@ -135,22 +137,19 @@ public class ResearchSocialController {
         return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 
-    // ── Comment reactions (multi-reaction — mirrors posts) ───────────────────
+    // ── Comment reactions (single LIKE — mirrors posts/QnA) ──────────────────
 
-    /**
-     * Add or change the viewer's reaction on a comment. Mirrors
-     * {@code POST /api/v1/posts/{postId}/comments/{commentId}/reactions} —
-     * idempotent on same-type, updates type on different-type, inserts on
-     * first-time.
-     */
     @PostMapping("/comments/{commentId}/reactions")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Void> reactToComment(
             @PathVariable UUID researchId,
             @PathVariable UUID commentId,
-            @Valid @RequestBody ReactRequest request,
+            @RequestBody(required = false) ReactRequest request,
             @AuthenticationPrincipal User user) {
-        researchService.reactToComment(researchId, commentId, request, user.getId());
+        researchService.reactToComment(
+                researchId, commentId,
+                request != null ? request : new ReactRequest(),
+                user.getId());
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 

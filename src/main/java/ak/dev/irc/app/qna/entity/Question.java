@@ -52,6 +52,10 @@ public class Question extends BaseAuditEntity {
     @Builder.Default
     private Long answerCount = 0L;
 
+    @Column(name = "view_count", nullable = false)
+    @Builder.Default
+    private Long viewCount = 0L;
+
     /** When true, no new answers can be submitted. */
     @Column(name = "answers_locked", nullable = false)
     @Builder.Default

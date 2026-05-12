@@ -55,6 +55,8 @@ public class QnaRealtimeEvent {
 
     // ── Fresh denormalised counters ────────────────────────────────────
     private Long questionAnswerCount;
+    /** Fresh view count on the question — populated on {@code VIEW_COUNT_UPDATED}. */
+    private Long questionViewCount;
     private Long answerReactionCount;
     private Long answerReplyCount;
     /** Number of distinct scholars that have voted this answer as best. */

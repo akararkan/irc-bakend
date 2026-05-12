@@ -48,10 +48,16 @@ public class PostMapper {
     }
 
     public PostResponse toResponse(Post post) {
-        return toResponse(post, null);
+        return toResponse(post, null, false);
     }
 
     public PostResponse toResponse(Post post, ak.dev.irc.app.post.enums.PostReactionType myReaction) {
+        return toResponse(post, myReaction, false);
+    }
+
+    public PostResponse toResponse(Post post,
+                                   ak.dev.irc.app.post.enums.PostReactionType myReaction,
+                                   boolean isSaved) {
         PostResponse.AuthorSummary author = PostResponse.AuthorSummary.builder()
                 .id(post.getAuthor().getId())
                 .username(post.getAuthor().getUsername())
@@ -84,7 +90,9 @@ public class PostMapper {
                 .commentCount(post.getCommentCount())
                 .shareCount(post.getShareCount())
                 .viewCount(post.getViewCount())
+                .saveCount(post.getSaveCount())
                 .myReaction(myReaction)
+                .isSaved(isSaved)
                 .createdAt(post.getCreatedAt())
                 .updatedAt(post.getUpdatedAt())
                 .timeAgo(TimeDisplayUtil.timeAgo(post.getCreatedAt()))
