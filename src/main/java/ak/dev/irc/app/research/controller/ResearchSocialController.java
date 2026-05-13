@@ -218,7 +218,10 @@ public class ResearchSocialController {
             @AuthenticationPrincipal User user,
             HttpServletRequest request) {
         UUID uid = user != null ? user.getId() : null;
-        researchService.recordView(researchId, uid, extractIp(request), request.getHeader("User-Agent"));
+        // Dedupe key: authenticated viewers by user id, anonymous by client IP
+        // so refreshing the same tab doesn't inflate the counter.
+        String viewerKey = uid != null ? uid.toString() : extractIp(request);
+        researchService.recordView(researchId, uid, viewerKey);
         return ResponseEntity.ok().build();
     }
 

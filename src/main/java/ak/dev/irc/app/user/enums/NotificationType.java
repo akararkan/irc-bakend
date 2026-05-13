@@ -10,6 +10,7 @@ public enum NotificationType {
     CONNECTION_ACCEPTED,
     PUBLICATION_LIKED,
     PUBLICATION_COMMENTED,
+    PUBLICATION_COMMENT_REACTED, // someone reacted to your comment on a research
     PUBLICATION_CITED,
     SYSTEM_MESSAGE,
 

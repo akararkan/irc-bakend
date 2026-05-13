@@ -233,11 +233,6 @@ public class Research extends BaseAuditEntity {
     @OneToMany(mappedBy = "research", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
-    private List<ResearchView> views = new ArrayList<>();
-
-    @OneToMany(mappedBy = "research", cascade = CascadeType.ALL,
-               orphanRemoval = true, fetch = FetchType.LAZY)
-    @Builder.Default
     private List<ResearchDownload> downloads = new ArrayList<>();
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -20,6 +20,10 @@ import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import ak.dev.irc.app.qna.repository.QuestionAnswerRepository;
 import ak.dev.irc.app.qna.repository.QuestionRepository;
+import ak.dev.irc.app.research.entity.Research;
+import ak.dev.irc.app.research.entity.ResearchComment;
+import ak.dev.irc.app.research.repository.ResearchCommentRepository;
+import ak.dev.irc.app.research.repository.ResearchRepository;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import ak.dev.irc.app.activity.realtime.UserActivityRealtimeBroadcaster;
@@ -52,6 +56,8 @@ public class UserActivityServiceImpl implements UserActivityService {
     private final UserActivityRealtimeBroadcaster realtimeBroadcaster;
     private final QuestionRepository questionRepo;
     private final QuestionAnswerRepository answerRepo;
+    private final ResearchRepository researchRepo;
+    private final ResearchCommentRepository researchCommentRepo;
 
     @Override
     @Transactional(readOnly = true)
@@ -390,6 +396,71 @@ public class UserActivityServiceImpl implements UserActivityService {
                 .activityType(UserActivityType.QNA_ANSWER_FEEDBACK)
                 .question(question)
                 .answer(answer)
+                .build());
+        broadcast(saved);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Research activity (parity with POST_*)
+    // ══════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Async
+    @Transactional
+    public void recordResearchReaction(UUID userId, UUID researchId) {
+        if (userId == null || researchId == null) return;
+        User user = userRepo.findActiveById(userId).orElse(null);
+        Research research = researchRepo.findById(researchId).orElse(null);
+        if (user == null || research == null) {
+            log.warn("[ACTIVITY] recordResearchReaction skipped — user/research not found (userId={}, researchId={})", userId, researchId);
+            return;
+        }
+        UserActivity saved = activityRepo.save(UserActivity.builder()
+                .user(user)
+                .activityType(UserActivityType.RESEARCH_REACTION)
+                .research(research)
+                .build());
+        broadcast(saved);
+    }
+
+    @Override
+    @Async
+    @Transactional
+    public void recordResearchComment(UUID userId, UUID researchId, UUID commentId) {
+        if (userId == null || researchId == null || commentId == null) return;
+        User user = userRepo.findActiveById(userId).orElse(null);
+        Research research = researchRepo.findById(researchId).orElse(null);
+        ResearchComment comment = researchCommentRepo.findById(commentId).orElse(null);
+        if (user == null || research == null || comment == null) {
+            log.warn("[ACTIVITY] recordResearchComment skipped — user/research/comment not found");
+            return;
+        }
+        UserActivity saved = activityRepo.save(UserActivity.builder()
+                .user(user)
+                .activityType(UserActivityType.RESEARCH_COMMENT)
+                .research(research)
+                .researchComment(comment)
+                .build());
+        broadcast(saved);
+    }
+
+    @Override
+    @Async
+    @Transactional
+    public void recordResearchCommentReaction(UUID userId, UUID researchId, UUID commentId) {
+        if (userId == null || researchId == null || commentId == null) return;
+        User user = userRepo.findActiveById(userId).orElse(null);
+        Research research = researchRepo.findById(researchId).orElse(null);
+        ResearchComment comment = researchCommentRepo.findById(commentId).orElse(null);
+        if (user == null || research == null || comment == null) {
+            log.warn("[ACTIVITY] recordResearchCommentReaction skipped — user/research/comment not found");
+            return;
+        }
+        UserActivity saved = activityRepo.save(UserActivity.builder()
+                .user(user)
+                .activityType(UserActivityType.RESEARCH_COMMENT_REACTION)
+                .research(research)
+                .researchComment(comment)
                 .build());
         broadcast(saved);
     }

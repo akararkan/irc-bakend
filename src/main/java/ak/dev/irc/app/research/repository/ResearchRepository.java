@@ -152,6 +152,41 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
             "CASE WHEN r.citationCount > 0 THEN r.citationCount - 1 ELSE 0 END WHERE r.id = :id")
     void decrementCitationCount(@Param("id") UUID id);
 
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+
+    @Modifying
+    @Query(value = """
+        UPDATE researches SET reaction_count = (
+            SELECT COUNT(*) FROM research_reactions r WHERE r.research_id = researches.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReactionCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE researches SET comment_count = (
+            SELECT COUNT(*) FROM research_comments c
+            WHERE c.research_id = researches.id AND c.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileCommentCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE researches SET save_count = (
+            SELECT COUNT(*) FROM research_saves s WHERE s.research_id = researches.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileSaveCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE researches SET download_count = (
+            SELECT COUNT(*) FROM research_downloads d WHERE d.research_id = researches.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileDownloadCount();
+
     boolean existsBySlug(String slug);
 
     // ── Full-text search (Postgres FTS + trigram fallback) ─────────────

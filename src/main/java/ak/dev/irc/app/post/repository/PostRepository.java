@@ -137,6 +137,38 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query("UPDATE Post p SET p.saveCount = CASE WHEN p.saveCount + :delta < 0 THEN 0 ELSE p.saveCount + :delta END WHERE p.id = :id")
     void adjustSaveCount(@Param("id") UUID id, @Param("delta") long delta);
 
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+    // Each statement does COUNT + UPDATE atomically (the COUNT subquery runs
+    // at the same point in time as the UPDATE), so it can't race with a
+    // concurrent reactor: either the new row is visible to the subquery and
+    // the bumped value lands in this UPDATE, or it lands in the user's own
+    // atomic +1 UPDATE — never both, never neither.
+
+    @Modifying
+    @Query(value = """
+        UPDATE posts SET reaction_count = (
+            SELECT COUNT(*) FROM post_reactions r WHERE r.post_id = posts.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReactionCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE posts SET comment_count = (
+            SELECT COUNT(*) FROM post_comments c
+            WHERE c.post_id = posts.id AND c.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileCommentCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE posts SET save_count = (
+            SELECT COUNT(*) FROM post_saves s WHERE s.post_id = posts.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileSaveCount();
+
     boolean existsByShareLink(String shareLink);
 
     // Following feed: posts from followed users (PUBLIC + FOLLOWERS_ONLY)

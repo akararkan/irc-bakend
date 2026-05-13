@@ -24,4 +24,7 @@ public interface PostReactionRepository extends JpaRepository<PostReaction, Post
     List<Object[]> countByTypeForPost(@Param("postId") UUID postId);
 
     List<PostReaction> findTop5ByPostIdOrderByCreatedAtDesc(UUID postId);
+
+    /** Source-of-truth count for the reconciler to rebuild {@code post.reactionCount}. */
+    long countByPostId(UUID postId);
 }

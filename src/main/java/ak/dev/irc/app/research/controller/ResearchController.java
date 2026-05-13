@@ -423,9 +423,9 @@ public class ResearchController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Void> react(
             @PathVariable UUID id,
-            @Valid @RequestBody ReactRequest request,
+            @RequestBody(required = false) ReactRequest request,
             @AuthenticationPrincipal User user) {
-        researchService.react(id, request, user.getId());
+        researchService.react(id, request != null ? request : new ReactRequest(), user.getId());
         return ResponseEntity.ok().build();
     }
 

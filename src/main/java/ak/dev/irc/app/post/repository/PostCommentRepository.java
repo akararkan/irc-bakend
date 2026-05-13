@@ -170,4 +170,33 @@ public interface PostCommentRepository extends JpaRepository<PostComment, UUID> 
     @Modifying
     @Query("UPDATE PostComment c SET c.replyCount = CASE WHEN c.replyCount + :delta < 0 THEN 0 ELSE c.replyCount + :delta END WHERE c.id = :id")
     void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    // ── Reconciliation source-of-truth queries ─────────────────────────────
+
+    /** Live (non-deleted) comments on a post. Used to rebuild {@code post.commentCount}. */
+    @Query("SELECT COUNT(c) FROM PostComment c WHERE c.post.id = :postId AND c.deletedAt IS NULL")
+    long countLiveByPostId(@Param("postId") UUID postId);
+
+    /** Live (non-deleted) replies under a parent comment. Used to rebuild {@code postComment.replyCount}. */
+    @Query("SELECT COUNT(c) FROM PostComment c WHERE c.parent.id = :parentId AND c.deletedAt IS NULL")
+    long countLiveRepliesByParentId(@Param("parentId") UUID parentId);
+
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+
+    @Modifying
+    @Query(value = """
+        UPDATE post_comments SET reaction_count = (
+            SELECT COUNT(*) FROM post_comment_reactions r WHERE r.comment_id = post_comments.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReactionCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE post_comments parent SET reply_count = (
+            SELECT COUNT(*) FROM post_comments c
+            WHERE c.parent_id = parent.id AND c.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReplyCount();
 }

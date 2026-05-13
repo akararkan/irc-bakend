@@ -52,4 +52,12 @@ public interface UserActivityService {
     void recordQnaBestAnswerVote(UUID voterId, UUID questionId, UUID answerId, boolean voted);
 
     void recordQnaAnswerFeedback(UUID userId, UUID questionId, UUID answerId);
+
+    // ── Research ─────────────────────────────────────────────────────────
+
+    void recordResearchReaction(UUID userId, UUID researchId);
+
+    void recordResearchComment(UUID userId, UUID researchId, UUID commentId);
+
+    void recordResearchCommentReaction(UUID userId, UUID researchId, UUID commentId);
 }

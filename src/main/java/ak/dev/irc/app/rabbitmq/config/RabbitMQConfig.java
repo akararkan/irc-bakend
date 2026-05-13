@@ -159,7 +159,11 @@ public class RabbitMQConfig {
 
     // ── Bindings — analytics queue ────────────────────────────────────────────
 
-    /** Research analytics events (views, downloads) */
+    /**
+     * Research analytics events (downloads). Views moved to an inline
+     * Redis-NX path in {@code ResearchServiceImpl.recordView} to mirror
+     * posts and Q&A — they no longer flow through Rabbit.
+     */
     @Bean
     public Binding analyticsBindingResearch(Queue analyticsQueue, TopicExchange ircExchange) {
         return BindingBuilder.bind(analyticsQueue)

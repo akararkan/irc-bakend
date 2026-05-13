@@ -152,7 +152,7 @@ public interface ResearchService {
 
     // ── View & Download tracking ─────────────────────────────────────────────
 
-    void recordView(UUID researchId, UUID userId, String ipAddress, String userAgent);
+    void recordView(UUID researchId, UUID viewerId, String viewerKey);
 
     String recordDownload(UUID researchId, UUID mediaId, UUID userId, String ipAddress);
 

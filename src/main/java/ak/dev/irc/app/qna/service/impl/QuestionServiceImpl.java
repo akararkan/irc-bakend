@@ -419,9 +419,11 @@ public class QuestionServiceImpl implements QuestionService {
 
         // Only top-level answers move the question into ANSWERED and bump the count.
         if (parent == null) {
-            question.setAnswerCount(question.getAnswerCount() + 1);
+            // Atomic — entity setter + save was racy under concurrent answer creates.
+            questionRepository.adjustAnswerCount(question.getId(), 1);
             question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
             questionRepository.save(question);
+            entityManager.refresh(question);
             counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
                     question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
                     question.getAnswerCount());
@@ -648,12 +650,14 @@ public class QuestionServiceImpl implements QuestionService {
 
         // Reanswers don't count toward the question's answerCount, so only adjust for top-level deletions.
         if (answer.getParentAnswer() == null) {
-            long remainingAnswers = Math.max(0L, question.getAnswerCount() - 1);
-            question.setAnswerCount(remainingAnswers);
+            // Atomic clamp-at-zero — entity setter + save was racy under concurrent deletes.
+            questionRepository.adjustAnswerCount(question.getId(), -1);
+            entityManager.refresh(question);
+            long remainingAnswers = question.getAnswerCount();
             if (remainingAnswers == 0 && question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED) {
                 question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN);
+                questionRepository.save(question);
             }
-            questionRepository.save(question);
             counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
                     question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
                     remainingAnswers);
@@ -1233,8 +1237,10 @@ public class QuestionServiceImpl implements QuestionService {
                 .reactionType(AnswerReactionType.LIKE)
                 .build();
         reactionRepository.save(reaction);
-        answer.incrementReactions();
-        answerRepository.save(answer);
+        // Atomic JPQL update — entity setter + save was racy under concurrent
+        // reactions and let the counter drift below the actual reaction-row count.
+        answerRepository.updateReactionCount(answerId, 1);
+        entityManager.refresh(answer);
         counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
                 ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, answer.getReactionCount());
 
@@ -1269,8 +1275,9 @@ public class QuestionServiceImpl implements QuestionService {
 
         reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).ifPresent(r -> {
             reactionRepository.delete(r);
-            answer.decrementReactions();
-            answerRepository.save(answer);
+            // Atomic JPQL update with clamp-at-zero — entity setter + save was racy.
+            answerRepository.updateReactionCount(answerId, -1);
+            entityManager.refresh(answer);
             counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
                     ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, answer.getReactionCount());
 

@@ -111,6 +111,68 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
     void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
 
     /**
+     * Atomic clamp-at-zero increment/decrement of the denormalised
+     * {@code reactionCount}. Mirrors {@code PostCommentRepository.updateReactionCount}
+     * — using entity setter + save was racy and would silently lose updates
+     * under concurrent reactions, causing the counter to drift below the
+     * actual reaction-row count.
+     */
+    @Modifying
+    @Query("""
+        UPDATE QuestionAnswer a
+        SET a.reactionCount = CASE WHEN a.reactionCount + :delta < 0 THEN 0
+                                   ELSE a.reactionCount + :delta END
+        WHERE a.id = :id
+        """)
+    void updateReactionCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    // ── Reconciliation source-of-truth queries ─────────────────────────────
+
+    /** Live (non-deleted) top-level answers on a question. Used to rebuild {@code question.answerCount}. */
+    @Query("""
+        SELECT COUNT(a) FROM QuestionAnswer a
+        WHERE a.question.id = :questionId
+          AND a.parentAnswer IS NULL
+          AND a.deletedAt IS NULL
+        """)
+    long countLiveTopLevelByQuestionId(@Param("questionId") UUID questionId);
+
+    /** Live (non-deleted) reanswers under a parent answer. Used to rebuild {@code answer.replyCount}. */
+    @Query("""
+        SELECT COUNT(a) FROM QuestionAnswer a
+        WHERE a.parentAnswer.id = :parentId
+          AND a.deletedAt IS NULL
+        """)
+    long countLiveRepliesByParentId(@Param("parentId") UUID parentId);
+
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+
+    @Modifying
+    @Query(value = """
+        UPDATE question_answers SET reaction_count = (
+            SELECT COUNT(*) FROM answer_reactions r WHERE r.answer_id = question_answers.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReactionCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE question_answers parent SET reply_count = (
+            SELECT COUNT(*) FROM question_answers a
+            WHERE a.parent_answer_id = parent.id AND a.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReplyCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE question_answers SET best_answer_vote_count = (
+            SELECT COUNT(*) FROM best_answer_votes v WHERE v.answer_id = question_answers.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileBestAnswerVoteCount();
+
+    /**
      * Bulk fetch of {@code (answerId, reactionType)} for a viewer over a page
      * of answers — supports rendering "myReaction" without N round-trips.
      */

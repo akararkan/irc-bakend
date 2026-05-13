@@ -39,6 +39,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -63,7 +64,6 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.research.repository.ResearchCommentReactionRepository commentReactionRepo;
     private final ResearchReactionRepository reactionRepo;
     private final ResearchSaveRepository     saveRepo;
-    private final ResearchViewRepository     viewRepo;
     private final ResearchDownloadRepository downloadRepo;
     private final UserRepository             userRepo;
     private final UserFollowRepository       followRepo;
@@ -79,6 +79,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
+    private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -863,6 +864,13 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Research ID is required", "INVALID_REACTION");
         Research research = findPublishedOrThrow(researchId);
         User user = findUserOrThrow(userId);
+        // Block guard — refuse to react across any block edge with the researcher.
+        // Mirrors PostService.reactToPost.
+        if (research.getResearcher() != null) {
+            socialGuard.requireNotBlockedBetween(
+                    userId, research.getResearcher().getId(),
+                    "RESEARCH_REACTION_BLOCKED_RELATIONSHIP");
+        }
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
         try {
             // Re-react is a no-op at the DB layer, but still broadcast the
@@ -937,6 +945,12 @@ public class ResearchServiceImpl implements ResearchService {
         Research research = findPublishedOrThrow(researchId);
         if (!research.isCommentsEnabled())
             throw new BadRequestException("Comments are disabled for this research", "COMMENTS_DISABLED");
+        // Block guard — can't comment on a researcher who has blocked you (or vice versa).
+        if (research.getResearcher() != null) {
+            socialGuard.requireNotBlockedBetween(
+                    userId, research.getResearcher().getId(),
+                    "RESEARCH_COMMENT_BLOCKED_RELATIONSHIP");
+        }
         User user = findUserOrThrow(userId);
 
         try {
@@ -963,8 +977,8 @@ public class ResearchServiceImpl implements ResearchService {
                 // and prevents a misbehaving client from producing depth-2 trees.
                 if (parent.getParent() != null) parent = parent.getParent();
                 comment.setParent(parent);
-                parent.setReplyCount(parent.getReplyCount() + 1);
-                commentRepo.save(parent);
+                // Atomic — entity setter + save was racy and lost concurrent reply bumps.
+                commentRepo.updateReplyCount(parent.getId(), 1);
             }
 
             comment = commentRepo.save(comment);
@@ -1170,9 +1184,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (comment.getParent() != null) {
             ResearchComment parent = comment.getParent();
             parentId = parent.getId();
-            long current = parent.getReplyCount() == null ? 0L : parent.getReplyCount();
-            parent.setReplyCount(Math.max(0L, current - 1));
-            commentRepo.save(parent);
+            // Atomic clamp-at-zero — entity setter + save was racy.
+            commentRepo.updateReplyCount(parentId, -1);
+            entityManager.refresh(parent);
             parentReplyCount = parent.getReplyCount();
         }
 
@@ -1294,12 +1308,26 @@ public class ResearchServiceImpl implements ResearchService {
     public void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId) {
         if (commentId == null || userId == null)
             throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+        rateLimiter.checkReaction(userId);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
             throw new ForbiddenException("Comment does not belong to this research");
         if (comment.getDeletedAt() != null)
             throw new BadRequestException("Cannot react to a deleted comment", "COMMENT_DELETED");
+
+        // Block guards — refuse to react across a block edge with either the
+        // comment author or the researcher. Mirrors PostCommentService.reactToComment.
+        if (comment.getUser() != null) {
+            socialGuard.requireNotBlockedBetween(
+                    userId, comment.getUser().getId(),
+                    "RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+        }
+        if (comment.getResearch().getResearcher() != null) {
+            socialGuard.requireNotBlockedBetween(
+                    userId, comment.getResearch().getResearcher().getId(),
+                    "RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+        }
 
         User actor = userRepo.findById(userId).orElse(null);
 
@@ -1335,11 +1363,18 @@ public class ResearchServiceImpl implements ResearchService {
                 .reactionType(ReactionType.LIKE)
                 .build();
         commentReactionRepo.save(reaction);
-        comment.setLikeCount(comment.getLikeCount() + 1);
-        commentRepo.save(comment);
+        // Atomic JPQL update — entity setter + save was racy under concurrent
+        // reactions and let the counter drift below the actual reaction-row count.
+        commentRepo.updateLikeCount(commentId, 1);
+        entityManager.refresh(comment);
         counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
                 commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
                 comment.getLikeCount());
+
+        // Publish for notification + activity recording (mirrors PostCommentService).
+        if (actor != null) {
+            researchEventPublisher.publishCommentReacted(comment.getResearch(), comment, actor);
+        }
 
         researchRealtime.broadcast(
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
@@ -1369,8 +1404,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (existingOpt.isEmpty()) return; // idempotent — nothing to remove
 
         commentReactionRepo.delete(existingOpt.get());
-        comment.setLikeCount(Math.max(0, comment.getLikeCount() - 1));
-        commentRepo.save(comment);
+        // Atomic JPQL update with clamp-at-zero — entity setter + save was racy.
+        commentRepo.updateLikeCount(commentId, -1);
+        entityManager.refresh(comment);
         counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
                 commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
                 comment.getLikeCount());
@@ -1467,19 +1503,37 @@ public class ResearchServiceImpl implements ResearchService {
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public void recordView(UUID researchId, UUID userId, String ipAddress, String userAgent) {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordView(UUID researchId, UUID viewerId, String viewerKey) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
-        if (ipAddress == null || ipAddress.isBlank()) ipAddress = "unknown";
-        LocalDateTime cutoff = LocalDateTime.now().minusHours(24);
         try {
-            boolean duplicate = userId != null
-                    ? viewRepo.existsByResearchIdAndUserIdAndCreatedAtAfter(researchId, userId, cutoff)
-                    : viewRepo.existsByResearchIdAndIpAddressAndUserIsNullAndCreatedAtAfter(researchId, ipAddress, cutoff);
-            if (!duplicate) {
-                researchEventPublisher.publishViewed(researchId, userId, ipAddress, userAgent);
+            // Atomic Redis NX dedupe — collapses refresh-spam and double-mount
+            // races into a single counter bump.
+            if (!viewTracker.shouldCount(researchId, viewerKey)) return;
+
+            researchRepo.incrementViewCount(researchId);
+
+            // Drop the L1 cache so the re-read returns the post-increment row,
+            // not the cached pre-increment entity Hibernate might still hold.
+            entityManager.flush();
+            entityManager.clear();
+            Long freshCount = researchRepo.findById(researchId)
+                    .map(Research::getViewCount)
+                    .orElse(null);
+            if (freshCount != null) {
+                counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH,
+                        researchId, ak.dev.irc.app.common.cache.CounterCache.F_VIEWS, freshCount);
+                researchRealtime.broadcast(
+                        ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                                .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.VIEW_COUNT_UPDATED)
+                                .researchId(researchId)
+                                .actorId(viewerId)
+                                .viewCount(freshCount)
+                                .build());
             }
-        } catch (DataAccessException e) {
-            log.error("Failed to check view duplicate for research {}: {}", researchId, e.getMessage());
+        } catch (Exception e) {
+            // View counts are best-effort; never let a counter failure break a read.
+            log.warn("Failed to bump view count for research {}: {}", researchId, e.getMessage());
         }
     }
 

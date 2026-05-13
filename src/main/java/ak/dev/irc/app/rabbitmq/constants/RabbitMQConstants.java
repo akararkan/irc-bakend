@@ -21,7 +21,7 @@ public final class RabbitMQConstants {
     /** Receives social + lifecycle events → creates Notification records */
     public static final String NOTIFICATION_QUEUE  = "irc.queue.notifications";
 
-    /** Receives analytics events → persists views / downloads / counters */
+    /** Receives analytics events → persists downloads / counters */
     public static final String ANALYTICS_QUEUE     = "irc.queue.analytics";
 
     /** Parking lot for messages that exhausted their retry attempts */
@@ -41,12 +41,12 @@ public final class RabbitMQConstants {
 
     // ── Routing keys — Research Social ────────────────────────────────────────
 
-    public static final String RESEARCH_REACTED   = "research.social.reacted";
-    public static final String RESEARCH_COMMENTED = "research.social.commented";
+    public static final String RESEARCH_REACTED          = "research.social.reacted";
+    public static final String RESEARCH_COMMENTED        = "research.social.commented";
+    public static final String RESEARCH_COMMENT_REACTED  = "research.social.comment.reacted";
 
     // ── Routing keys — Research Analytics ────────────────────────────────────
 
-    public static final String RESEARCH_VIEWED     = "research.analytics.viewed";
     public static final String RESEARCH_DOWNLOADED = "research.analytics.downloaded";
 
     // ── Routing keys — Q&A ───────────────────────────────────────────────────

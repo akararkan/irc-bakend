@@ -47,4 +47,8 @@ public interface PostSaveRepository extends JpaRepository<PostSave, PostSaveId> 
     int renameCollection(@Param("userId") UUID userId,
                          @Param("oldName") String oldName,
                          @Param("newName") String newName);
+
+    /** Source-of-truth count for the reconciler to rebuild {@code post.saveCount}. */
+    @Query("SELECT COUNT(s) FROM PostSave s WHERE s.id.postId = :postId")
+    long countByPostId(@Param("postId") UUID postId);
 }

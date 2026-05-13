@@ -61,4 +61,58 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
         WHERE comment_id = :commentId
     """, nativeQuery = true)
     void deleteAllLikesByCommentId(@Param("commentId") UUID commentId);
+
+    /**
+     * Atomic clamp-at-zero increment/decrement of the denormalised
+     * {@code likeCount}. Mirrors {@code PostCommentRepository.updateReactionCount}
+     * — using entity setter + save was racy and would silently lose updates
+     * under concurrent reactions, causing the counter to drift below the
+     * actual reaction-row count.
+     */
+    @Modifying
+    @Query("UPDATE ResearchComment c SET c.likeCount = CASE WHEN c.likeCount + :delta < 0 THEN 0 ELSE c.likeCount + :delta END WHERE c.id = :id")
+    void updateLikeCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    /**
+     * Atomic clamp-at-zero increment/decrement of the denormalised
+     * {@code replyCount}. Same rationale as {@link #updateLikeCount}.
+     */
+    @Modifying
+    @Query("UPDATE ResearchComment c SET c.replyCount = CASE WHEN c.replyCount + :delta < 0 THEN 0 ELSE c.replyCount + :delta END WHERE c.id = :id")
+    void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    // ── Reconciliation queries (used by CounterReconciler to rebuild counters
+    //    from the source-of-truth row counts, not from the possibly-drifted
+    //    denormalised columns) ─────────────────────────────────────────────
+
+    @Query(value = """
+        SELECT COUNT(*) FROM research_comment_likes WHERE comment_id = :commentId
+    """, nativeQuery = true)
+    long countLikesByCommentId(@Param("commentId") UUID commentId);
+
+    @Query("SELECT COUNT(c) FROM ResearchComment c WHERE c.parent.id = :parentId AND c.deletedAt IS NULL")
+    long countLiveRepliesByParentId(@Param("parentId") UUID parentId);
+
+    /** Live (non-deleted) comments on a research. Used to rebuild {@code research.commentCount}. */
+    @Query("SELECT COUNT(c) FROM ResearchComment c WHERE c.research.id = :researchId AND c.deletedAt IS NULL")
+    long countLiveByResearchId(@Param("researchId") UUID researchId);
+
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+
+    @Modifying
+    @Query(value = """
+        UPDATE research_comments SET like_count = (
+            SELECT COUNT(*) FROM research_comment_likes l WHERE l.comment_id = research_comments.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileLikeCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE research_comments parent SET reply_count = (
+            SELECT COUNT(*) FROM research_comments c
+            WHERE c.parent_id = parent.id AND c.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileReplyCount();
 }

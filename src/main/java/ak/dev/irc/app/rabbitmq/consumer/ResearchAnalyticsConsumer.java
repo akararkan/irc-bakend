@@ -1,18 +1,15 @@
 package ak.dev.irc.app.rabbitmq.consumer;
 
 import ak.dev.irc.app.rabbitmq.event.research.ResearchDownloadedEvent;
-import ak.dev.irc.app.rabbitmq.event.research.ResearchViewedEvent;
 import ak.dev.irc.app.research.entity.Research;
 import ak.dev.irc.app.research.entity.ResearchDownload;
 import ak.dev.irc.app.research.entity.ResearchMedia;
-import ak.dev.irc.app.research.entity.ResearchView;
 import ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster;
 import ak.dev.irc.app.research.realtime.ResearchRealtimeEvent;
 import ak.dev.irc.app.research.realtime.ResearchRealtimeEventType;
 import ak.dev.irc.app.research.repository.ResearchDownloadRepository;
 import ak.dev.irc.app.research.repository.ResearchMediaRepository;
 import ak.dev.irc.app.research.repository.ResearchRepository;
-import ak.dev.irc.app.research.repository.ResearchViewRepository;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -35,12 +32,12 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.ANALYTICS_QUEU
  * │  Listens to: irc.queue.analytics                                        │
  * │                                                                          │
  * │  Handles:                                                                │
- * │   ResearchViewedEvent     → save ResearchView + increment viewCount     │
  * │   ResearchDownloadedEvent → save ResearchDownload + increment DL count  │
  * └──────────────────────────────────────────────────────────────────────────┘
  *
- * Keeping analytics processing off the HTTP request thread means the
- * API response is always fast, even if the DB is briefly under pressure.
+ * View tracking lives in {@code ResearchServiceImpl.recordView} (Redis NX
+ * dedupe + inline increment), mirroring posts and Q&A. Only download
+ * analytics still flow through this queue.
  */
 @Slf4j
 @Component
@@ -49,7 +46,6 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.ANALYTICS_QUEU
 public class ResearchAnalyticsConsumer {
 
     private final ResearchRepository      researchRepo;
-    private final ResearchViewRepository  viewRepo;
     private final ResearchDownloadRepository downloadRepo;
     private final ResearchMediaRepository mediaRepo;
     private final UserRepository          userRepo;
@@ -61,54 +57,6 @@ public class ResearchAnalyticsConsumer {
     // that Hibernate still holds in the persistence context.
     @PersistenceContext
     private EntityManager em;
-
-    // ══════════════════════════════════════════════════════════════════════════
-    //  View tracking
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @RabbitHandler
-    @Transactional
-    public void onResearchViewed(ResearchViewedEvent event) {
-        log.trace("[ANALYTICS] ResearchViewed — researchId={} userId={}",
-                event.researchId(), event.userId());
-
-        Optional<Research> researchOpt = researchRepo.findByIdAndDeletedAtIsNull(event.researchId());
-        if (researchOpt.isEmpty()) {
-            log.warn("[ANALYTICS] ResearchViewed skipped — research not found id={}", event.researchId());
-            return;
-        }
-
-        Research research = researchOpt.get();
-
-        // Resolve optional user reference
-        User user = null;
-        if (event.userId() != null) {
-            user = userRepo.findActiveById(event.userId()).orElse(null);
-        }
-
-        // Truncate oversized fields (defensive — service already validates, but belt-and-suspenders)
-        String ip = event.ipAddress() != null
-                ? (event.ipAddress().length() > 45 ? event.ipAddress().substring(0, 45) : event.ipAddress())
-                : "unknown";
-        String ua = event.userAgent() != null
-                ? (event.userAgent().length() > 500 ? event.userAgent().substring(0, 500) : event.userAgent())
-                : null;
-
-        ResearchView view = ResearchView.builder()
-                .research(research)
-                .user(user)
-                .ipAddress(ip)
-                .userAgent(ua)
-                .build();
-
-        viewRepo.save(view);
-        researchRepo.incrementViewCount(event.researchId());
-
-        broadcastFreshCounters(event.researchId(), ResearchRealtimeEventType.VIEW_COUNT_UPDATED);
-
-        log.debug("[ANALYTICS] View saved and viewCount incremented for researchId={}",
-                event.researchId());
-    }
 
     // ══════════════════════════════════════════════════════════════════════════
     //  Download tracking
@@ -165,8 +113,8 @@ public class ResearchAnalyticsConsumer {
 
     /**
      * Re-read the freshly-incremented counters and emit a research-channel
-     * event so every connected reader sees view / download numbers update
-     * live without reloading the page. Fail-safe — analytics writes never
+     * event so every connected reader sees download numbers update live
+     * without reloading the page. Fail-safe — analytics writes never
      * propagate broadcast errors.
      */
     private void broadcastFreshCounters(java.util.UUID researchId, ResearchRealtimeEventType type) {

@@ -23,4 +23,8 @@ public interface PostCommentReactionRepository extends JpaRepository<PostComment
     @Modifying
     @Query("DELETE FROM PostCommentReaction r WHERE r.id.commentId = :commentId")
     int deleteAllByCommentId(@Param("commentId") UUID commentId);
+
+    /** Source-of-truth count for the reconciler to rebuild {@code postComment.reactionCount}. */
+    @Query("SELECT COUNT(r) FROM PostCommentReaction r WHERE r.id.commentId = :commentId")
+    long countByCommentId(@Param("commentId") UUID commentId);
 }

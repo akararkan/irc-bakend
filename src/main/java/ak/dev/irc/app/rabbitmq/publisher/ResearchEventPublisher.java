@@ -82,13 +82,23 @@ public class ResearchEventPublisher {
                 research.getId(), actor.getId());
     }
 
-    // ── Analytics ─────────────────────────────────────────────────────────────
-
-    public void publishViewed(UUID researchId, UUID userId, String ipAddress, String userAgent) {
-        ResearchViewedEvent event = ResearchViewedEvent.of(researchId, userId, ipAddress, userAgent);
-        send(RESEARCH_VIEWED, event);
-        log.trace("[EVENT] ResearchViewed published — researchId={}", researchId);
+    public void publishCommentReacted(Research research, ResearchComment comment, User actor) {
+        ResearchCommentReactedEvent event = ResearchCommentReactedEvent.of(
+                research.getId(),
+                research.getTitle(),
+                comment.getId(),
+                comment.getUser() != null ? comment.getUser().getId() : null,
+                actor.getId(),
+                actor.getUsername(),
+                actor.getFullName(),
+                ak.dev.irc.app.research.enums.ReactionType.LIKE.name()
+        );
+        send(RESEARCH_COMMENT_REACTED, event);
+        log.debug("[EVENT] ResearchCommentReacted published — commentId={} actor={}",
+                comment.getId(), actor.getId());
     }
+
+    // ── Analytics ─────────────────────────────────────────────────────────────
 
     public void publishDownloaded(UUID researchId, UUID mediaId, UUID userId, String ipAddress) {
         ResearchDownloadedEvent event = ResearchDownloadedEvent.of(researchId, mediaId, userId, ipAddress);

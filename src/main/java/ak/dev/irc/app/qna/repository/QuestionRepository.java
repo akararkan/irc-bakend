@@ -86,6 +86,29 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Query("UPDATE Question q SET q.viewCount = q.viewCount + 1 WHERE q.id = :id")
     void incrementViewCount(@Param("id") UUID id);
 
+    /**
+     * Atomic clamp-at-zero increment/decrement of the denormalised
+     * {@code answerCount}. Replaces the racy
+     * {@code question.setAnswerCount(getAnswerCount() ± 1); save(question)}
+     * which lost updates under concurrent answer creates/deletes.
+     */
+    @Modifying
+    @Query("UPDATE Question q SET q.answerCount = CASE WHEN q.answerCount + :delta < 0 THEN 0 ELSE q.answerCount + :delta END WHERE q.id = :id")
+    void adjustAnswerCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
+
+    @Modifying
+    @Query(value = """
+        UPDATE questions SET answer_count = (
+            SELECT COUNT(*) FROM question_answers a
+            WHERE a.question_id = questions.id
+              AND a.parent_answer_id IS NULL
+              AND a.deleted_at IS NULL
+        )
+        """, nativeQuery = true)
+    int bulkReconcileAnswerCount();
+
     // ── Full-text search (block-aware) ─────────────────────────────────
     // Per-query block exclusion — pass null/empty for anonymous viewers.
     @Query(value = """

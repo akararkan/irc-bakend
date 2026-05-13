@@ -19,9 +19,11 @@ import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
+import ak.dev.irc.app.rabbitmq.event.research.ResearchCommentReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchCommentedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchPublishedEvent;
 import ak.dev.irc.app.rabbitmq.event.research.ResearchReactedEvent;
+import ak.dev.irc.app.research.repository.ResearchCommentRepository;
 import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.rabbitmq.event.user.UserBlockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserFollowedEvent;
@@ -106,6 +108,7 @@ public class NotificationEventConsumer {
         private final UserFollowRepository   followRepo;
         private final UserRestrictionRepository restrictionRepo;
         private final PostCommentRepository  postCommentRepo;
+        private final ResearchCommentRepository researchCommentRepo;
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
         private final UserActivityService    userActivityService;
@@ -276,6 +279,8 @@ public class NotificationEventConsumer {
                 event.researchId(),
                 "Research");
         log.debug("[CONSUMER] PUBLICATION_LIKED dispatched → researcher={}", researcher.getId());
+
+        recordResearchReactionActivity(event);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -310,6 +315,46 @@ public class NotificationEventConsumer {
                 event.researchId(),
                 "Research");
         log.debug("[CONSUMER] PUBLICATION_COMMENTED dispatched → researcher={}", researcher.getId());
+
+        recordResearchCommentActivity(event);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Research — Comment Reacted
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @RabbitHandler
+    @Transactional
+    public void onResearchCommentReacted(ResearchCommentReactedEvent event) {
+        log.info("[CONSUMER] ResearchCommentReacted — commentId={} actor={} ({})",
+                event.commentId(), event.reactorId(), event.reactorUsername());
+
+        // Notify the comment author — suppressed when they reacted to their own comment.
+        if (event.commentAuthorId() != null && !event.commentAuthorId().equals(event.reactorId())) {
+            Optional<User> targetOpt = userRepo.findActiveById(event.commentAuthorId());
+            Optional<User> actorOpt  = userRepo.findActiveById(event.reactorId());
+            if (targetOpt.isPresent() && actorOpt.isPresent()) {
+                User target = targetOpt.get();
+                User actor  = actorOpt.get();
+                if (!isSilencedByRestriction(event.commentAuthorId(), event.reactorId(), "ResearchCommentReacted")) {
+                    dispatcher.dispatchAggregated(
+                            target,
+                            actor,
+                            NotificationType.PUBLICATION_COMMENT_REACTED,
+                            "PUBLICATION_COMMENT_REACTED:" + event.commentId(),
+                            "Someone reacted to your comment",
+                            actor.getFullName() + " (@" + actor.getUsername()
+                                    + ") reacted to your comment on: \"" + event.researchTitle() + "\"",
+                            event.commentId(),
+                            "ResearchComment");
+                    log.debug("[CONSUMER] PUBLICATION_COMMENT_REACTED dispatched → target={}", target.getId());
+                }
+            } else {
+                log.warn("[CONSUMER] ResearchCommentReacted skipped notif — user not found");
+            }
+        }
+
+        recordResearchCommentReactionActivity(event);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1219,6 +1264,36 @@ public class NotificationEventConsumer {
             return PostReactionType.valueOf(raw);
         } catch (IllegalArgumentException ex) {
             return null;
+        }
+    }
+
+    // ── Research activity recording helpers ──────────────────────────────────
+
+    private void recordResearchReactionActivity(ResearchReactedEvent event) {
+        try {
+            userActivityService.recordResearchReaction(event.actorId(), event.researchId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record research reaction (researchId={}, userId={}): {}",
+                    event.researchId(), event.actorId(), e.getMessage());
+        }
+    }
+
+    private void recordResearchCommentActivity(ResearchCommentedEvent event) {
+        try {
+            userActivityService.recordResearchComment(event.actorId(), event.researchId(), event.commentId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record research comment (researchId={}, commentId={}): {}",
+                    event.researchId(), event.commentId(), e.getMessage());
+        }
+    }
+
+    private void recordResearchCommentReactionActivity(ResearchCommentReactedEvent event) {
+        try {
+            userActivityService.recordResearchCommentReaction(
+                    event.reactorId(), event.researchId(), event.commentId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] failed to record research comment reaction (commentId={}, userId={}): {}",
+                    event.commentId(), event.reactorId(), e.getMessage());
         }
     }
 }

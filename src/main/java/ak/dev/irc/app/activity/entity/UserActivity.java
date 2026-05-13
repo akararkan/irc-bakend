@@ -8,6 +8,8 @@ import ak.dev.irc.app.post.enums.PostReactionType;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
+import ak.dev.irc.app.research.entity.Research;
+import ak.dev.irc.app.research.entity.ResearchComment;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.persistence.*;
 import lombok.*;
@@ -25,7 +27,9 @@ import java.util.UUID;
                 @Index(name = "idx_uact_target_user",  columnList = "target_user_id"),
                 @Index(name = "idx_uact_user_query",   columnList = "user_id, query"),
                 @Index(name = "idx_uact_question",     columnList = "question_id"),
-                @Index(name = "idx_uact_answer",       columnList = "answer_id")
+                @Index(name = "idx_uact_answer",       columnList = "answer_id"),
+                @Index(name = "idx_uact_research",     columnList = "research_id"),
+                @Index(name = "idx_uact_rcomment",     columnList = "research_comment_id")
         }
 )
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -99,4 +103,16 @@ public class UserActivity extends BaseAuditEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "qna_reaction_type", length = 30)
     private AnswerReactionType qnaReactionType;
+
+    /** Research for RESEARCH_REACTION / RESEARCH_COMMENT / RESEARCH_COMMENT_REACTION. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "research_id",
+            foreignKey = @ForeignKey(name = "fk_uact_research"))
+    private Research research;
+
+    /** Comment on a research for RESEARCH_COMMENT / RESEARCH_COMMENT_REACTION. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "research_comment_id",
+            foreignKey = @ForeignKey(name = "fk_uact_rcomment"))
+    private ResearchComment researchComment;
 }
