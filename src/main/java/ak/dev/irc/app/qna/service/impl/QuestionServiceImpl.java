@@ -75,6 +75,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionViewTracker viewTracker;
     private final UserActivityService userActivityService;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
+    private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -337,6 +338,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional
     public QuestionAnswerResponse addAnswer(UUID questionId, CreateAnswerRequest request, UUID authorId) {
+        rateLimiter.checkComment(authorId);
         User author = findAnswerAuthorOrThrow(authorId);
         Question question = findQuestionOrThrow(questionId);
 
@@ -1187,6 +1189,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional
     public QuestionAnswerResponse reactToAnswer(UUID questionId, UUID answerId,
                                                  ReactToAnswerRequest request, UUID requesterId) {
+        rateLimiter.checkReaction(requesterId);
         Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));

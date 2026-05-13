@@ -9,6 +9,7 @@ import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.post.entity.Post;
 import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.post.realtime.PostRealtimeBroadcaster;
@@ -42,6 +43,7 @@ public class ReelViewServiceImpl implements ReelViewService {
     private final UserActivityService userActivityService;
     private final PostRealtimeBroadcaster postRealtime;
     private final PostViewTracker viewTracker;
+    private final CounterCache counterCache;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -90,6 +92,12 @@ public class ReelViewServiceImpl implements ReelViewService {
             // Fresh read in this REQUIRES_NEW tx — no stale L1 cache from the caller.
             Long freshCount = postRepo.findById(postId).map(Post::getViewCount).orElse(null);
             if (freshCount != null) {
+                // Write-through to Redis so the feed and detail pages render the
+                // post-increment count without falling back to Postgres on the
+                // next mapper.getOr(...). Without this, the reel-watch path was
+                // desyncing the cache (DB bumped, Redis stale).
+                counterCache.set(CounterCache.Kind.POST, postId,
+                        CounterCache.F_VIEWS, freshCount);
                 postRealtime.broadcast(PostRealtimeEvent.builder()
                         .eventType(PostRealtimeEventType.VIEW_COUNT_UPDATED)
                         .postId(postId)

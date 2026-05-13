@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.service;
 
 import ak.dev.irc.app.common.cache.CounterCache;
+import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
 import ak.dev.irc.app.post.dto.CreateCommentRequest;
@@ -54,6 +55,7 @@ public class PostCommentService {
     private final PostRealtimeBroadcaster     realtime;
     private final SocialGuard                 socialGuard;
     private final CounterCache                counterCache;
+    private final RateLimiter                 rateLimiter;
 
     // Needed to refresh entities after JPQL bulk-updates so SSE broadcasts
     // carry the post-increment counter, not the pre-increment cached value.
@@ -64,6 +66,7 @@ public class PostCommentService {
 
     @Transactional
     public CommentResponse addComment(UUID postId, UUID authorId, CreateCommentRequest req) {
+        rateLimiter.checkComment(authorId);
         Post post = postRepository.findById(postId)
                 .filter(p -> p.getStatus() == PostStatus.PUBLISHED)
                 .orElseThrow(() -> new EntityNotFoundException("Post not found"));
@@ -225,10 +228,63 @@ public class PostCommentService {
                 });
     }
 
+    /**
+     * Cursor-paginated top-level comments — stable under concurrent inserts
+     * (page-based pagination shifts as new comments arrive at the top).
+     *
+     * @param cursor pass {@code null} for the first page; pass the previous
+     *               page's {@code nextCursor} for subsequent pages.
+     */
+    @Transactional(readOnly = true)
+    public ak.dev.irc.app.post.dto.CursorPage<CommentResponse> getTopLevelCommentsCursor(
+            UUID postId, UUID requesterId, java.time.LocalDateTime cursor, int limit) {
+        int safe = Math.max(1, Math.min(limit, 50));
+        var page = org.springframework.data.domain.PageRequest.of(0, safe + 1);
+        java.util.List<ak.dev.irc.app.post.entity.PostComment> rows = cursor == null
+                ? commentRepository.findTopLevelFirstPage(postId, requesterId, page)
+                : commentRepository.findTopLevelAfter(postId, requesterId, cursor, page);
+        boolean hasMore = rows.size() > safe;
+        if (hasMore) rows = rows.subList(0, safe);
+        java.util.List<CommentResponse> items = rows.stream().map(c -> {
+            PostReactionType myReaction = requesterId != null
+                    ? commentReactionRepository.findByCommentIdAndUserId(c.getId(), requesterId)
+                            .map(PostCommentReaction::getReactionType).orElse(null)
+                    : null;
+            return postMapper.toCommentResponse(c, myReaction);
+        }).toList();
+        java.time.LocalDateTime nextCursor = hasMore
+                ? rows.get(rows.size() - 1).getCreatedAt() : null;
+        return new ak.dev.irc.app.post.dto.CursorPage<>(items, nextCursor, hasMore);
+    }
+
+    /** Cursor-paginated replies — same idea, ascending so chronological reads. */
+    @Transactional(readOnly = true)
+    public ak.dev.irc.app.post.dto.CursorPage<CommentResponse> getRepliesCursor(
+            UUID parentId, UUID requesterId, java.time.LocalDateTime cursor, int limit) {
+        int safe = Math.max(1, Math.min(limit, 50));
+        var page = org.springframework.data.domain.PageRequest.of(0, safe + 1);
+        java.util.List<ak.dev.irc.app.post.entity.PostComment> rows = cursor == null
+                ? commentRepository.findRepliesFirstPage(parentId, requesterId, page)
+                : commentRepository.findRepliesAfter(parentId, requesterId, cursor, page);
+        boolean hasMore = rows.size() > safe;
+        if (hasMore) rows = rows.subList(0, safe);
+        java.util.List<CommentResponse> items = rows.stream().map(c -> {
+            PostReactionType myReaction = requesterId != null
+                    ? commentReactionRepository.findByCommentIdAndUserId(c.getId(), requesterId)
+                            .map(PostCommentReaction::getReactionType).orElse(null)
+                    : null;
+            return postMapper.toCommentResponse(c, myReaction);
+        }).toList();
+        java.time.LocalDateTime nextCursor = hasMore
+                ? rows.get(rows.size() - 1).getCreatedAt() : null;
+        return new ak.dev.irc.app.post.dto.CursorPage<>(items, nextCursor, hasMore);
+    }
+
     // ── React to comment ──────────────────────────────────────
 
     @Transactional
     public CommentResponse reactToComment(UUID commentId, UUID userId, ReactToPostRequest req) {
+        rateLimiter.checkReaction(userId);
         PostComment comment = commentRepository.findById(commentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found"));
 

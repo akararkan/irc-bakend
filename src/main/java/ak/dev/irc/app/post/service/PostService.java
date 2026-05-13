@@ -3,6 +3,7 @@ package ak.dev.irc.app.post.service;
 
 
 import ak.dev.irc.app.common.cache.CounterCache;
+import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.service.FollowingIdsCache;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
@@ -70,6 +71,7 @@ public class PostService {
     private final SocialGuard            socialGuard;
     private final FollowingIdsCache      followingIdsCache;
     private final CounterCache           counterCache;
+    private final RateLimiter            rateLimiter;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -96,8 +98,12 @@ public class PostService {
         if (req.getSharedPostId() != null) {
             Post original = postRepository.findById(UUID.fromString(req.getSharedPostId()))
                     .orElseThrow(() -> new EntityNotFoundException("Original post not found"));
-            post.setSharedPost(resolveOriginal(original));
-            postRepository.incrementShareCount(resolveOriginal(original).getId());
+            Post canonical = resolveOriginal(original);
+            post.setSharedPost(canonical);
+            postRepository.incrementShareCount(canonical.getId());
+            em.refresh(canonical);
+            counterCache.set(CounterCache.Kind.POST, canonical.getId(),
+                    CounterCache.F_SHARES, canonical.getShareCount());
         }
 
         post = postRepository.save(post);
@@ -210,6 +216,9 @@ public class PostService {
 
         // Increment share count on the original
         postRepository.incrementShareCount(original.getId());
+        em.refresh(original);
+        counterCache.set(CounterCache.Kind.POST, original.getId(),
+                CounterCache.F_SHARES, original.getShareCount());
 
         // Log the share event
         PostShare share = PostShare.builder()
@@ -236,15 +245,13 @@ public class PostService {
                 .caption(caption)
                 .build());
 
-        Long freshShareCount = postRepository.findById(original.getId())
-                .map(Post::getShareCount).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
                 .postId(original.getId())
                 .actorId(sharerId)
                 .actorUsername(sharer.getUsername())
                 .actorAvatarUrl(sharer.getProfileImage())
-                .postShareCount(freshShareCount)
+                .postShareCount(original.getShareCount())
                 .build());
 
         log.info("Post reposted: original={} repost={} by user {}", original.getId(), repost.getId(), sharerId);
@@ -275,14 +282,15 @@ public class PostService {
                 .ifPresent(shareRepository::delete);
 
         postRepository.decrementShareCount(original.getId());
+        em.refresh(original);
+        counterCache.set(CounterCache.Kind.POST, original.getId(),
+                CounterCache.F_SHARES, original.getShareCount());
 
-        Long freshShareCount = postRepository.findById(original.getId())
-                .map(Post::getShareCount).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
                 .postId(original.getId())
                 .actorId(requesterId)
-                .postShareCount(freshShareCount)
+                .postShareCount(original.getShareCount())
                 .build());
 
         log.info("Repost undone: original={} repost={} by user {}", original.getId(), repost.getId(), requesterId);
@@ -320,9 +328,11 @@ public class PostService {
         }
 
         postRepository.incrementShareCount(original.getId());
+        em.refresh(original);
+        Long fresh = original.getShareCount();
+        counterCache.set(CounterCache.Kind.POST, original.getId(),
+                CounterCache.F_SHARES, fresh);
 
-        Long fresh = postRepository.findById(original.getId())
-                .map(Post::getShareCount).orElse(null);
         User actor = requesterId != null
                 ? userRepository.findById(requesterId).orElse(null)
                 : null;
@@ -658,6 +668,7 @@ public class PostService {
 
     @Transactional
     public PostResponse reactToPost(UUID postId, UUID userId, ReactToPostRequest req) {
+        rateLimiter.checkReaction(userId);
         Post post = findPublishedPost(postId);
 
         // Block guard — disallow reacting across any block edge.
@@ -786,8 +797,10 @@ public class PostService {
         // looking at the original sees the counter drop live.
         if (original != null) {
             UUID originalId = original.getId();
-            Long freshShareCount = postRepository.findById(originalId)
-                    .map(Post::getShareCount).orElse(null);
+            em.refresh(original);
+            Long freshShareCount = original.getShareCount();
+            counterCache.set(CounterCache.Kind.POST, originalId,
+                    CounterCache.F_SHARES, freshShareCount);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.SHARE_COUNT_UPDATED)
                     .postId(originalId)
@@ -805,13 +818,31 @@ public class PostService {
 
     @Transactional
     public void savePost(UUID postId, UUID userId, String collectionName) {
+        rateLimiter.checkSocial(userId);
         Post post = findPublishedPost(postId);
 
         socialGuard.requireNotBlockedBetween(
                 userId, post.getAuthor().getId(), "SAVE_BLOCKED_RELATIONSHIP");
 
+        User actor = userRepository.findById(userId).orElse(null);
         PostSaveId sid = new PostSaveId(postId, userId);
-        if (saveRepository.existsById(sid)) return; // idempotent
+
+        // Already saved — broadcast current count so an SSE-driven UI doing an
+        // optimistic save can reconcile against the authoritative number
+        // (matches the reaction idempotent-broadcast pattern).
+        if (saveRepository.existsById(sid)) {
+            long current = counterCache.getOr(CounterCache.Kind.POST, postId,
+                    CounterCache.F_SAVES, () -> post.getSaveCount() == null ? 0L : post.getSaveCount());
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
+                    .postId(postId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .postSaveCount(current)
+                    .build());
+            return;
+        }
 
         User user = userRepository.getReferenceById(userId);
         saveRepository.save(PostSave.builder()
@@ -820,29 +851,34 @@ public class PostService {
                         ? collectionName.trim() : "Default")
                 .build());
         postRepository.adjustSaveCount(postId, 1);
+        // JPQL bulk UPDATE bypasses the L1 cache — refresh, then write through.
+        em.refresh(post);
+        counterCache.set(CounterCache.Kind.POST, postId,
+                CounterCache.F_SAVES, post.getSaveCount());
 
-        Long freshSaveCount = postRepository.findById(postId)
-                .map(Post::getSaveCount).orElse(null);
-        User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
                 .postId(postId)
                 .actorId(userId)
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .postSaveCount(freshSaveCount)
+                .postSaveCount(post.getSaveCount())
                 .build());
     }
 
     @Transactional
     public void unsavePost(UUID postId, UUID userId) {
         PostSaveId sid = new PostSaveId(postId, userId);
-        if (!saveRepository.existsById(sid)) return; // idempotent
+        if (!saveRepository.existsById(sid)) return; // idempotent — nothing to remove
+        Post post = postRepository.findById(postId).orElse(null);
         saveRepository.deleteById(sid);
         postRepository.adjustSaveCount(postId, -1);
+        if (post != null) {
+            em.refresh(post);
+            counterCache.set(CounterCache.Kind.POST, postId,
+                    CounterCache.F_SAVES, post.getSaveCount());
+        }
 
-        Long freshSaveCount = postRepository.findById(postId)
-                .map(Post::getSaveCount).orElse(null);
         User actor = userRepository.findById(userId).orElse(null);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
@@ -850,7 +886,7 @@ public class PostService {
                 .actorId(userId)
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .postSaveCount(freshSaveCount)
+                .postSaveCount(post != null ? post.getSaveCount() : null)
                 .build());
     }
 

@@ -66,6 +66,37 @@ public class PostCommentController {
                 user != null ? user.getId() : null, pageable));
     }
 
+    /**
+     * Cursor-paginated top-level comments — stable under concurrent inserts.
+     * First page: omit {@code cursor}. Next page: send the previous response's
+     * {@code nextCursor}. End: response carries {@code hasMore=false}.
+     */
+    @GetMapping("/cursor")
+    public ResponseEntity<ak.dev.irc.app.post.dto.CursorPage<CommentResponse>> getCommentsCursor(
+            @PathVariable UUID postId,
+            @RequestParam(required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime cursor,
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(commentService.getTopLevelCommentsCursor(
+                postId, user != null ? user.getId() : null, cursor, limit));
+    }
+
+    /** Cursor-paginated replies — ascending (oldest first). */
+    @GetMapping("/{commentId}/replies/cursor")
+    public ResponseEntity<ak.dev.irc.app.post.dto.CursorPage<CommentResponse>> getRepliesCursor(
+            @PathVariable UUID postId,
+            @PathVariable UUID commentId,
+            @RequestParam(required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime cursor,
+            @RequestParam(defaultValue = "10") int limit,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(commentService.getRepliesCursor(
+                commentId, user != null ? user.getId() : null, cursor, limit));
+    }
+
     @PostMapping("/{commentId}/react")
     public ResponseEntity<CommentResponse> reactToComment(
             @PathVariable UUID postId,

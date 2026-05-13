@@ -157,11 +157,22 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     // ── Full-text search (Postgres FTS + trigram fallback) ─────────────
     // Indexed by SearchInfrastructureInitializer; sub-100ms on millions of rows.
     // Block-aware via :blockedIds — pass null/empty for anonymous viewers.
+    /**
+     * FTS search with engagement boost — the BM25-style {@code ts_rank_cd} score
+     * is multiplied by {@code ln(1 + reactions + views/10 + downloads*5 + citations*10)}
+     * so popular research surfaces above bare keyword matches with equal text
+     * relevance. Downloads and citations weighted more because they signal
+     * deeper scholarly intent than a view.
+     */
     @Query(value = """
-        SELECT r.id, ts_rank_cd(to_tsvector('simple',
+        SELECT r.id, (ts_rank_cd(to_tsvector('simple',
                   coalesce(r.title, '') || ' ' || coalesce(r.abstract_text, '') || ' ' ||
                   coalesce(r.description, '') || ' ' || coalesce(r.keywords, '')),
-                websearch_to_tsquery('simple', :q)) AS score
+                websearch_to_tsquery('simple', :q))
+              * (1 + LN(1 + r.reaction_count
+                          + r.view_count / 10.0
+                          + r.download_count * 5
+                          + r.citation_count * 10))) AS score
         FROM researches r
         WHERE r.deleted_at IS NULL
           AND r.status = 'PUBLISHED'
@@ -184,7 +195,7 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
         FROM researches r
         WHERE r.deleted_at IS NULL
           AND r.status = 'PUBLISHED'
-          AND (coalesce(r.title,'') %% :q OR coalesce(r.keywords,'') %% :q)
+          AND (coalesce(r.title,'') % :q OR coalesce(r.keywords,'') % :q)
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, r.created_at DESC
@@ -207,7 +218,7 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
           AND r.status = 'PUBLISHED'
           AND (LOWER(r.title) LIKE LOWER(:q || '%')
             OR LOWER(r.keywords) LIKE LOWER(:q || '%')
-            OR coalesce(r.title,'') %% :q)
+            OR coalesce(r.title,'') % :q)
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, r.created_at DESC

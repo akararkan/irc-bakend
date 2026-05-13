@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -71,6 +73,95 @@ public interface PostCommentRepository extends JpaRepository<PostComment, UUID> 
     Page<PostComment> findVisibleReplies(@Param("parentId") UUID parentId,
                                          @Param("requesterId") UUID requesterId,
                                          Pageable pageable);
+
+    // ── Cursor pagination for comments + replies ──────────────────────────
+    // Cursor = the createdAt of the last comment in the previous page. Stable
+    // under concurrent inserts (page-based pagination shifts when new comments
+    // arrive at the top while the user is scrolling). Split into first-page
+    // and after-cursor variants because Hibernate can't bind a null typed
+    // LocalDateTime parameter through a single conditional clause.
+
+    @Query("""
+        SELECT c FROM PostComment c
+        WHERE c.post.id = :postId
+          AND c.parent IS NULL
+          AND c.isDeleted = false
+          AND (
+            (:requesterId IS NOT NULL AND c.post.author.id = :requesterId)
+            OR (:requesterId IS NOT NULL AND c.author.id = :requesterId)
+            OR NOT EXISTS (
+              SELECT 1 FROM UserRestriction r
+              WHERE r.restrictor.id = c.post.author.id
+                AND r.restricted.id = c.author.id
+            )
+          )
+        ORDER BY c.createdAt DESC
+        """)
+    List<PostComment> findTopLevelFirstPage(@Param("postId") UUID postId,
+                                            @Param("requesterId") UUID requesterId,
+                                            Pageable pageable);
+
+    @Query("""
+        SELECT c FROM PostComment c
+        WHERE c.post.id = :postId
+          AND c.parent IS NULL
+          AND c.isDeleted = false
+          AND c.createdAt < :cursor
+          AND (
+            (:requesterId IS NOT NULL AND c.post.author.id = :requesterId)
+            OR (:requesterId IS NOT NULL AND c.author.id = :requesterId)
+            OR NOT EXISTS (
+              SELECT 1 FROM UserRestriction r
+              WHERE r.restrictor.id = c.post.author.id
+                AND r.restricted.id = c.author.id
+            )
+          )
+        ORDER BY c.createdAt DESC
+        """)
+    List<PostComment> findTopLevelAfter(@Param("postId") UUID postId,
+                                        @Param("requesterId") UUID requesterId,
+                                        @Param("cursor") LocalDateTime cursor,
+                                        Pageable pageable);
+
+    @Query("""
+        SELECT c FROM PostComment c
+        WHERE c.parent.id = :parentId
+          AND c.isDeleted = false
+          AND (
+            (:requesterId IS NOT NULL AND c.post.author.id = :requesterId)
+            OR (:requesterId IS NOT NULL AND c.author.id = :requesterId)
+            OR NOT EXISTS (
+              SELECT 1 FROM UserRestriction r
+              WHERE r.restrictor.id = c.post.author.id
+                AND r.restricted.id = c.author.id
+            )
+          )
+        ORDER BY c.createdAt ASC
+        """)
+    List<PostComment> findRepliesFirstPage(@Param("parentId") UUID parentId,
+                                           @Param("requesterId") UUID requesterId,
+                                           Pageable pageable);
+
+    @Query("""
+        SELECT c FROM PostComment c
+        WHERE c.parent.id = :parentId
+          AND c.isDeleted = false
+          AND c.createdAt > :cursor
+          AND (
+            (:requesterId IS NOT NULL AND c.post.author.id = :requesterId)
+            OR (:requesterId IS NOT NULL AND c.author.id = :requesterId)
+            OR NOT EXISTS (
+              SELECT 1 FROM UserRestriction r
+              WHERE r.restrictor.id = c.post.author.id
+                AND r.restricted.id = c.author.id
+            )
+          )
+        ORDER BY c.createdAt ASC
+        """)
+    List<PostComment> findRepliesAfter(@Param("parentId") UUID parentId,
+                                       @Param("requesterId") UUID requesterId,
+                                       @Param("cursor") LocalDateTime cursor,
+                                       Pageable pageable);
 
     @Modifying
     @Query("UPDATE PostComment c SET c.reactionCount = CASE WHEN c.reactionCount + :delta < 0 THEN 0 ELSE c.reactionCount + :delta END WHERE c.id = :id")

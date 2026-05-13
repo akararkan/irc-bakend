@@ -238,6 +238,39 @@ logging:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  MANAGEMENT / OBSERVABILITY (Spring Boot Actuator + Micrometer/Prometheus)
+#  Endpoints:
+#    GET /actuator/health        — quick liveness/readiness
+#    GET /actuator/info          — build info
+#    GET /actuator/metrics       — list metric names
+#    GET /actuator/prometheus    — scrape format for Prometheus/Grafana
+# ═══════════════════════════════════════════════════════════════════════════════
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5, 0.9, 0.95, 0.99
+    tags:
+      application: ${spring.application.name}
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  SERVER
 # ═══════════════════════════════════════════════════════════════════════════════
 server:

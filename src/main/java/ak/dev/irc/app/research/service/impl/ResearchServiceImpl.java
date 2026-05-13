@@ -78,6 +78,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster researchRealtime;
     private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
+    private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -857,6 +858,7 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public void react(UUID researchId, ReactRequest request, UUID userId) {
+        rateLimiter.checkReaction(userId);
         if (researchId == null)
             throw new BadRequestException("Research ID is required", "INVALID_REACTION");
         Research research = findPublishedOrThrow(researchId);
@@ -919,6 +921,7 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public CommentResponse addComment(UUID researchId, AddCommentRequest request, UUID userId) {
+        rateLimiter.checkComment(userId);
         if (researchId == null || request == null)
             throw new BadRequestException("Research ID and comment data are required", "INVALID_INPUT");
 
@@ -966,6 +969,13 @@ public class ResearchServiceImpl implements ResearchService {
 
             comment = commentRepo.save(comment);
             researchRepo.adjustCommentCount(researchId, 1);
+            // JPQL bulk UPDATE bypassed the L1 cache; refresh so the broadcast
+            // carries the post-increment commentCount, then write the whole
+            // counter set through to Redis so feed cards re-render the new
+            // number without an extra Postgres trip.
+            entityManager.refresh(research);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS, research.getCommentCount());
             researchEventPublisher.publishCommented(research, user, comment);
 
             // Realtime — broadcast on the research stream so every reader
@@ -988,15 +998,14 @@ public class ResearchServiceImpl implements ResearchService {
                 evt.parentCommentId(comment.getParent().getId())
                         .commentReplyCount(comment.getParent().getReplyCount());
             }
-            // Re-read counts so the broadcast carries the post-increment value.
-            researchRepo.findById(researchId).ifPresent(r ->
-                    evt.commentCount(r.getCommentCount())
-                       .reactionCount(r.getReactionCount())
-                       .shareCount(r.getShareCount())
-                       .saveCount(r.getSaveCount())
-                       .viewCount(r.getViewCount())
-                       .downloadCount(r.getDownloadCount())
-                       .citationCount(r.getCitationCount()));
+            // Counts already on `research` are fresh (we refreshed above).
+            evt.commentCount(research.getCommentCount())
+               .reactionCount(research.getReactionCount())
+               .shareCount(research.getShareCount())
+               .saveCount(research.getSaveCount())
+               .viewCount(research.getViewCount())
+               .downloadCount(research.getDownloadCount())
+               .citationCount(research.getCitationCount());
             researchRealtime.broadcast(evt.build());
 
             // @mentions in research comments — no @followers fan-out from comments.
@@ -1144,6 +1153,15 @@ public class ResearchServiceImpl implements ResearchService {
         comment.audit(AuditAction.DELETE, "Deleted comment");
         commentRepo.save(comment);
         researchRepo.adjustCommentCount(researchId, -1);
+        // Refresh the research row + write through to Redis so the broadcast
+        // and feed cards reflect the post-decrement commentCount.
+        Research research = comment.getResearch();
+        entityManager.refresh(research);
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId,
+                ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS, research.getCommentCount());
+        // Also clear the per-comment reaction count we just zeroed.
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT, commentId,
+                ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, 0L);
 
         // If the deleted row was a reply, drop the parent's denormalised
         // replyCount so threads stay consistent.
@@ -1169,14 +1187,13 @@ public class ResearchServiceImpl implements ResearchService {
                         .commentId(commentId)
                         .parentCommentId(parentId)
                         .commentReplyCount(parentReplyCount);
-        researchRepo.findById(researchId).ifPresent(r ->
-                evt.commentCount(r.getCommentCount())
-                   .reactionCount(r.getReactionCount())
-                   .shareCount(r.getShareCount())
-                   .saveCount(r.getSaveCount())
-                   .viewCount(r.getViewCount())
-                   .downloadCount(r.getDownloadCount())
-                   .citationCount(r.getCitationCount()));
+        evt.commentCount(research.getCommentCount())
+           .reactionCount(research.getReactionCount())
+           .shareCount(research.getShareCount())
+           .saveCount(research.getSaveCount())
+           .viewCount(research.getViewCount())
+           .downloadCount(research.getDownloadCount())
+           .citationCount(research.getCitationCount());
         researchRealtime.broadcast(evt.build());
     }
 

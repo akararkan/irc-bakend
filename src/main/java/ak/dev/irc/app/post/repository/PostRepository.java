@@ -183,8 +183,12 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     // websearch_to_tsquery accepts user input as-is ("foo bar", "foo OR bar", -exclude).
     // {@code reelsOnly}: null = any post type, true = only REEL, false = exclude REEL.
     @Query(value = """
-        SELECT p.id, ts_rank_cd(to_tsvector('simple', coalesce(p.text_content, '')),
-                                websearch_to_tsquery('simple', :q)) AS score
+        SELECT p.id, (ts_rank_cd(to_tsvector('simple', coalesce(p.text_content, '')),
+                                 websearch_to_tsquery('simple', :q))
+              * (1 + LN(1 + p.reaction_count
+                          + p.comment_count * 2
+                          + p.share_count * 3
+                          + p.view_count / 20.0))) AS score
         FROM posts p
         WHERE p.status = 'PUBLISHED'
           AND p.visibility = 'PUBLIC'
@@ -230,7 +234,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
         FROM posts p
         WHERE p.status = 'PUBLISHED'
           AND p.visibility = 'PUBLIC'
-          AND coalesce(p.text_content, '') %% :q
+          AND coalesce(p.text_content, '') % :q
           AND (:reelsOnly IS NULL
                OR (:reelsOnly = TRUE  AND p.post_type = 'REEL')
                OR (:reelsOnly = FALSE AND p.post_type <> 'REEL'))
@@ -271,7 +275,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
         WHERE p.status = 'PUBLISHED'
           AND p.visibility = 'PUBLIC'
           AND (LOWER(p.text_content) LIKE LOWER(:q || '%')
-            OR coalesce(p.text_content, '') %% :q)
+            OR coalesce(p.text_content, '') % :q)
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR p.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, p.created_at DESC

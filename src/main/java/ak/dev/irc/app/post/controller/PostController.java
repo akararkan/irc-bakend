@@ -36,6 +36,7 @@ public class PostController {
 
     private final PostService postService;
     private final PostRealtimeService realtimeService;
+    private final ak.dev.irc.app.post.service.FeedRankingService feedRankingService;
 
     // ── Create ────────────────────────────────────────────────
 
@@ -120,6 +121,22 @@ public class PostController {
             @AuthenticationPrincipal User user) {
         UUID viewerId = user != null ? user.getId() : null;
         return ResponseEntity.ok(postService.getPublicFeed(viewerId, pageable));
+    }
+
+    /**
+     * Personalised "For You" feed — ranked by engagement, recency, and
+     * follower relationship rather than pure chronological order.
+     *
+     * <p>Scoring weights live in {@code FeedRankingService}; pages are cached
+     * per-viewer for 60 s so repeated pulls (infinite-scroll, refresh-on-tab)
+     * are sub-millisecond Redis hits.</p>
+     */
+    @GetMapping("/feed/for-you")
+    public ResponseEntity<java.util.List<PostResponse>> getRankedFeed(
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        UUID viewerId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(feedRankingService.rankedFeed(viewerId, limit));
     }
 
     /**

@@ -71,9 +71,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
                               similarity(coalesce(u.lname,''),    :q)) AS score
         FROM users u
         WHERE u.deleted_at IS NULL
-          AND (coalesce(u.username,'') %% :q
-            OR coalesce(u.fname,'')    %% :q
-            OR coalesce(u.lname,'')    %% :q)
+          AND (coalesce(u.username,'') % :q
+            OR coalesce(u.fname,'')    % :q
+            OR coalesce(u.lname,'')    % :q)
         ORDER BY score DESC, u.created_at DESC
         LIMIT :limit
         """, nativeQuery = true)
@@ -100,9 +100,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
           AND (LOWER(u.username) LIKE LOWER(:q || '%')
             OR LOWER(u.fname)    LIKE LOWER(:q || '%')
             OR LOWER(u.lname)    LIKE LOWER(:q || '%')
-            OR coalesce(u.username,'') %% :q
-            OR coalesce(u.fname,'')    %% :q
-            OR coalesce(u.lname,'')    %% :q)
+            OR coalesce(u.username,'') % :q
+            OR coalesce(u.fname,'')    % :q
+            OR coalesce(u.lname,'')    % :q)
         ORDER BY score DESC, length(u.username) ASC
         LIMIT :limit
         """, nativeQuery = true)

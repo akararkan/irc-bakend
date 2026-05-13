@@ -124,6 +124,12 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
+		<!-- Prometheus scrape endpoint (exposed at /actuator/prometheus) — wired
+		     by Spring Boot autoconfiguration once management.metrics.export.prometheus is on -->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
 
 		<!-- ══════════════════════════════════
              AWS SDK v2 — S3
@@ -238,7 +244,7 @@
 
 		<dependency>
 			<groupId>org.springframework.amqp</groupId>
-			<artifactId>spring-rabbit-test</artifactId>
+				<artifactId>spring-rabbit-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 

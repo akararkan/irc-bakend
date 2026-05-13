@@ -100,51 +100,35 @@ public class UnifiedSearchService {
 
         UUID[] blocked = blockedIdsFor(viewerId);
 
-        // Fan out — each corpus runs on the common ForkJoinPool, hydrating
-        // entities concurrently so the wall-clock cost is the slowest of N
-        // queries, not the sum.
-        Map<SearchType, CompletableFuture<List<SearchHit>>> futures = new EnumMap<>(SearchType.class);
-        if (wanted.contains(SearchType.POST)) {
-            futures.put(SearchType.POST,
-                    CompletableFuture.supplyAsync(() -> searchPostsLike(query, /* reelsOnly */ false, blocked, limit)));
-        }
-        if (wanted.contains(SearchType.REEL)) {
-            futures.put(SearchType.REEL,
-                    CompletableFuture.supplyAsync(() -> searchPostsLike(query, /* reelsOnly */ true, blocked, limit)));
-        }
-        if (wanted.contains(SearchType.RESEARCH)) {
-            futures.put(SearchType.RESEARCH,
-                    CompletableFuture.supplyAsync(() -> searchResearch(query, blocked, limit)));
-        }
-        if (wanted.contains(SearchType.QUESTION)) {
-            futures.put(SearchType.QUESTION,
-                    CompletableFuture.supplyAsync(() -> searchQuestions(query, blocked, limit)));
-        }
-        if (wanted.contains(SearchType.ANSWER)) {
-            futures.put(SearchType.ANSWER,
-                    CompletableFuture.supplyAsync(() -> searchAnswers(query, blocked, limit)));
-        }
-        if (wanted.contains(SearchType.USER)) {
-            futures.put(SearchType.USER,
-                    CompletableFuture.supplyAsync(() -> searchUsers(query, limit)));
-        }
-
-        // Block until all complete — bounded fanout, no deadlock risk.
+        // Sequential per-corpus execution. Used to be parallel via
+        // CompletableFuture.supplyAsync, but that ran each future on the common
+        // ForkJoinPool and called {@code this.searchPostsLike(...)} which
+        // bypassed the Spring transactional proxy — the worker thread had no
+        // Hibernate session and lazy User loads crashed. At sub-10 ms per
+        // corpus, sum(corpora) ≈ 30-60 ms which is still well inside the
+        // budget; if it ever becomes a hotspot, the right fix is a self-proxy
+        // injection so each async call goes through @Transactional.
         Map<SearchType, List<SearchHit>> buckets = new EnumMap<>(SearchType.class);
-        futures.forEach((type, fut) -> {
-            try {
-                buckets.put(type, fut.join());
-            } catch (Exception ex) {
-                log.warn("[SEARCH] {} corpus failed: {}", type, ex.getMessage());
-                buckets.put(type, List.of());
-            }
-        });
+        if (wanted.contains(SearchType.POST))     buckets.put(SearchType.POST,     safeCall(() -> searchPostsLike(query, /* reelsOnly */ false, blocked, limit), SearchType.POST));
+        if (wanted.contains(SearchType.REEL))     buckets.put(SearchType.REEL,     safeCall(() -> searchPostsLike(query, /* reelsOnly */ true,  blocked, limit), SearchType.REEL));
+        if (wanted.contains(SearchType.RESEARCH)) buckets.put(SearchType.RESEARCH, safeCall(() -> searchResearch(query, blocked, limit),                          SearchType.RESEARCH));
+        if (wanted.contains(SearchType.QUESTION)) buckets.put(SearchType.QUESTION, safeCall(() -> searchQuestions(query, blocked, limit),                         SearchType.QUESTION));
+        if (wanted.contains(SearchType.ANSWER))   buckets.put(SearchType.ANSWER,   safeCall(() -> searchAnswers(query, blocked, limit),                           SearchType.ANSWER));
+        if (wanted.contains(SearchType.USER))     buckets.put(SearchType.USER,     safeCall(() -> searchUsers(query, limit),                                       SearchType.USER));
 
         return UnifiedSearchResult.builder()
                 .query(query)
                 .buckets(buckets)
                 .elapsedMs(System.currentTimeMillis() - started)
                 .build();
+    }
+
+    private List<SearchHit> safeCall(java.util.function.Supplier<List<SearchHit>> q, SearchType type) {
+        try { return q.get(); }
+        catch (Exception ex) {
+            log.warn("[SEARCH] {} corpus failed: {}", type, ex.getMessage());
+            return java.util.List.of();
+        }
     }
 
     // ── Per-corpus public helpers (also used as standalone endpoints) ────
