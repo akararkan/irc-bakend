@@ -90,7 +90,24 @@ SPRING_RABBITMQ_HOST=localhost SPRING_RABBITMQ_USERNAME=guest SPRING_RABBITMQ_PA
 
 ---
 
-## 4. Building the Docker image locally
+## 4. Builder choice: Dockerfile vs Nixpacks
+
+Railway can build this repo two ways. **Both work**.
+
+| Builder | When | Where the JDK comes from |
+|---|---|---|
+| **Dockerfile** (preferred) | `railway.toml` declares `builder = "DOCKERFILE"`. Use this for full control. | `eclipse-temurin:21-jdk` baked into the image. |
+| **Nixpacks** (Railway default) | If you don't override the builder, or your service was created before `railway.toml` existed. | `nixpacks.toml` pins `NIXPACKS_JDK_VERSION = "21"`. |
+
+The Maven `production` profile in `pom.xml` is intentionally minimal — it only flips `skipTests=true` so the cloud builder doesn't try to start Postgres/Redis/Rabbit. The actual production hardening lives in `application-prod.yaml` and is activated by `SPRING_PROFILES_ACTIVE=prod` (the Dockerfile sets this; the Nixpacks start command sets it via `-Dspring.profiles.active=prod`).
+
+If your Railway build still fails with "release version 25 not supported", your service is using an old detected builder. Either:
+- Open the service settings → Build → switch to **Dockerfile**, redeploy, **or**
+- Trust `nixpacks.toml`'s `NIXPACKS_JDK_VERSION = "21"` and trigger a fresh deploy.
+
+---
+
+## 5. Building the Docker image locally
 
 ```bash
 docker build -t irc:local .
@@ -110,7 +127,7 @@ Image is ~250 MB on JRE 25 (Eclipse Temurin). Build uses BuildKit cache mounts s
 
 ---
 
-## 5. Operational notes
+## 6. Operational notes
 
 - **Healthcheck path**: `GET /actuator/health` — returns 200 once Postgres, Redis and RabbitMQ are reachable. Railway routes traffic only after this passes.
 - **Graceful shutdown**: configured (`server.shutdown: graceful`). In-flight requests complete before the JVM exits.
@@ -121,7 +138,7 @@ Image is ~250 MB on JRE 25 (Eclipse Temurin). Build uses BuildKit cache mounts s
 
 ---
 
-## 6. Pre-flight checklist
+## 7. Pre-flight checklist
 
 Before flipping DNS:
 

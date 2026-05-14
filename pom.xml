@@ -29,10 +29,20 @@
 	<!-- ════════════
          JAVA VERSION
          ════════════ -->
+	<!--
+	    Pinned to Java 21 LTS — supported by every cloud builder (Railway
+	    Nixpacks, Heroku, Fly.io, Cloud Run, App Runner) and the LTS train
+	    runs through 2031. Bumping past 21 requires verifying that the
+	    target build environment ships that JDK.
+	-->
 	<properties>
-		<java.version>25</java.version>
+		<java.version>21</java.version>
 		<!-- AWS SDK v2 BOM version — keep in sync manually -->
 		<aws.sdk.version>2.25.60</aws.sdk.version>
+		<!-- Lombok 1.18.42+ supports the JDK 21–25 host range. We pin the
+		     latest patch so the same pom builds locally on a JDK-25 dev box
+		     and in Railway's Nixpacks (JDK 21). -->
+		<lombok.version>1.18.46</lombok.version>
 	</properties>
 
 	<!-- ═══════════════════════════════════════════════════════════
@@ -177,10 +187,11 @@
              UTILITIES
              ══════════════════════════════════ -->
 
-		<!-- Lombok -->
+		<!-- Lombok — version pinned via property (Java 21 compatible) -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
+			<version>${lombok.version}</version>
 			<optional>true</optional>
 		</dependency>
 
@@ -255,16 +266,17 @@
 	<build>
 		<plugins>
 
-			<!-- Maven Compiler — explicit annotation-processor path for Java 25+ -->
+			<!-- Maven Compiler — Java 21 + Lombok annotation processor -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
+					<release>${java.version}</release>
 					<annotationProcessorPaths>
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
-							<version>1.18.44</version>
+							<version>${lombok.version}</version>
 						</path>
 					</annotationProcessorPaths>
 				</configuration>
@@ -286,5 +298,25 @@
 
 		</plugins>
 	</build>
+
+	<!-- ═══════════════════════════════════════════════════════════
+         BUILD PROFILES
+         Railway / Nixpacks invokes Maven with `-Pproduction`. The profile
+         exists so the flag binds to something; the actual production
+         hardening lives in application-prod.yaml (activated by the
+         SPRING_PROFILES_ACTIVE=prod env var, NOT by this Maven profile).
+         ═══════════════════════════════════════════════════════════ -->
+	<profiles>
+		<profile>
+			<id>production</id>
+			<properties>
+				<!-- Skip tests during the cloud build — they need infra
+				     (Postgres, Redis, RabbitMQ) that the builder doesn't
+				     provision. Run them in CI before merge instead. -->
+				<skipTests>true</skipTests>
+				<maven.test.skip>true</maven.test.skip>
+			</properties>
+		</profile>
+	</profiles>
 
 </project>

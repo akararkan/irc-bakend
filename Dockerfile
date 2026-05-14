@@ -4,8 +4,8 @@
 #  IRC PLATFORM — PRODUCTION IMAGE
 #
 #  Two-stage build:
-#    1. builder  — JDK 25 + Maven, compiles a runnable fat-jar
-#    2. runtime  — minimal JRE 25, runs as a non-root user
+#    1. builder  — JDK 21 LTS + Maven, compiles a runnable fat-jar
+#    2. runtime  — minimal JRE 21 LTS, runs as a non-root user
 #
 #  Railway:   image is detected automatically. Set SPRING_PROFILES_ACTIVE=prod
 #             plus the env vars listed in .env.example. PORT is injected by
@@ -13,7 +13,7 @@
 # ════════════════════════════════════════════════════════════════════════════
 
 # ───────── 1. BUILDER ──────────────────────────────────────────────────────
-FROM eclipse-temurin:25-jdk AS builder
+FROM eclipse-temurin:21-jdk AS builder
 
 WORKDIR /build
 
@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 
 # ───────── 2. RUNTIME ──────────────────────────────────────────────────────
-FROM eclipse-temurin:25-jre
+FROM eclipse-temurin:21-jre
 
 # Non-root user for least privilege.
 RUN useradd --system --create-home --uid 1000 --shell /usr/sbin/nologin irc
