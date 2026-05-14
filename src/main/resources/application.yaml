@@ -139,6 +139,11 @@ spring:
   # ── MVC ───────────────────────────────────────────────────────────────────────
   mvc:
     throw-exception-if-no-handler-found: true
+    # SSE / async support — long timeout so the notification stream is not killed
+    # by Spring's default 30s async-request-timeout. SseEmitter timeouts are still
+    # honoured per-connection.
+    async:
+      request-timeout: 86400000
 
   web:
     resources:
@@ -195,6 +200,11 @@ jwt:
 #  STORAGE + CORS — bound under `app.*` to match the existing Java @Values.
 # ═══════════════════════════════════════════════════════════════════════════════
 app:
+
+  # Public-facing frontend URL — used to build user-clickable links inside
+  # emails and the social share preview pages (/p, /r, /q). Falls back to
+  # the request origin when unset, so dev still works without env vars.
+  frontend-url: ${FRONTEND_URL:}
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}

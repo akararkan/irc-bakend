@@ -8,6 +8,7 @@ import ak.dev.irc.app.user.enums.NotificationCategory;
 import ak.dev.irc.app.user.enums.NotificationType;
 import ak.dev.irc.app.user.realtime.NotificationSseService;
 import ak.dev.irc.app.user.service.NotificationService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -55,7 +56,8 @@ public class NotificationController {
      */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @PreAuthorize("permitAll()")
-    public SseEmitter stream(@RequestParam(value = "token", required = false) String token) {
+    public SseEmitter stream(@RequestParam(value = "token", required = false) String token,
+                             HttpServletResponse response) {
         UUID userId = SecurityUtils.getCurrentUserId().orElse(null);
 
         if (userId == null && StringUtils.hasText(token)) {
@@ -75,6 +77,13 @@ public class NotificationController {
                     "You must be authenticated to subscribe to notifications. " +
                     "Pass your access token as ?token=<jwt> for SSE connections.");
         }
+
+        // Disable proxy buffering (Railway/Nginx/Cloudflare) so events stream
+        // immediately instead of being held until the response closes.
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        response.setHeader("Pragma", "no-cache");
+        response.setHeader("Connection", "keep-alive");
 
         log.info("[SSE] User [{}] opening notification stream", userId);
         return sseService.subscribe(userId);

@@ -26,8 +26,16 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class NotificationSseService {
 
-    /** No server-side timeout — connections live until the client disconnects. */
-    private static final long SSE_TIMEOUT_MS = 0L;
+    /**
+     * Long-lived async timeout. Spring's default async-request-timeout (30s) would
+     * terminate the SSE stream — a long explicit timeout (24h) lets the client
+     * stay subscribed for an entire session. We do NOT use 0 (no timeout) because
+     * some servlet containers treat it as "use default 30s" instead of "infinite".
+     */
+    private static final long SSE_TIMEOUT_MS = 24L * 60L * 60L * 1000L;
+
+    /** Heartbeat interval — must beat any intermediary's idle-timeout (~30s on most proxies). */
+    private static final long HEARTBEAT_MS = 15_000L;
 
     private final Map<UUID, CopyOnWriteArrayList<Subscription>> emittersByUser = new ConcurrentHashMap<>();
     private final AtomicLong subscriptionSeq = new AtomicLong();
@@ -68,6 +76,14 @@ public class NotificationSseService {
         });
 
         try {
+            // 1) A 2KB SSE comment frame forces proxies (Cloudflare, Nginx, Railway's
+            //    edge) past their write-buffer threshold so the response is flushed
+            //    to the client immediately. Without this the browser sits in
+            //    "loading" state and EventSource fires onerror after the page
+            //    navigation timeout. Comments are valid SSE and ignored by clients.
+            emitter.send(SseEmitter.event()
+                    .comment(" ".repeat(2048)));
+
             emitter.send(SseEmitter.event()
                     .name("connected")
                     .data(Map.of(
@@ -119,7 +135,7 @@ public class NotificationSseService {
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
 
-    @Scheduled(fixedDelay = 25_000)
+    @Scheduled(fixedDelay = HEARTBEAT_MS)
     public void heartbeat() {
         if (emittersByUser.isEmpty()) return;
         String ts = LocalDateTime.now().toString();
