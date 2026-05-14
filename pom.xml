@@ -30,7 +30,7 @@
          JAVA VERSION
          ════════════ -->
 	<properties>
-		<java.version>25</java.version>
+		<java.version>21</java.version>
 		<!-- AWS SDK v2 BOM — 2.29.39 is latest confirmed stable -->
 		<aws.sdk.version>2.29.39</aws.sdk.version>
 		<!-- Lombok — keep in sync with annotationProcessorPaths below -->
