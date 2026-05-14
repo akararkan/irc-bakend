@@ -168,16 +168,33 @@ irc:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  APPLICATION SPECIFIC CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
-app:
+#  JWT — keys read by JwtTokenProvider via @Value("${jwt.*}").
+#  MUST be a top-level `jwt:` block (not `app.jwt`) — that's what the code
+#  binds to. Missing this causes a "Could not resolve placeholder 'jwt.secret'"
+#  failure on boot.
+# ═══════════════════════════════════════════════════════════════════════════════
+jwt:
+  # Override APP_JWT_SECRET in production with `openssl rand -base64 64`.
+  secret:             ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
+  # Access 24h, refresh 90d — long sessions. Refresh rotates on use, so an
+  # active user stays logged in indefinitely.
+  expiration-ms:         ${APP_JWT_ACCESS_MS:86400000}
+  refresh-expiration-ms: ${APP_JWT_REFRESH_MS:7776000000}
+  issuer:                ${APP_JWT_ISSUER:irc-platform}
+  # Cookie settings — IRC_TOKEN cookie carrying the access token. Set
+  # JWT_COOKIE_SECURE=true on Railway (HTTPS) so the cookie is HTTPS-only.
+  cookie-name:      ${JWT_COOKIE_NAME:IRC_TOKEN}
+  cookie-secure:    ${JWT_COOKIE_SECURE:false}
+  cookie-http-only: ${JWT_COOKIE_HTTP_ONLY:true}
+  cookie-same-site: ${JWT_COOKIE_SAME_SITE:Lax}
+  cookie-path:      ${JWT_COOKIE_PATH:/}
+  cookie-max-age:   ${JWT_COOKIE_MAX_AGE:86400}
 
-  jwt:
-    # Override APP_JWT_SECRET in production with `openssl rand -base64 64`.
-    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
-    # Access 24h, refresh 90d — long sessions. Refresh rotates on use, so
-    # an active user stays logged in indefinitely.
-    access-token-expiration-ms:  ${APP_JWT_ACCESS_MS:86400000}
-    refresh-token-expiration-ms: ${APP_JWT_REFRESH_MS:7776000000}
-    issuer: ${APP_JWT_ISSUER:irc-platform}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STORAGE + CORS — bound under `app.*` to match the existing Java @Values.
+# ═══════════════════════════════════════════════════════════════════════════════
+app:
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
