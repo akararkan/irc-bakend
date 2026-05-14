@@ -5,6 +5,7 @@ import ak.dev.irc.app.security.jwt.JwtAuthenticationEntryPoint;
 import ak.dev.irc.app.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -24,6 +25,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 @Slf4j
@@ -39,6 +42,15 @@ public class SecurityConfig {
     private final JwtAuthenticationEntryPoint jwtEntryPoint;
     private final JwtAccessDeniedHandler jwtAccessDeniedHandler;
     private final UserDetailsService userDetailsService;
+
+    /**
+     * Extra origins from {@code CORS_ORIGINS} env var (comma-separated).
+     * Combined with the always-on baseline below (localhost, LAN, Vercel,
+     * Netlify, Railway). Set in Railway → Variables → CORS_ORIGINS to your
+     * production frontend domain(s).
+     */
+    @Value("${app.cors.allowed-origins:}")
+    private String corsAllowedOrigins;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -89,17 +101,34 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        // Dev origins: localhost + every RFC-1918 private LAN range so the
-        // dev server is reachable from phones on the same Wi-Fi without
-        // re-editing this list every time the host IP changes.
-        config.setAllowedOriginPatterns(List.of(
+
+        // ── Always-on baseline: dev hosts + common production platforms ─────
+        // Localhost + every RFC-1918 LAN range so the dev server is reachable
+        // from phones on the same Wi-Fi. Vercel / Netlify / Railway wildcards
+        // so any preview / production URL on those platforms works without
+        // touching env vars. Add a custom domain through CORS_ORIGINS.
+        List<String> patterns = new ArrayList<>(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
                 "http://192.168.*.*:*",
                 "http://10.*.*.*:*",
                 "http://172.*.*.*:*",
+                "https://*.vercel.app",
+                "https://*.netlify.app",
+                "https://*.up.railway.app",
                 "https://*.irc-research.org"
         ));
+
+        // Merge in anything the operator set via CORS_ORIGINS env var.
+        if (corsAllowedOrigins != null && !corsAllowedOrigins.isBlank()) {
+            Arrays.stream(corsAllowedOrigins.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .forEach(patterns::add);
+        }
+        log.info("CORS allowed origin patterns: {}", patterns);
+
+        config.setAllowedOriginPatterns(patterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Authorization", "Set-Cookie", "Content-Disposition"));
