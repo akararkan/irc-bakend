@@ -23,13 +23,22 @@ COPY .mvn .mvn
 COPY pom.xml ./
 
 # Pre-download dependencies (cached unless pom.xml changes).
-# Railway's BuildKit requires an explicit `id` on cache mounts.
-RUN --mount=type=cache,id=irc-m2,target=/root/.m2 \
+# ────────────────────────────────────────────────────────────────────────────
+# Railway's Metal builders enforce a service-scoped cache id in the format
+#     id=s/<railway-service-id>-<target-path>
+# Plain ids (id=irc-m2) are rejected at "dockerfile validation" with
+#     dockerfile invalid: flag '--mount=type=cache,target=/root/.m2'
+#     is missing an id argument
+# The id below is tied to the production Railway service. Forks that deploy
+# elsewhere should replace the UUID with their own service id (or drop the
+# `--mount=type=cache` line entirely — it's a build-time speedup, not required).
+# ────────────────────────────────────────────────────────────────────────────
+RUN --mount=type=cache,id=s/3a44bb6f-ca54-4113-a541-976dbca6be51-/root/.m2,target=/root/.m2 \
     ./mvnw -q -B -DskipTests dependency:go-offline
 
 # Now bring in sources and build the fat-jar.
 COPY src src
-RUN --mount=type=cache,id=irc-m2,target=/root/.m2 \
+RUN --mount=type=cache,id=s/3a44bb6f-ca54-4113-a541-976dbca6be51-/root/.m2,target=/root/.m2 \
     ./mvnw -q -B -DskipTests package && \
     cp target/*.jar /build/app.jar
 
