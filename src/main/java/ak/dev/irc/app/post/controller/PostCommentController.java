@@ -108,12 +108,11 @@ public class PostCommentController {
     }
 
     @DeleteMapping("/{commentId}/react")
-    public ResponseEntity<Void> removeCommentReaction(
+    public ResponseEntity<CommentResponse> removeCommentReaction(
             @PathVariable UUID postId,
             @PathVariable UUID commentId,
             @AuthenticationPrincipal User user) {
-        commentService.removeCommentReaction(commentId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(commentService.removeCommentReaction(commentId, user.getId()));
     }
 
     @DeleteMapping("/{commentId}")

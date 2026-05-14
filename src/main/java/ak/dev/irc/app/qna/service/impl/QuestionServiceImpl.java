@@ -62,6 +62,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final AnswerSourceRepository sourceRepository;
     private final AnswerReactionRepository reactionRepository;
     private final BestAnswerVoteRepository bestAnswerVoteRepository;
+    private final QuestionSaveRepository saveRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
     private final UserBlockRepository blockRepository;
@@ -224,8 +225,10 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordView(UUID questionId, UUID viewerId, String viewerKey) {
         try {
-            // Dedupe: refresh-spam from the same viewer in the window is ignored.
-            if (!viewTracker.shouldCount(questionId, viewerKey)) return;
+            // Authed viewer → count once per (question, user) FOREVER (durable
+            // question_views ledger). Anonymous viewer → 1h Redis dedupe on the
+            // request fingerprint.
+            if (!viewTracker.shouldCount(questionId, viewerId, viewerKey)) return;
 
             questionRepository.incrementViewCount(questionId);
 
@@ -1212,10 +1215,13 @@ public class QuestionServiceImpl implements QuestionService {
         // count on the question's stream so an SSE-driven UI can reconcile
         // its optimistic bump against the real number.
         if (reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).isPresent()) {
-            long current = counterCache.getOr(
-                    ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
-                    ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
-                    answer::getReactionCount);
+            // Refresh from DB (not cache) so the broadcast carries the real
+            // current count — otherwise a stale cache value would leak into
+            // the SSE stream and visibly desync the UI on the next click.
+            entityManager.refresh(answer);
+            long current = answer.getReactionCount() == null ? 0L : answer.getReactionCount();
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, current);
             realtime.broadcast(QnaRealtimeEvent.builder()
                     .eventType(QnaRealtimeEventType.ANSWER_REACTION_ADDED)
                     .questionId(question.getId())
@@ -1268,13 +1274,16 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     @Transactional
-    public void removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId) {
+    public QuestionAnswerResponse removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
-        reactionRepository.findByAnswerIdAndUserId(answerId, requesterId).ifPresent(r -> {
-            reactionRepository.delete(r);
+        var existing = reactionRepository.findByAnswerIdAndUserId(answerId, requesterId);
+        User actor = userRepository.findById(requesterId).orElse(null);
+
+        if (existing.isPresent()) {
+            reactionRepository.delete(existing.get());
             // Atomic JPQL update with clamp-at-zero — entity setter + save was racy.
             answerRepository.updateReactionCount(answerId, -1);
             entityManager.refresh(answer);
@@ -1284,7 +1293,6 @@ public class QuestionServiceImpl implements QuestionService {
             eventPublisher.publishAnswerUnreacted(question.getId(), answer.getId(),
                     requesterId, AnswerReactionType.LIKE.name());
 
-            User actor = userRepository.findById(requesterId).orElse(null);
             realtime.broadcast(QnaRealtimeEvent.builder()
                     .eventType(QnaRealtimeEventType.ANSWER_REACTION_REMOVED)
                     .questionId(question.getId())
@@ -1295,7 +1303,166 @@ public class QuestionServiceImpl implements QuestionService {
                     .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
                     .answerReactionCount(answer.getReactionCount())
                     .build());
-        });
+            return mapper.toAnswerResponse(answer, null, null);
+        }
+        // No row to remove — broadcast the authoritative count so a stale UI
+        // that did a local -1 can reconcile against the DB (without this, a
+        // double-click or out-of-sync state would visibly lose a like).
+        entityManager.refresh(answer);
+        long current = answer.getReactionCount() == null ? 0L : answer.getReactionCount();
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER, answerId,
+                ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, current);
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.ANSWER_REACTION_REMOVED)
+                .questionId(question.getId())
+                .actorId(requesterId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .answerId(answer.getId())
+                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answerReactionCount(current)
+                .build());
+        return mapper.toAnswerResponse(answer, null, null);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SAVES / BOOKMARKS
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional
+    public QuestionResponse saveQuestion(UUID questionId, UUID userId, String collectionName) {
+        rateLimiter.checkSocial(userId);
+        Question question = findQuestionOrThrow(questionId);
+
+        // Block guard — refuse to save across a block edge with the question author.
+        socialGuard.requireNotBlockedBetween(
+                userId, question.getAuthor().getId(), "QNA_SAVE_BLOCKED_RELATIONSHIP");
+
+        User actor = userRepository.findById(userId).orElse(null);
+        QuestionSaveId sid = new QuestionSaveId();
+        sid.setQuestionId(questionId);
+        sid.setUserId(userId);
+
+        // Already saved — refresh from DB so the broadcast carries the truth,
+        // write through the cache, and return the current state. Idempotent.
+        if (saveRepository.existsById(sid)) {
+            entityManager.refresh(question);
+            long current = question.getSaveCount() == null ? 0L : question.getSaveCount();
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION, questionId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_SAVES, current);
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.SAVE_COUNT_UPDATED)
+                    .questionId(questionId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .questionSaveCount(current)
+                    .build());
+            return mapper.toQuestionResponse(question, true);
+        }
+
+        User user = userRepository.getReferenceById(userId);
+        QuestionSave save = QuestionSave.builder()
+                .id(sid).question(question).user(user)
+                .collectionName(collectionName != null && !collectionName.isBlank()
+                        ? collectionName.trim() : "Default")
+                .build();
+        saveRepository.save(save);
+        questionRepository.adjustSaveCount(questionId, 1);
+        // JPQL bulk UPDATE bypasses the L1 cache — refresh, then write through.
+        entityManager.refresh(question);
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION, questionId,
+                ak.dev.irc.app.common.cache.CounterCache.F_SAVES, question.getSaveCount());
+
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.SAVE_COUNT_UPDATED)
+                .questionId(questionId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .questionSaveCount(question.getSaveCount())
+                .build());
+
+        return mapper.toQuestionResponse(question, true);
+    }
+
+    @Override
+    @Transactional
+    public QuestionResponse unsaveQuestion(UUID questionId, UUID userId) {
+        Question question = findQuestionOrThrow(questionId);
+        QuestionSaveId sid = new QuestionSaveId();
+        sid.setQuestionId(questionId);
+        sid.setUserId(userId);
+        User actor = userRepository.findById(userId).orElse(null);
+
+        if (saveRepository.existsById(sid)) {
+            saveRepository.deleteById(sid);
+            questionRepository.adjustSaveCount(questionId, -1);
+            entityManager.refresh(question);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION, questionId,
+                    ak.dev.irc.app.common.cache.CounterCache.F_SAVES, question.getSaveCount());
+
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.SAVE_COUNT_UPDATED)
+                    .questionId(questionId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .questionSaveCount(question.getSaveCount())
+                    .build());
+            return mapper.toQuestionResponse(question, false);
+        }
+        // No row to remove — broadcast the authoritative count so a stale UI
+        // doing an optimistic local -1 can reconcile against the DB.
+        entityManager.refresh(question);
+        long current = question.getSaveCount() == null ? 0L : question.getSaveCount();
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION, questionId,
+                ak.dev.irc.app.common.cache.CounterCache.F_SAVES, current);
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.SAVE_COUNT_UPDATED)
+                .questionId(questionId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .questionSaveCount(current)
+                .build());
+        return mapper.toQuestionResponse(question, false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionResponse> getSavedQuestions(UUID userId, Pageable pageable) {
+        return saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
+                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<QuestionResponse> getSavedQuestionsByCollection(UUID userId, String collectionName,
+                                                                Pageable pageable) {
+        if (collectionName == null || collectionName.isBlank()) {
+            throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
+        }
+        return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
+                        userId, collectionName.trim(), pageable)
+                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> getSavedQuestionCollections(UUID userId) {
+        return saveRepository.findDistinctCollectionNamesByUserId(userId);
+    }
+
+    @Override
+    @Transactional
+    public void renameSavedQuestionCollection(UUID userId, String oldName, String newName) {
+        if (oldName == null || oldName.isBlank())
+            throw new BadRequestException("Old collection name is required", "MISSING_OLD_NAME");
+        if (newName == null || newName.isBlank())
+            throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
+        saveRepository.renameCollection(userId, oldName, newName.trim());
     }
 
     // ══════════════════════════════════════════════════════════════════════════

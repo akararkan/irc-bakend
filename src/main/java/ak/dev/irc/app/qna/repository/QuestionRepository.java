@@ -96,6 +96,14 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Query("UPDATE Question q SET q.answerCount = CASE WHEN q.answerCount + :delta < 0 THEN 0 ELSE q.answerCount + :delta END WHERE q.id = :id")
     void adjustAnswerCount(@Param("id") UUID id, @Param("delta") long delta);
 
+    /**
+     * Atomic clamp-at-zero increment/decrement of {@code saveCount}. Mirrors
+     * {@code PostRepository.adjustSaveCount}.
+     */
+    @Modifying
+    @Query("UPDATE Question q SET q.saveCount = CASE WHEN q.saveCount + :delta < 0 THEN 0 ELSE q.saveCount + :delta END WHERE q.id = :id")
+    void adjustSaveCount(@Param("id") UUID id, @Param("delta") long delta);
+
     // ── Bulk reconcile from source-of-truth row counts ──────────────────────
 
     @Modifying
@@ -108,6 +116,14 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         )
         """, nativeQuery = true)
     int bulkReconcileAnswerCount();
+
+    @Modifying
+    @Query(value = """
+        UPDATE questions SET save_count = (
+            SELECT COUNT(*) FROM question_saves s WHERE s.question_id = questions.id
+        )
+        """, nativeQuery = true)
+    int bulkReconcileSaveCount();
 
     // ── Full-text search (block-aware) ─────────────────────────────────
     // Per-query block exclusion — pass null/empty for anonymous viewers.

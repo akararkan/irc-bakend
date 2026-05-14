@@ -163,6 +163,21 @@ public class PostController {
         return ResponseEntity.ok(postService.getFollowingFeed(user.getId(), pageable));
     }
 
+    /**
+     * Cursor-paginated following feed (preferred for infinite-scroll clients).
+     * First page: omit {@code cursor}. Next page: send the previous response's
+     * {@code nextCursor}. Stable under concurrent inserts at the top.
+     */
+    @GetMapping("/feed/following/cursor")
+    public ResponseEntity<CursorPage<PostResponse>> getFollowingFeedCursor(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(postService.getFollowingFeedCursor(user.getId(), cursor, limit));
+    }
+
     @GetMapping("/feed/reels")
     public ResponseEntity<Page<PostResponse>> getReelFeed(
             @PageableDefault(size = 10) Pageable pageable,
@@ -210,33 +225,31 @@ public class PostController {
     }
 
     @DeleteMapping("/{postId}/react")
-    public ResponseEntity<Void> removeReaction(
+    public ResponseEntity<PostResponse> removeReaction(
             @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        postService.removeReaction(postId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(postService.removeReaction(postId, user.getId()));
     }
 
     // ── Save / Bookmark ───────────────────────────────────────
 
     @PostMapping("/{postId}/save")
-    public ResponseEntity<Void> savePost(
+    public ResponseEntity<PostResponse> savePost(
             @PathVariable UUID postId,
             @RequestParam(required = false) String collection,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        postService.savePost(postId, user.getId(), collection);
-        return ResponseEntity.status(HttpStatus.CREATED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(postService.savePost(postId, user.getId(), collection));
     }
 
     @DeleteMapping("/{postId}/save")
-    public ResponseEntity<Void> unsavePost(
+    public ResponseEntity<PostResponse> unsavePost(
             @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        postService.unsavePost(postId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(postService.unsavePost(postId, user.getId()));
     }
 
     @GetMapping("/me/saved")

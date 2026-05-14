@@ -69,11 +69,13 @@ public class PostComment {
 
     // (voice/comment audio removed for posts)
 
-    // ── reactions & counters ──────────────────────────────────
-    @OneToMany(mappedBy = "comment", cascade = CascadeType.ALL, orphanRemoval = true)
-    @Builder.Default
-    private List<PostCommentReaction> reactions = new ArrayList<>();
-
+    // ── counters ──────────────────────────────────────────────
+    // NOTE: reactions are intentionally NOT mapped as a @OneToMany collection.
+    // A cascade=ALL/orphanRemoval=true mapping here interfered with em.refresh
+    // after a manual repository delete, causing count drift (2→1→1→0 on the
+    // sequence unlike→re-like→unlike). Reactions are managed exclusively via
+    // PostCommentReactionRepository — bulk-delete on comment soft-delete, and
+    // single-row insert/delete on react/unreact.
     @Builder.Default
     @Column(name = "reaction_count")
     private Long reactionCount = 0L;

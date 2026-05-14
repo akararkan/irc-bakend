@@ -22,6 +22,15 @@ public class QuestionMapper {
     private static long nz(Long v) { return v == null ? 0L : v; }
 
     public QuestionResponse toQuestionResponse(Question question) {
+        return toQuestionResponse(question, false);
+    }
+
+    /**
+     * Block-aware overload that lets the service pass a pre-resolved
+     * {@code isSaved} flag so listing endpoints can do one batched lookup
+     * instead of N+1 round trips.
+     */
+    public QuestionResponse toQuestionResponse(Question question, boolean isSaved) {
         User author = question.getAuthor();
         return new QuestionResponse(
                 question.getId(),
@@ -36,8 +45,11 @@ public class QuestionMapper {
                         CounterCache.F_ANSWERS, () -> nz(question.getAnswerCount())),
                 counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
                         CounterCache.F_VIEWS, () -> nz(question.getViewCount())),
+                counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
+                        CounterCache.F_SAVES, () -> nz(question.getSaveCount())),
                 question.isAnswersLocked(),
                 question.getMaxAnswers(),
+                isSaved,
                 question.getCreatedAt(),
                 question.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(question.getCreatedAt()),

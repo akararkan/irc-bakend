@@ -460,6 +460,14 @@ public class PostService {
             throw new EntityNotFoundException("Post not found or unavailable");
         }
 
+        // Visibility enforcement — same 404 semantics so existence isn't leaked.
+        //   ONLY_ME        → only the author themselves
+        //   FOLLOWERS_ONLY → only the author or someone who follows them
+        //   PUBLIC         → anyone (incl. anonymous)
+        if (!canViewPost(post, requesterId)) {
+            throw new EntityNotFoundException("Post not found or unavailable");
+        }
+
         PostReactionType myReaction = null;
         boolean isSaved = false;
         if (requesterId != null) {
@@ -478,8 +486,11 @@ public class PostService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordView(UUID postId, UUID viewerId, String viewerKey) {
         try {
-            // Dedupe: refresh-spam from the same viewer in the dedupe window is ignored.
-            if (!viewTracker.shouldCount(postId, viewerKey)) return;
+            // Authed viewer → count once per (post, user) FOREVER (durable
+            // post_views ledger). Anonymous viewer → 1h Redis dedupe on the
+            // request fingerprint. The same authed user re-opening the post
+            // a year later is still a single view.
+            if (!viewTracker.shouldCount(postId, viewerId, viewerKey)) return;
 
             postRepository.incrementViewCount(postId);
 
@@ -598,8 +609,14 @@ public class PostService {
                     "This profile is not available.",
                     "PROFILE_BLOCKED_RELATIONSHIP");
         }
+        // Visibility scope per relationship:
+        //   self      → PUBLIC + FOLLOWERS_ONLY + ONLY_ME (the author sees everything)
+        //   follower  → PUBLIC + FOLLOWERS_ONLY
+        //   stranger  → PUBLIC only
+        // anonymous viewers fall in the "stranger" bucket.
+        List<PostVisibility> allowed = visibleVisibilitiesFor(authorId, requesterId);
         return postRepository
-                .findByAuthorIdAndStatusAndVisibility(authorId, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
+                .findAuthorPostsByVisibilities(authorId, allowed, pageable)
                 .map(postMapper::toResponse);
     }
 
@@ -611,6 +628,33 @@ public class PostService {
         }
         return postRepository.findFollowingFeed(followingIds, pageable)
                 .map(postMapper::toResponse);
+    }
+
+    /**
+     * Cursor-paginated following feed. Stable under concurrent inserts —
+     * unlike offset-based pagination, new posts arriving at the top while
+     * the user scrolls do not push items into duplicate pages.
+     */
+    @Transactional(readOnly = true)
+    public CursorPage<PostResponse> getFollowingFeedCursor(UUID userId, LocalDateTime cursor, int limit) {
+        int safe = Math.max(1, Math.min(limit, 50));
+        List<UUID> followingIds = getFilteredFollowingIds(userId);
+        if (followingIds.isEmpty()) {
+            return CursorPage.<PostResponse>builder()
+                    .items(java.util.Collections.emptyList()).nextCursor(null).hasMore(false).build();
+        }
+        var pageReq = org.springframework.data.domain.PageRequest.of(0, safe + 1);
+        List<Post> rows = cursor == null
+                ? postRepository.findFollowingFeedFirstPage(followingIds, pageReq)
+                : postRepository.findFollowingFeedAfter(followingIds, cursor, pageReq);
+        boolean hasMore = rows.size() > safe;
+        if (hasMore) rows = rows.subList(0, safe);
+        List<PostResponse> items = rows.stream().map(postMapper::toResponse).toList();
+        LocalDateTime nextCursor = hasMore && !items.isEmpty()
+                ? rows.get(rows.size() - 1).getCreatedAt()
+                : null;
+        return CursorPage.<PostResponse>builder()
+                .items(items).nextCursor(nextCursor).hasMore(hasMore).build();
     }
 
     @Transactional(readOnly = true)
@@ -682,8 +726,12 @@ public class PostService {
         // SSE-driven UI that did an optimistic bump can reconcile against the
         // real value instead of "regretting" back to a stale local guess.
         if (reactionRepository.findByPostIdAndUserId(postId, userId).isPresent()) {
-            long current = counterCache.getOr(CounterCache.Kind.POST, postId,
-                    CounterCache.F_REACTIONS, post::getReactionCount);
+            // Re-read from DB (not cache) so the broadcast carries the real
+            // current count. A stale cache value here would leak the bug into
+            // the SSE stream and visibly drop the count on the next click.
+            em.refresh(post);
+            long current = post.getReactionCount() == null ? 0L : post.getReactionCount();
+            counterCache.set(CounterCache.Kind.POST, postId, CounterCache.F_REACTIONS, current);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.REACTION_ADDED)
                     .postId(postId)
@@ -734,8 +782,10 @@ public class PostService {
     }
 
     @Transactional
-    public void removeReaction(UUID postId, UUID userId) {
-        reactionRepository.findByPostIdAndUserId(postId, userId).ifPresent(r -> {
+    public PostResponse removeReaction(UUID postId, UUID userId) {
+        var existing = reactionRepository.findByPostIdAndUserId(postId, userId);
+        if (existing.isPresent()) {
+            PostReaction r = existing.get();
             PostReactionType previous = r.getReactionType();
             Post post = r.getPost();
             reactionRepository.delete(r);
@@ -756,7 +806,28 @@ public class PostService {
                     .previousReactionType(previous.name())
                     .postReactionCount(post.getReactionCount())
                     .build());
-        });
+            return postMapper.toResponse(post, null);
+        }
+        // No row to remove — broadcast the authoritative count so a stale
+        // optimistic UI that did a local -1 can reconcile against the DB.
+        Post post = postRepository.findById(postId).orElse(null);
+        if (post == null) {
+            throw new EntityNotFoundException("Post not found");
+        }
+        em.refresh(post);
+        long current = post.getReactionCount() == null ? 0L : post.getReactionCount();
+        counterCache.set(CounterCache.Kind.POST, postId,
+                CounterCache.F_REACTIONS, current);
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.REACTION_REMOVED)
+                .postId(postId)
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .postReactionCount(current)
+                .build());
+        return postMapper.toResponse(post, null);
     }
 
     // ── Delete ────────────────────────────────────────────────
@@ -817,7 +888,7 @@ public class PostService {
     // ── Save / Bookmark ───────────────────────────────────────
 
     @Transactional
-    public void savePost(UUID postId, UUID userId, String collectionName) {
+    public PostResponse savePost(UUID postId, UUID userId, String collectionName) {
         rateLimiter.checkSocial(userId);
         Post post = findPublishedPost(postId);
 
@@ -829,10 +900,12 @@ public class PostService {
 
         // Already saved — broadcast current count so an SSE-driven UI doing an
         // optimistic save can reconcile against the authoritative number
-        // (matches the reaction idempotent-broadcast pattern).
+        // (matches the reaction idempotent-broadcast pattern). Return the
+        // current state so a re-save call still produces a usable payload.
         if (saveRepository.existsById(sid)) {
-            long current = counterCache.getOr(CounterCache.Kind.POST, postId,
-                    CounterCache.F_SAVES, () -> post.getSaveCount() == null ? 0L : post.getSaveCount());
+            em.refresh(post);
+            long current = post.getSaveCount() == null ? 0L : post.getSaveCount();
+            counterCache.set(CounterCache.Kind.POST, postId, CounterCache.F_SAVES, current);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
                     .postId(postId)
@@ -841,7 +914,9 @@ public class PostService {
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .postSaveCount(current)
                     .build());
-            return;
+            PostReactionType myReaction = reactionRepository.findByPostIdAndUserId(postId, userId)
+                    .map(PostReaction::getReactionType).orElse(null);
+            return postMapper.toResponse(post, myReaction, true);
         }
 
         User user = userRepository.getReferenceById(userId);
@@ -864,30 +939,56 @@ public class PostService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .postSaveCount(post.getSaveCount())
                 .build());
+
+        PostReactionType myReaction = reactionRepository.findByPostIdAndUserId(postId, userId)
+                .map(PostReaction::getReactionType).orElse(null);
+        return postMapper.toResponse(post, myReaction, true);
     }
 
     @Transactional
-    public void unsavePost(UUID postId, UUID userId) {
+    public PostResponse unsavePost(UUID postId, UUID userId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new EntityNotFoundException("Post not found"));
         PostSaveId sid = new PostSaveId(postId, userId);
-        if (!saveRepository.existsById(sid)) return; // idempotent — nothing to remove
-        Post post = postRepository.findById(postId).orElse(null);
-        saveRepository.deleteById(sid);
-        postRepository.adjustSaveCount(postId, -1);
-        if (post != null) {
+        User actor = userRepository.findById(userId).orElse(null);
+
+        if (saveRepository.existsById(sid)) {
+            saveRepository.deleteById(sid);
+            postRepository.adjustSaveCount(postId, -1);
             em.refresh(post);
             counterCache.set(CounterCache.Kind.POST, postId,
                     CounterCache.F_SAVES, post.getSaveCount());
-        }
 
-        User actor = userRepository.findById(userId).orElse(null);
+            realtime.broadcast(PostRealtimeEvent.builder()
+                    .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
+                    .postId(postId)
+                    .actorId(userId)
+                    .actorUsername(actor != null ? actor.getUsername() : null)
+                    .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                    .postSaveCount(post.getSaveCount())
+                    .build());
+            PostReactionType myReaction = reactionRepository.findByPostIdAndUserId(postId, userId)
+                    .map(PostReaction::getReactionType).orElse(null);
+            return postMapper.toResponse(post, myReaction, false);
+        }
+        // No row to remove — broadcast authoritative count so an SSE-driven UI
+        // can reconcile, and return the current state so callers always see
+        // the truth even after an idempotent unsave.
+        em.refresh(post);
+        long current = post.getSaveCount() == null ? 0L : post.getSaveCount();
+        counterCache.set(CounterCache.Kind.POST, postId,
+                CounterCache.F_SAVES, current);
         realtime.broadcast(PostRealtimeEvent.builder()
                 .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
                 .postId(postId)
                 .actorId(userId)
                 .actorUsername(actor != null ? actor.getUsername() : null)
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .postSaveCount(post != null ? post.getSaveCount() : null)
+                .postSaveCount(current)
                 .build());
+        PostReactionType myReaction = reactionRepository.findByPostIdAndUserId(postId, userId)
+                .map(PostReaction::getReactionType).orElse(null);
+        return postMapper.toResponse(post, myReaction, false);
     }
 
     @Transactional(readOnly = true)
@@ -943,6 +1044,37 @@ public class PostService {
         return postRepository.findById(postId)
                 .filter(p -> p.getStatus() == PostStatus.PUBLISHED)
                 .orElseThrow(() -> new EntityNotFoundException("Post not found or unavailable"));
+    }
+
+    /**
+     * True if {@code requesterId} can view {@code post} given its visibility.
+     * Mirrors the rules in {@link #visibleVisibilitiesFor}.
+     */
+    private boolean canViewPost(Post post, UUID requesterId) {
+        UUID authorId = post.getAuthor().getId();
+        return switch (post.getVisibility()) {
+            case PUBLIC -> true;
+            case FOLLOWERS_ONLY -> requesterId != null
+                    && (requesterId.equals(authorId)
+                        || followRepository.isFollowing(requesterId, authorId));
+            case ONLY_ME -> requesterId != null && requesterId.equals(authorId);
+        };
+    }
+
+    /**
+     * The visibility levels {@code requesterId} is allowed to see for posts
+     * authored by {@code authorId}. Computed once per profile-feed call so the
+     * SQL fits a single {@code visibility IN (...)} filter.
+     */
+    private List<PostVisibility> visibleVisibilitiesFor(UUID authorId, UUID requesterId) {
+        if (requesterId != null && requesterId.equals(authorId)) {
+            return List.of(PostVisibility.PUBLIC, PostVisibility.FOLLOWERS_ONLY, PostVisibility.ONLY_ME);
+        }
+        if (requesterId != null
+                && followRepository.isFollowing(requesterId, authorId)) {
+            return List.of(PostVisibility.PUBLIC, PostVisibility.FOLLOWERS_ONLY);
+        }
+        return List.of(PostVisibility.PUBLIC);
     }
 
     /**

@@ -899,18 +899,24 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     @Override
-    public void removeReaction(UUID researchId, UUID userId) {
+    public ResearchResponse removeReaction(UUID researchId, UUID userId) {
         if (researchId == null || userId == null)
             throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
+        User actor = userRepo.findById(userId).orElse(null);
         if (reactionRepo.existsById(rId)) {
             reactionRepo.deleteById(rId);
             researchRepo.adjustReactionCount(researchId, -1);
-            User actor = userRepo.findById(userId).orElse(null);
             broadcastCounters(researchId,
                     ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_REMOVED,
                     actor);
         }
+        // broadcastCounters did flush+clear above; re-load from DB so the
+        // mapped response carries the post-decrement counters and a clean
+        // currentUserReacted=false for the actor.
+        Research fresh = researchRepo.findById(researchId)
+                .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+        return mapper.toResponse(fresh, userId);
     }
 
     @Override
@@ -1299,9 +1305,9 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     @Override
-    public void unlikeComment(UUID researchId, UUID commentId, UUID userId) {
+    public CommentResponse unlikeComment(UUID researchId, UUID commentId, UUID userId) {
         // Back-compat facade — old DELETE /like becomes a generic remove-reaction.
-        removeCommentReaction(researchId, commentId, userId);
+        return removeCommentReaction(researchId, commentId, userId);
     }
 
     @Override
@@ -1334,11 +1340,13 @@ public class ResearchServiceImpl implements ResearchService {
         // Re-react is a no-op at the DB layer, but still broadcast the
         // authoritative current count so an SSE-driven UI that did an
         // optimistic bump can reconcile (otherwise the heart "regrets").
+        // IMPORTANT: refresh from DB (not cache) — cache could be stale and
+        // would otherwise leak a wrong number into the broadcast.
         if (commentReactionRepo.findByCommentIdAndUserId(commentId, userId).isPresent()) {
-            long current = counterCache.getOr(
-                    ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
-                    commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
-                    comment::getLikeCount);
+            entityManager.refresh(comment);
+            long current = comment.getLikeCount() == null ? 0L : comment.getLikeCount();
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
+                    commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, current);
             researchRealtime.broadcast(
                     ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
                             .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_ADDED)
@@ -1392,7 +1400,7 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     @Override
-    public void removeCommentReaction(UUID researchId, UUID commentId, UUID userId) {
+    public CommentResponse removeCommentReaction(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
             throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
         ResearchComment comment = commentRepo.findById(commentId)
@@ -1401,17 +1409,38 @@ public class ResearchServiceImpl implements ResearchService {
             throw new ForbiddenException("Comment does not belong to this research");
 
         var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
-        if (existingOpt.isEmpty()) return; // idempotent — nothing to remove
-
-        commentReactionRepo.delete(existingOpt.get());
-        // Atomic JPQL update with clamp-at-zero — entity setter + save was racy.
-        commentRepo.updateLikeCount(commentId, -1);
-        entityManager.refresh(comment);
-        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
-                commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
-                comment.getLikeCount());
-
         User actor = userRepo.findById(userId).orElse(null);
+
+        if (existingOpt.isPresent()) {
+            commentReactionRepo.delete(existingOpt.get());
+            // Atomic JPQL update with clamp-at-zero — entity setter + save was racy.
+            commentRepo.updateLikeCount(commentId, -1);
+            entityManager.refresh(comment);
+            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
+                    commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS,
+                    comment.getLikeCount());
+
+            researchRealtime.broadcast(
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                            .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_REMOVED)
+                            .researchId(researchId)
+                            .actorId(userId)
+                            .actorUsername(actor != null ? actor.getUsername() : null)
+                            .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                            .commentId(commentId)
+                            .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
+                            .commentReactionCount(comment.getLikeCount())
+                            .commentLikeCount(comment.getLikeCount())
+                            .build());
+            return mapper.toCommentResponse(comment, false, null);
+        }
+        // No row to remove — broadcast the authoritative count so a stale UI
+        // that did a local -1 can reconcile against the DB (without this, a
+        // double-click or out-of-sync state would visibly lose a like).
+        entityManager.refresh(comment);
+        long current = comment.getLikeCount() == null ? 0L : comment.getLikeCount();
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH_COMMENT,
+                commentId, ak.dev.irc.app.common.cache.CounterCache.F_REACTIONS, current);
         researchRealtime.broadcast(
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
                         .eventType(ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_REACTION_REMOVED)
@@ -1421,9 +1450,10 @@ public class ResearchServiceImpl implements ResearchService {
                         .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                         .commentId(commentId)
                         .parentCommentId(comment.getParent() != null ? comment.getParent().getId() : null)
-                        .commentReactionCount(comment.getLikeCount())
-                        .commentLikeCount(comment.getLikeCount())
+                        .commentReactionCount(current)
+                        .commentLikeCount(current)
                         .build());
+        return mapper.toCommentResponse(comment, false, null);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1431,36 +1461,75 @@ public class ResearchServiceImpl implements ResearchService {
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public void saveResearch(UUID researchId, String collectionName, UUID userId) {
+    public ResearchResponse saveResearch(UUID researchId, String collectionName, UUID userId) {
         if (researchId == null || userId == null)
             throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
+        rateLimiter.checkSocial(userId);
         Research research = findPublishedOrThrow(researchId);
         User user = findUserOrThrow(userId);
+
+        // Block guard — refuse to save across a block edge with the researcher.
+        // Mirrors PostService.savePost.
+        if (research.getResearcher() != null) {
+            socialGuard.requireNotBlockedBetween(
+                    userId, research.getResearcher().getId(),
+                    "RESEARCH_SAVE_BLOCKED_RELATIONSHIP");
+        }
+
         ResearchSaveId sId = new ResearchSaveId(researchId, userId);
-        if (saveRepo.existsById(sId))
-            throw new DuplicateResourceException("Research save", "user_research", userId + "_" + researchId);
+
+        // Already saved → idempotent. Don't throw — re-broadcast the
+        // authoritative count and return the current state. This matches
+        // PostService.savePost so the front-end can call save() blindly without
+        // first checking isSaved.
+        if (saveRepo.existsById(sId)) {
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
+                    user);
+            Research fresh = researchRepo.findById(researchId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+            return mapper.toResponse(fresh, userId);
+        }
+
         saveRepo.save(ResearchSave.builder()
                 .id(sId).research(research).user(user)
-                .collectionName(collectionName != null ? collectionName.trim() : "Default").build());
+                .collectionName(collectionName != null && !collectionName.isBlank()
+                        ? collectionName.trim() : "Default")
+                .build());
         researchRepo.adjustSaveCount(researchId, 1);
         broadcastCounters(researchId,
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
                 user);
+
+        Research fresh = researchRepo.findById(researchId)
+                .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+        return mapper.toResponse(fresh, userId);
     }
 
     @Override
-    public void unsaveResearch(UUID researchId, UUID userId) {
+    public ResearchResponse unsaveResearch(UUID researchId, UUID userId) {
         if (researchId == null || userId == null)
             throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
         ResearchSaveId sId = new ResearchSaveId(researchId, userId);
+        User actor = userRepo.findById(userId).orElse(null);
+
         if (saveRepo.existsById(sId)) {
             saveRepo.deleteById(sId);
             researchRepo.adjustSaveCount(researchId, -1);
-            User actor = userRepo.findById(userId).orElse(null);
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
+                    actor);
+        } else {
+            // Idempotent — still broadcast the truth so an SSE-driven UI can
+            // reconcile after an optimistic local -1.
             broadcastCounters(researchId,
                     ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
                     actor);
         }
+
+        Research fresh = researchRepo.findById(researchId)
+                .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+        return mapper.toResponse(fresh, userId);
     }
 
     @Override
@@ -1507,9 +1576,11 @@ public class ResearchServiceImpl implements ResearchService {
     public void recordView(UUID researchId, UUID viewerId, String viewerKey) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
         try {
-            // Atomic Redis NX dedupe — collapses refresh-spam and double-mount
-            // races into a single counter bump.
-            if (!viewTracker.shouldCount(researchId, viewerKey)) return;
+            // Authed viewer → count once per (research, user) FOREVER (durable
+            // research_views ledger). Anonymous viewer → 1h Redis dedupe on the
+            // request fingerprint. The same authed user re-opening the paper a
+            // year later is still a single view.
+            if (!viewTracker.shouldCount(researchId, viewerId, viewerKey)) return;
 
             researchRepo.incrementViewCount(researchId);
 

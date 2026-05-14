@@ -4,6 +4,7 @@ import ak.dev.irc.app.research.dto.request.AddCommentRequest;
 import ak.dev.irc.app.research.dto.request.EditCommentRequest;
 import ak.dev.irc.app.research.dto.request.ReactRequest;
 import ak.dev.irc.app.research.dto.response.CommentResponse;
+import ak.dev.irc.app.research.dto.response.ResearchResponse;
 import ak.dev.irc.app.research.enums.ReactionType;
 import ak.dev.irc.app.research.service.ResearchService;
 import ak.dev.irc.app.user.entity.User;
@@ -49,11 +50,10 @@ public class ResearchSocialController {
 
     @DeleteMapping("/reactions")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> removeReaction(
+    public ResponseEntity<ResearchResponse> removeReaction(
             @PathVariable UUID researchId,
             @AuthenticationPrincipal User user) {
-        researchService.removeReaction(researchId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(researchService.removeReaction(researchId, user.getId()));
     }
 
     @GetMapping("/reactions/breakdown")
@@ -155,12 +155,12 @@ public class ResearchSocialController {
 
     @DeleteMapping("/comments/{commentId}/reactions")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> removeCommentReaction(
+    public ResponseEntity<CommentResponse> removeCommentReaction(
             @PathVariable UUID researchId,
             @PathVariable UUID commentId,
             @AuthenticationPrincipal User user) {
-        researchService.removeCommentReaction(researchId, commentId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(
+                researchService.removeCommentReaction(researchId, commentId, user.getId()));
     }
 
     // ── Comment likes (back-compat — LIKE-typed shortcut over /reactions) ────
@@ -177,12 +177,11 @@ public class ResearchSocialController {
 
     @DeleteMapping("/comments/{commentId}/like")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> unlikeComment(
+    public ResponseEntity<CommentResponse> unlikeComment(
             @PathVariable UUID researchId,
             @PathVariable UUID commentId,
             @AuthenticationPrincipal User user) {
-        researchService.unlikeComment(researchId, commentId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(researchService.unlikeComment(researchId, commentId, user.getId()));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -191,21 +190,20 @@ public class ResearchSocialController {
 
     @PostMapping("/save")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> save(
+    public ResponseEntity<ResearchResponse> save(
             @PathVariable UUID researchId,
             @RequestParam(required = false) String collection,
             @AuthenticationPrincipal User user) {
-        researchService.saveResearch(researchId, collection, user.getId());
-        return ResponseEntity.status(HttpStatus.CREATED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(researchService.saveResearch(researchId, collection, user.getId()));
     }
 
     @DeleteMapping("/save")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> unsave(
+    public ResponseEntity<ResearchResponse> unsave(
             @PathVariable UUID researchId,
             @AuthenticationPrincipal User user) {
-        researchService.unsaveResearch(researchId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(researchService.unsaveResearch(researchId, user.getId()));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

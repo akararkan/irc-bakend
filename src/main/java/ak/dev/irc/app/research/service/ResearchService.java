@@ -95,7 +95,13 @@ public interface ResearchService {
 
     void react(UUID researchId, ReactRequest request, UUID userId);
 
-    void removeReaction(UUID researchId, UUID userId);
+    /**
+     * Remove the viewer's reaction on a research and return the updated detail
+     * payload with {@code reactionCount} decremented and
+     * {@code currentUserReacted=false} so a front-end gets the new state in one
+     * round-trip — no follow-up GET, no reliance on the SSE echo.
+     */
+    ResearchResponse removeReaction(UUID researchId, UUID userId);
 
     Map<ReactionType, Long> getReactionBreakdown(UUID researchId);
 
@@ -118,7 +124,7 @@ public interface ResearchService {
 
     /** @deprecated use {@link #removeCommentReaction}. Kept for back-compat. */
     @Deprecated
-    void unlikeComment(UUID researchId, UUID commentId, UUID userId);
+    CommentResponse unlikeComment(UUID researchId, UUID commentId, UUID userId);
 
     /**
      * Add or change the viewer's reaction on a comment. Mirrors
@@ -129,8 +135,13 @@ public interface ResearchService {
      */
     void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId);
 
-    /** Remove the viewer's reaction on a comment. Broadcasts {@code COMMENT_REACTION_REMOVED}. */
-    void removeCommentReaction(UUID researchId, UUID commentId, UUID userId);
+    /**
+     * Remove the viewer's reaction on a comment. Broadcasts
+     * {@code COMMENT_REACTION_REMOVED}. Returns the updated comment with
+     * {@code likeCount} decremented and {@code myReaction=null} so the
+     * front-end has the new state in the response body.
+     */
+    CommentResponse removeCommentReaction(UUID researchId, UUID commentId, UUID userId);
 
     void hideComment(UUID researchId, UUID commentId, UUID userId);
 
@@ -138,9 +149,19 @@ public interface ResearchService {
 
     // ── Save / Bookmark ──────────────────────────────────────────────────────
 
-    void saveResearch(UUID researchId, String collectionName, UUID userId);
+    /**
+     * Save (bookmark) a research paper into a collection. Idempotent — saving
+     * a paper that is already bookmarked is a no-op at the DB layer but still
+     * returns the updated payload so the front-end can call this blindly.
+     */
+    ResearchResponse saveResearch(UUID researchId, String collectionName, UUID userId);
 
-    void unsaveResearch(UUID researchId, UUID userId);
+    /**
+     * Remove the viewer's bookmark on a research paper. Idempotent — unsaving
+     * a paper that is not bookmarked is a no-op. Returns the updated payload
+     * with {@code currentUserSaved=false} and decremented {@code saveCount}.
+     */
+    ResearchResponse unsaveResearch(UUID researchId, UUID userId);
 
     Page<ResearchSummaryResponse> getSavedResearches(UUID userId, Pageable pageable);
 

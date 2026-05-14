@@ -309,13 +309,13 @@ public class QuestionController {
 
     @DeleteMapping("/{questionId}/answers/{answerId}/react")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> removeAnswerReaction(
+    public ResponseEntity<QuestionAnswerResponse> removeAnswerReaction(
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        questionService.removeAnswerReaction(questionId, answerId, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(
+                questionService.removeAnswerReaction(questionId, answerId, user.getId()));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -509,6 +509,74 @@ public class QuestionController {
             @AuthenticationPrincipal User user) {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         questionService.deleteSource(questionId, answerId, sourceId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SAVE / BOOKMARK   (mirrors /posts and /researches save endpoints)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** Save (bookmark) the question into a collection. Idempotent. */
+    @PostMapping("/{questionId}/save")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> saveQuestion(
+            @PathVariable UUID questionId,
+            @RequestParam(required = false) String collection,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(questionService.saveQuestion(questionId, user.getId(), collection));
+    }
+
+    /** Remove the viewer's bookmark on the question. Idempotent. */
+    @DeleteMapping("/{questionId}/save")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<QuestionResponse> unsaveQuestion(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.unsaveQuestion(questionId, user.getId()));
+    }
+
+    /** Page of the viewer's saved questions, newest first. */
+    @GetMapping("/me/saved")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Page<QuestionResponse>> getSavedQuestions(
+            @AuthenticationPrincipal User user,
+            @PageableDefault(size = 20) Pageable pageable) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.getSavedQuestions(user.getId(), pageable));
+    }
+
+    /** Page of saved questions filtered by {@code ?name=...}. */
+    @GetMapping("/me/saved/collection")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Page<QuestionResponse>> getSavedQuestionsByCollection(
+            @RequestParam String name,
+            @AuthenticationPrincipal User user,
+            @PageableDefault(size = 20) Pageable pageable) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.getSavedQuestionsByCollection(user.getId(), name, pageable));
+    }
+
+    /** Distinct collection names the viewer has used. */
+    @GetMapping("/me/saved/collections")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<String>> getSavedQuestionCollections(
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        return ResponseEntity.ok(questionService.getSavedQuestionCollections(user.getId()));
+    }
+
+    /** Rename a save collection across every save row owned by the viewer. */
+    @PatchMapping("/me/saved/collections")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> renameSavedQuestionCollection(
+            @RequestParam String oldName,
+            @RequestParam String newName,
+            @AuthenticationPrincipal User user) {
+        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        questionService.renameSavedQuestionCollection(user.getId(), oldName, newName);
         return ResponseEntity.noContent().build();
     }
 

@@ -84,8 +84,11 @@ public class ReelViewServiceImpl implements ReelViewService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordPostView(UUID postId, UUID viewerId) {
         try {
-            // Refresh-spam from the same viewer inside the dedupe window is ignored.
-            if (!viewTracker.shouldCount(postId, viewerId.toString())) return;
+            // Authed viewer → count once per (reel, user) FOREVER (durable
+            // post_views ledger). The ReelView analytics row above is still
+            // written on every watch, but the displayed view counter only
+            // bumps on the user's first watch ever.
+            if (!viewTracker.shouldCount(postId, viewerId, viewerId.toString())) return;
 
             postRepo.incrementViewCount(postId);
 

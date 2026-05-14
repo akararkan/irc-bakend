@@ -16,8 +16,12 @@ public record QuestionResponse(
         QuestionStatus status,
         Long answerCount,
         Long viewCount,
+        /** Number of users who bookmarked this question. */
+        Long saveCount,
         boolean answersLocked,
         Integer maxAnswers,
+        /** Whether the current viewer (if authed) has bookmarked this question. */
+        boolean isSaved,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
         String timeAgo,

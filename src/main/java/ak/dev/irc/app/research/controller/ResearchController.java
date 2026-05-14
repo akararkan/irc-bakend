@@ -432,11 +432,10 @@ public class ResearchController {
     /** Remove the authenticated user's reaction from a research. */
     @DeleteMapping("/{id}/react")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> removeReaction(
+    public ResponseEntity<ResearchResponse> removeReaction(
             @PathVariable UUID id,
             @AuthenticationPrincipal User user) {
-        researchService.removeReaction(id, user.getId());
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(researchService.removeReaction(id, user.getId()));
     }
 
     /**

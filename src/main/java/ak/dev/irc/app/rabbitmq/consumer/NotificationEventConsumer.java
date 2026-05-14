@@ -71,8 +71,11 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.NOTIFICATION_Q
  * │  — User events —                                                         │
  * │   UserFollowedEvent         → NEW_FOLLOWER notification                 │
  * │   UserUnfollowedEvent       → removes the earlier follow notification   │
- * │   UserUnblockedEvent        → UNBLOCKED notification                    │
  * │   UserBlockedEvent          → (acknowledged silently — no notification) │
+ * │   UserUnblockedEvent        → (acknowledged silently — no notification) │
+ * │                              (notifying "you were unblocked" implicitly │
+ * │                              reveals the prior block — block must stay  │
+ * │                              invisible to the target).                  │
  * │                                                                          │
  * │  — Research events —                                                     │
  * │   ResearchPublishedEvent    → fans out POST_NEW to all followers         │
@@ -184,32 +187,13 @@ public class NotificationEventConsumer {
     @RabbitHandler
     @Transactional
     public void onUserUnblocked(UserUnblockedEvent event) {
-        log.info("[CONSUMER] UserUnblocked — actor={} ({}) → target={}",
-                event.actorId(), event.actorUsername(), event.targetId());
-
-        Optional<User> actorOpt  = userRepo.findActiveById(event.actorId());
-        Optional<User> targetOpt = userRepo.findActiveById(event.targetId());
-
-        if (actorOpt.isEmpty() || targetOpt.isEmpty()) {
-            log.warn("[CONSUMER] UserUnblocked skipped — user not found");
-            return;
-        }
-
-        User actor  = actorOpt.get();
-        User target = targetOpt.get();
-
-        Notification notification = Notification.builder()
-                .user(target)
-                .actor(actor)
-                .type(NotificationType.UNBLOCKED)
-                .title("You have been unblocked")
-                .body(actor.getFullName() + " (@" + actor.getUsername() + ") unblocked you.")
-                .resourceId(actor.getId())
-                .resourceType("User")
-                .build();
-
-        dispatcher.dispatch(notification);
-        log.debug("[CONSUMER] UNBLOCKED dispatched → user={}", target.getId());
+        // Unblocks are silent by design — a "you were unblocked" notification
+        // implicitly tells the target they were previously blocked, defeating
+        // the silence of the block itself. The visible side-effect of the
+        // unblock is purely behavioural (the target can suddenly follow /
+        // interact again); no notification is dispatched.
+        log.info("[CONSUMER] UserUnblocked (silent) — actor={} → target={}",
+                event.actorId(), event.targetId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════

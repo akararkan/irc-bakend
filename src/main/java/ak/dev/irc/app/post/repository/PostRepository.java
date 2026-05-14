@@ -26,6 +26,27 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     Page<Post> findByAuthorIdAndStatusAndVisibility(
             UUID authorId, PostStatus status, PostVisibility visibility, Pageable pageable);
 
+    /**
+     * Profile feed for an author with an explicit set of allowed visibility
+     * levels — lets the service show the right subset per viewer:
+     * <ul>
+     *   <li>Self: PUBLIC + FOLLOWERS_ONLY + ONLY_ME</li>
+     *   <li>Follower: PUBLIC + FOLLOWERS_ONLY</li>
+     *   <li>Other / anonymous: PUBLIC only</li>
+     * </ul>
+     */
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id = :authorId
+          AND p.status = 'PUBLISHED'
+          AND p.visibility IN :visibilities
+        ORDER BY p.createdAt DESC
+        """)
+    Page<Post> findAuthorPostsByVisibilities(@Param("authorId") UUID authorId,
+                                              @Param("visibilities") List<PostVisibility> visibilities,
+                                              Pageable pageable);
+
     // Public feed (latest) — anonymous viewers (no block filter applied).
     @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
     Page<Post> findByStatusAndVisibilityOrderByCreatedAtDesc(
@@ -181,6 +202,67 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
         ORDER BY p.createdAt DESC
         """)
     Page<Post> findFollowingFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
+
+    /**
+     * Cursor-paginated following feed (preferred for infinite scroll). Stable
+     * under concurrent inserts. Pass {@code cursor=null} for the first page.
+     */
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id IN :authorIds
+          AND p.status = 'PUBLISHED'
+          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findFollowingFeedFirstPage(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
+
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.author.id IN :authorIds
+          AND p.status = 'PUBLISHED'
+          AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+          AND p.createdAt < :cursor
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findFollowingFeedAfter(@Param("authorIds") List<UUID> authorIds,
+                                      @Param("cursor") LocalDateTime cursor,
+                                      Pageable pageable);
+
+    /**
+     * For-You candidate pool when the viewer has followed authors — every
+     * PUBLIC post plus every FOLLOWERS_ONLY post by an author the viewer
+     * follows. Used by {@code FeedRankingService}. Service must guarantee
+     * {@code followedAuthorIds} is non-empty before calling.
+     */
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND (p.visibility = 'PUBLIC'
+            OR (p.visibility = 'FOLLOWERS_ONLY' AND p.author.id IN :followedAuthorIds))
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findForYouCandidates(@Param("followedAuthorIds") List<UUID> followedAuthorIds,
+                                    Pageable pageable);
+
+    /**
+     * Block-aware variant of {@link #findForYouCandidates}. Service must
+     * guarantee {@code followedAuthorIds} and {@code blockedIds} are non-empty.
+     */
+    @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.status = 'PUBLISHED'
+          AND (p.visibility = 'PUBLIC'
+            OR (p.visibility = 'FOLLOWERS_ONLY' AND p.author.id IN :followedAuthorIds))
+          AND p.author.id NOT IN :blockedIds
+        ORDER BY p.createdAt DESC
+        """)
+    List<Post> findForYouCandidatesExcluding(@Param("followedAuthorIds") List<UUID> followedAuthorIds,
+                                              @Param("blockedIds") List<UUID> blockedIds,
+                                              Pageable pageable);
 
     // Following reel feed: reels from followed users
     @EntityGraph(attributePaths = {"author", "mediaList", "sharedPost", "sharedPost.author"})

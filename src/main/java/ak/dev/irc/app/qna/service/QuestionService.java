@@ -160,5 +160,44 @@ public interface QuestionService {
     QuestionAnswerResponse reactToAnswer(UUID questionId, UUID answerId,
                                          ReactToAnswerRequest request, UUID requesterId);
 
-    void removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId);
+    /**
+     * Remove the viewer's reaction on an answer and return the updated answer
+     * with {@code reactionCount} decremented and {@code myReaction=null}, so a
+     * front-end gets the new state in one round-trip — no follow-up GET, no
+     * reliance on the SSE echo.
+     */
+    QuestionAnswerResponse removeAnswerReaction(UUID questionId, UUID answerId, UUID requesterId);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SAVES / BOOKMARKS  — mirrors PostService.savePost / ResearchService.saveResearch
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Save (bookmark) a question into a collection. Idempotent — saving a
+     * question already in the user's bookmarks is a no-op at the DB layer but
+     * still returns the updated payload (useful for SSE-driven UIs that need
+     * to reconcile against the authoritative count).
+     *
+     * @param collectionName optional collection (defaults to {@code "Default"})
+     */
+    QuestionResponse saveQuestion(UUID questionId, UUID userId, String collectionName);
+
+    /**
+     * Remove the viewer's bookmark on a question. Idempotent — unsaving a
+     * question that is not in the user's bookmarks is a no-op. Returns the
+     * updated payload with {@code isSaved=false} and decremented {@code saveCount}.
+     */
+    QuestionResponse unsaveQuestion(UUID questionId, UUID userId);
+
+    /** Page of the viewer's saved questions, newest first. */
+    Page<QuestionResponse> getSavedQuestions(UUID userId, Pageable pageable);
+
+    /** Page of saved questions filtered by collection name. */
+    Page<QuestionResponse> getSavedQuestionsByCollection(UUID userId, String collectionName, Pageable pageable);
+
+    /** Distinct collection names the viewer has used. */
+    List<String> getSavedQuestionCollections(UUID userId);
+
+    /** Rename a collection across every save row owned by the viewer. */
+    void renameSavedQuestionCollection(UUID userId, String oldName, String newName);
 }

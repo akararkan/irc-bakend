@@ -85,32 +85,34 @@ public class FeedRankingService {
             }
         } catch (Exception ignored) { /* cache miss is OK */ }
 
-        // 1) Candidate pool — most recent CANDIDATE_POOL public posts, block-filtered.
-        List<Post> candidates;
-        if (viewerId != null) {
-            List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
-            if (blocked.isEmpty()) {
-                candidates = postRepository
-                        .findByStatusAndVisibilityOrderByCreatedAtDesc(
-                                PostStatus.PUBLISHED, PostVisibility.PUBLIC, PageRequest.of(0, CANDIDATE_POOL))
-                        .getContent();
-            } else {
-                candidates = postRepository
-                        .findPublicFeedExcluding(blocked, PageRequest.of(0, CANDIDATE_POOL))
-                        .getContent();
-            }
-        } else {
-            candidates = postRepository
-                    .findByStatusAndVisibilityOrderByCreatedAtDesc(
-                            PostStatus.PUBLISHED, PostVisibility.PUBLIC, PageRequest.of(0, CANDIDATE_POOL))
-                    .getContent();
-        }
-        if (candidates.isEmpty()) return Collections.emptyList();
-
-        // 2) Relationship — Redis-cached followed-author IDs (sub-ms hit).
+        // 1) Resolve viewer relationships up-front so we can include the
+        //    FOLLOWERS_ONLY posts the viewer is entitled to see.
         Set<UUID> followed = viewerId != null
                 ? new HashSet<>(followingIdsCache.getFilteredFollowingIds(viewerId))
                 : Collections.emptySet();
+        List<UUID> blocked = viewerId != null
+                ? socialGuard.findRelatedBlockedIds(viewerId)
+                : Collections.emptyList();
+
+        // 2) Candidate pool — public posts + follower-only posts by followed
+        //    authors, block-filtered. Falls back to the bare public feed when
+        //    the viewer follows nobody (no follower-only content to include).
+        List<Post> candidates;
+        var page = PageRequest.of(0, CANDIDATE_POOL);
+        if (viewerId == null || followed.isEmpty()) {
+            candidates = blocked.isEmpty()
+                    ? postRepository
+                            .findByStatusAndVisibilityOrderByCreatedAtDesc(
+                                    PostStatus.PUBLISHED, PostVisibility.PUBLIC, page)
+                            .getContent()
+                    : postRepository.findPublicFeedExcluding(blocked, page).getContent();
+        } else {
+            List<UUID> followedList = new ArrayList<>(followed);
+            candidates = blocked.isEmpty()
+                    ? postRepository.findForYouCandidates(followedList, page)
+                    : postRepository.findForYouCandidatesExcluding(followedList, blocked, page);
+        }
+        if (candidates.isEmpty()) return Collections.emptyList();
 
         // 3) Score each candidate.
         LocalDateTime now = LocalDateTime.now();

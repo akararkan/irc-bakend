@@ -299,9 +299,14 @@ public class PostCommentService {
 
         // Re-react is a no-op at the DB layer; still emit the authoritative
         // count so an SSE-driven UI can reconcile.
+        // IMPORTANT: refresh from DB (not cache) so the broadcast value matches
+        // the actual current state. Cache could be stale (e.g. across instances
+        // before pub/sub propagates) and would otherwise leak a wrong number.
         if (commentReactionRepository.findByCommentIdAndUserId(commentId, userId).isPresent()) {
-            long current = counterCache.getOr(CounterCache.Kind.POST_COMMENT, commentId,
-                    CounterCache.F_REACTIONS, comment::getReactionCount);
+            em.refresh(comment);
+            long current = comment.getReactionCount() == null ? 0L : comment.getReactionCount();
+            counterCache.set(CounterCache.Kind.POST_COMMENT, commentId,
+                    CounterCache.F_REACTIONS, current);
             realtime.broadcast(PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.COMMENT_REACTION_ADDED)
                     .postId(comment.getPost().getId())
@@ -352,8 +357,10 @@ public class PostCommentService {
     }
 
     @Transactional
-    public void removeCommentReaction(UUID commentId, UUID userId) {
-        commentReactionRepository.findByCommentIdAndUserId(commentId, userId).ifPresent(r -> {
+    public CommentResponse removeCommentReaction(UUID commentId, UUID userId) {
+        var existing = commentReactionRepository.findByCommentIdAndUserId(commentId, userId);
+        if (existing.isPresent()) {
+            PostCommentReaction r = existing.get();
             PostComment comment = r.getComment();
             UUID postId = comment.getPost().getId();
             commentReactionRepository.delete(r);
@@ -372,7 +379,29 @@ public class PostCommentService {
                     .commentId(commentId)
                     .commentReactionCount(comment.getReactionCount())
                     .build());
-        });
+            return postMapper.toCommentResponse(comment, null);
+        }
+        // No row to remove — still broadcast the authoritative count so an
+        // optimistic UI that did a local -1 can reconcile against the DB.
+        // Without this, a stale frontend that thought the user had reacted
+        // would visibly lose a like with no server-side change to recover.
+        PostComment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new EntityNotFoundException("Comment not found"));
+        em.refresh(comment);
+        long current = comment.getReactionCount() == null ? 0L : comment.getReactionCount();
+        counterCache.set(CounterCache.Kind.POST_COMMENT, commentId,
+                CounterCache.F_REACTIONS, current);
+        User actor = userRepository.findById(userId).orElse(null);
+        realtime.broadcast(PostRealtimeEvent.builder()
+                .eventType(PostRealtimeEventType.COMMENT_REACTION_REMOVED)
+                .postId(comment.getPost().getId())
+                .actorId(userId)
+                .actorUsername(actor != null ? actor.getUsername() : null)
+                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
+                .commentId(commentId)
+                .commentReactionCount(current)
+                .build());
+        return postMapper.toCommentResponse(comment, null);
     }
 
     // ── Delete comment ────────────────────────────────────────
