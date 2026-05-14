@@ -39,9 +39,14 @@ public interface ResearchService {
 
     // ── Media upload (Cloudflare R2) ─────────────────────────────────────────
 
+    /**
+     * Upload a video promo. Duration is extracted server-side from the file —
+     * the client does not pass it. Returns the updated research with
+     * {@code videoPromoDurationSeconds} populated (or {@code null} if
+     * extraction failed; the upload still succeeds in that case).
+     */
     ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video,
-                                      MultipartFile thumbnail, Integer durationSeconds,
-                                      UUID researcherId);
+                                      MultipartFile thumbnail, UUID researcherId);
 
     ResearchResponse removeVideoPromo(UUID researchId, UUID researcherId);
 

@@ -503,20 +503,16 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @CacheEvict(value = "research-by-id", key = "#researchId")
     public ResearchResponse uploadVideoPromo(UUID researchId, MultipartFile video,
-                                              MultipartFile thumbnail, Integer durationSeconds,
+                                              MultipartFile thumbnail,
                                               UUID researcherId) {
         validateFile(video, "video", Arrays.asList("video/mp4", "video/webm", "video/quicktime"));
 
-        // Auto-extract duration from the video file; fall back to client-provided value
-        Integer extractedDuration = videoMetadataExtractor.extractDurationSeconds(video);
-        if (extractedDuration != null && extractedDuration > 0) {
-            durationSeconds = extractedDuration;
-        }
-        if (durationSeconds == null || durationSeconds <= 0) {
-            throw new BadRequestException(
-                    "Could not determine video duration. Please provide durationSeconds as a query parameter.",
-                    "DURATION_UNKNOWN");
-        }
+        // Server-side duration extraction — the client never sends a duration.
+        // If the file format defeats the extractor (rare with mp4/mov), the
+        // upload still succeeds with a null duration; the front-end can read
+        // it from the <video> element at playback time.
+        Integer durationSeconds = videoMetadataExtractor.extractDurationSeconds(video);
+        if (durationSeconds != null && durationSeconds <= 0) durationSeconds = null;
 
         if (thumbnail != null && !thumbnail.isEmpty()) {
             validateFile(thumbnail, "thumbnail", Arrays.asList("image/jpeg", "image/png", "image/webp"));

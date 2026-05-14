@@ -161,18 +161,18 @@ public class ResearchController {
     /**
      * Upload a video promo with optional thumbnail.
      *
-     * <p>Video duration is automatically extracted from the file (MP4/MOV).
-     * If extraction fails (e.g. WebM format), pass {@code durationSeconds} as a fallback.
+     * <p>Video duration is extracted server-side from the uploaded file
+     * (MP4/MOV/QuickTime via mp4parser). The client does <strong>not</strong>
+     * send a duration — there is no {@code durationSeconds} parameter. If
+     * extraction can't determine the duration (rare; unsupported container
+     * variant), the field is stored as {@code null} and the upload still
+     * succeeds — the client {@code <video>} element can read the duration at
+     * playback time.</p>
      *
      * <h4>Multipart parts</h4>
      * <ul>
      *   <li>{@code video}     — required — the video file (mp4, webm, quicktime)</li>
      *   <li>{@code thumbnail} — optional — a thumbnail image for the video</li>
-     * </ul>
-     *
-     * <h4>Query parameters</h4>
-     * <ul>
-     *   <li>{@code durationSeconds} — optional — fallback if server-side extraction fails</li>
      * </ul>
      */
     @PostMapping(value = "/{id}/video-promo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -181,9 +181,8 @@ public class ResearchController {
             @PathVariable UUID id,
             @RequestPart("video") MultipartFile video,
             @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
-            @RequestParam(value = "durationSeconds", required = false) Integer durationSeconds,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.uploadVideoPromo(id, video, thumbnail, durationSeconds, user.getId()));
+        return ResponseEntity.ok(researchService.uploadVideoPromo(id, video, thumbnail, user.getId()));
     }
 
     @DeleteMapping("/{id}/video-promo")

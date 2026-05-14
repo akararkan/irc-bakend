@@ -72,6 +72,7 @@ public class PostService {
     private final FollowingIdsCache      followingIdsCache;
     private final CounterCache           counterCache;
     private final RateLimiter            rateLimiter;
+    private final ak.dev.irc.app.research.service.VideoMetadataExtractor videoMetadataExtractor;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -158,6 +159,13 @@ public class PostService {
                 // Determine media type from content type
                 if (file.getContentType() != null && file.getContentType().startsWith("video/")) {
                     item.setMediaType(PostMediaType.VIDEO);
+                    // Server-side duration extraction so the frontend never has
+                    // to compute or send the value. Reels rely on this to render
+                    // a duration label in the feed without playing the video.
+                    // Null on failure — front-end can still read it from the
+                    // <video> element at playback time.
+                    Integer dur = videoMetadataExtractor.extractDurationSeconds(file);
+                    if (dur != null && dur > 0) item.setDurationSeconds(dur);
                 } else {
                     item.setMediaType(PostMediaType.IMAGE);
                 }
