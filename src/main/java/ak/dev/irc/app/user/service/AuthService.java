@@ -20,4 +20,13 @@ public interface AuthService {
                 HttpServletResponse httpResponse);
 
     void logoutAll(HttpServletResponse httpResponse);
+
+    /**
+     * Authenticated change-password. Re-verifies the current password,
+     * updates the hash, then revokes every other session and rotates the
+     * caller's tokens — so the user stays logged in on this device while
+     * any other device that knew the old password is forced to re-login.
+     */
+    AuthResponse changePassword(AuthRequests.ChangePasswordRequest request,
+                                 HttpServletResponse response);
 }

@@ -1,0 +1,24 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  Railway deployment manifest
+#  Docs: https://docs.railway.com/reference/config-as-code
+# ════════════════════════════════════════════════════════════════════════════
+
+[build]
+# Railway auto-detects the Dockerfile in the repo root.
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway boots the container's ENTRYPOINT; we already set it.
+# Restart on crash, with backoff. Bumped attempts to ride out transient Postgres warm-up.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# Railway routes traffic to the container as soon as this endpoint returns 200.
+# Spring Boot's /actuator/health returns 200 when DB + Redis + Rabbit are all UP.
+healthcheckPath = "/actuator/health"
+healthcheckTimeout = 30
+
+# Number of replicas for this service. Bump when you have a load-balancer
+# / sticky-sessions story for the SSE streams (one viewer per replica).
+numReplicas = 1

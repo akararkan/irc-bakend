@@ -3,20 +3,14 @@ package ak.dev.irc.app.config;
 import ak.dev.irc.app.security.jwt.JwtAccessDeniedHandler;
 import ak.dev.irc.app.security.jwt.JwtAuthenticationEntryPoint;
 import ak.dev.irc.app.security.jwt.JwtAuthenticationFilter;
-import ak.dev.irc.app.security.oauth2.CustomOAuth2UserService;
-import ak.dev.irc.app.security.oauth2.HttpCookieOAuth2AuthorizationRequestRepository;
-import ak.dev.irc.app.security.oauth2.OAuth2AuthenticationFailureHandler;
-import ak.dev.irc.app.security.oauth2.OAuth2AuthenticationSuccessHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -46,11 +40,6 @@ public class SecurityConfig {
     private final JwtAccessDeniedHandler jwtAccessDeniedHandler;
     private final UserDetailsService userDetailsService;
 
-    private final CustomOAuth2UserService customOAuth2UserService;
-    private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
-    private final OAuth2AuthenticationFailureHandler oAuth2FailureHandler;
-    private final HttpCookieOAuth2AuthorizationRequestRepository cookieAuthRequestRepo;
-
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 
@@ -73,17 +62,7 @@ public class SecurityConfig {
 
                 // JWT filter enabled so SecurityContext is populated from Bearer tokens.
                 // This does NOT block unauthenticated requests — permitAll() above handles that.
-                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-
-                .oauth2Login(oauth2 -> oauth2
-                        .authorizationEndpoint(authz -> authz
-                                .baseUri("/oauth2/authorize")
-                                .authorizationRequestRepository(cookieAuthRequestRepo))
-                        .redirectionEndpoint(redir -> redir.baseUri("/login/oauth2/code/*"))
-                        .userInfoEndpoint(ui -> ui.userService(customOAuth2UserService))
-                        .successHandler(oAuth2SuccessHandler)
-                        .failureHandler(oAuth2FailureHandler)
-                );
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

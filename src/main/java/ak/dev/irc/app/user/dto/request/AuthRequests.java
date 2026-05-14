@@ -48,4 +48,19 @@ public final class AuthRequests {
     public record LogoutRequest(
             String refreshToken  // optional — can come from cookie instead
     ) {}
+
+    /**
+     * The authenticated user changes their own password. There is intentionally
+     * no "forgot password" / reset-token flow — only an authenticated session
+     * can rotate the credential. The current password must be re-verified to
+     * defend against session hijack scenarios.
+     */
+    public record ChangePasswordRequest(
+            @NotBlank(message = "Current password is required")
+            String currentPassword,
+
+            @NotBlank(message = "New password is required")
+            @Size(min = 8, max = 128, message = "New password must be between 8 and 128 characters")
+            String newPassword
+    ) {}
 }

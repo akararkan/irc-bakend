@@ -22,12 +22,17 @@ import org.springframework.web.bind.annotation.*;
  * </ul>
  *
  * <pre>
- *   POST /api/v1/auth/register     → register a new account
- *   POST /api/v1/auth/login        → authenticate and receive tokens
- *   POST /api/v1/auth/refresh      → exchange refresh token for new pair
- *   POST /api/v1/auth/logout       → revoke refresh token + clear cookies
- *   POST /api/v1/auth/logout-all   → revoke ALL refresh tokens + clear cookies
+ *   POST /api/v1/auth/register          → register a new account
+ *   POST /api/v1/auth/login             → authenticate and receive tokens
+ *   POST /api/v1/auth/refresh           → exchange refresh token for new pair
+ *   POST /api/v1/auth/logout            → revoke refresh token + clear cookies
+ *   POST /api/v1/auth/logout-all        → revoke ALL refresh tokens + clear cookies
+ *   POST /api/v1/auth/change-password   → authed-user-only password rotation
  * </pre>
+ *
+ * <p>There is intentionally <b>no</b> forgot-password / reset-token flow.
+ * The only way to rotate a password is the {@code /change-password} endpoint
+ * which requires an authenticated session and re-verifies the current password.
  */
 @Slf4j
 @RestController
@@ -88,5 +93,28 @@ public class AuthController {
         log.info("POST /api/v1/auth/logout-all");
         authService.logoutAll(httpResponse);
         return ResponseEntity.ok().build();
+    }
+
+    /**
+     * Authed-user password rotation.
+     *
+     * <p>The caller must already be logged in and must re-supply their current
+     * password. On success: every refresh token for this user is revoked
+     * (including the caller's old one), then a fresh access/refresh pair is
+     * issued in the response body and HttpOnly cookies. The caller stays
+     * logged in on this device; every other device is forced to log in again
+     * with the new password.</p>
+     *
+     * <p>There is no /forgot-password endpoint by design — this is the only
+     * path to change a password.</p>
+     */
+    @PostMapping("/change-password")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<AuthResponse> changePassword(
+            @Valid @RequestBody AuthRequests.ChangePasswordRequest request,
+            HttpServletResponse response) {
+
+        log.info("POST /api/v1/auth/change-password");
+        return ResponseEntity.ok(authService.changePassword(request, response));
     }
 }

@@ -482,7 +482,8 @@ public class UserServiceImpl implements UserService {
 
     /**
      * Extracts the R2 S3 key from a public URL and deletes the file.
-     * Silently skips if the URL is from an external provider (e.g. Google OAuth2).
+     * Silently skips if the URL is not on our R2 bucket (e.g. a legacy
+     * external avatar URL).
      */
     private void deleteOldProfileImageIfExists(User user) {
         // Prefer the persisted S3 key for reliable deletion

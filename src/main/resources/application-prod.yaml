@@ -1,0 +1,133 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IRC PLATFORM — PRODUCTION PROFILE  (Railway, etc.)
+#
+#  Activate with:  SPRING_PROFILES_ACTIVE=prod
+#
+#  Every secret must come from the environment. The application FAILS FAST if
+#  a required value is missing (no silent fall-back to weak defaults).
+#
+#  Required environment variables — see .env.example for the full list:
+#    SPRING_DATASOURCE_URL                 jdbc:postgresql://host:port/db
+#    SPRING_DATASOURCE_USERNAME / _PASSWORD
+#    SPRING_DATA_REDIS_URL                 redis://[:pass@]host:port  (or HOST/PORT/PASSWORD)
+#    SPRING_RABBITMQ_HOST / _PORT / _USERNAME / _PASSWORD / _VIRTUAL_HOST
+#    APP_JWT_SECRET                        Base64, ≥256 bits
+#    IRC_VERIFICATION_SECRET               32+ random chars
+#    MAIL_USERNAME / MAIL_PASSWORD         SMTP credentials
+#    R2_ENDPOINT / R2_ACCESS_KEY / R2_SECRET_KEY / R2_BUCKET_NAME / R2_PUBLIC_URL
+#    CORS_ORIGINS                          https://app.example.com,...
+#    IRC_BASE_URL                          public canonical URL (used in emails, share links)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+spring:
+
+  # Railway's PostgreSQL plugin populates these automatically when linked.
+  datasource:
+    url:      ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      # Railway free-tier connection limits are tight — keep the pool modest.
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle:      ${DB_POOL_MIN:2}
+
+  # ── JPA — production hardening ───────────────────────────────────────────────
+  # ddl-auto=update is acceptable while iterating, but switch to `validate` (or
+  # `none`) once schema is stable and migrations live in Flyway/Liquibase.
+  jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}
+    show-sql: false
+    defer-datasource-initialization: false
+    properties:
+      hibernate:
+        format_sql: false
+        use_sql_comments: false
+
+  # No schema.sql / data.sql in production — Hibernate owns the schema.
+  sql:
+    init:
+      mode: never
+
+  # ── Redis — accept a single URL (Railway "REDIS_URL" style) or HOST/PORT pair.
+  data:
+    redis:
+      url:      ${SPRING_DATA_REDIS_URL:${REDIS_URL:}}
+      host:     ${SPRING_DATA_REDIS_HOST:${REDIS_HOST:}}
+      port:     ${SPRING_DATA_REDIS_PORT:${REDIS_PORT:6379}}
+      password: ${SPRING_DATA_REDIS_PASSWORD:${REDIS_PASSWORD:}}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
+
+  # ── RabbitMQ ──────────────────────────────────────────────────────────────────
+  rabbitmq:
+    host:         ${SPRING_RABBITMQ_HOST:${RABBITMQ_HOST}}
+    port:         ${SPRING_RABBITMQ_PORT:${RABBITMQ_PORT:5672}}
+    username:     ${SPRING_RABBITMQ_USERNAME:${RABBITMQ_USERNAME}}
+    password:     ${SPRING_RABBITMQ_PASSWORD:${RABBITMQ_PASSWORD}}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:${RABBITMQ_VHOST:/}}
+    ssl:
+      enabled: ${RABBITMQ_SSL_ENABLED:false}
+
+  # ── Dev-tools / live-reload — always off in prod ─────────────────────────────
+  devtools:
+    restart:
+      enabled: false
+    livereload:
+      enabled: false
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LOGGING — production: INFO at root, WARN for noisy libraries, no SQL spam.
+# ═══════════════════════════════════════════════════════════════════════════════
+logging:
+  level:
+    root: INFO
+    ak.dev.irc: INFO
+    ak.dev.irc.security: INFO
+    org.springframework.security: WARN
+    org.springframework.amqp: WARN
+    org.hibernate.SQL: OFF
+    org.hibernate: WARN
+    io.netty: WARN
+    software.amazon.awssdk: WARN
+  pattern:
+    # Slightly compacted prod format — kept human-readable for Railway's log UI.
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MANAGEMENT — Railway health-checks /actuator/health
+#  Other endpoints kept exposed for Prometheus scraping; restrict at the
+#  network layer (Railway private networking) rather than auth in-app.
+# ═══════════════════════════════════════════════════════════════════════════════
+management:
+  endpoint:
+    health:
+      show-details: never           # never leak internal state to public
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SERVER — Railway injects $PORT; we already bind to it in the base config.
+# ═══════════════════════════════════════════════════════════════════════════════
+server:
+  error:
+    # Don't leak stacktraces / class names in production error bodies.
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
+  shutdown: graceful
+  tomcat:
+    accesslog:
+      enabled: false
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+      min-spare: ${TOMCAT_MIN_THREADS:10}

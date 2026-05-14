@@ -7,12 +7,12 @@
 	<modelVersion>4.0.0</modelVersion>
 
 	<!-- ═══════════════════════════════════════════════════════════
-         PARENT — Spring Boot 3.5.12 manages ALL transitive versions
+         PARENT — Spring Boot 3.5.14 (latest confirmed, Maven Central)
          ═══════════════════════════════════════════════════════════ -->
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.5.12</version>
+		<version>3.5.14</version>
 		<relativePath/>
 	</parent>
 
@@ -31,8 +31,10 @@
          ════════════ -->
 	<properties>
 		<java.version>25</java.version>
-		<!-- AWS SDK v2 BOM version — keep in sync manually -->
-		<aws.sdk.version>2.25.60</aws.sdk.version>
+		<!-- AWS SDK v2 BOM — 2.29.39 is latest confirmed stable -->
+		<aws.sdk.version>2.29.39</aws.sdk.version>
+		<!-- Lombok — keep in sync with annotationProcessorPaths below -->
+		<lombok.version>1.18.46</lombok.version>
 	</properties>
 
 	<!-- ═══════════════════════════════════════════════════════════
@@ -62,16 +64,11 @@
 		</dependency>
 
 		<!-- ══════════════════════════════════
-             SECURITY + OAuth2
+             SECURITY
              ══════════════════════════════════ -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-oauth2-client</artifactId>
 		</dependency>
 
 		<!-- ══════════════════════════════════
@@ -118,28 +115,32 @@
 		</dependency>
 
 		<!-- ══════════════════════════════════
-             ACTUATOR
+             ACTUATOR + PROMETHEUS
              ══════════════════════════════════ -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
-		<!-- Prometheus scrape endpoint (exposed at /actuator/prometheus) — wired
-		     by Spring Boot autoconfiguration once management.metrics.export.prometheus is on -->
 		<dependency>
 			<groupId>io.micrometer</groupId>
 			<artifactId>micrometer-registry-prometheus</artifactId>
 		</dependency>
 
 		<!-- ══════════════════════════════════
+             MAIL
+             ══════════════════════════════════ -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-mail</artifactId>
+		</dependency>
+
+		<!-- ══════════════════════════════════
              AWS SDK v2 — S3
-             FIX: exclude commons-logging pulled in by apache-client
-             to avoid conflict with Spring's spring-jcl bridge
+             Exclude commons-logging to avoid conflict with spring-jcl
              ══════════════════════════════════ -->
 		<dependency>
 			<groupId>software.amazon.awssdk</groupId>
 			<artifactId>s3</artifactId>
-			<!-- version managed by AWS BOM above -->
 			<exclusions>
 				<exclusion>
 					<groupId>commons-logging</groupId>
@@ -149,21 +150,19 @@
 		</dependency>
 
 		<!-- ══════════════════════════════════
-             JWT — JJWT (parse / sign)
+             JWT — JJWT 0.12.6 (parse / sign)
              ══════════════════════════════════ -->
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-api</artifactId>
 			<version>0.12.6</version>
 		</dependency>
-
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-impl</artifactId>
 			<version>0.12.6</version>
 			<scope>runtime</scope>
 		</dependency>
-
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-jackson</artifactId>
@@ -171,7 +170,7 @@
 			<scope>runtime</scope>
 		</dependency>
 
-		<!-- JWT — Auth0 (verify / decode, used alongside JJWT) -->
+		<!-- JWT — Auth0 (verify / decode) -->
 		<dependency>
 			<groupId>com.auth0</groupId>
 			<artifactId>java-jwt</artifactId>
@@ -182,14 +181,17 @@
              UTILITIES
              ══════════════════════════════════ -->
 
-		<!-- Lombok -->
+		<!-- Lombok — version pinned via property above -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
+			<version>${lombok.version}</version>
 			<optional>true</optional>
 		</dependency>
 
-		<!-- Apache Commons Lang — override Spring Boot BOM for CVE-2025-48924 fix -->
+		<!-- Apache Commons Lang
+             NOTE: Spring Boot 3.5.x BOM pins this; we override to a version
+             that includes the CVE-2025-48924 fix. 3.17.0 is still vulnerable. -->
 		<dependency>
 			<groupId>org.apache.commons</groupId>
 			<artifactId>commons-lang3</artifactId>
@@ -200,7 +202,7 @@
 		<dependency>
 			<groupId>com.google.guava</groupId>
 			<artifactId>guava</artifactId>
-			<version>33.2.0-jre</version>
+			<version>33.4.8-jre</version>
 		</dependency>
 
 		<!-- .env file support -->
@@ -210,7 +212,7 @@
 			<version>4.0.0</version>
 		</dependency>
 
-		<!-- MP4 / QuickTime metadata parser — extracts video duration server-side -->
+		<!-- MP4 / QuickTime metadata parser — extracts video duration -->
 		<dependency>
 			<groupId>org.mp4parser</groupId>
 			<artifactId>isoparser</artifactId>
@@ -235,24 +237,37 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
-
 		<dependency>
 			<groupId>org.springframework.security</groupId>
 			<artifactId>spring-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
-
 		<dependency>
 			<groupId>org.springframework.amqp</groupId>
-				<artifactId>spring-rabbit-test</artifactId>
+			<artifactId>spring-rabbit-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-mail</artifactId>
-		</dependency>
 	</dependencies>
+
+	<!-- ═══════════════════════════════════════════════════════════
+         PROFILES
+         -Pproduction skips devtools and enables optimised settings
+         ═══════════════════════════════════════════════════════════ -->
+	<profiles>
+		<profile>
+			<id>production</id>
+			<dependencies>
+				<!-- Remove devtools from the production fat-jar -->
+				<dependency>
+					<groupId>org.springframework.boot</groupId>
+					<artifactId>spring-boot-devtools</artifactId>
+					<scope>provided</scope>
+					<optional>true</optional>
+				</dependency>
+			</dependencies>
+		</profile>
+	</profiles>
 
 	<!-- ═══════════════════════════════════════════════════════════
          BUILD
@@ -260,26 +275,32 @@
 	<build>
 		<plugins>
 
-			<!-- Maven Compiler — explicit annotation-processor path for Java 25+ -->
+			<!-- Maven Compiler — Java 25 + preview + Lombok processor -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
+					<release>25</release>
+					<compilerArgs>
+						<arg>--enable-preview</arg>
+					</compilerArgs>
 					<annotationProcessorPaths>
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
-							<version>1.18.44</version>
+							<version>${lombok.version}</version>
 						</path>
 					</annotationProcessorPaths>
 				</configuration>
 			</plugin>
 
-			<!-- Spring Boot Maven Plugin — exclude Lombok from final jar -->
+			<!-- Spring Boot Maven Plugin
+			     Pass enable-preview to the JVM at runtime too  -->
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 				<configuration>
+					<jvmArguments>--enable-preview</jvmArguments>
 					<excludes>
 						<exclude>
 							<groupId>org.projectlombok</groupId>

@@ -250,6 +250,51 @@ public class AuthServiceImpl implements AuthService {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  CHANGE PASSWORD  (authenticated user only — no reset-token flow)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public AuthResponse changePassword(AuthRequests.ChangePasswordRequest request,
+                                        HttpServletResponse response) {
+        UUID userId = SecurityUtils.getCurrentUserId()
+                .orElseThrow(() -> new UnauthorizedException(
+                        "Not authenticated.", "AUTH_REQUIRED"));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UnauthorizedException(
+                        "User no longer exists.", "USER_NOT_FOUND"));
+
+        // 1) Re-verify the CURRENT password — defends against session hijack.
+        if (!passwordEncoder.matches(request.currentPassword(), user.getPassword())) {
+            log.warn("Change-password rejected — wrong current password for user [{}]", userId);
+            throw new UnauthorizedException(
+                    "Current password is incorrect.",
+                    "AUTH_CURRENT_PASSWORD_INVALID");
+        }
+
+        // 2) Block obvious no-op (encoded compare, not raw — avoids matching by chance).
+        if (passwordEncoder.matches(request.newPassword(), user.getPassword())) {
+            throw new ak.dev.irc.app.common.exception.BadRequestException(
+                    "New password must be different from the current password.",
+                    "AUTH_NEW_PASSWORD_SAME_AS_CURRENT");
+        }
+
+        // 3) Persist the new hash.
+        user.setPassword(passwordEncoder.encode(request.newPassword()));
+        user.audit(AuditAction.UPDATE, "Password changed");
+        userRepository.save(user);
+
+        // 4) Revoke every existing refresh token, then issue a fresh pair to
+        //    the caller — they keep their session, every OTHER device is
+        //    forced to log in again with the new password.
+        refreshTokenRepository.revokeAllForUser(userId);
+
+        log.info("Password changed for user [{}] — all other sessions revoked", userId);
+
+        return issueTokenPair(user, response);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  INTERNAL HELPERS
     // ══════════════════════════════════════════════════════════════════════════
 

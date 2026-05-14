@@ -1,0 +1,45 @@
+# Build artifacts — rebuilt inside the image
+target/
+**/target/
+*.jar
+*.war
+*.log
+
+# Local IDE / editor
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Tests / coverage / docs that aren't needed at runtime
+.mvn/wrapper/maven-wrapper.jar
+HELP.md
+README.md
+*.md
+
+# Local env files — secrets MUST NOT enter the image
+.env
+.env.*
+!.env.example
+
+# Docker / deploy artifacts
+docker-compose.yml
+Dockerfile
+.dockerignore
+railway.toml
+railway.json
+
+# Scripts only run by maintainers
+scripts/
+files_list_src_clean.txt

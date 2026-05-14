@@ -37,13 +37,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final UserDetailsService userDetailsService;
     private final ObjectMapper       objectMapper;
 
-    // ── Skip filter entirely for auth & OAuth2 routes ────────────────────────
+    // ── Skip filter entirely for auth routes ─────────────────────────────────
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getServletPath();
-        return path.startsWith("/api/v1/auth/")
-                || path.startsWith("/oauth2/")
-                || path.startsWith("/login/oauth2/");
+        return request.getServletPath().startsWith("/api/v1/auth/");
     }
 
     @Override

@@ -32,3 +32,14 @@ build/
 ### VS Code ###
 .vscode/
 
+### Local secrets / runtime artefacts — never commit ###
+.env
+.env.local
+.env.*.local
+*.log
+app.log
+
+### OS junk ###
+.DS_Store
+Thumbs.db
+
