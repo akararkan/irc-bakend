@@ -23,12 +23,13 @@ COPY .mvn .mvn
 COPY pom.xml ./
 
 # Pre-download dependencies (cached unless pom.xml changes).
-RUN --mount=type=cache,target=/root/.m2 \
+# Railway's BuildKit requires an explicit `id` on cache mounts.
+RUN --mount=type=cache,id=irc-m2,target=/root/.m2 \
     ./mvnw -q -B -DskipTests dependency:go-offline
 
 # Now bring in sources and build the fat-jar.
 COPY src src
-RUN --mount=type=cache,target=/root/.m2 \
+RUN --mount=type=cache,id=irc-m2,target=/root/.m2 \
     ./mvnw -q -B -DskipTests package && \
     cp target/*.jar /build/app.jar
 
@@ -36,12 +37,14 @@ RUN --mount=type=cache,target=/root/.m2 \
 # ───────── 2. RUNTIME ──────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre
 
-# Non-root user for least privilege.
-RUN useradd --system --create-home --uid 1000 --shell /usr/sbin/nologin irc
-USER irc
-WORKDIR /home/irc
+# Non-root user for least privilege. Use a name that won't collide with
+# any user pre-baked into the base image (eclipse-temurin already ships
+# with an `irc` user in some variants, which would fail `useradd`).
+RUN useradd --system --create-home --shell /usr/sbin/nologin app
+USER app
+WORKDIR /home/app
 
-COPY --from=builder /build/app.jar /home/irc/app.jar
+COPY --from=builder /build/app.jar /home/app/app.jar
 
 # Railway provides $PORT — Spring Boot's server.port already reads it.
 # Documented EXPOSE is informational; the actual port is whatever PORT is set to.
@@ -56,4 +59,4 @@ ENV SPRING_PROFILES_ACTIVE=prod \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -fsS "http://localhost:${PORT:-8080}/actuator/health" || exit 1
 
-ENTRYPOINT ["java","-jar","/home/irc/app.jar"]
+ENTRYPOINT ["java","-jar","/home/app/app.jar"]
