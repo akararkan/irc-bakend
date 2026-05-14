@@ -1,21 +1,4 @@
-# ════════════════════════════════════════════════════════════════════════════
-#  Nixpacks build manifest — used by Railway when its builder is set to
-#  "Nixpacks" (the default). When the service is configured to use the
-#  Dockerfile builder, this file is ignored.
-#
-#  We pin JDK 21 (LTS) here so the build environment matches our pom.xml
-#  (which has <java.version>21</java.version>) regardless of which JDK
-#  Nixpacks would default to.
-# ════════════════════════════════════════════════════════════════════════════
-
+# Pin the JDK version Railway / Nixpacks uses to build the app.
+# Matches <java.version>21</java.version> in pom.xml.
 [variables]
 NIXPACKS_JDK_VERSION = "21"
-
-# Build phase — Maven assembles the fat-jar with the production profile.
-# Tests are skipped because the cloud builder has no Postgres/Redis/Rabbit.
-[phases.build]
-cmds = ["./mvnw -B -DskipTests -Pproduction package"]
-
-# Boot the runnable jar produced by the build phase.
-[start]
-cmd = "java -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/./urandom -Dspring.profiles.active=prod -jar target/*.jar"

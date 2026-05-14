@@ -1,12 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-#  IRC PLATFORM — BASE / SHARED CONFIGURATION
+#  IRC PLATFORM — APPLICATION CONFIGURATION
 #
-#  Profile-specific overrides live in:
-#    - application-dev.yaml   (local development — default profile)
-#    - application-prod.yaml  (production — Railway, etc.)
-#
-#  Activate a profile with:  SPRING_PROFILES_ACTIVE=prod
-#  When no profile is set, "dev" is loaded automatically (see below).
+#  ONE file. Every value is overridable through an environment variable.
+#  - Local dev: just `./mvnw spring-boot:run` — the localhost defaults below
+#    work against `docker compose up` (Postgres / Redis / RabbitMQ).
+#  - Railway:   set the env vars listed in .env.example, deploy, done.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 spring:
@@ -14,26 +12,27 @@ spring:
   application:
     name: irc
 
-  # Default profile when SPRING_PROFILES_ACTIVE is not set — keeps the local
-  # workflow identical to before (mvn spring-boot:run just works).
-  profiles:
-    default: dev
-
   # ── Database ──────────────────────────────────────────────────────────────────
-  # SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
-  # are honoured automatically by Spring Boot's relaxed binding; profile YAML
-  # files just fill in sensible defaults.
+  # On Railway: set SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME /
+  # SPRING_DATASOURCE_PASSWORD (Spring Boot reads them automatically).
   datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/irc}
+    username: ${SPRING_DATASOURCE_USERNAME:${DB_USERNAME:khi}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:}}
     hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: ${DB_POOL_MIN:2}
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
 
   # ── JPA ───────────────────────────────────────────────────────────────────────
   jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}
     open-in-view: false
+    show-sql: ${JPA_SHOW_SQL:false}
+    defer-datasource-initialization: true
     properties:
       hibernate:
         jdbc:
@@ -45,9 +44,22 @@ spring:
         query:
           in_clause_parameter_padding: true
 
+  # ── SQL init (runs schema.sql / data.sql AFTER Hibernate DDL) ──────────────
+  sql:
+    init:
+      mode: ${SQL_INIT_MODE:always}
+
   # ── Redis ─────────────────────────────────────────────────────────────────────
+  # Railway's "Redis" plugin gives a single REDIS_URL. Set
+  # SPRING_DATA_REDIS_URL=$REDIS_URL in the service variables — it wins.
   data:
     redis:
+      url:      ${SPRING_DATA_REDIS_URL:}
+      host:     ${SPRING_DATA_REDIS_HOST:${REDIS_HOST:localhost}}
+      port:     ${SPRING_DATA_REDIS_PORT:${REDIS_PORT:6379}}
+      password: ${SPRING_DATA_REDIS_PASSWORD:${REDIS_PASSWORD:}}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
       timeout: 2000ms
       lettuce:
         pool:
@@ -63,6 +75,13 @@ spring:
 
   # ── RabbitMQ ──────────────────────────────────────────────────────────────────
   rabbitmq:
+    host:         ${SPRING_RABBITMQ_HOST:${RABBITMQ_HOST:localhost}}
+    port:         ${SPRING_RABBITMQ_PORT:${RABBITMQ_PORT:5672}}
+    username:     ${SPRING_RABBITMQ_USERNAME:${RABBITMQ_USERNAME:guest}}
+    password:     ${SPRING_RABBITMQ_PASSWORD:${RABBITMQ_PASSWORD:guest}}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:${RABBITMQ_VHOST:/}}
+    ssl:
+      enabled: ${RABBITMQ_SSL_ENABLED:false}
     publisher-confirm-type: correlated
     publisher-returns: true
     listener:
@@ -90,6 +109,7 @@ spring:
       write-dates-as-timestamps: false
 
   # ── Mail (SMTP) ──────────────────────────────────────────────────────────────
+  # Gmail: turn on 2-Step, generate an App Password, use that as MAIL_PASSWORD.
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
@@ -132,9 +152,8 @@ irc:
   doi:
     prefix: ${DOI_PREFIX:10.12345}
 
-  base-url: ${IRC_BASE_URL:https://irc.example.com}
+  base-url: ${IRC_BASE_URL:http://localhost:8080}
 
-  # Notification email branding + reply-to.
   email:
     from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
     from-name: ${MAIL_FROM_NAME:IRC Platform}
@@ -142,8 +161,8 @@ irc:
     throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
 
   verification:
-    # Required in production — set IRC_VERIFICATION_SECRET to a 32+ char random string.
-    secret: ${IRC_VERIFICATION_SECRET:}
+    # Override IRC_VERIFICATION_SECRET in production with `openssl rand -hex 24`.
+    secret: ${IRC_VERIFICATION_SECRET:dev-only-32-char-verification-secret-xx}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -152,19 +171,16 @@ irc:
 app:
 
   jwt:
-    # MUST be set via APP_JWT_SECRET env var in production (Base64, ≥256 bits).
-    secret: ${APP_JWT_SECRET:}
-    # Access token: 24 h. Long enough that the front-end rarely sees a 401,
-    # short enough that a leaked token is not an indefinite back-door.
+    # Override APP_JWT_SECRET in production with `openssl rand -base64 64`.
+    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
+    # Access 24h, refresh 90d — long sessions. Refresh rotates on use, so
+    # an active user stays logged in indefinitely.
     access-token-expiration-ms:  ${APP_JWT_ACCESS_MS:86400000}
-    # Refresh token: 90 days. Combined with rotate-on-refresh below, an active
-    # user stays logged in indefinitely (each refresh extends the chain) while
-    # a truly idle user only loses their session after 90 days of inactivity.
     refresh-token-expiration-ms: ${APP_JWT_REFRESH_MS:7776000000}
     issuer: ${APP_JWT_ISSUER:irc-platform}
 
   cors:
-    allowed-origins: ${CORS_ORIGINS:}
+    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
     allowed-headers: ${CORS_HEADERS:*}
     allow-credentials: ${CORS_CREDENTIALS:true}
@@ -180,12 +196,13 @@ app:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  LOGGING (base — profiles tighten or loosen)
+#  LOGGING
+#  Set LOG_LEVEL_APP=INFO (or WARN) on Railway for quieter prod logs.
 # ═══════════════════════════════════════════════════════════════════════════════
 logging:
   level:
-    root: INFO
-    ak.dev.irc: INFO
+    root: ${LOG_LEVEL_ROOT:INFO}
+    ak.dev.irc: ${LOG_LEVEL_APP:DEBUG}
     org.springframework.security: WARN
     org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
     org.springframework.amqp: INFO
@@ -199,11 +216,7 @@ logging:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MANAGEMENT / OBSERVABILITY  (Spring Boot Actuator + Prometheus)
-#    GET /actuator/health        — liveness/readiness  (Railway healthcheck)
-#    GET /actuator/info          — build info
-#    GET /actuator/metrics       — list metric names
-#    GET /actuator/prometheus    — scrape format
+#  MANAGEMENT / OBSERVABILITY  — Railway healthcheck hits /actuator/health
 # ═══════════════════════════════════════════════════════════════════════════════
 management:
   endpoints:
@@ -231,15 +244,15 @@ management:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SERVER  — Railway injects PORT; we honour both PORT and SERVER_PORT.
+#  SERVER  — Railway injects PORT, we honour both PORT and SERVER_PORT.
 # ═══════════════════════════════════════════════════════════════════════════════
 server:
   address: 0.0.0.0
   port: ${PORT:${SERVER_PORT:8080}}
   forward-headers-strategy: framework        # honour X-Forwarded-* behind Railway's proxy
+  shutdown: graceful
   error:
     include-message: always
     include-binding-errors: always
     include-stacktrace: never
     include-exception: false
-  shutdown: graceful
