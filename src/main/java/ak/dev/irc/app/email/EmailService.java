@@ -74,21 +74,53 @@ public class EmailService {
         String host = "<unknown>";
         int port = -1;
         String username = "<unknown>";
+        String password = null;
         if (mailSender instanceof JavaMailSenderImpl impl) {
             host = impl.getHost();
             port = impl.getPort();
             username = impl.getUsername();
+            password = impl.getPassword();
         }
-        log.info("[EMAIL] startup — enabled={} host={} port={} username={} from={} fromName={}",
-                isEnabled(), host, port, username, fromAddress, fromName);
+        log.info("[EMAIL] startup — enabled={} host={} port={} username={} from={} fromName={} passwordSet={}",
+                isEnabled(), host, port, username, fromAddress, fromName,
+                password != null && !password.isBlank());
 
+        // Loud diagnostics — cover the three failures we keep seeing in production.
         if (host != null && host.contains("@")) {
-            log.error("[EMAIL] SMTP host '{}' looks like an email address — set spring.mail.host "
-                    + "to your server (e.g. smtp.gmail.com), not your account. No mail will send "
-                    + "until this is corrected.", host);
+            log.error("[EMAIL] ❌ SMTP host '{}' looks like an email address — set spring.mail.host "
+                    + "(MAIL_HOST env var) to your SMTP server (e.g. smtp.gmail.com), not your account.",
+                    host);
+        }
+        if (username == null || username.isBlank()) {
+            log.error("[EMAIL] ❌ MAIL_USERNAME is empty — set it on Railway to the Gmail address that sends mail. "
+                    + "No email will be delivered until this is set.");
+        }
+        if (password == null || password.isBlank()) {
+            log.error("[EMAIL] ❌ MAIL_PASSWORD is empty — for Gmail you need a 16-char App Password "
+                    + "(generate at https://myaccount.google.com/apppasswords AFTER turning on 2-Step "
+                    + "Verification). Your normal Google password will NOT work over SMTP.");
+        }
+        if (fromAddress == null || fromAddress.isBlank()) {
+            log.error("[EMAIL] ❌ irc.email.from-address is empty — set MAIL_FROM (or MAIL_USERNAME) on Railway.");
         }
         if (!isEnabled()) {
-            log.warn("[EMAIL] disabled or misconfigured — no notification emails will be sent.");
+            log.warn("[EMAIL] ⚠ Email service disabled — no notification emails will be sent.");
+            return;
+        }
+
+        // Try a real SMTP login at boot so failures are visible IMMEDIATELY in the
+        // deployment logs instead of only when the first event tries to email out.
+        if (mailSender instanceof JavaMailSenderImpl impl) {
+            try {
+                impl.testConnection();
+                log.info("[EMAIL] ✅ SMTP connection test succeeded — host={} username={}", host, username);
+            } catch (MessagingException ex) {
+                log.error("[EMAIL] ❌ SMTP connection test FAILED — host={} port={} username={}: {}",
+                        host, port, username, ex.getMessage());
+                log.error("[EMAIL]    For Gmail this almost always means: (1) wrong app password, "
+                        + "(2) 2-Step Verification not enabled on the sending account, or "
+                        + "(3) the sending account has no app password generated yet.");
+            }
         }
     }
 

@@ -38,6 +38,11 @@ spring:
         jdbc:
           batch_size: 30
           fetch_size: 50
+          # Force every TIMESTAMP write/read through UTC. Without this Hibernate
+          # uses the JVM default, so a non-UTC container would silently write
+          # local-time values into the DB and the frontend would show wrong
+          # relative times ("3 hours ago" right after posting).
+          time_zone: UTC
         order_inserts: true
         order_updates: true
         default_batch_fetch_size: 20
