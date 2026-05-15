@@ -1,6 +1,7 @@
 package ak.dev.irc.app.share;
 
 import ak.dev.irc.app.post.entity.Post;
+import ak.dev.irc.app.post.entity.PostMedia;
 import ak.dev.irc.app.post.repository.PostRepository;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.repository.QuestionRepository;
@@ -14,9 +15,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -61,6 +65,7 @@ public class SharePreviewController {
     // ── /p/{token} ───────────────────────────────────────────────────────
 
     @GetMapping(value = "/p/{token}", produces = MediaType.TEXT_HTML_VALUE)
+    @Transactional(readOnly = true)
     public ResponseEntity<String> sharePost(@PathVariable String token,
                                             HttpServletRequest request) {
         Optional<Post> opt = resolvePost(token);
@@ -81,6 +86,7 @@ public class SharePreviewController {
     // ── /r/{token} ───────────────────────────────────────────────────────
 
     @GetMapping(value = "/r/{token}", produces = MediaType.TEXT_HTML_VALUE)
+    @Transactional(readOnly = true)
     public ResponseEntity<String> shareResearch(@PathVariable String token,
                                                 HttpServletRequest request) {
         Optional<Research> opt = researchRepository.findByShareTokenAndDeletedAtIsNull(token);
@@ -99,6 +105,7 @@ public class SharePreviewController {
     // ── /q/{questionId} ──────────────────────────────────────────────────
 
     @GetMapping(value = "/q/{id}", produces = MediaType.TEXT_HTML_VALUE)
+    @Transactional(readOnly = true)
     public ResponseEntity<String> shareQuestion(@PathVariable String id,
                                                 HttpServletRequest request) {
         UUID qid;
@@ -131,20 +138,28 @@ public class SharePreviewController {
         }
     }
 
+    /**
+     * Picks the OG image: first the post's media attachments (image preferred,
+     * then video thumbnail), then the author's avatar. Must be called inside the
+     * @Transactional method so LAZY collections / relations can be initialised.
+     */
     private String pickPostImage(Post post) {
-        // Many post types (image / video / reel) carry attachments. We pull the
-        // first available URL via reflection-safe getters; if nothing fits,
-        // return the author's avatar so the OG card is never empty.
         try {
-            var media = post.getClass().getMethod("getMedia").invoke(post);
-            if (media instanceof java.util.List<?> list && !list.isEmpty()) {
-                Object first = list.get(0);
-                Object url = first.getClass().getMethod("getUrl").invoke(first);
-                if (url != null) return url.toString();
+            List<PostMedia> media = post.getMediaList();
+            if (media != null && !media.isEmpty()) {
+                for (PostMedia m : media) {
+                    if (m.getUrl() != null && !m.getUrl().isBlank()) return m.getUrl();
+                    if (m.getThumbnailUrl() != null && !m.getThumbnailUrl().isBlank())
+                        return m.getThumbnailUrl();
+                }
             }
-        } catch (Exception ignored) { }
-        User author = post.getAuthor();
-        return author == null ? null : author.getProfileImage();
+        } catch (Exception ignored) { /* lazy-init guard */ }
+        try {
+            User author = post.getAuthor();
+            return author == null ? null : author.getProfileImage();
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     // ── HTML rendering ───────────────────────────────────────────────────
