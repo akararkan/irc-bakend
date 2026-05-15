@@ -73,6 +73,7 @@ public class PostService {
     private final CounterCache           counterCache;
     private final RateLimiter            rateLimiter;
     private final ak.dev.irc.app.research.service.VideoMetadataExtractor videoMetadataExtractor;
+    private final ak.dev.irc.app.share.FrontendUrlResolver               frontendUrlResolver;
 
     // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
     @Autowired @Lazy
@@ -358,11 +359,16 @@ public class PostService {
         String token = original.getShareLink() != null && !original.getShareLink().isBlank()
                 ? original.getShareLink()
                 : original.getId().toString();
-        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+        // shortUrl (the OG-tagged redirect page) is hosted on the BACKEND.
+        // canonicalUrl (the real app destination) is on the FRONTEND so users
+        // who paste the canonical URL into a browser actually see the post.
+        String backendBase = (baseUrl == null || baseUrl.isBlank())
                 ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String frontBase = frontendUrlResolver.resolve();
+        if (frontBase == null || frontBase.isBlank()) frontBase = backendBase;
         return new ShareLinkInfo(
-                trimmedBase + "/p/" + token,
-                trimmedBase + "/posts/" + original.getId(),
+                backendBase + "/p/" + token,
+                frontBase + "/posts/" + original.getId(),
                 token,
                 fresh == null ? 0L : fresh);
     }

@@ -75,6 +75,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final FollowingIdsCache followingIdsCache;
     private final QnaRealtimeBroadcaster realtime;
     private final QuestionViewTracker viewTracker;
+    private final ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
     private final UserActivityService userActivityService;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
@@ -1497,12 +1498,14 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private ShareLinkInfo buildShareLinkInfo(Question q, String baseUrl, long count) {
-        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+        String backendBase = (baseUrl == null || baseUrl.isBlank())
                 ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String frontBase = frontendUrlResolver.resolve();
+        if (frontBase == null || frontBase.isBlank()) frontBase = backendBase;
         String token = q.getId().toString();
         return new ShareLinkInfo(
-                trimmedBase + "/q/" + token,
-                trimmedBase + "/questions/" + token,
+                backendBase + "/q/" + token,
+                frontBase + "/questions/" + token,
                 token,
                 count);
     }

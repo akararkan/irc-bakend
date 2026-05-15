@@ -81,6 +81,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
+    private final ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -1683,15 +1684,17 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     private ShareLinkInfo buildShareInfo(Research research, String baseUrl, long count) {
-        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+        String backendBase = (baseUrl == null || baseUrl.isBlank())
                 ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String frontBase = frontendUrlResolver.resolve();
+        if (frontBase == null || frontBase.isBlank()) frontBase = backendBase;
         String token = research.getShareToken();
         String shortUrl = (token != null && !token.isBlank())
-                ? trimmedBase + "/r/" + token
-                : trimmedBase + "/research/" + research.getId();
+                ? backendBase + "/r/" + token
+                : frontBase + "/research/" + research.getId();
         return new ShareLinkInfo(
                 shortUrl,
-                trimmedBase + "/research/" + research.getId(),
+                frontBase + "/research/" + research.getId(),
                 token != null ? token : research.getId().toString(),
                 count);
     }

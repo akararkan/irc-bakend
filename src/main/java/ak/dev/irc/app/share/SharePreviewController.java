@@ -102,6 +102,40 @@ public class SharePreviewController {
         return ok(renderPreview(r.getTitle(), description, image, redirectTo, request));
     }
 
+    // ── Fallback redirects for users who paste the BACKEND canonical URL ──
+    //  ({backend}/posts/{id} · /research/{id} · /questions/{id})
+    //
+    //  Older share links and any user who copies the canonical URL bar from
+    //  the API host land here. We just 302 to the matching frontend page so
+    //  it Just Works instead of returning a 404.
+
+    @GetMapping("/posts/{id}")
+    public ResponseEntity<Void> bouncePost(@PathVariable String id, HttpServletRequest request) {
+        return redirect(frontendUrl(request) + "/posts/" + id);
+    }
+
+    @GetMapping("/research/{id}")
+    public ResponseEntity<Void> bounceResearch(@PathVariable String id, HttpServletRequest request) {
+        return redirect(frontendUrl(request) + "/research/" + id);
+    }
+
+    @GetMapping("/researches/{id}")
+    public ResponseEntity<Void> bounceResearches(@PathVariable String id, HttpServletRequest request) {
+        return redirect(frontendUrl(request) + "/research/" + id);
+    }
+
+    @GetMapping("/questions/{id}")
+    public ResponseEntity<Void> bounceQuestion(@PathVariable String id, HttpServletRequest request) {
+        return redirect(frontendUrl(request) + "/questions/" + id);
+    }
+
+    private ResponseEntity<Void> redirect(String to) {
+        return ResponseEntity.status(302)
+                .header("Location", to)
+                .header("Cache-Control", "no-store")
+                .build();
+    }
+
     // ── /q/{questionId} ──────────────────────────────────────────────────
 
     @GetMapping(value = "/q/{id}", produces = MediaType.TEXT_HTML_VALUE)

@@ -16,6 +16,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -125,6 +126,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
                     "Invalid or expired token. Please log in again.",
                     "AUTH_TOKEN_INVALID");
+
+        } catch (UsernameNotFoundException ex) {
+            // Token is well-formed and unexpired but the user it points to no
+            // longer exists (typical after a DB reset or account purge). This
+            // is an authentication failure, not a 500 — surface it as such.
+            log.warn("JWT references unknown user on {} {} — {}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage());
+            writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
+                    "Your session is no longer valid. Please log in again.",
+                    "AUTH_USER_NOT_FOUND");
 
         } catch (Exception ex) {
             // Truly unexpected: DB down, NPE, etc.

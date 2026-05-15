@@ -96,10 +96,26 @@ public class PostController {
     public SseEmitter streamPost(
             @PathVariable UUID postId,
             @AuthenticationPrincipal User user) {
-        // Reject the SSE handshake when the viewer can't read the post (block,
-        // missing, removed). assertVisible(...) bypasses the view-count bump.
         UUID requesterId = user != null ? user.getId() : null;
-        postService.assertPostVisible(postId, requesterId);
+        try {
+            postService.assertPostVisible(postId, requesterId);
+        } catch (RuntimeException ex) {
+            // SSE clients accept text/event-stream only — letting the
+            // exception bubble triggers Spring's JSON exception handler which
+            // can't write a JSON body to a text/event-stream response and
+            // returns 500. Instead, emit a single "error" event and close
+            // the stream cleanly so EventSource gets a usable signal.
+            SseEmitter emitter = new SseEmitter(0L);
+            try {
+                emitter.send(SseEmitter.event()
+                        .name("error")
+                        .data(java.util.Map.of(
+                                "code",    "POST_NOT_VISIBLE",
+                                "message", ex.getMessage() == null ? "Post not available" : ex.getMessage())));
+            } catch (java.io.IOException ignored) { /* best effort */ }
+            emitter.complete();
+            return emitter;
+        }
         return realtimeService.subscribe(postId, requesterId);
     }
 
