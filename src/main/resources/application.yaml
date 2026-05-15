@@ -29,7 +29,7 @@ spring:
   # ── JPA ───────────────────────────────────────────────────────────────────────
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:update}
+      ddl-auto: ${JPA_DDL_AUTO:create-drop}
     open-in-view: false
     show-sql: ${JPA_SHOW_SQL:false}
     defer-datasource-initialization: true
