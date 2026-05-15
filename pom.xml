@@ -258,6 +258,15 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-mail</artifactId>
 		</dependency>
+
+		<!-- Resend HTTPS email API — used in production where Railway / most
+		     PaaS providers block outbound SMTP on ports 25/465/587. The Spring
+		     mail starter above is still in classpath for local dev. -->
+		<dependency>
+			<groupId>com.resend</groupId>
+			<artifactId>resend-java</artifactId>
+			<version>4.1.0</version>
+		</dependency>
 	</dependencies>
 
 	<!-- ═══════════════════════════════════════════════════════════

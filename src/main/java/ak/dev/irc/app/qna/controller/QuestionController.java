@@ -5,6 +5,8 @@ import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeService;
 import ak.dev.irc.app.qna.service.QuestionService;
+import ak.dev.irc.app.share.OriginUtil;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -578,6 +580,36 @@ public class QuestionController {
         if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         questionService.renameSavedQuestionCollection(user.getId(), oldName, newName);
         return ResponseEntity.noContent().build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SHARE  — mirrors PostController copy-link / share-link
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the share URL info without bumping the counter — for the inline
+     * share UI before the user actually copies the link.
+     */
+    @GetMapping("/{questionId}/share-link")
+    public ResponseEntity<ShareLinkInfo> previewShareLink(
+            @PathVariable UUID questionId,
+            HttpServletRequest request) {
+        return ResponseEntity.ok(
+                questionService.previewShareLink(questionId, OriginUtil.origin(request)));
+    }
+
+    /**
+     * Atomically bumps {@code shareCount} and returns the share URL info.
+     * Called when the user actually copies / sends the link.
+     */
+    @PostMapping("/{questionId}/share")
+    public ResponseEntity<ShareLinkInfo> share(
+            @PathVariable UUID questionId,
+            @AuthenticationPrincipal User user,
+            HttpServletRequest request) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(
+                questionService.recordShare(questionId, requesterId, OriginUtil.origin(request)));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

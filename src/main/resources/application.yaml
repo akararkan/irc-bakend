@@ -169,6 +169,16 @@ irc:
     from-name: ${MAIL_FROM_NAME:IRC Platform}
     enabled: ${MAIL_ENABLED:true}
     throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
+    # Transport: "smtp" (local dev / providers that allow SMTP egress) or
+    # "resend" (Railway / Heroku / Render / GCP / Fly — anywhere outbound
+    # SMTP is blocked). Resend speaks HTTPS over 443 which every PaaS allows.
+    # When set to "resend", RESEND_API_KEY must also be set.
+    provider: ${MAIL_PROVIDER:smtp}
+    reply-to: ${MAIL_REPLY_TO:}
+
+# Resend HTTPS transport — generate a key at https://resend.com/api-keys
+resend:
+  api-key: ${RESEND_API_KEY:}
 
   verification:
     # Override IRC_VERIFICATION_SECRET in production with `openssl rand -hex 24`.

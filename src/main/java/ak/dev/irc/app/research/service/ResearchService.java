@@ -3,6 +3,7 @@ package ak.dev.irc.app.research.service;
 import ak.dev.irc.app.research.dto.request.*;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.enums.ReactionType;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
@@ -184,7 +185,14 @@ public interface ResearchService {
 
     // ── Share & Citations ─────────────────────────────────────────────────────
 
+    /** Legacy: returns plain share URL string. Kept for back-compat. */
     String getShareLink(UUID researchId);
+
+    /** Returns full share info without bumping the counter. */
+    ShareLinkInfo previewShareLink(UUID researchId, String baseUrl);
+
+    /** Bumps the share counter and returns full share info. */
+    ShareLinkInfo recordShare(UUID researchId, UUID requesterId, String baseUrl);
 
     void incrementCitationCount(UUID researchId);
 

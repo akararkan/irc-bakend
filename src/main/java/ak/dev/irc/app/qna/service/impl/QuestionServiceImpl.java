@@ -23,6 +23,7 @@ import ak.dev.irc.app.qna.realtime.QuestionViewTracker;
 import ak.dev.irc.app.qna.repository.*;
 import ak.dev.irc.app.qna.service.QuestionService;
 import ak.dev.irc.app.rabbitmq.publisher.QuestionEventPublisher;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import ak.dev.irc.app.research.enums.MediaType;
 import ak.dev.irc.app.research.enums.SourceType;
 import ak.dev.irc.app.research.service.S3StorageService;
@@ -1463,6 +1464,47 @@ public class QuestionServiceImpl implements QuestionService {
         if (newName == null || newName.isBlank())
             throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
         saveRepository.renameCollection(userId, oldName, newName.trim());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SHARE
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public ShareLinkInfo previewShareLink(UUID questionId, String baseUrl) {
+        Question q = findQuestionOrThrow(questionId);
+        return buildShareLinkInfo(q, baseUrl, q.getShareCount());
+    }
+
+    @Override
+    @Transactional
+    public ShareLinkInfo recordShare(UUID questionId, UUID requesterId, String baseUrl) {
+        Question q = findQuestionOrThrow(questionId);
+        questionRepository.incrementShareCount(questionId);
+        // Read fresh count without a refresh round-trip — the entity is
+        // detached at this point, so just bump the in-memory value too.
+        long fresh = (q.getShareCount() == null ? 0L : q.getShareCount()) + 1;
+
+        realtime.broadcast(QnaRealtimeEvent.builder()
+                .eventType(QnaRealtimeEventType.SHARE_COUNT_UPDATED)
+                .questionId(questionId)
+                .actorId(requesterId)
+                .shareCount(fresh)
+                .build());
+
+        return buildShareLinkInfo(q, baseUrl, fresh);
+    }
+
+    private ShareLinkInfo buildShareLinkInfo(Question q, String baseUrl, long count) {
+        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+                ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String token = q.getId().toString();
+        return new ShareLinkInfo(
+                trimmedBase + "/q/" + token,
+                trimmedBase + "/questions/" + token,
+                token,
+                count);
     }
 
     // ══════════════════════════════════════════════════════════════════════════

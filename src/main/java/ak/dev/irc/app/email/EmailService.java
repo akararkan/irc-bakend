@@ -6,6 +6,7 @@ import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -51,6 +52,15 @@ public class EmailService {
 
     private final JavaMailSender mailSender;
 
+    /**
+     * Optional Resend HTTPS transport — present only when
+     * {@code irc.email.provider=resend} (the recommended setting on any
+     * cloud host that blocks outbound SMTP, including Railway). When null,
+     * the service falls back to SMTP via {@link JavaMailSender}.
+     */
+    @Autowired(required = false)
+    private ResendEmailSender resendSender;
+
     @Value("${irc.email.from-address}")
     private String fromAddress;
 
@@ -59,6 +69,9 @@ public class EmailService {
 
     @Value("${irc.email.enabled:true}")
     private boolean enabled;
+
+    @Value("${irc.email.provider:smtp}")
+    private String provider;
 
     @Value("${irc.base-url:https://irc.example.com}")
     private String baseUrl;
@@ -69,8 +82,36 @@ public class EmailService {
                 && !fromAddress.isBlank();
     }
 
+    /** True iff the active provider is Resend AND its client is initialised. */
+    private boolean resendActive() {
+        return "resend".equalsIgnoreCase(provider) && resendSender != null && resendSender.isReady();
+    }
+
     @PostConstruct
     public void announceConfig() {
+        log.info("[EMAIL] startup — enabled={} provider={} from={} fromName={}",
+                isEnabled(), provider, fromAddress, fromName);
+
+        if (fromAddress == null || fromAddress.isBlank()) {
+            log.error("[EMAIL] ❌ irc.email.from-address is empty — set MAIL_FROM "
+                    + "(or, with Resend, the verified sender) on Railway.");
+        }
+        if (!isEnabled()) {
+            log.warn("[EMAIL] ⚠ Email service disabled — no notification emails will be sent.");
+            return;
+        }
+
+        if ("resend".equalsIgnoreCase(provider)) {
+            if (resendSender == null || !resendSender.isReady()) {
+                log.error("[EMAIL] ❌ provider=resend but ResendEmailSender is not initialised. "
+                        + "Set RESEND_API_KEY on Railway → Variables and redeploy.");
+            } else {
+                log.info("[EMAIL] ✅ Active transport: Resend (HTTPS) — Railway-friendly, no SMTP egress required.");
+            }
+            return;
+        }
+
+        // SMTP path — only relevant in environments that allow outbound SMTP.
         String host = "<unknown>";
         int port = -1;
         String username = "<unknown>";
@@ -81,35 +122,18 @@ public class EmailService {
             username = impl.getUsername();
             password = impl.getPassword();
         }
-        log.info("[EMAIL] startup — enabled={} host={} port={} username={} from={} fromName={} passwordSet={}",
-                isEnabled(), host, port, username, fromAddress, fromName,
-                password != null && !password.isBlank());
-
-        // Loud diagnostics — cover the three failures we keep seeing in production.
+        log.info("[EMAIL] SMTP transport selected — host={} port={} username={} passwordSet={}",
+                host, port, username, password != null && !password.isBlank());
         if (host != null && host.contains("@")) {
             log.error("[EMAIL] ❌ SMTP host '{}' looks like an email address — set spring.mail.host "
-                    + "(MAIL_HOST env var) to your SMTP server (e.g. smtp.gmail.com), not your account.",
-                    host);
+                    + "(MAIL_HOST env var) to your SMTP server.", host);
         }
         if (username == null || username.isBlank()) {
-            log.error("[EMAIL] ❌ MAIL_USERNAME is empty — set it on Railway to the Gmail address that sends mail. "
-                    + "No email will be delivered until this is set.");
+            log.error("[EMAIL] ❌ MAIL_USERNAME is empty.");
         }
         if (password == null || password.isBlank()) {
-            log.error("[EMAIL] ❌ MAIL_PASSWORD is empty — for Gmail you need a 16-char App Password "
-                    + "(generate at https://myaccount.google.com/apppasswords AFTER turning on 2-Step "
-                    + "Verification). Your normal Google password will NOT work over SMTP.");
+            log.error("[EMAIL] ❌ MAIL_PASSWORD is empty.");
         }
-        if (fromAddress == null || fromAddress.isBlank()) {
-            log.error("[EMAIL] ❌ irc.email.from-address is empty — set MAIL_FROM (or MAIL_USERNAME) on Railway.");
-        }
-        if (!isEnabled()) {
-            log.warn("[EMAIL] ⚠ Email service disabled — no notification emails will be sent.");
-            return;
-        }
-
-        // Try a real SMTP login at boot so failures are visible IMMEDIATELY in the
-        // deployment logs instead of only when the first event tries to email out.
         if (mailSender instanceof JavaMailSenderImpl impl) {
             try {
                 impl.testConnection();
@@ -117,9 +141,8 @@ public class EmailService {
             } catch (MessagingException ex) {
                 log.error("[EMAIL] ❌ SMTP connection test FAILED — host={} port={} username={}: {}",
                         host, port, username, ex.getMessage());
-                log.error("[EMAIL]    For Gmail this almost always means: (1) wrong app password, "
-                        + "(2) 2-Step Verification not enabled on the sending account, or "
-                        + "(3) the sending account has no app password generated yet.");
+                log.error("[EMAIL]    Most cloud hosts (Railway, Heroku, Render, Fly, GCP) block outbound "
+                        + "SMTP. Switch to provider=resend and set RESEND_API_KEY.");
             }
         }
     }
@@ -137,6 +160,12 @@ public class EmailService {
             return;
         }
         if (toAddress == null || toAddress.isBlank()) return;
+
+        // Resend (HTTPS) — no SMTP egress, works on Railway / every PaaS.
+        if (resendActive()) {
+            sendViaResend(toAddress, subject, plainBody, htmlBody);
+            return;
+        }
 
         long backoffMs = 500;
         for (int attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
@@ -198,6 +227,39 @@ public class EmailService {
                 log.error("[EMAIL] unexpected error sending to {}: {}", toAddress, ex.getMessage(), ex);
                 return;
             }
+        }
+    }
+
+    /**
+     * Resend send path with the same retry / back-off behaviour as the SMTP
+     * path. Resend's own client doesn't retry — we wrap each call to handle
+     * 429 / 5xx blips without dropping the email outright.
+     */
+    private void sendViaResend(String toAddress, String subject, String plainBody, String htmlBody) {
+        long backoffMs = 500;
+        for (int attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+            String id = resendSender.send(toAddress, subject, plainBody, htmlBody);
+            if (id != null) {
+                if (attempt > 1) {
+                    log.info("[EMAIL] sent via Resend '{}' to {} on attempt {} (id={})",
+                            subject, toAddress, attempt, id);
+                } else {
+                    log.debug("[EMAIL] sent via Resend '{}' to {} (id={})", subject, toAddress, id);
+                }
+                return;
+            }
+            if (attempt == RETRY_ATTEMPTS) {
+                log.error("[EMAIL] Resend gave up after {} attempts — to={} subject='{}'",
+                        RETRY_ATTEMPTS, toAddress, subject);
+                return;
+            }
+            try {
+                Thread.sleep(backoffMs);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            backoffMs *= 2;
         }
     }
 }

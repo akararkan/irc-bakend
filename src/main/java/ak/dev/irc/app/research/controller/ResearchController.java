@@ -496,13 +496,40 @@ public class ResearchController {
     // ══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Increment share counter and return the full public share URL.
-     *
-     * <p>Example response: {@code "https://irc.example.com/r/fX9kR2mQpLzT4nYw"}
+     * Legacy: increment share counter and return the plain share URL string.
+     * <p>Prefer {@link #shareResearch} which returns the unified
+     * {@link ak.dev.irc.app.share.ShareLinkInfo} payload.</p>
      */
-    @PostMapping("/{id}/share")
+    @PostMapping("/{id}/share-legacy")
     public ResponseEntity<String> getShareLink(@PathVariable UUID id) {
         return ResponseEntity.ok(researchService.getShareLink(id));
+    }
+
+    /**
+     * Returns the unified share-link info without bumping the counter — for the
+     * inline share UI before the user actually copies the link.
+     */
+    @GetMapping("/{id}/share-link")
+    public ResponseEntity<ak.dev.irc.app.share.ShareLinkInfo> previewShareLink(
+            @PathVariable UUID id,
+            jakarta.servlet.http.HttpServletRequest request) {
+        return ResponseEntity.ok(
+                researchService.previewShareLink(id, ak.dev.irc.app.share.OriginUtil.origin(request)));
+    }
+
+    /**
+     * Atomically bumps {@code shareCount} and returns the unified share-link
+     * info. Called when the user actually copies / sends the link.
+     */
+    @PostMapping("/{id}/share")
+    public ResponseEntity<ak.dev.irc.app.share.ShareLinkInfo> shareResearch(
+            @PathVariable UUID id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    ak.dev.irc.app.user.entity.User user,
+            jakarta.servlet.http.HttpServletRequest request) {
+        UUID requesterId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(
+                researchService.recordShare(id, requesterId, ak.dev.irc.app.share.OriginUtil.origin(request)));
     }
 
     /**

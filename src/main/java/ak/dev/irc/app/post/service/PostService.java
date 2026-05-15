@@ -367,8 +367,14 @@ public class PostService {
                 fresh == null ? 0L : fresh);
     }
 
-    /** Lightweight payload for the copy-link endpoint. */
-    public record ShareLinkInfo(String shortUrl, String canonicalUrl, String token, long shareCount) {}
+    /**
+     * Lightweight payload for the copy-link endpoint.
+     *
+     * <p>Kept as a nested type alias for binary back-compat — the canonical
+     * shape now lives in {@link ak.dev.irc.app.share.ShareLinkInfo} so post,
+     * research, and Q&A all return the same JSON.</p>
+     */
+    public record ShareLinkInfo(String shortUrl, String canonicalUrl, String token, long shareCount) { }
 
     // ── Update ────────────────────────────────────────────────
 

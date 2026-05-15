@@ -40,5 +40,6 @@ public enum QnaRealtimeEventType {
     // ── live counters (one event per counter so clients can patch
     //     individual numbers without re-fetching the whole question) ────
     VIEW_COUNT_UPDATED,
-    SAVE_COUNT_UPDATED
+    SAVE_COUNT_UPDATED,
+    SHARE_COUNT_UPDATED
 }

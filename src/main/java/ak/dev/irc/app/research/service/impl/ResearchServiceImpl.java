@@ -18,6 +18,7 @@ import ak.dev.irc.app.research.service.IrcIdentifierService;
 import ak.dev.irc.app.research.service.ResearchService;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.research.service.VideoMetadataExtractor;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
@@ -1649,6 +1650,50 @@ public class ResearchServiceImpl implements ResearchService {
         }
         catch (DataAccessException e) { log.error("Error incrementing share count: {}", e.getMessage()); }
         return ircIdentifierService.buildShareUrl(research.getShareToken());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ShareLinkInfo previewShareLink(UUID researchId, String baseUrl) {
+        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        Research research = findPublishedOrThrow(researchId);
+        return buildShareInfo(research, baseUrl,
+                research.getShareCount() == null ? 0L : research.getShareCount());
+    }
+
+    @Override
+    @Transactional
+    public ShareLinkInfo recordShare(UUID researchId, UUID requesterId, String baseUrl) {
+        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        Research research = findPublishedOrThrow(researchId);
+        long fresh = research.getShareCount() == null ? 0L : research.getShareCount();
+        User actor = requesterId != null
+                ? userRepo.findById(requesterId).orElse(null)
+                : null;
+        try {
+            researchRepo.incrementShareCount(researchId);
+            fresh += 1;
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SHARE_COUNT_UPDATED,
+                    actor);
+        } catch (DataAccessException e) {
+            log.error("Error incrementing share count: {}", e.getMessage());
+        }
+        return buildShareInfo(research, baseUrl, fresh);
+    }
+
+    private ShareLinkInfo buildShareInfo(Research research, String baseUrl, long count) {
+        String trimmedBase = (baseUrl == null || baseUrl.isBlank())
+                ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String token = research.getShareToken();
+        String shortUrl = (token != null && !token.isBlank())
+                ? trimmedBase + "/r/" + token
+                : trimmedBase + "/research/" + research.getId();
+        return new ShareLinkInfo(
+                shortUrl,
+                trimmedBase + "/research/" + research.getId(),
+                token != null ? token : research.getId().toString(),
+                count);
     }
 
     @Override

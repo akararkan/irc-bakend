@@ -59,6 +59,8 @@ public class QnaRealtimeEvent {
     private Long questionViewCount;
     /** Fresh save (bookmark) count on the question — populated on {@code SAVE_COUNT_UPDATED}. */
     private Long questionSaveCount;
+    /** Fresh share count on the question — populated on {@code SHARE_COUNT_UPDATED}. */
+    private Long shareCount;
     private Long answerReactionCount;
     private Long answerReplyCount;
     /** Number of distinct scholars that have voted this answer as best. */

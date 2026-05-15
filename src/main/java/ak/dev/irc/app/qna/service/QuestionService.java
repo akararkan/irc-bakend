@@ -3,6 +3,7 @@ package ak.dev.irc.app.qna.service;
 import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.qna.dto.response.*;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
@@ -200,4 +201,20 @@ public interface QuestionService {
 
     /** Rename a collection across every save row owned by the viewer. */
     void renameSavedQuestionCollection(UUID userId, String oldName, String newName);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  SHARE  — mirrors PostService.copyShareLink / ResearchService.getShareLink
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Build the share URL info for a question without bumping the counter.
+     * Used by the inline UI before the user actually copies/sends the link.
+     */
+    ShareLinkInfo previewShareLink(UUID questionId, String baseUrl);
+
+    /**
+     * Bump the share counter and return the share URL info. Called when the
+     * user actually performs the copy / share action.
+     */
+    ShareLinkInfo recordShare(UUID questionId, UUID requesterId, String baseUrl);
 }

@@ -60,6 +60,10 @@ public class Question extends BaseAuditEntity {
     @Builder.Default
     private Long saveCount = 0L;
 
+    @Column(name = "share_count", nullable = false)
+    @Builder.Default
+    private Long shareCount = 0L;
+
     /** When true, no new answers can be submitted. */
     @Column(name = "answers_locked", nullable = false)
     @Builder.Default

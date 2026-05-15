@@ -86,6 +86,11 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Query("UPDATE Question q SET q.viewCount = q.viewCount + 1 WHERE q.id = :id")
     void incrementViewCount(@Param("id") UUID id);
 
+    /** Atomic share-count bump — invoked by the share endpoint. */
+    @Modifying
+    @Query("UPDATE Question q SET q.shareCount = q.shareCount + 1 WHERE q.id = :id")
+    void incrementShareCount(@Param("id") UUID id);
+
     /**
      * Atomic clamp-at-zero increment/decrement of the denormalised
      * {@code answerCount}. Replaces the racy
