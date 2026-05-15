@@ -76,6 +76,15 @@ public class EmailService {
     @Value("${irc.base-url:https://irc.example.com}")
     private String baseUrl;
 
+    /**
+     * Public-facing frontend URL — required for every email CTA. When unset,
+     * emails go out without CTA buttons (we never link to the backend's
+     * own URL because the backend has no user-facing pages). Set FRONTEND_URL
+     * on Railway → Variables.
+     */
+    @Value("${app.frontend-url:}")
+    private String frontendUrl;
+
     public boolean isEnabled() {
         return enabled
                 && fromAddress != null
@@ -95,6 +104,14 @@ public class EmailService {
         if (fromAddress == null || fromAddress.isBlank()) {
             log.error("[EMAIL] ❌ irc.email.from-address is empty — set MAIL_FROM "
                     + "(or, with Resend, the verified sender) on Railway.");
+        }
+        if (frontendUrl == null || frontendUrl.isBlank()) {
+            log.error("[EMAIL] ❌ app.frontend-url is empty — emails will be sent WITHOUT a "
+                    + "CTA button. Set FRONTEND_URL on Railway to your user-facing app URL "
+                    + "(e.g. https://irc-frontend-517u.vercel.app) so links in emails open the "
+                    + "actual app instead of the backend API.");
+        } else {
+            log.info("[EMAIL] CTA links will use frontend URL: {}", frontendUrl);
         }
         if (!isEnabled()) {
             log.warn("[EMAIL] ⚠ Email service disabled — no notification emails will be sent.");

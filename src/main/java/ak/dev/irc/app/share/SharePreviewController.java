@@ -251,15 +251,36 @@ public class SharePreviewController {
 
     // ── URL + string helpers ─────────────────────────────────────────────
 
-    /** Frontend base — falls back to the request origin if {@code app.frontend-url} is unset. */
+    /**
+     * Frontend base — what we redirect share visitors to. Always
+     * {@code app.frontend-url}; never the request origin, since the request
+     * origin is the backend API which has no user-facing pages.
+     *
+     * <p>Falls back to the request origin only when {@code app.frontend-url}
+     * is unset AND the request host is clearly a localhost dev address —
+     * keeps {@code curl} on a laptop working without Railway env vars.</p>
+     */
     private String frontendUrl(HttpServletRequest request) {
         if (frontendUrl != null && !frontendUrl.isBlank()) {
             return trimTrailingSlash(frontendUrl);
         }
-        // Fallback: derive from the incoming request so a missing env var doesn't
-        // produce broken redirects in dev.
+        String host = headerOr(request, "X-Forwarded-Host", request.getServerName());
+        boolean isLocal = host != null
+                && (host.startsWith("localhost") || host.startsWith("127.")
+                    || host.startsWith("192.168.") || host.startsWith("10."));
+        if (isLocal) {
+            String scheme = headerOr(request, "X-Forwarded-Proto", request.getScheme());
+            log.warn("[Share] app.frontend-url unset — falling back to request origin {}://{} "
+                   + "(only safe in local dev). Set FRONTEND_URL on Railway.", scheme, host);
+            return scheme + "://" + host;
+        }
+        log.error("[Share] ❌ app.frontend-url unset — refusing to redirect share visitors to "
+                + "the backend host '{}' (no user-facing pages there). Set FRONTEND_URL on Railway.",
+                host);
+        // Returning the host alone causes the redirect to land on the backend's
+        // own /posts/{id} which 404s — better than crashing, but the operator
+        // MUST fix the env var. The error log above makes that loud.
         String scheme = headerOr(request, "X-Forwarded-Proto", request.getScheme());
-        String host   = headerOr(request, "X-Forwarded-Host",  request.getServerName());
         return scheme + "://" + host;
     }
 

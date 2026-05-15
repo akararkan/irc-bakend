@@ -26,9 +26,11 @@ public class EmailTemplate {
     private static final DateTimeFormatter WHEN =
             DateTimeFormatter.ofPattern("MMM d, yyyy 'at' h:mm a", Locale.ENGLISH);
 
-    @Value("${irc.base-url:https://irc.example.com}")
-    private String baseUrl;
-
+    /**
+     * Public-facing frontend URL. CTA buttons in every email use this — the
+     * backend's {@code irc.base-url} is never used here because the backend
+     * has no user-facing pages to land on.
+     */
     @Value("${app.frontend-url:}")
     private String frontendUrl;
 
@@ -372,13 +374,25 @@ public class EmailTemplate {
         return base;
     }
 
+    /**
+     * Builds the absolute URL the email CTA opens. Always uses the frontend
+     * URL — never the backend's {@code irc.base-url}, since the backend has
+     * no user-facing pages and {@code https://api.../posts/{id}} would 404.
+     *
+     * <p>Returns {@code null} when {@code app.frontend-url} is not configured
+     * — the caller then renders the email without a CTA button rather than
+     * pointing the user to a broken link.</p>
+     */
     private String buildDeepLink(String deepLink) {
         if (deepLink == null || deepLink.isBlank()) return null;
-        // Frontend overrides backend baseUrl when set — emails should land on the
-        // user-facing app, not the API.
-        String base = (frontendUrl != null && !frontendUrl.isBlank()) ? frontendUrl : baseUrl;
-        if (base == null || base.isBlank()) return deepLink;
-        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        if (frontendUrl == null || frontendUrl.isBlank()) {
+            // Loud — once per email send is fine; this is a misconfiguration
+            // the operator must fix.
+            return null;
+        }
+        String base = frontendUrl.endsWith("/")
+                ? frontendUrl.substring(0, frontendUrl.length() - 1)
+                : frontendUrl;
         return deepLink.startsWith("/") ? base + deepLink : base + "/" + deepLink;
     }
 

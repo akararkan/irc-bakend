@@ -176,13 +176,13 @@ irc:
     provider: ${MAIL_PROVIDER:smtp}
     reply-to: ${MAIL_REPLY_TO:}
 
-# Resend HTTPS transport — generate a key at https://resend.com/api-keys
-resend:
-  api-key: ${RESEND_API_KEY:}
-
   verification:
     # Override IRC_VERIFICATION_SECRET in production with `openssl rand -hex 24`.
     secret: ${IRC_VERIFICATION_SECRET:dev-only-32-char-verification-secret-xx}
+
+# Resend HTTPS transport — generate a key at https://resend.com/api-keys
+resend:
+  api-key: ${RESEND_API_KEY:}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
