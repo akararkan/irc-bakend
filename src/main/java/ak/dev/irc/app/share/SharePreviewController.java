@@ -111,22 +111,31 @@ public class SharePreviewController {
 
     @GetMapping("/posts/{id}")
     public ResponseEntity<Void> bouncePost(@PathVariable String id, HttpServletRequest request) {
-        return redirect(frontendUrl(request) + "/posts/" + id);
+        return bounceToFrontend("/posts/" + id, request);
     }
 
     @GetMapping("/research/{id}")
     public ResponseEntity<Void> bounceResearch(@PathVariable String id, HttpServletRequest request) {
-        return redirect(frontendUrl(request) + "/research/" + id);
+        return bounceToFrontend("/research/" + id, request);
     }
 
     @GetMapping("/researches/{id}")
     public ResponseEntity<Void> bounceResearches(@PathVariable String id, HttpServletRequest request) {
-        return redirect(frontendUrl(request) + "/research/" + id);
+        return bounceToFrontend("/research/" + id, request);
     }
 
     @GetMapping("/questions/{id}")
     public ResponseEntity<Void> bounceQuestion(@PathVariable String id, HttpServletRequest request) {
-        return redirect(frontendUrl(request) + "/questions/" + id);
+        return bounceToFrontend("/questions/" + id, request);
+    }
+
+    private ResponseEntity<Void> bounceToFrontend(String path, HttpServletRequest request) {
+        String base = frontendUrl(request);
+        if (base.isBlank()) {
+            // FRONTEND_URL not set and not on localhost — refuse to redirect to avoid a loop.
+            return ResponseEntity.status(503).build();
+        }
+        return redirect(base + path);
     }
 
     private ResponseEntity<Void> redirect(String to) {
@@ -298,24 +307,24 @@ public class SharePreviewController {
         if (frontendUrl != null && !frontendUrl.isBlank()) {
             return trimTrailingSlash(frontendUrl);
         }
+        // No FRONTEND_URL configured — use request origin only for local dev.
+        // For non-local hosts, never redirect back to the backend itself (causes
+        // an infinite redirect loop on /posts/{id}, /research/{id}, etc.).
         String host = headerOr(request, "X-Forwarded-Host", request.getServerName());
+        String scheme = headerOr(request, "X-Forwarded-Proto", request.getScheme());
         boolean isLocal = host != null
                 && (host.startsWith("localhost") || host.startsWith("127.")
                     || host.startsWith("192.168.") || host.startsWith("10."));
         if (isLocal) {
-            String scheme = headerOr(request, "X-Forwarded-Proto", request.getScheme());
             log.warn("[Share] app.frontend-url unset — falling back to request origin {}://{} "
                    + "(only safe in local dev). Set FRONTEND_URL on Railway.", scheme, host);
             return scheme + "://" + host;
         }
-        log.error("[Share] ❌ app.frontend-url unset — refusing to redirect share visitors to "
-                + "the backend host '{}' (no user-facing pages there). Set FRONTEND_URL on Railway.",
-                host);
-        // Returning the host alone causes the redirect to land on the backend's
-        // own /posts/{id} which 404s — better than crashing, but the operator
-        // MUST fix the env var. The error log above makes that loud.
-        String scheme = headerOr(request, "X-Forwarded-Proto", request.getScheme());
-        return scheme + "://" + host;
+        log.error("[Share] ❌ app.frontend-url unset and not on localhost. "
+                + "Set FRONTEND_URL on Railway to fix share redirects.");
+        // Return empty string — callers must guard against this producing a
+        // bad redirect. The application.yaml default should prevent reaching here.
+        return "";
     }
 
     private String currentUrl(HttpServletRequest request) {
