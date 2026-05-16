@@ -13,6 +13,7 @@ import ak.dev.irc.app.post.entity.*;
 import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
@@ -24,6 +25,12 @@ import java.util.stream.Collectors;
 public class PostMapper {
 
     private final CounterCache counterCache;
+
+    @Value("${app.frontend-url:}")
+    private String frontendUrl;
+
+    @Value("${irc.base-url:http://localhost:8080}")
+    private String backendBaseUrl;
 
     private static long nz(Long v) { return v == null ? 0L : v; }
 
@@ -91,7 +98,7 @@ public class PostMapper {
                 .locationLat(post.getLocationLat())
                 .locationLng(post.getLocationLng())
                 .sharedPost(post.getSharedPost() != null ? toResponse(post.getSharedPost()) : null)
-                .shareLink(post.getShareLink())
+                .shareLink(buildShareUrl(post))
                 .isRepost(isRepost)
                 // Counters read from Redis with DB fallback. Cache hit = sub-ms;
                 // cache miss = one Postgres column read which then warms Redis.
@@ -112,6 +119,14 @@ public class PostMapper {
                 .timeAgo(TimeDisplayUtil.timeAgo(post.getCreatedAt()))
                 .formattedDate(TimeDisplayUtil.formattedDate(post.getCreatedAt()))
                 .build();
+    }
+
+    private String buildShareUrl(Post post) {
+        String base = (frontendUrl != null && !frontendUrl.isBlank())
+                ? frontendUrl
+                : backendBaseUrl;
+        base = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        return base + "/posts/" + post.getId();
     }
 
     // ── Media ─────────────────────────────────────────────────
