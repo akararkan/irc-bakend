@@ -80,7 +80,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO user_profiles (
     id, user_id, display_name, profile_bio, self_describer, location,
     academic_title, institution_name, website_url,
-    follower_count, following_count, research_count, content_language,
+    follower_count, following_count, research_count, fatwa_count, content_language,
     is_for_hire, is_profile_locked, profile_views, created_at, updated_at
 ) VALUES
 ('b0000001-0000-0000-0000-000000000001','a0000001-0000-0000-0000-000000000001',
@@ -91,7 +91,7 @@ INSERT INTO user_profiles (
  'Professor of Islamic Jurisprudence',
  'University of Sulaymaniyah',
  'https://karzan.irc.mock',
- 142, 38, 12, 'EN', true, false, 2400, now() - interval '180 days', now()),
+ 142, 38, 12, 0, 'EN', true, false, 2400, now() - interval '180 days', now()),
 
 ('b0000001-0000-0000-0000-000000000002','a0000001-0000-0000-0000-000000000002',
  'Lana Abdullah',
@@ -101,7 +101,7 @@ INSERT INTO user_profiles (
  'Research Fellow in Hadith Sciences',
  'IRC Research Institute',
  null,
- 89, 52, 6, 'EN', false, false, 1100, now() - interval '120 days', now()),
+ 89, 52, 6, 0, 'EN', false, false, 1100, now() - interval '120 days', now()),
 
 ('b0000001-0000-0000-0000-000000000003','a0000001-0000-0000-0000-000000000003',
  'James Mitchell',
@@ -109,7 +109,7 @@ INSERT INTO user_profiles (
  'Islamic studies student',
  'London, UK',
  null, null, null,
- 14, 67, 0, 'EN', false, false, 230, now() - interval '60 days', now()),
+ 14, 67, 0, 0, 'EN', false, false, 230, now() - interval '60 days', now()),
 
 ('b0000001-0000-0000-0000-000000000004','a0000001-0000-0000-0000-000000000004',
  'سۆران کەریم',
@@ -119,7 +119,7 @@ INSERT INTO user_profiles (
  'مامۆستای زانستی ئیسلامی',
  'زانکۆی سلێمانی',
  null,
- 215, 44, 9, 'CKB', true, false, 3100, now() - interval '200 days', now()),
+ 215, 44, 9, 0, 'CKB', true, false, 3100, now() - interval '200 days', now()),
 
 ('b0000001-0000-0000-0000-000000000005','a0000001-0000-0000-0000-000000000005',
  'دێلنیا ڕەشید',
@@ -129,7 +129,7 @@ INSERT INTO user_profiles (
  'خوێندکاری دکتۆرا لە مێژووی ئیسلامی',
  'زانکۆی سەلاحەدین',
  null,
- 56, 78, 4, 'CKB', false, false, 780, now() - interval '90 days', now()),
+ 56, 78, 4, 0, 'CKB', false, false, 780, now() - interval '90 days', now()),
 
 ('b0000001-0000-0000-0000-000000000006','a0000001-0000-0000-0000-000000000006',
  'ڕزگار سالح',
@@ -137,7 +137,7 @@ INSERT INTO user_profiles (
  'خوێندکاری زانستی ئیسلامی',
  'دهۆک، کوردستان',
  null, null, null,
- 8, 42, 0, 'CKB', false, false, 95, now() - interval '30 days', now()),
+ 8, 42, 0, 0, 'CKB', false, false, 95, now() - interval '30 days', now()),
 
 ('b0000001-0000-0000-0000-000000000007','a0000001-0000-0000-0000-000000000007',
  'أحمد الراشد',
@@ -147,7 +147,7 @@ INSERT INTO user_profiles (
  'أستاذ الفقه الإسلامي',
  'جامعة بغداد',
  'https://ahmad-rashid.irc.mock',
- 380, 25, 22, 'AR', true, false, 5200, now() - interval '300 days', now()),
+ 380, 25, 22, 0, 'AR', true, false, 5200, now() - interval '300 days', now()),
 
 ('b0000001-0000-0000-0000-000000000008','a0000001-0000-0000-0000-000000000008',
  'فاطمة الزهراء',
@@ -157,7 +157,7 @@ INSERT INTO user_profiles (
  'باحثة في علوم الحديث',
  'مركز الدراسات الإسلامية',
  null,
- 123, 61, 7, 'AR', false, false, 1800, now() - interval '150 days', now()),
+ 123, 61, 7, 0, 'AR', false, false, 1800, now() - interval '150 days', now()),
 
 ('b0000001-0000-0000-0000-000000000009','a0000001-0000-0000-0000-000000000009',
  'عمر حسن',
@@ -165,7 +165,7 @@ INSERT INTO user_profiles (
  'طالب علم',
  'الموصل، العراق',
  null, null, null,
- 11, 93, 0, 'AR', false, false, 140, now() - interval '45 days', now()),
+ 11, 93, 0, 0, 'AR', false, false, 140, now() - interval '45 days', now()),
 
 ('b0000001-0000-0000-0000-000000000010','a0000001-0000-0000-0000-000000000010',
  'إبراهيم النوري',
@@ -175,7 +175,7 @@ INSERT INTO user_profiles (
  'أستاذ مشارك في الفقه الإسلامي',
  'جامعة كربلاء',
  null,
- 267, 33, 15, 'AR', true, false, 3900, now() - interval '250 days', now())
+ 267, 33, 15, 0, 'AR', true, false, 3900, now() - interval '250 days', now())
 ON CONFLICT (id) DO NOTHING;
 
 -- ─────────────────────────────────────────────────────────────────────────────

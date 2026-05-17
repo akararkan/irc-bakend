@@ -53,6 +53,7 @@ spring:
   sql:
     init:
       mode: ${SQL_INIT_MODE:always}
+      continue-on-error: true
 
   # ── Redis ─────────────────────────────────────────────────────────────────────
   # Railway's "Redis" plugin gives a single REDIS_URL. Set
