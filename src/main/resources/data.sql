@@ -14,62 +14,63 @@ INSERT INTO users (
     id, fname, lname, username, email, password, role,
     account_type, verification_tier, is_system_account, preferred_language,
     is_enabled, is_account_non_expired, is_account_non_locked,
-    is_credentials_non_expired, email_notifications_enabled,
-    email_social_enabled, email_mentions_enabled, email_system_enabled,
+    is_credentials_non_expired, two_factor_enabled,
+    email_notifications_enabled, email_social_enabled,
+    email_mentions_enabled, email_system_enabled,
     email_verified_at, created_at, updated_at
 ) VALUES
 -- English scholars / researchers
 ('a0000001-0000-0000-0000-000000000001','Karzan','Hama Faraj','karzan_faraj','karzan@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'SCHOLAR','VERIFIED_SCHOLAR','SENIOR_SCHOLAR',false,'EN',
- true,true,true,true,true,true,true,true, now() - interval '180 days', now() - interval '180 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '180 days', now() - interval '180 days', now()),
 
 ('a0000001-0000-0000-0000-000000000002','Lana','Abdullah','lana_abd','lana@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'RESEARCHER','VERIFIED_RESEARCHER','NONE',false,'EN',
- true,true,true,true,true,true,true,true, now() - interval '120 days', now() - interval '120 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '120 days', now() - interval '120 days', now()),
 
 ('a0000001-0000-0000-0000-000000000003','James','Mitchell','james_m','james@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'USER','REGULAR','NONE',false,'EN',
- true,true,true,true,true,true,true,true, now() - interval '60 days', now() - interval '60 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '60 days', now() - interval '60 days', now()),
 
 -- Kurdish (Sorani) scholars / researchers
 ('a0000001-0000-0000-0000-000000000004','Soran','Karim','soran_karim','soran@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'SCHOLAR','VERIFIED_SCHOLAR','SCHOLAR',false,'CKB',
- true,true,true,true,true,true,true,true, now() - interval '200 days', now() - interval '200 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '200 days', now() - interval '200 days', now()),
 
 ('a0000001-0000-0000-0000-000000000005','Delnya','Rashid','delnya_r','delnya@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'RESEARCHER','VERIFIED_RESEARCHER','STUDENT_OF_KNOWLEDGE',false,'CKB',
- true,true,true,true,true,true,true,true, now() - interval '90 days', now() - interval '90 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '90 days', now() - interval '90 days', now()),
 
 ('a0000001-0000-0000-0000-000000000006','Rzgar','Salih','rzgar_s','rzgar@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'USER','REGULAR','NONE',false,'CKB',
- true,true,true,true,true,true,true,true, now() - interval '30 days', now() - interval '30 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '30 days', now() - interval '30 days', now()),
 
 -- Arabic scholars / researchers
 ('a0000001-0000-0000-0000-000000000007','Ahmad','Al-Rashid','ahmad_rashid','ahmad@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'SCHOLAR','VERIFIED_SCHOLAR','SENIOR_SCHOLAR',false,'AR',
- true,true,true,true,true,true,true,true, now() - interval '300 days', now() - interval '300 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '300 days', now() - interval '300 days', now()),
 
 ('a0000001-0000-0000-0000-000000000008','Fatima','Al-Zahra','fatima_z','fatima@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'RESEARCHER','VERIFIED_RESEARCHER','NONE',false,'AR',
- true,true,true,true,true,true,true,true, now() - interval '150 days', now() - interval '150 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '150 days', now() - interval '150 days', now()),
 
 ('a0000001-0000-0000-0000-000000000009','Omar','Hassan','omar_hassan','omar@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'USER','REGULAR','NONE',false,'AR',
- true,true,true,true,true,true,true,true, now() - interval '45 days', now() - interval '45 days', now()),
+ true,true,true,true,false,true,true,true,true, now() - interval '45 days', now() - interval '45 days', now()),
 
 ('a0000001-0000-0000-0000-000000000010','Ibrahim','Al-Nouri','ibrahim_n','ibrahim@irc.mock',
  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVXRgQ.gXe',
  'SCHOLAR','VERIFIED_SCHOLAR','SCHOLAR',false,'AR',
- true,true,true,true,true,true,true,true, now() - interval '250 days', now() - interval '250 days', now())
+ true,true,true,true,false,true,true,true,true, now() - interval '250 days', now() - interval '250 days', now())
 ON CONFLICT (id) DO NOTHING;
 
 -- ─────────────────────────────────────────────────────────────────────────────
