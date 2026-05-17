@@ -1,9 +1,11 @@
 package ak.dev.irc.app.post.entity;
 
 
+import ak.dev.irc.app.post.enums.ModerationState;
 import ak.dev.irc.app.post.enums.PostStatus;
 import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.post.enums.PostVisibility;
+import ak.dev.irc.app.post.sound.entity.PostSound;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.persistence.*;
 import lombok.*;
@@ -89,6 +91,17 @@ public class Post {
     @Builder.Default @Column(name = "share_count")    private Long shareCount    = 0L;
     @Builder.Default @Column(name = "view_count")     private Long viewCount     = 0L;
     @Builder.Default @Column(name = "save_count")     private Long saveCount     = 0L;
+
+    // ── sound library ─────────────────────────────────────────
+    @OneToOne(mappedBy = "post", cascade = CascadeType.ALL,
+              orphanRemoval = true, fetch = FetchType.LAZY)
+    private PostSound sound;
+
+    // ── moderation ────────────────────────────────────────────
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_state", nullable = false, length = 25)
+    @Builder.Default
+    private ModerationState moderationState = ModerationState.VISIBLE;
 
     // ── relations ─────────────────────────────────────────────
     // NOTE: reactions and comments are intentionally NOT mapped as collections here.

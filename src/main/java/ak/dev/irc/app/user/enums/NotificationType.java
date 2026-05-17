@@ -34,6 +34,11 @@ public enum NotificationType {
     ANSWER_ACCEPTED,
     ANSWER_FEEDBACK_RECEIVED,
 
+    // ── Story ────────────────────────────────────────────────
+    STORY_REACTED,        // someone reacted to your story
+    STORY_REPLIED,        // someone replied to your story
+    SOUND_APPROVED,       // your uploaded sound was approved
+
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,
     ACCOUNT_WARNING

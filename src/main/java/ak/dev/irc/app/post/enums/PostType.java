@@ -6,5 +6,6 @@ public enum PostType {
     EMBEDDED,       // text + media
     VOICE_POST,     // primary content is voice/audio
     REEL,           // short-form video
-    REPOST          // shared/reposted content from another user
+    REPOST,         // shared/reposted content from another user
+    STORY           // ephemeral 24h content
 }

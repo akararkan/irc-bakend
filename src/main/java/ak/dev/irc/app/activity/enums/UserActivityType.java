@@ -20,5 +20,14 @@ public enum UserActivityType {
     // ── Research social actions (parity with POST_*) ─────────────────────
     RESEARCH_REACTION,
     RESEARCH_COMMENT,
-    RESEARCH_COMMENT_REACTION
+    RESEARCH_COMMENT_REACTION,
+
+    // ── Story interactions ────────────────────────────────────────────────
+    STORY_VIEWED,
+    STORY_REACTED,
+    STORY_REPLIED,
+    STORY_POLL_VOTED,
+
+    // ── Sound library ─────────────────────────────────────────────────────
+    SOUND_USED
 }
