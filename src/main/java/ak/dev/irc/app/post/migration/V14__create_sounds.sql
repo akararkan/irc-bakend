@@ -57,9 +57,5 @@ CREATE INDEX IF NOT EXISTS idx_psound_post  ON post_sounds(post_id);
 CREATE INDEX IF NOT EXISTS idx_psound_story ON post_sounds(story_id);
 CREATE INDEX IF NOT EXISTS idx_psound_sound ON post_sounds(sound_id);
 
--- Add moderation_state to posts
-ALTER TABLE posts
-    ADD COLUMN IF NOT EXISTS moderation_state VARCHAR(25) NOT NULL DEFAULT 'VISIBLE';
-
 -- Add STORY to post_type enum if using PostgreSQL enum type
 -- (Hibernate STRING strategy means this is already a varchar — no action needed)

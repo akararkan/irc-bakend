@@ -1,7 +1,6 @@
 package ak.dev.irc.app.post.entity;
 
 
-import ak.dev.irc.app.post.enums.ModerationState;
 import ak.dev.irc.app.post.enums.PostStatus;
 import ak.dev.irc.app.post.enums.PostType;
 import ak.dev.irc.app.post.enums.PostVisibility;
@@ -55,8 +54,6 @@ public class Post {
     @Builder.Default
     private PostVisibility visibility = PostVisibility.PUBLIC;
 
-    // (voice/audio posts removed — voice fields intentionally omitted)
-
     // ── reel / embedded audio ─────────────────────────────────
     @Column(name = "audio_track_url")
     private String audioTrackUrl;
@@ -97,17 +94,7 @@ public class Post {
               orphanRemoval = true, fetch = FetchType.LAZY)
     private PostSound sound;
 
-    // ── moderation ────────────────────────────────────────────
-    @Enumerated(EnumType.STRING)
-    @Column(name = "moderation_state", nullable = false, length = 25)
-    @Builder.Default
-    private ModerationState moderationState = ModerationState.VISIBLE;
-
     // ── relations ─────────────────────────────────────────────
-    // NOTE: reactions and comments are intentionally NOT mapped as collections here.
-    // A viral post can have millions of rows; loading them via post.getReactions()
-    // would OOM the JVM. Always query PostReactionRepository / PostCommentRepository
-    // with explicit pagination instead.
     @OneToMany(mappedBy = "post", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<PostMedia> mediaList = new ArrayList<>();

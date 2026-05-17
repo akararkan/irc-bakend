@@ -398,4 +398,5 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     List<Object[]> searchPrefix(@Param("q") String q,
                                  @Param("blockedIds") java.util.UUID[] blockedIds,
                                  @Param("limit") int limit);
+
 }
