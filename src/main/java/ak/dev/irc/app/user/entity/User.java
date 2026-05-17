@@ -1,7 +1,10 @@
 package ak.dev.irc.app.user.entity;
 
 import ak.dev.irc.app.common.BaseAuditEntity;
+import ak.dev.irc.app.common.enums.Language;
+import ak.dev.irc.app.user.enums.AccountType;
 import ak.dev.irc.app.user.enums.Role;
+import ak.dev.irc.app.user.enums.VerificationTier;
 import jakarta.persistence.*;
 import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
@@ -13,12 +16,13 @@ import java.util.*;
 
 @Entity
 @Table(
-        name = "users",
-        indexes = {
-                @Index(name = "idx_user_email",    columnList = "email"),
-                @Index(name = "idx_user_username", columnList = "username"),
-                @Index(name = "idx_user_deleted",  columnList = "deleted_at")
-        }
+    name = "users",
+    indexes = {
+        @Index(name = "idx_user_email",        columnList = "email"),
+        @Index(name = "idx_user_username",     columnList = "username"),
+        @Index(name = "idx_user_deleted",      columnList = "deleted_at"),
+        @Index(name = "idx_user_account_type", columnList = "account_type")
+    }
 )
 @Getter
 @Setter
@@ -32,6 +36,8 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(updatable = false, nullable = false)
     private UUID id;
 
+    // ── Identity ──────────────────────────────────────────────────────────────
+
     @Column(name = "fname", nullable = false, length = 80)
     private String fname;
 
@@ -44,33 +50,50 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "email", nullable = false, unique = true, length = 255)
     private String email;
 
-    @Column(name = "location", length = 200)
-    private String location;
-
     @Column(name = "password", length = 255)
     private String password;
 
-    @Column(name = "profile_image", columnDefinition = "TEXT")
-    private String profileImage;
-
-    /** S3/R2 object key for the profile image */
-    @Column(name = "profile_image_s3_key", columnDefinition = "TEXT")
-    private String profileImageS3Key;
-
-    @Column(name = "profile_bio", columnDefinition = "TEXT")
-    private String profileBio;
-
-    @Column(name = "self_describer", columnDefinition = "TEXT")
-    private String selfDescriber;
+    // ── Authorization ─────────────────────────────────────────────────────────
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
     @Builder.Default
-        private Role role = Role.SCHOLAR;
+    private Role role = Role.USER;
 
-    @Column(name = "is_profile_locked", nullable = false)
+    // ── Account classification ────────────────────────────────────────────────
+
+    /** What kind of account — drives badge rendering and UI behaviour. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "account_type", nullable = false, length = 30)
     @Builder.Default
-    private boolean isProfileLocked = false;
+    private AccountType accountType = AccountType.REGULAR;
+
+    /**
+     * Scholar sub-level — gates fatwa issuing and research review.
+     * Set only by admin on approval of a ScholarVerification application.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "verification_tier", nullable = false, length = 30)
+    @Builder.Default
+    private VerificationTier verificationTier = VerificationTier.NONE;
+
+    /**
+     * True ONLY for the IRC platform account (accountType = PLATFORM_OFFICIAL).
+     * Blocks normal login — this account acts only through the system.
+     */
+    @Column(name = "is_system_account", nullable = false)
+    @Builder.Default
+    private boolean isSystemAccount = false;
+
+    /** ORCID researcher identifier, e.g. 0000-0002-1825-0097. */
+    @Column(name = "orcid_id", length = 20)
+    private String orcidId;
+
+    /** User's preferred UI and email language. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "preferred_language", nullable = false, length = 5)
+    @Builder.Default
+    private Language preferredLanguage = Language.EN;
 
     // ── Spring Security flags ─────────────────────────────────────────────────
 
@@ -102,17 +125,12 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "two_factor_secret", length = 255)
     private String twoFactorSecret;
 
-    // ── Email notification preferences ──────────────────────────────────
-    /** Master toggle — when false, no activity emails are ever sent. */
+    // ── Email notification preferences ────────────────────────────────────────
+
     @Column(name = "email_notifications_enabled", nullable = false)
     @Builder.Default
     private boolean emailNotificationsEnabled = true;
 
-    /**
-     * Per-category opt-out bitmask is overkill at this stage — three coarse
-     * toggles cover the common UX needs (mute social spam, mute marketing,
-     * always keep security emails on).
-     */
     @Column(name = "email_social_enabled", nullable = false)
     @Builder.Default
     private boolean emailSocialEnabled = true;
@@ -135,55 +153,37 @@ public class User extends BaseAuditEntity implements UserDetails {
 
     // ── Relationships ─────────────────────────────────────────────────────────
 
+    /** 1-to-1 public profile — created together with the user on registration. */
+    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL,
+              orphanRemoval = true, fetch = FetchType.LAZY)
+    private UserProfile profile;
+
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
+               orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private List<UserAuthority> authorities = new ArrayList<>();
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
-    @OrderBy("displayOrder ASC")
-    @Builder.Default
-    private List<UserLink> links = new ArrayList<>();
-
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
-    @Builder.Default
-    private List<UserAttachment> attachments = new ArrayList<>();
-
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
-    @Builder.Default
-    private List<UserContact> contacts = new ArrayList<>();
-
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
+               orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private List<RefreshToken> refreshTokens = new ArrayList<>();
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL,
-            orphanRemoval = true, fetch = FetchType.LAZY)
+               orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private List<Notification> notifications = new ArrayList<>();
 
-    // ── UserDetails implementation ────────────────────────────────────────────
+    // ── UserDetails ───────────────────────────────────────────────────────────
 
-    /**
-     * Derives authorities solely from the {@code role} column which is
-     * always loaded with the entity — never touches the lazy {@code authorities}
-     * collection, so this is safe to call outside a Hibernate session (e.g. in
-     * the JWT filter).
-     */
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-                if (role == Role.SCHOLAR) {
-                        return List.of(
-                                        new SimpleGrantedAuthority("ROLE_SCHOLAR"),
-                                        new SimpleGrantedAuthority("ROLE_RESEARCHER")
-                        );
-                }
-
-                return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
+        if (role == Role.SCHOLAR) {
+            return List.of(
+                new SimpleGrantedAuthority("ROLE_SCHOLAR"),
+                new SimpleGrantedAuthority("ROLE_RESEARCHER")
+            );
+        }
+        return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
     }
 
     @Override public String getPassword()              { return password; }
@@ -191,11 +191,29 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Override public boolean isAccountNonExpired()     { return isAccountNonExpired; }
     @Override public boolean isAccountNonLocked()      { return isAccountNonLocked; }
     @Override public boolean isCredentialsNonExpired() { return isCredentialsNonExpired; }
-    @Override public boolean isEnabled()               { return isEnabled && deletedAt == null; }
+
+    /** System accounts cannot log in — blocked at the security layer. */
+    @Override public boolean isEnabled()               { return isEnabled && deletedAt == null && !isSystemAccount; }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    public String getFullName()      { return fname + " " + lname; }
-    public boolean isDeleted()       { return deletedAt != null; }
-    public boolean isEmailVerified() { return emailVerifiedAt != null; }
+    public String  getFullName()       { return fname + " " + lname; }
+    public boolean isDeleted()         { return deletedAt != null; }
+    public boolean isEmailVerified()   { return emailVerifiedAt != null; }
+    public boolean isPlatformAccount() { return isSystemAccount; }
+
+    public boolean isVerifiedScholar() {
+        return verificationTier == VerificationTier.SCHOLAR
+            || verificationTier == VerificationTier.SENIOR_SCHOLAR;
+    }
+
+    // ── Profile convenience accessors (delegate to UserProfile) ──────────────
+    // Used widely across post/qna/research/search modules without touching
+    // each call site individually.
+
+    public String  getProfileImage()  { return profile != null ? profile.getAvatarUrl()       : null; }
+    public String  getLocation()      { return profile != null ? profile.getLocation()          : null; }
+    public String  getProfileBio()    { return profile != null ? profile.getProfileBio()        : null; }
+    public String  getSelfDescriber() { return profile != null ? profile.getSelfDescriber()     : null; }
+    public boolean isProfileLocked()  { return profile != null && profile.isProfileLocked(); }
 }

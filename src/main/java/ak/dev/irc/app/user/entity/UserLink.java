@@ -10,7 +10,7 @@ import java.util.UUID;
 @Entity
 @Table(
     name = "user_links",
-    indexes = @Index(name = "idx_link_user", columnList = "user_id")
+    indexes = @Index(name = "idx_link_profile", columnList = "profile_id")
 )
 @Getter
 @Setter
@@ -25,28 +25,17 @@ public class UserLink extends BaseAuditEntity {
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "user_id", nullable = false,
-                foreignKey = @ForeignKey(name = "fk_link_user"))
-    private User user;
+    @JoinColumn(name = "profile_id", nullable = false,
+                foreignKey = @ForeignKey(name = "fk_link_profile"))
+    private UserProfile profile;
 
-    /**
-     * Platform type: FACEBOOK, TWITTER, ORCID, etc.
-     */
     @Enumerated(EnumType.STRING)
     @Column(name = "platform", nullable = false, length = 30)
     private LinkPlatform platform;
 
-    /**
-     * User-written label/description.
-     * Example: "My Facebook Page" or "ORCID Research Profile"
-     */
     @Column(name = "description", nullable = false, length = 200)
     private String description;
 
-    /**
-     * The actual URL.
-     * Example: https://www.facebook.com/myprofile
-     */
     @Column(name = "url", nullable = false, columnDefinition = "TEXT")
     private String url;
 

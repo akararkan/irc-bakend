@@ -90,7 +90,7 @@ public class UserSocialServiceImpl implements UserSocialService {
                 me, meUser.getUsername(), targetId, target.getUsername());
 
         return SocialActionResponse.of("FOLLOWED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+                avatarOf(target), buildStatus(me, targetId));
     }
 
     @Override
@@ -117,7 +117,7 @@ public class UserSocialServiceImpl implements UserSocialService {
 
         return SocialActionResponse.of("UNFOLLOWED", targetId,
             target != null ? target.getUsername() : null,
-            target != null ? target.getProfileImage() : null,
+            target != null ? avatarOf(target) : null,
             buildStatus(me, targetId));
     }
 
@@ -171,7 +171,7 @@ public class UserSocialServiceImpl implements UserSocialService {
                 me, meUser.getUsername(), targetId, target.getUsername());
 
         return SocialActionResponse.of("BLOCKED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+                avatarOf(target), buildStatus(me, targetId));
     }
 
     @Override
@@ -198,7 +198,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         log.info("User [{}] unblocked user [{}]", me, targetId);
 
         return SocialActionResponse.of("UNBLOCKED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+                avatarOf(target), buildStatus(me, targetId));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -240,7 +240,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         log.info("User [{}] restricted user [{}] (silent)", me, targetId);
 
         return SocialActionResponse.of("RESTRICTED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+                avatarOf(target), buildStatus(me, targetId));
     }
 
     @Override
@@ -259,7 +259,7 @@ public class UserSocialServiceImpl implements UserSocialService {
 
         User target = findActiveOrThrow(targetId);
         return SocialActionResponse.of("UNRESTRICTED", target.getId(), target.getUsername(),
-                target.getProfileImage(), buildStatus(me, targetId));
+                avatarOf(target), buildStatus(me, targetId));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -275,11 +275,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         findActiveOrThrow(userId);
 
         Page<UserResponse> result = followRepository.findFollowers(userId, pageable)
-                .map(uf -> userMapper.toResponse(
-                        uf.getFollower(),
-                        followRepository.countByFollowingId(uf.getFollower().getId()),
-                        followRepository.countByFollowerId(uf.getFollower().getId())
-                ));
+                .map(uf -> userMapper.toResponse(uf.getFollower()));
 
         log.debug("User [{}] has {} total follower(s)", userId, result.getTotalElements());
         return result;
@@ -293,11 +289,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         findActiveOrThrow(userId);
 
         return followRepository.findFollowing(userId, pageable)
-                .map(uf -> userMapper.toResponse(
-                        uf.getFollowing(),
-                        followRepository.countByFollowingId(uf.getFollowing().getId()),
-                        followRepository.countByFollowerId(uf.getFollowing().getId())
-                ));
+                .map(uf -> userMapper.toResponse(uf.getFollowing()));
     }
 
     @Override
@@ -305,7 +297,7 @@ public class UserSocialServiceImpl implements UserSocialService {
     public Page<UserResponse> getBlockedUsers(Pageable pageable) {
         UUID me = authenticatedUserId();
         return blockRepository.findBlockedUsers(me, pageable)
-                .map(ub -> userMapper.toResponse(ub.getBlocked(), 0L, 0L));
+                .map(ub -> userMapper.toResponse(ub.getBlocked()));
     }
 
     @Override
@@ -313,7 +305,7 @@ public class UserSocialServiceImpl implements UserSocialService {
     public Page<UserResponse> getRestrictedUsers(Pageable pageable) {
         UUID me = authenticatedUserId();
         return restrictionRepository.findRestrictedUsers(me, pageable)
-                .map(ur -> userMapper.toResponse(ur.getRestricted(), 0L, 0L));
+                .map(ur -> userMapper.toResponse(ur.getRestricted()));
     }
 
     @Override
@@ -357,6 +349,10 @@ public class UserSocialServiceImpl implements UserSocialService {
             throw new BadRequestException(
                     "You cannot " + action + " yourself.", "SELF_ACTION_NOT_ALLOWED");
         }
+    }
+
+    private String avatarOf(User user) {
+        return user.getProfile() != null ? user.getProfile().getAvatarUrl() : null;
     }
 
     /** Builds the current SocialStatusResponse for (me → targetId) snapshot. */

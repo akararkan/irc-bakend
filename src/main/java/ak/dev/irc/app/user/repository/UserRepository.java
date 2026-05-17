@@ -48,13 +48,14 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     @Query(value = """
         SELECT u.id, ts_rank_cd(to_tsvector('simple',
                   coalesce(u.username,'') || ' ' || coalesce(u.fname,'') || ' ' ||
-                  coalesce(u.lname,'')    || ' ' || coalesce(u.profile_bio,'')),
+                  coalesce(u.lname,'')    || ' ' || coalesce(p.profile_bio,'')),
                 websearch_to_tsquery('simple', :q)) AS score
         FROM users u
+        LEFT JOIN user_profiles p ON p.user_id = u.id
         WHERE u.deleted_at IS NULL
           AND to_tsvector('simple',
                   coalesce(u.username,'') || ' ' || coalesce(u.fname,'') || ' ' ||
-                  coalesce(u.lname,'')    || ' ' || coalesce(u.profile_bio,''))
+                  coalesce(u.lname,'')    || ' ' || coalesce(p.profile_bio,''))
               @@ websearch_to_tsquery('simple', :q)
         ORDER BY score DESC, u.created_at DESC
         LIMIT :limit

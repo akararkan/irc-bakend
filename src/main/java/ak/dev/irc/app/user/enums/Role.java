@@ -4,6 +4,8 @@ public enum Role {
     USER,
     SCHOLAR,
     RESEARCHER,
+    MODERATOR,
+    EDITOR,
     ADMIN,
     SUPER_ADMIN
 }

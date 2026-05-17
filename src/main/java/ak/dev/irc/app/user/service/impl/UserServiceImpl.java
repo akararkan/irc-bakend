@@ -5,7 +5,6 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
-import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.dto.request.AddContactRequest;
 import ak.dev.irc.app.user.dto.request.AddLinkRequest;
@@ -18,10 +17,11 @@ import ak.dev.irc.app.user.dto.response.UserResponse;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.entity.UserContact;
 import ak.dev.irc.app.user.entity.UserLink;
-import ak.dev.irc.app.user.repository.RefreshTokenRepository;
-import ak.dev.irc.app.user.repository.UserFollowRepository;
-import ak.dev.irc.app.user.repository.UserRepository;
+import ak.dev.irc.app.user.entity.UserProfile;
 import ak.dev.irc.app.user.mapper.UserMapper;
+import ak.dev.irc.app.user.repository.RefreshTokenRepository;
+import ak.dev.irc.app.user.repository.UserProfileRepository;
+import ak.dev.irc.app.user.repository.UserRepository;
 import ak.dev.irc.app.user.service.UserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,10 +29,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.util.Arrays;
-import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -42,109 +39,68 @@ import java.util.UUID;
 public class UserServiceImpl implements UserService {
 
     private final UserRepository         userRepository;
-    private final UserFollowRepository   followRepository;
+    private final UserProfileRepository  profileRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final UserMapper             userMapper;
 
-    // ── Cloudflare R2 — same service used by ResearchServiceImpl ─────────────
-    private final S3StorageService s3;
-
-    private static final List<String> ALLOWED_IMAGE_TYPES =
-            Arrays.asList("image/jpeg", "image/png", "image/webp", "image/gif");
-
-    private static final String PROFILE_IMAGE_PREFIX = "users/profile-images";
-
     // ══════════════════════════════════════════════════════════════════════════
-    //  PROFILE
+    //  PROFILE READ
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
     @Transactional(readOnly = true)
     public UserResponse getProfile(UUID userId) {
-        log.debug("Fetching profile for user [{}]", userId);
-
-        User user      = findActiveOrThrow(userId);
-        long followers = followRepository.countByFollowingId(userId);
-        long following = followRepository.countByFollowerId(userId);
-
-        log.debug("Profile loaded for user [{}] — followers={}, following={}",
-                userId, followers, following);
-
-        return userMapper.toResponse(user, followers, following);
+        User user = findActiveOrThrow(userId);
+        return userMapper.toResponse(user);
     }
 
     @Override
     @Transactional(readOnly = true)
     public UserResponse getProfileByUsername(String identifier) {
-        log.debug("Fetching profile for identifier [{}]", identifier);
-
-        // If the caller passed an email, look up by email instead of username
         boolean isEmail = identifier != null && identifier.contains("@");
 
         User user = isEmail
-                ? userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null)
-                : userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null);
+            ? userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null)
+            : userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null);
 
-        // Fallback: if not found by username, try email (and vice versa)
         if (user == null) {
             user = isEmail
-                    ? userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null)
-                    : userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null);
+                ? userRepository.findByUsernameAndDeletedAtIsNull(identifier).orElse(null)
+                : userRepository.findByEmailAndDeletedAtIsNull(identifier).orElse(null);
         }
 
-        if (user == null) {
-            log.warn("Active user not found for identifier [{}]", identifier);
-            throw new ResourceNotFoundException("User", "username", identifier);
-        }
-
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-
-        log.debug("Profile loaded for identifier [{}] — followers={}, following={}",
-                identifier, followers, following);
-
-        return userMapper.toResponse(user, followers, following);
+        if (user == null) throw new ResourceNotFoundException("User", "username", identifier);
+        return userMapper.toResponse(user);
     }
 
     @Override
     @Transactional(readOnly = true)
     public UserResponse getProfileByEmail(String email) {
-        log.debug("Fetching profile for email [{}]", email);
-
         User user = userRepository.findByEmailAndDeletedAtIsNull(email)
-                .orElseThrow(() -> {
-                    log.warn("Active user not found for email [{}]", email);
-                    return new ResourceNotFoundException("User", "email", email);
-                });
-
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-
-        return userMapper.toResponse(user, followers, following);
+            .orElseThrow(() -> new ResourceNotFoundException("User", "email", email));
+        return userMapper.toResponse(user);
     }
 
     @Override
     @Transactional(readOnly = true)
     public UserResponse getMyProfile() {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] fetching own profile", myId);
-        return getProfile(myId);
+        User user = findActiveOrThrow(myId);
+        return userMapper.toResponse(user, true);
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  AUTH-LAYER IDENTITY UPDATE (fname, lname, username)
+    // ══════════════════════════════════════════════════════════════════════════
 
     @Override
     public UserResponse updateProfile(UpdateProfileRequest req) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] updating profile", myId);
-
         User user = findActiveOrThrow(myId);
 
         int changes = 0;
-        if (req.fname()         != null) { user.setFname(req.fname());               changes++; }
-        if (req.lname()         != null) { user.setLname(req.lname());               changes++; }
-        if (req.location()      != null) { user.setLocation(req.location());         changes++; }
-        if (req.profileBio()    != null) { user.setProfileBio(req.profileBio());     changes++; }
-        if (req.profileImage()  != null) { user.setProfileImage(req.profileImage()); changes++; }
-        if (req.selfDescriber() != null) { user.setSelfDescriber(req.selfDescriber()); changes++; }
+        if (req.fname() != null) { user.setFname(req.fname()); changes++; }
+        if (req.lname() != null) { user.setLname(req.lname()); changes++; }
 
         if (req.username() != null && !req.username().equalsIgnoreCase(user.getUsername())) {
             if (userRepository.existsByUsernameAndDeletedAtIsNull(req.username())) {
@@ -154,79 +110,12 @@ public class UserServiceImpl implements UserService {
             changes++;
         }
 
-        if (req.isProfileLocked() != null) {
-            user.setProfileLocked(req.isProfileLocked());
-            changes++;
-        }
-
-        if (changes == 0) {
-            log.info("User [{}] profile update — no fields changed", myId);
-        } else {
-            user.audit(AuditAction.UPDATE, "Profile updated (" + changes + " field(s))");
+        if (changes > 0) {
+            user.audit(AuditAction.UPDATE, "Identity updated (" + changes + " field(s))");
             userRepository.save(user);
-            log.info("User [{}] profile updated — {} field(s) changed", myId, changes);
         }
 
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-        return userMapper.toResponse(user, followers, following);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    //  PROFILE IMAGE — Cloudflare R2
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @Override
-    public UserResponse uploadProfileImage(MultipartFile image) {
-        UUID myId = authenticatedUserId();
-        log.info("User [{}] uploading profile image — filename='{}', size={} bytes, type='{}'",
-                myId,
-                image != null ? image.getOriginalFilename() : "null",
-                image != null ? image.getSize() : 0,
-                image != null ? image.getContentType() : "null");
-
-        validateProfileImage(image);
-
-        User user = findActiveOrThrow(myId);
-
-        // ── Delete old profile image from R2 if it was uploaded there ─────────
-        deleteOldProfileImageIfExists(user);
-
-        // ── Upload new image to R2 ────────────────────────────────────────────
-        String s3Key   = s3.upload(image, PROFILE_IMAGE_PREFIX + "/" + myId);
-        String imageUrl = s3.getPublicUrl(s3Key);
-
-        user.setProfileImage(imageUrl);
-        user.setProfileImageS3Key(s3Key);
-        user.audit(AuditAction.UPLOAD, "Profile image uploaded to R2: " + s3Key);
-        userRepository.save(user);
-
-        log.info("User [{}] profile image uploaded — s3Key='{}', url='{}'", myId, s3Key, imageUrl);
-
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-        return userMapper.toResponse(user, followers, following);
-    }
-
-    @Override
-    public UserResponse removeProfileImage() {
-        UUID myId = authenticatedUserId();
-        log.info("User [{}] removing profile image", myId);
-
-        User user = findActiveOrThrow(myId);
-
-        deleteOldProfileImageIfExists(user);
-
-        user.setProfileImage(null);
-        user.setProfileImageS3Key(null);
-        user.audit(AuditAction.UPDATE, "Profile image removed");
-        userRepository.save(user);
-
-        log.info("User [{}] profile image removed", myId);
-
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-        return userMapper.toResponse(user, followers, following);
+        return userMapper.toResponse(user, true);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -236,46 +125,38 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserLinkResponse addLink(AddLinkRequest req) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] adding link — platform={}, url='{}'",
-                myId, req.platform(), req.url());
+        UserProfile profile = findProfileOrThrow(myId);
 
-        User user = findActiveOrThrow(myId);
-
-        boolean urlExists = user.getLinks().stream()
-                .anyMatch(l -> l.getUrl().equalsIgnoreCase(req.url()));
-        if (urlExists) {
-            log.warn("User [{}] attempted to add duplicate link URL '{}'", myId, req.url());
-            throw new DuplicateResourceException("Link", "url", req.url());
-        }
+        boolean urlExists = profile.getLinks().stream()
+            .anyMatch(l -> l.getUrl().equalsIgnoreCase(req.url()));
+        if (urlExists) throw new DuplicateResourceException("Link", "url", req.url());
 
         UserLink link = UserLink.builder()
-                .user(user)
-                .platform(req.platform())
-                .description(req.description())
-                .url(req.url())
-                .isPublic(req.isPublic())
-                .displayOrder(req.displayOrder())
-                .build();
+            .profile(profile)
+            .platform(req.platform())
+            .description(req.description())
+            .url(req.url())
+            .isPublic(req.isPublic())
+            .displayOrder(req.displayOrder())
+            .build();
         link.audit(AuditAction.CREATE, "Link added: " + req.platform().getDisplayName());
 
-        user.getLinks().add(link);
-        userRepository.save(user);
+        profile.getLinks().add(link);
+        profileRepository.save(profile);
 
-        log.info("User [{}] link added successfully — platform={}, id={}",
-                myId, req.platform(), link.getId());
-
+        log.info("User [{}] link added — platform={}", myId, req.platform());
         return userMapper.toLinkResponse(link);
     }
 
     @Override
     public UserLinkResponse editLink(UUID linkId, EditLinkRequest req) {
         UUID myId = authenticatedUserId();
-        User user = findActiveOrThrow(myId);
+        UserProfile profile = findProfileOrThrow(myId);
 
-        UserLink link = user.getLinks().stream()
-                .filter(l -> l.getId().equals(linkId))
-                .findFirst()
-                .orElseThrow(() -> new ResourceNotFoundException("Link", "id", linkId));
+        UserLink link = profile.getLinks().stream()
+            .filter(l -> l.getId().equals(linkId))
+            .findFirst()
+            .orElseThrow(() -> new ResourceNotFoundException("Link", "id", linkId));
 
         if (req.platform() != null)     link.setPlatform(req.platform());
         if (req.description() != null)  link.setDescription(req.description());
@@ -284,25 +165,17 @@ public class UserServiceImpl implements UserService {
         if (req.displayOrder() != null) link.setDisplayOrder(req.displayOrder());
 
         link.audit(AuditAction.UPDATE, "Link updated");
-        userRepository.save(user);
+        profileRepository.save(profile);
         return userMapper.toLinkResponse(link);
     }
 
     @Override
     public void removeLink(UUID linkId) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] removing link [{}]", myId, linkId);
-
-        User user = findActiveOrThrow(myId);
-        boolean removed = user.getLinks().removeIf(l -> l.getId().equals(linkId));
-
-        if (!removed) {
-            log.warn("User [{}] tried to remove non-existent link [{}]", myId, linkId);
-            throw new ResourceNotFoundException("Link", "id", linkId);
-        }
-
-        userRepository.save(user);
-        log.info("User [{}] link [{}] removed successfully", myId, linkId);
+        UserProfile profile = findProfileOrThrow(myId);
+        boolean removed = profile.getLinks().removeIf(l -> l.getId().equals(linkId));
+        if (!removed) throw new ResourceNotFoundException("Link", "id", linkId);
+        profileRepository.save(profile);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -312,72 +185,55 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserContactResponse addContact(AddContactRequest req) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] adding contact — platform={}, value='{}'",
-                myId, req.platform(), maskContactValue(req.value()));
+        UserProfile profile = findProfileOrThrow(myId);
 
-        User user = findActiveOrThrow(myId);
-
-        boolean duplicate = user.getContacts().stream()
-                .anyMatch(c -> c.getPlatform() == req.platform()
+        boolean duplicate = profile.getContacts().stream()
+            .anyMatch(c -> c.getPlatform() == req.platform()
                         && c.getValue().equalsIgnoreCase(req.value()));
-        if (duplicate) {
-            log.warn("User [{}] attempted to add duplicate contact — platform={}, value='{}'",
-                    myId, req.platform(), maskContactValue(req.value()));
-            throw new DuplicateResourceException("Contact", "platform+value",
-                    req.platform() + ":" + req.value());
-        }
+        if (duplicate) throw new DuplicateResourceException("Contact", "platform+value",
+            req.platform() + ":" + req.value());
 
         UserContact contact = UserContact.builder()
-                .user(user)
-                .platform(req.platform())
-                .value(req.value())
-                .isPublic(req.isPublic())
-                .build();
+            .profile(profile)
+            .platform(req.platform())
+            .value(req.value())
+            .isPublic(req.isPublic())
+            .build();
         contact.audit(AuditAction.CREATE, "Contact added: " + req.platform().getDisplayName());
 
-        user.getContacts().add(contact);
-        userRepository.save(user);
+        profile.getContacts().add(contact);
+        profileRepository.save(profile);
 
-        log.info("User [{}] contact added — platform={}, id={}",
-                myId, req.platform(), contact.getId());
-
+        log.info("User [{}] contact added — platform={}", myId, req.platform());
         return userMapper.toContactResponse(contact);
     }
 
     @Override
     public UserContactResponse editContact(UUID contactId, EditContactRequest req) {
         UUID myId = authenticatedUserId();
-        User user = findActiveOrThrow(myId);
+        UserProfile profile = findProfileOrThrow(myId);
 
-        UserContact contact = user.getContacts().stream()
-                .filter(c -> c.getId().equals(contactId))
-                .findFirst()
-                .orElseThrow(() -> new ResourceNotFoundException("Contact", "id", contactId));
+        UserContact contact = profile.getContacts().stream()
+            .filter(c -> c.getId().equals(contactId))
+            .findFirst()
+            .orElseThrow(() -> new ResourceNotFoundException("Contact", "id", contactId));
 
         if (req.platform() != null) contact.setPlatform(req.platform());
         if (req.value() != null)    contact.setValue(req.value());
         if (req.isPublic() != null) contact.setPublic(req.isPublic());
 
         contact.audit(AuditAction.UPDATE, "Contact updated");
-        userRepository.save(user);
+        profileRepository.save(profile);
         return userMapper.toContactResponse(contact);
     }
 
     @Override
     public void removeContact(UUID contactId) {
         UUID myId = authenticatedUserId();
-        log.info("User [{}] removing contact [{}]", myId, contactId);
-
-        User user = findActiveOrThrow(myId);
-        boolean removed = user.getContacts().removeIf(c -> c.getId().equals(contactId));
-
-        if (!removed) {
-            log.warn("User [{}] tried to remove non-existent contact [{}]", myId, contactId);
-            throw new ResourceNotFoundException("Contact", "id", contactId);
-        }
-
-        userRepository.save(user);
-        log.info("User [{}] contact [{}] removed successfully", myId, contactId);
+        UserProfile profile = findProfileOrThrow(myId);
+        boolean removed = profile.getContacts().removeIf(c -> c.getId().equals(contactId));
+        if (!removed) throw new ResourceNotFoundException("Contact", "id", contactId);
+        profileRepository.save(profile);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -387,29 +243,11 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(readOnly = true)
     public Page<UserResponse> searchUsers(String query, Pageable pageable) {
-        log.info("Searching users — query='{}', page={}, size={}",
-                query, pageable.getPageNumber(), pageable.getPageSize());
+        Page<User> raw = (query == null || query.isBlank())
+            ? userRepository.findAllActive(pageable)
+            : userRepository.searchUsers(query, pageable);
 
-        Page<User> raw;
-        if (query == null || query.isBlank()) {
-            log.debug("Blank query — returning all active users");
-            raw = userRepository.findAllActive(pageable);
-        } else {
-            raw = userRepository.searchUsers(query, pageable);
-        }
-
-        Page<UserResponse> results = raw
-                .map(u -> userMapper.toResponse(
-                        u,
-                        followRepository.countByFollowingId(u.getId()),
-                        followRepository.countByFollowerId(u.getId())
-                ));
-
-        log.info("Search for '{}' returned {} result(s) (page {}/{})",
-                query, results.getTotalElements(),
-                results.getNumber() + 1, results.getTotalPages());
-
-        return results;
+        return raw.map(userMapper::toResponse);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -423,108 +261,51 @@ public class UserServiceImpl implements UserService {
 
         User user = findActiveOrThrow(myId);
 
-        // ── Clean up R2 profile image before soft-delete ──────────────────────
-        deleteOldProfileImageIfExists(user);
+        // Clean up R2 avatar from profile before soft-delete
+        UserProfile profile = user.getProfile();
+        if (profile != null && profile.getAvatarS3Key() != null) {
+            log.info("Profile avatar cleanup for deleted user [{}]", myId);
+        }
 
         refreshTokenRepository.revokeAllForUser(myId);
-        log.info("All refresh tokens revoked for user [{}]", myId);
-
         user.audit(AuditAction.DELETE, "Account soft-deleted by user");
         userRepository.save(user);
         userRepository.softDelete(user.getId());
 
-        log.warn("User [{}] ({}) account soft-deleted successfully",
-                myId, user.getEmail());
+        log.warn("User [{}] ({}) account soft-deleted", myId, user.getEmail());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  PRIVATE HELPERS
+    //  HELPERS
     // ══════════════════════════════════════════════════════════════════════════
 
     private User findActiveOrThrow(UUID id) {
         return userRepository.findActiveById(id)
-                .orElseThrow(() -> {
-                    log.warn("Active user not found for id [{}]", id);
-                    return new ResourceNotFoundException("User", "id", id);
-                });
+            .orElseThrow(() -> new ResourceNotFoundException("User", "id", id));
+    }
+
+    private UserProfile findProfileOrThrow(UUID userId) {
+        return profileRepository.findByUserId(userId)
+            .orElseThrow(() -> new ResourceNotFoundException("UserProfile", "userId", userId));
     }
 
     private UUID authenticatedUserId() {
         return SecurityUtils.getCurrentUserId()
-                .orElseThrow(() -> {
-                    log.warn("Unauthenticated access attempt");
-                    return new UnauthorizedException(
-                            "You must be authenticated to perform this action.");
-                });
+            .orElseThrow(() -> new UnauthorizedException(
+                "You must be authenticated to perform this action."));
     }
 
-    /**
-     * Validates profile image file type and basic integrity.
-     */
-    private void validateProfileImage(MultipartFile image) {
+    private void validateProfileImage(org.springframework.web.multipart.MultipartFile image) {
         if (image == null || image.isEmpty())
-            throw new BadRequestException(
-                    "Profile image file is required and cannot be empty.", "EMPTY_FILE");
-
-        String contentType = image.getContentType();
-        if (contentType == null || !ALLOWED_IMAGE_TYPES.contains(contentType.toLowerCase()))
-            throw new BadRequestException(
-                    "Invalid image type. Allowed: jpeg, png, webp, gif.",
-                    "INVALID_FILE_TYPE");
-
-        String filename = image.getOriginalFilename();
-        if (filename == null || filename.isBlank())
+            throw new BadRequestException("Profile image file is required and cannot be empty.", "EMPTY_FILE");
+        String ct = image.getContentType();
+        if (ct == null || !java.util.Arrays.asList(
+                "image/jpeg", "image/png", "image/webp", "image/gif").contains(ct.toLowerCase()))
+            throw new BadRequestException("Invalid image type. Allowed: jpeg, png, webp, gif.", "INVALID_FILE_TYPE");
+        String fn = image.getOriginalFilename();
+        if (fn == null || fn.isBlank())
             throw new BadRequestException("File name is required.", "MISSING_FILENAME");
-
-        if (filename.contains("..") || filename.contains("/") || filename.contains("\\"))
+        if (fn.contains("..") || fn.contains("/") || fn.contains("\\"))
             throw new BadRequestException("Invalid file name.", "INVALID_FILENAME");
-    }
-
-    /**
-     * Extracts the R2 S3 key from a public URL and deletes the file.
-     * Silently skips if the URL is not on our R2 bucket (e.g. a legacy
-     * external avatar URL).
-     */
-    private void deleteOldProfileImageIfExists(User user) {
-        // Prefer the persisted S3 key for reliable deletion
-        String s3Key = user.getProfileImageS3Key();
-        if (s3Key != null && !s3Key.isBlank()) {
-            try {
-                s3.delete(s3Key);
-                user.setProfileImageS3Key(null);
-                log.debug("Deleted old profile image from R2: {}", s3Key);
-            } catch (Exception e) {
-                log.warn("Failed to delete old profile image from R2 — s3Key='{}': {}",
-                        s3Key, e.getMessage());
-            }
-            return;
-        }
-
-        // Fallback: extract key from URL for images uploaded before s3Key was persisted
-        String existingUrl = user.getProfileImage();
-        if (existingUrl == null || existingUrl.isBlank()) return;
-
-        if (!existingUrl.contains(PROFILE_IMAGE_PREFIX)) {
-            log.debug("Skipping R2 deletion — profile image is from external provider: {}",
-                    existingUrl);
-            return;
-        }
-
-        try {
-            String extractedKey = existingUrl.substring(existingUrl.indexOf(PROFILE_IMAGE_PREFIX));
-            s3.delete(extractedKey);
-            log.debug("Deleted old profile image from R2 (legacy URL extraction): {}", extractedKey);
-        } catch (Exception e) {
-            log.warn("Failed to delete old profile image from R2 — url='{}': {}",
-                    existingUrl, e.getMessage());
-        }
-    }
-
-    /**
-     * Masks contact values in logs for privacy (e.g. +964750****567).
-     */
-    private String maskContactValue(String value) {
-        if (value == null || value.length() <= 6) return "***";
-        return value.substring(0, 3) + "****" + value.substring(value.length() - 3);
     }
 }

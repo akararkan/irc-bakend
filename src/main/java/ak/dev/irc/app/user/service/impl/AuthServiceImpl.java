@@ -12,8 +12,9 @@ import ak.dev.irc.app.user.dto.response.UserResponse;
 import ak.dev.irc.app.user.entity.RefreshToken;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.mapper.UserMapper;
+import ak.dev.irc.app.user.entity.UserProfile;
 import ak.dev.irc.app.user.repository.RefreshTokenRepository;
-import ak.dev.irc.app.user.repository.UserFollowRepository;
+import ak.dev.irc.app.user.repository.UserProfileRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
 import ak.dev.irc.app.user.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -55,7 +56,7 @@ public class AuthServiceImpl implements AuthService {
     private final JwtTokenProvider        jwtTokenProvider;
     private final JwtCookieUtil           jwtCookieUtil;
     private final UserRepository          userRepository;
-    private final UserFollowRepository    followRepository;
+    private final UserProfileRepository   profileRepository;
     private final RefreshTokenRepository  refreshTokenRepository;
     private final PasswordEncoder         passwordEncoder;
     private final UserMapper              userMapper;
@@ -85,11 +86,19 @@ public class AuthServiceImpl implements AuthService {
                 .username(request.username())
                 .email(request.email())
                 .password(passwordEncoder.encode(request.password()))
-                .role(ak.dev.irc.app.user.enums.Role.SCHOLAR)
+                .role(ak.dev.irc.app.user.enums.Role.USER)
                 .isEnabled(true)
                 .build();
         user.audit(AuditAction.CREATE, "User registered");
         user = userRepository.save(user);
+
+        // Create the linked public profile immediately after registration
+        UserProfile profile = UserProfile.builder()
+                .user(user)
+                .displayName(user.getFname() + " " + user.getLname())
+                .build();
+        profile.audit(AuditAction.CREATE, "Profile created on registration");
+        profileRepository.save(profile);
 
         log.info("User registered — id={}, email='{}'", user.getId(), user.getEmail());
 
@@ -308,9 +317,7 @@ public class AuthServiceImpl implements AuthService {
         jwtCookieUtil.addAccessTokenCookie(response, accessToken);
         jwtCookieUtil.addRefreshTokenCookie(response, refreshToken);
 
-        long followers = followRepository.countByFollowingId(user.getId());
-        long following = followRepository.countByFollowerId(user.getId());
-        UserResponse userResponse = userMapper.toResponse(user, followers, following);
+        UserResponse userResponse = userMapper.toResponse(user, true);
 
         log.debug("Token pair issued (body + cookies) for user [{}]", user.getId());
 
