@@ -304,6 +304,11 @@ public class EmailTemplate {
 
             case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT -> "sent you a system message";
             case ACCOUNT_WARNING                     -> "issued an account warning";
+
+            case STORY_PUBLISHED  -> "published a new story";
+            case STORY_REACTED    -> "reacted to your story";
+            case STORY_REPLIED    -> "replied to your story";
+            case SOUND_APPROVED   -> "approved your uploaded sound";
         };
     }
 
