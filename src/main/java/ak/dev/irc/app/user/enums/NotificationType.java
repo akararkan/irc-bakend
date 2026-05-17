@@ -35,6 +35,7 @@ public enum NotificationType {
     ANSWER_FEEDBACK_RECEIVED,
 
     // ── Story ────────────────────────────────────────────────
+    STORY_PUBLISHED,      // someone you follow posted a new story
     STORY_REACTED,        // someone reacted to your story
     STORY_REPLIED,        // someone replied to your story
     SOUND_APPROVED,       // your uploaded sound was approved

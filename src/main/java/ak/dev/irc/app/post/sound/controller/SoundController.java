@@ -68,7 +68,7 @@ public class SoundController {
         return ResponseEntity.status(201).body(soundService.uploadSound(req, audio, cover, me));
     }
 
-    // ── Attach to posts ───────────────────────────────────────────────────────
+    // ── Attach to posts / reels ───────────────────────────────────────────────
 
     @PatchMapping("/api/v1/posts/{postId}/sound")
     @PreAuthorize("isAuthenticated()")
@@ -85,6 +85,26 @@ public class SoundController {
     public ResponseEntity<Void> detachFromPost(@PathVariable UUID postId) {
         UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
         soundService.detachFromPost(postId, me);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Attach to stories ─────────────────────────────────────────────────────
+
+    @PatchMapping("/api/v1/stories/{storyId}/sound")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> attachToStory(
+            @PathVariable UUID storyId,
+            @Valid @RequestBody AttachSoundRequest req) {
+        UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
+        soundService.attachToStory(storyId, req, me);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/api/v1/stories/{storyId}/sound")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> detachFromStory(@PathVariable UUID storyId) {
+        UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
+        soundService.detachFromStory(storyId, me);
         return ResponseEntity.noContent().build();
     }
 

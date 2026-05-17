@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.controller;
 
 import ak.dev.irc.app.post.dto.story.*;
 import ak.dev.irc.app.post.realtime.StoryRealtimeService;
+import ak.dev.irc.app.post.realtime.StoryTrayRealtimeService;
 import ak.dev.irc.app.post.service.StoryService;
 import ak.dev.irc.app.security.SecurityUtils;
 import jakarta.validation.Valid;
@@ -24,8 +25,9 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class StoryController {
 
-    private final StoryService         storyService;
-    private final StoryRealtimeService realtimeService;
+    private final StoryService             storyService;
+    private final StoryRealtimeService     realtimeService;
+    private final StoryTrayRealtimeService trayRealtimeService;
 
     // ── Create ────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,21 @@ public class StoryController {
             @Valid @RequestBody ShareToStoryRequest req) {
         UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
         return ResponseEntity.status(201).body(storyService.shareToStory(req, me));
+    }
+
+    // ── Tray real-time stream (per-user) ─────────────────────────────────────
+
+    /**
+     * SSE stream for the authenticated user's story tray.
+     * Fires a {@code new_story} event the moment a followed user posts,
+     * and a {@code story_removed} event when they delete or it expires.
+     * The client uses this to update the tray ring without polling.
+     */
+    @GetMapping(value = "/tray/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public SseEmitter streamTray() {
+        UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
+        return trayRealtimeService.subscribe(me);
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────
@@ -136,5 +153,13 @@ public class StoryController {
             @PageableDefault(size = 20) Pageable pageable) {
         UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
         return ResponseEntity.ok(storyService.getViewers(id, me, pageable));
+    }
+
+    /** View count breakdown by relationship — only for the story author. */
+    @GetMapping("/{id}/views/breakdown")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<StoryResponse.ViewBreakdown> viewBreakdown(@PathVariable UUID id) {
+        UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
+        return ResponseEntity.ok(storyService.getViewBreakdown(id, me));
     }
 }

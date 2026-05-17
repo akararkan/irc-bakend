@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.entity;
 
+import ak.dev.irc.app.post.enums.ViewerRelationship;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -12,8 +13,9 @@ import java.util.UUID;
 @Table(
     name = "story_views",
     indexes = {
-        @Index(name = "idx_sv_story",  columnList = "story_id"),
-        @Index(name = "idx_sv_viewer", columnList = "viewer_id")
+        @Index(name = "idx_sv_story",        columnList = "story_id"),
+        @Index(name = "idx_sv_viewer",       columnList = "viewer_id"),
+        @Index(name = "idx_sv_relationship", columnList = "story_id, viewer_relationship")
     }
 )
 @Getter
@@ -35,6 +37,15 @@ public class StoryView {
     @MapsId("viewerId")
     @JoinColumn(name = "viewer_id")
     private ak.dev.irc.app.user.entity.User viewer;
+
+    /**
+     * Relationship of the viewer to the story author at the time of viewing.
+     * Used to produce a segmented view-count breakdown for the author.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "viewer_relationship", nullable = false, length = 15)
+    @Builder.Default
+    private ViewerRelationship viewerRelationship = ViewerRelationship.PUBLIC;
 
     /** Milliseconds the viewer watched — engagement signal. */
     @Column(name = "watch_duration_ms")

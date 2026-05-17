@@ -6,6 +6,10 @@ import ak.dev.irc.app.audit.realtime.AuditRealtimePublisher;
 import ak.dev.irc.app.audit.realtime.AuditRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import ak.dev.irc.app.post.realtime.PostRealtimeSubscriber;
+import ak.dev.irc.app.post.realtime.StoryRealtimePublisher;
+import ak.dev.irc.app.post.realtime.StoryRealtimeSubscriber;
+import ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher;
+import ak.dev.irc.app.post.realtime.StoryTrayRealtimeSubscriber;
 import ak.dev.irc.app.qna.realtime.QnaRealtimePublisher;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeSubscriber;
 import ak.dev.irc.app.research.realtime.ResearchRealtimePublisher;
@@ -43,13 +47,15 @@ public class RedisMessagingConfig {
 
     @Bean
     public RedisMessageListenerContainer notificationRedisListenerContainer(
-            RedisConnectionFactory connectionFactory,
-            NotificationRedisSubscriber notificationSubscriber,
-            PostRealtimeSubscriber postSubscriber,
-            QnaRealtimeSubscriber qnaSubscriber,
-            ResearchRealtimeSubscriber researchSubscriber,
-            AuditRealtimeSubscriber auditSubscriber,
-            UserActivityRealtimeSubscriber activitySubscriber) {
+            RedisConnectionFactory           connectionFactory,
+            NotificationRedisSubscriber      notificationSubscriber,
+            PostRealtimeSubscriber           postSubscriber,
+            StoryRealtimeSubscriber          storySubscriber,
+            StoryTrayRealtimeSubscriber      storyTraySubscriber,
+            QnaRealtimeSubscriber            qnaSubscriber,
+            ResearchRealtimeSubscriber       researchSubscriber,
+            AuditRealtimeSubscriber          auditSubscriber,
+            UserActivityRealtimeSubscriber   activitySubscriber) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
@@ -61,6 +67,15 @@ public class RedisMessagingConfig {
         // Per-post realtime channels (reactions, comments, replies, view counts).
         container.addMessageListener(postSubscriber,
                 new PatternTopic(PostRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Per-story realtime channels (views, reactions, poll votes, reply count, lifecycle).
+        container.addMessageListener(storySubscriber,
+                new PatternTopic(StoryRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Per-viewer story-tray channels — NEW_STORY fires instantly when a followed
+        // user posts; STORY_REMOVED fires on delete/expiry. Lights up the tray ring.
+        container.addMessageListener(storyTraySubscriber,
+                new PatternTopic(StoryTrayRealtimePublisher.CHANNEL_PREFIX + "*"));
 
         // Per-question realtime channels (answers, reanswers, reactions, accepts).
         container.addMessageListener(qnaSubscriber,

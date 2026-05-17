@@ -23,7 +23,8 @@ public class StoryRealtimeService {
     private static final long HEARTBEAT_DELAY_S = 25L;
 
     private final Map<UUID, CopyOnWriteArrayList<SseEmitter>> topics = new ConcurrentHashMap<>();
-    private final StoryRealtimePublisher publisher;
+    private final StoryRealtimePublisher   publisher;
+    private final StoryRealtimeBroadcaster broadcaster;
 
     public SseEmitter subscribe(UUID storyId, UUID viewerId) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
@@ -62,8 +63,9 @@ public class StoryRealtimeService {
         }
     }
 
+    /** Called by services — defers until afterCommit when inside a transaction. */
     public void broadcastEvent(UUID storyId, StoryRealtimeEvent event) {
-        publisher.publish(storyId, event);
+        broadcaster.broadcast(storyId, event);
     }
 
     private void scheduleHeartbeat(SseEmitter emitter, UUID storyId) {

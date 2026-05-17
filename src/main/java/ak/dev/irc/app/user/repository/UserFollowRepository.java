@@ -70,6 +70,18 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         """)
     List<UUID> findFollowingIds(@Param("userId") UUID userId);
 
+    /**
+     * All follower IDs for story fan-out — capped to avoid OOM on viral accounts.
+     * The SSE fan-out uses this; late followers will see the story on next tray load.
+     */
+    @Query("""
+        SELECT uf.follower.id FROM UserFollow uf
+        WHERE uf.following.id = :userId
+          AND uf.follower.deletedAt IS NULL
+        ORDER BY uf.followedAt DESC
+        """)
+    List<UUID> findAllFollowerIds(@Param("userId") UUID userId, Pageable pageable);
+
     /** Delete all follow rows between two users in both directions */
     @Modifying
     @Query("""

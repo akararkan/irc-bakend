@@ -23,13 +23,48 @@ public record StoryResponse(
     SoundBrief      sound,
     LocalDateTime   expiresAt,
     boolean         isExpired,
+
+    // ── Counts ────────────────────────────────────────────────────────────────
     long            viewCount,
+    ViewBreakdown   viewBreakdown,   // only populated for the story author
     long            reactionCount,
     long            replyCount,
-    String          myReactionEmoji,       // null = not reacted
-    boolean         isSeen,               // true if viewer has already seen this story
+
+    // ── Viewer-specific state ─────────────────────────────────────────────────
+    String          myReactionEmoji, // null = viewer has not reacted
+    boolean         isSeen,          // true if viewer has already seen this story
+
     LocalDateTime   createdAt
 ) {
-    public record StoryAuthor(UUID id, String username, String fullName, String avatarUrl, String role) {}
-    public record SoundBrief(UUID id, String title, String artistName, String audioUrl, String coverArtUrl, int clipStartSeconds, float volume) {}
+    public record StoryAuthor(
+        UUID   id,
+        String username,
+        String fullName,
+        String avatarUrl,
+        String role,
+        String accountType
+    ) {}
+
+    public record SoundBrief(
+        UUID   id,
+        String title,
+        String artistName,
+        String audioUrl,
+        String coverArtUrl,
+        int    clipStartSeconds,
+        float  volume
+    ) {}
+
+    /**
+     * View count segmented by the viewer's relationship to the author.
+     * Only returned when the authenticated user is the story author.
+     * Null for all other viewers.
+     */
+    public record ViewBreakdown(
+        long total,
+        long byCloseFriends,
+        long byFollowers,
+        long byPublic,
+        long byAuthor       // self-views (for completeness, usually 0 or 1)
+    ) {}
 }

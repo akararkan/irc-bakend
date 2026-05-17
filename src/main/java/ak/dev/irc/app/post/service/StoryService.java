@@ -46,4 +46,7 @@ public interface StoryService {
 
     // ── Viewers (owner only) ──────────────────────────────────────────────────
     Page<StoryViewerResponse> getViewers(UUID storyId, UUID requesterId, Pageable pageable);
+
+    /** Segmented view breakdown — only for the story author. */
+    StoryResponse.ViewBreakdown getViewBreakdown(UUID storyId, UUID requesterId);
 }
