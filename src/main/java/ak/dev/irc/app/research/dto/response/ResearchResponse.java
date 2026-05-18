@@ -68,6 +68,7 @@ public record ResearchResponse(
     List<String> tags,
     List<MediaResponse> mediaFiles,
     List<SourceResponse> sources,
+    List<ContributorResponse> contributors,
 
     // ── Current user context (populated per request) ─────────────────────────
     boolean currentUserReacted,

@@ -60,6 +60,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchRepository         researchRepo;
     private final ResearchMediaRepository    mediaRepo;
     private final ResearchSourceRepository   sourceRepo;
+    private final ResearchContributorRepository contributorRepo;
     private final ResearchTagRepository      tagRepo;
     private final ResearchCommentRepository  commentRepo;
     private final ak.dev.irc.app.research.repository.ResearchCommentReactionRepository commentReactionRepo;
@@ -166,6 +167,11 @@ public class ResearchServiceImpl implements ResearchService {
             // ── Sources ────────────────────────────────────────────────────
             if (!CollectionUtils.isEmpty(req.sources())) {
                 saveSources(research, req.sources());
+            }
+
+            // ── Contributors ───────────────────────────────────────────────
+            if (!CollectionUtils.isEmpty(req.contributors())) {
+                saveContributors(research, req.contributors(), researcherId);
             }
 
             // ── Media files (uploaded atomically with the research) ─────────
@@ -291,6 +297,13 @@ public class ResearchServiceImpl implements ResearchService {
                 sourceRepo.deleteAllByResearchId(researchId);
                 research.getSources().clear();
                 if (!req.sources().isEmpty()) saveSources(research, req.sources());
+            }
+
+            if (req.contributors() != null) {
+                contributorRepo.deleteAllByResearchId(researchId);
+                research.getContributors().clear();
+                if (!req.contributors().isEmpty())
+                    saveContributors(research, req.contributors(), researcherId);
             }
 
             research = researchRepo.save(research);
@@ -1841,6 +1854,173 @@ public class ResearchServiceImpl implements ResearchService {
                         log.warn("Duplicate tag '{}' skipped for research {}", name, research.getId());
                     }
                 });
+    }
+
+    /**
+     * Bulk-insert contributors during research create / update-replace.
+     * Skips null entries, deduplicates by user-id, ignores the owner (the
+     * corresponding researcher is implicit and never stored as a contributor).
+     */
+    private void saveContributors(Research research,
+                                  List<ContributorRequest> requests,
+                                  UUID ownerId) {
+        AtomicInteger order = new AtomicInteger(0);
+        Set<UUID> seenUserIds = new HashSet<>();
+        requests.forEach(cr -> {
+            if (cr == null || cr.userId() == null) return;
+            if (cr.userId().equals(ownerId)) {
+                throw new BadRequestException(
+                        "The corresponding researcher cannot also be listed as a contributor",
+                        "CONTRIBUTOR_IS_OWNER");
+            }
+            if (!seenUserIds.add(cr.userId())) {
+                throw new BadRequestException(
+                        "Duplicate contributor in request: " + cr.userId(),
+                        "DUPLICATE_CONTRIBUTOR");
+            }
+            User contributor = findContributorCandidateOrThrow(cr.userId());
+            ResearchContributor row = ResearchContributor.builder()
+                    .research(research)
+                    .user(contributor)
+                    .role(cr.role())
+                    .displayOrder(cr.displayOrder() != null ? cr.displayOrder() : order.getAndIncrement())
+                    .contributionNote(cr.contributionNote())
+                    .build();
+            contributorRepo.save(row);
+            research.getContributors().add(row);
+        });
+    }
+
+    /**
+     * Loads a user and asserts they're eligible to appear as a contributor
+     * (RESEARCHER, SCHOLAR, or higher staff role). Throws otherwise.
+     */
+    private User findContributorCandidateOrThrow(UUID userId) {
+        User u = userRepo.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+        if (u.isDeleted())
+            throw new BadRequestException("Contributor account is deactivated", "CONTRIBUTOR_DELETED");
+        Role r = u.getRole();
+        if (r != Role.RESEARCHER && r != Role.SCHOLAR
+                && r != Role.ADMIN && r != Role.SUPER_ADMIN) {
+            throw new BadRequestException(
+                    "Contributors must be a researcher or scholar (user " + userId + ")",
+                    "CONTRIBUTOR_NOT_ELIGIBLE");
+        }
+        return u;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  CONTRIBUTORS — public API
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @CacheEvict(value = "research-by-id", key = "#researchId")
+    public ContributorResponse addContributor(UUID researchId,
+                                              ContributorRequest request,
+                                              UUID researcherId) {
+        if (request == null || request.userId() == null)
+            throw new BadRequestException("Contributor userId is required", "INVALID_INPUT");
+
+        Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+
+        if (request.userId().equals(researcherId))
+            throw new BadRequestException(
+                    "The corresponding researcher cannot be added as a contributor",
+                    "CONTRIBUTOR_IS_OWNER");
+
+        if (contributorRepo.existsByResearchIdAndUserId(researchId, request.userId()))
+            throw new ConflictException("User is already a contributor on this research");
+
+        User contributor = findContributorCandidateOrThrow(request.userId());
+
+        int displayOrder = request.displayOrder() != null
+                ? request.displayOrder()
+                : (int) contributorRepo.countByResearchId(researchId);
+
+        ResearchContributor row = ResearchContributor.builder()
+                .research(research)
+                .user(contributor)
+                .role(request.role())
+                .displayOrder(displayOrder)
+                .contributionNote(request.contributionNote())
+                .build();
+
+        try {
+            row = contributorRepo.save(row);
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflictException("User is already a contributor on this research");
+        }
+
+        log.info("Contributor added: research={} user={} role={} by={}",
+                researchId, contributor.getId(), row.getRole(), researcherId);
+
+        return mapper.toContributorResponse(row);
+    }
+
+    @Override
+    @CacheEvict(value = "research-by-id", key = "#researchId")
+    public List<ContributorResponse> replaceContributors(UUID researchId,
+                                                          List<ContributorRequest> contributors,
+                                                          UUID researcherId) {
+        Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+        contributorRepo.deleteAllByResearchId(researchId);
+        research.getContributors().clear();
+        if (!CollectionUtils.isEmpty(contributors))
+            saveContributors(research, contributors, researcherId);
+        return research.getContributors().stream()
+                .map(mapper::toContributorResponse)
+                .toList();
+    }
+
+    @Override
+    @CacheEvict(value = "research-by-id", key = "#researchId")
+    public ContributorResponse updateContributor(UUID researchId,
+                                                 UUID contributorId,
+                                                 UpdateContributorRequest request,
+                                                 UUID researcherId) {
+        if (request == null)
+            throw new BadRequestException("Request body is required", "INVALID_INPUT");
+
+        // Ownership check on the parent research
+        findResearchOwnedByOrThrow(researchId, researcherId);
+
+        ResearchContributor row = contributorRepo.findById(contributorId)
+                .orElseThrow(() -> new ResourceNotFoundException("Contributor", "id", contributorId));
+        if (!row.getResearch().getId().equals(researchId))
+            throw new BadRequestException("Contributor does not belong to this research",
+                    "CONTRIBUTOR_RESEARCH_MISMATCH");
+
+        if (request.role() != null)             row.setRole(request.role());
+        if (request.displayOrder() != null)     row.setDisplayOrder(request.displayOrder());
+        if (request.contributionNote() != null) row.setContributionNote(request.contributionNote());
+
+        row = contributorRepo.save(row);
+        return mapper.toContributorResponse(row);
+    }
+
+    @Override
+    @CacheEvict(value = "research-by-id", key = "#researchId")
+    public void removeContributor(UUID researchId, UUID contributorId, UUID researcherId) {
+        findResearchOwnedByOrThrow(researchId, researcherId);
+
+        ResearchContributor row = contributorRepo.findById(contributorId)
+                .orElseThrow(() -> new ResourceNotFoundException("Contributor", "id", contributorId));
+        if (!row.getResearch().getId().equals(researchId))
+            throw new BadRequestException("Contributor does not belong to this research",
+                    "CONTRIBUTOR_RESEARCH_MISMATCH");
+
+        contributorRepo.delete(row);
+        log.info("Contributor removed: research={} contributor={} by={}",
+                researchId, contributorId, researcherId);
+    }
+
+    @Override
+    public List<ContributorResponse> getContributors(UUID researchId) {
+        return contributorRepo.findByResearchIdOrderByDisplayOrderAsc(researchId)
+                .stream()
+                .map(mapper::toContributorResponse)
+                .toList();
     }
 
     private void saveSources(Research research, List<SourceRequest> sourceRequests) {

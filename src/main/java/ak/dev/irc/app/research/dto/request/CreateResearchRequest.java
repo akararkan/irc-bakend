@@ -81,7 +81,17 @@ public record CreateResearchRequest(
          * Matched to files by index — may be null or shorter than the file list.
          */
         @Valid
-        List<MediaUploadMetadata> mediaFiles
+        List<MediaUploadMetadata> mediaFiles,
+
+        // ── Contributors ──────────────────────────────────────────────────────
+
+        /**
+         * Optional named participants other than the corresponding researcher
+         * (co-authors, advisors, translators, etc.). Each referenced user must
+         * already exist and carry role RESEARCHER or SCHOLAR.
+         */
+        @Valid
+        List<ContributorRequest> contributors
 
 ) {
     /** Default visibility to PUBLIC if not explicitly set. */

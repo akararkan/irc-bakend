@@ -23,5 +23,13 @@ public record UpdateResearchRequest(
 
     @Size(max = 30) List<@Size(max = 100) String> tags,
 
-    @Valid List<SourceRequest> sources
+    @Valid List<SourceRequest> sources,
+
+    /**
+     * If non-null, REPLACES the full contributor list for this research
+     * (PATCH semantics — pass the desired list, not a delta). Pass an empty
+     * list to clear all contributors. Leave null to leave contributors
+     * untouched. Each referenced user must be RESEARCHER or SCHOLAR.
+     */
+    @Valid List<ContributorRequest> contributors
 ) {}

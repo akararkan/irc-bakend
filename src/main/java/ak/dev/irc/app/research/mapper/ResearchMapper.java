@@ -124,6 +124,7 @@ public class ResearchMapper {
                 r.getTags().stream().map(ResearchTag::getTagName).toList(),
                 r.getMediaFiles().stream().map(this::toMediaResponse).toList(),
                 r.getSources().stream().map(this::toSourceResponse).toList(),
+                r.getContributors().stream().map(this::toContributorResponse).toList(),
                 reacted,
                 reactionType,
                 saved,
@@ -211,6 +212,25 @@ public class ResearchMapper {
                 m.getDisplayOrder(), m.getCaption(), m.getAltText(),
                 m.getDurationSeconds(), m.getThumbnailUrl(),
                 m.getWidthPx(), m.getHeightPx()
+        );
+    }
+
+    // ── Contributor ───────────────────────────────────────────────────────────
+
+    public ContributorResponse toContributorResponse(ResearchContributor c) {
+        User u = c.getUser();
+        return new ContributorResponse(
+                c.getId(),
+                u.getId(),
+                u.getFullName(),
+                u.getUsername(),
+                u.getProfileImage(),
+                u.getRole(),
+                u.getAccountType(),
+                c.getRole(),
+                c.getDisplayOrder(),
+                c.getContributionNote(),
+                c.getCreatedAt()
         );
     }
 

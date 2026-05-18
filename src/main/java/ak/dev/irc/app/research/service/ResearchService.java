@@ -97,6 +97,35 @@ public interface ResearchService {
 
     Page<ResearchSummaryResponse> getMyResearches(UUID researcherId, Pageable pageable);
 
+    // ── Contributors (research owner only) ───────────────────────────────────
+
+    /**
+     * Add a single contributor to the research. The target user must carry role
+     * RESEARCHER or SCHOLAR. Idempotency: re-adding the same user is rejected
+     * with {@link ak.dev.irc.app.common.exception.ConflictException}. Only the
+     * corresponding researcher (owner of the paper) may add contributors.
+     */
+    ContributorResponse addContributor(UUID researchId, ContributorRequest request, UUID researcherId);
+
+    /**
+     * Replace the full contributor list for a research. The supplied list becomes
+     * the new state — anything previously stored that is not in the new list is
+     * removed. Pass an empty list to clear all contributors.
+     */
+    List<ContributorResponse> replaceContributors(UUID researchId,
+                                                   List<ContributorRequest> contributors,
+                                                   UUID researcherId);
+
+    /** Update a single contributor's role / order / note. */
+    ContributorResponse updateContributor(UUID researchId, UUID contributorId,
+                                          UpdateContributorRequest request, UUID researcherId);
+
+    /** Remove a contributor by their {@code contributor_id} (not user-id). */
+    void removeContributor(UUID researchId, UUID contributorId, UUID researcherId);
+
+    /** Public listing of contributors on a research, ordered by displayOrder. */
+    List<ContributorResponse> getContributors(UUID researchId);
+
     // ── Reactions (any user) ─────────────────────────────────────────────────
 
     void react(UUID researchId, ReactRequest request, UUID userId);

@@ -211,6 +211,12 @@ public class Research extends BaseAuditEntity {
 
     @OneToMany(mappedBy = "research", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
+    @OrderBy("displayOrder ASC")
+    @Builder.Default
+    private List<ResearchContributor> contributors = new ArrayList<>();
+
+    @OneToMany(mappedBy = "research", cascade = CascadeType.ALL,
+               orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private Set<ResearchTag> tags = new LinkedHashSet<>();
 

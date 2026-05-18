@@ -29,7 +29,7 @@ spring:
   # ── JPA ───────────────────────────────────────────────────────────────────────
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:create-drop}
+      ddl-auto: ${JPA_DDL_AUTO:create-drop} # create-drop for dev, validate or none for prod
     open-in-view: false
     show-sql: ${JPA_SHOW_SQL:false}
     defer-datasource-initialization: true

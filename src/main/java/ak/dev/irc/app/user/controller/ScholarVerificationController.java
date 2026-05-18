@@ -1,6 +1,5 @@
 package ak.dev.irc.app.user.controller;
 
-import ak.dev.irc.app.user.dto.request.ScholarVerificationRequest;
 import ak.dev.irc.app.user.dto.request.VerificationReviewRequest;
 import ak.dev.irc.app.user.dto.response.ScholarVerificationResponse;
 import ak.dev.irc.app.user.enums.VerificationStatus;
@@ -16,26 +15,20 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
+/**
+ * Admin-only review of legacy scholar verification applications.
+ *
+ * <p>NOTE: Users can no longer submit verification applications — account types
+ * are now changed directly by admins via
+ * {@link AdminUserController#changeAccountType}. This controller exists only to
+ * let administrators close out legacy applications that were submitted before
+ * the policy change.</p>
+ */
 @RestController
 @RequiredArgsConstructor
 public class ScholarVerificationController {
 
     private final ScholarVerificationService verificationService;
-
-    // ── Applicant ─────────────────────────────────────────────────────────────
-
-    @PostMapping("/api/v1/verification/apply")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ScholarVerificationResponse> apply(
-            @Valid @RequestBody ScholarVerificationRequest request) {
-        return ResponseEntity.status(201).body(verificationService.apply(request));
-    }
-
-    @GetMapping("/api/v1/verification/my-status")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ScholarVerificationResponse> myStatus() {
-        return ResponseEntity.ok(verificationService.getMyStatus());
-    }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
 

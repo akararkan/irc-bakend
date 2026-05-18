@@ -114,8 +114,8 @@ class ResearchCommentReactionTest {
         userId = UUID.randomUUID();
         researcherId = UUID.randomUUID();
 
-        actor = User.builder().id(userId).email("actor@test").profileImage("a.png").build();
-        researcher = User.builder().id(researcherId).email("researcher@test").profileImage("r.png").build();
+        actor = User.builder().id(userId).email("actor@test").build();
+        researcher = User.builder().id(researcherId).email("researcher@test").build();
         research = Research.builder().id(researchId).researcher(researcher).build();
         comment = ResearchComment.builder()
                 .id(commentId).research(research).user(researcher)

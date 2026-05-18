@@ -98,8 +98,8 @@ class PostCommentReactionTest {
         postId = UUID.randomUUID();
         userId = UUID.randomUUID();
 
-        actor = User.builder().id(userId).email("actor@test").profileImage("a.png").build();
-        author = User.builder().id(UUID.randomUUID()).email("author@test").profileImage("b.png").build();
+        actor = User.builder().id(userId).email("actor@test").build();
+        author = User.builder().id(UUID.randomUUID()).email("author@test").build();
         post = Post.builder().id(postId).author(author).postType(PostType.TEXT)
                 .status(PostStatus.PUBLISHED).build();
         comment = PostComment.builder().id(commentId).post(post).author(author)

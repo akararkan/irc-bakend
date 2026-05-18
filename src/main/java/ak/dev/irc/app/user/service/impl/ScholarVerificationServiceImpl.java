@@ -5,7 +5,6 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
 import ak.dev.irc.app.security.SecurityUtils;
-import ak.dev.irc.app.user.dto.request.ScholarVerificationRequest;
 import ak.dev.irc.app.user.dto.request.VerificationReviewRequest;
 import ak.dev.irc.app.user.dto.response.ScholarVerificationResponse;
 import ak.dev.irc.app.user.entity.ScholarVerification;
@@ -34,42 +33,6 @@ public class ScholarVerificationServiceImpl implements ScholarVerificationServic
 
     private final UserRepository                 userRepository;
     private final ScholarVerificationRepository  verificationRepository;
-
-    @Override
-    public ScholarVerificationResponse apply(ScholarVerificationRequest req) {
-        UUID myId = authenticatedUserId();
-        User user = findActiveOrThrow(myId);
-
-        if (verificationRepository.existsByUserIdAndStatus(myId, VerificationStatus.PENDING)
-         || verificationRepository.existsByUserIdAndStatus(myId, VerificationStatus.UNDER_REVIEW)) {
-            throw new BadRequestException(
-                "You already have a pending verification application.", "PENDING_APPLICATION");
-        }
-
-        ScholarVerification application = ScholarVerification.builder()
-            .user(user)
-            .claimedTier(req.claimedTier())
-            .affiliation(req.affiliation())
-            .evidenceUrls(req.evidenceUrls())
-            .orcidId(req.orcidId())
-            .status(VerificationStatus.PENDING)
-            .build();
-        application.audit(AuditAction.CREATE, "Scholar verification application submitted");
-        verificationRepository.save(application);
-
-        log.info("User [{}] submitted scholar verification — tier={}", myId, req.claimedTier());
-        return toResponse(application);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public ScholarVerificationResponse getMyStatus() {
-        UUID myId = authenticatedUserId();
-        ScholarVerification app = verificationRepository.findLatestByUserId(myId)
-            .orElseThrow(() -> new ResourceNotFoundException(
-                "ScholarVerification", "userId", myId));
-        return toResponse(app);
-    }
 
     @Override
     @Transactional(readOnly = true)

@@ -96,8 +96,8 @@ class PostSaveTest {
         userId = UUID.randomUUID();
         UUID authorId = UUID.randomUUID();
 
-        actor  = User.builder().id(userId).email("actor@test").profileImage("a.png").build();
-        author = User.builder().id(authorId).email("author@test").profileImage("b.png").build();
+        actor  = User.builder().id(userId).email("actor@test").build();
+        author = User.builder().id(authorId).email("author@test").build();
         post = Post.builder()
                 .id(postId).author(author)
                 .postType(PostType.TEXT).status(PostStatus.PUBLISHED)

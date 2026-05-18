@@ -278,6 +278,69 @@ public class ResearchController {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  CONTRIBUTORS — managed by the corresponding researcher only
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Add a single contributor (co-author, advisor, translator, etc.) to a
+     * research. The target user must already exist and hold role
+     * {@code RESEARCHER} or {@code SCHOLAR}.
+     */
+    @PostMapping("/{id}/contributors")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<ContributorResponse> addContributor(
+            @PathVariable UUID id,
+            @Valid @RequestBody ContributorRequest request,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(researchService.addContributor(id, request, user.getId()));
+    }
+
+    /**
+     * Replace the entire contributor list. Pass an empty list to clear.
+     * Use this when the UI lets the researcher edit the full co-author table
+     * in one form and submit it as a single PUT.
+     */
+    @PutMapping("/{id}/contributors")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<List<ContributorResponse>> replaceContributors(
+            @PathVariable UUID id,
+            @Valid @RequestBody List<ContributorRequest> contributors,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(
+                researchService.replaceContributors(id, contributors, user.getId()));
+    }
+
+    /** Update a single contributor's role / order / note. */
+    @PatchMapping("/{id}/contributors/{contributorId}")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<ContributorResponse> updateContributor(
+            @PathVariable UUID id,
+            @PathVariable UUID contributorId,
+            @Valid @RequestBody UpdateContributorRequest request,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(
+                researchService.updateContributor(id, contributorId, request, user.getId()));
+    }
+
+    /** Remove a contributor row by its id. */
+    @DeleteMapping("/{id}/contributors/{contributorId}")
+    @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
+    public ResponseEntity<Void> removeContributor(
+            @PathVariable UUID id,
+            @PathVariable UUID contributorId,
+            @AuthenticationPrincipal User user) {
+        researchService.removeContributor(id, contributorId, user.getId());
+        return ResponseEntity.noContent().build();
+    }
+
+    /** Public — list all contributors for a research. */
+    @GetMapping("/{id}/contributors")
+    public ResponseEntity<List<ContributorResponse>> getContributors(@PathVariable UUID id) {
+        return ResponseEntity.ok(researchService.getContributors(id));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  READ — single item
     // ══════════════════════════════════════════════════════════════════════════
 

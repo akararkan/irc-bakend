@@ -110,8 +110,8 @@ class QuestionAnswerReactionTest {
         userId = UUID.randomUUID();
         authorId = UUID.randomUUID();
 
-        actor = User.builder().id(userId).email("actor@test").profileImage("a.png").build();
-        author = User.builder().id(authorId).email("author@test").profileImage("b.png").build();
+        actor = User.builder().id(userId).email("actor@test").build();
+        author = User.builder().id(authorId).email("author@test").build();
         question = Question.builder().id(questionId).author(author)
                 .title("Why?").body("Body").status(QuestionStatus.OPEN).build();
         answer = QuestionAnswer.builder().id(answerId).question(question).author(author)
