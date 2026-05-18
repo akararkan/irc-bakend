@@ -67,7 +67,7 @@ public class StoryController {
     @GetMapping(value = "/tray/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @PreAuthorize("isAuthenticated()")
     public SseEmitter streamTray() {
-        UUID me = SecurityUtils.getCurrentUserId().orElseThrow();
+        UUID me = SecurityUtils.requireCurrentUserId();
         return trayRealtimeService.subscribe(me);
     }
 

@@ -12,6 +12,7 @@ public enum NotificationType {
     PUBLICATION_COMMENTED,
     PUBLICATION_COMMENT_REACTED, // someone reacted to your comment on a research
     PUBLICATION_CITED,
+    RESEARCH_CONTRIBUTOR_ADDED,  // a researcher added you as a contributor on their paper
     SYSTEM_MESSAGE,
 
     // ── Post: lifecycle ──────────────────────────────────────

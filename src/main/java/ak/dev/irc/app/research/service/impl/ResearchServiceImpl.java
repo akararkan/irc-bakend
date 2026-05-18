@@ -19,7 +19,9 @@ import ak.dev.irc.app.research.service.ResearchService;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.research.service.VideoMetadataExtractor;
 import ak.dev.irc.app.share.ShareLinkInfo;
+import ak.dev.irc.app.user.entity.Notification;
 import ak.dev.irc.app.user.entity.User;
+import ak.dev.irc.app.user.enums.NotificationType;
 import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
@@ -78,6 +80,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ResearchEventPublisher researchEventPublisher;
     private final MentionService         mentionService;
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster researchRealtime;
+    private final ak.dev.irc.app.user.service.NotificationDispatcher notificationDispatcher;
     private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
@@ -172,6 +175,10 @@ public class ResearchServiceImpl implements ResearchService {
             // ── Contributors ───────────────────────────────────────────────
             if (!CollectionUtils.isEmpty(req.contributors())) {
                 saveContributors(research, req.contributors(), researcherId);
+                // Notify each newly-listed contributor that they're on the paper.
+                final Research notifyRef = research;
+                notifyRef.getContributors()
+                        .forEach(c -> notifyContributorAdded(notifyRef, c.getUser(), c.getRole()));
             }
 
             // ── Media files (uploaded atomically with the research) ─────────
@@ -300,10 +307,22 @@ public class ResearchServiceImpl implements ResearchService {
             }
 
             if (req.contributors() != null) {
+                // Snapshot prior contributor user-ids — we only want to notify
+                // users who are newly added by this PATCH, not ones simply being
+                // reordered or having their notes updated.
+                Set<UUID> priorUserIds = research.getContributors().stream()
+                        .map(c -> c.getUser().getId())
+                        .collect(Collectors.toSet());
+
                 contributorRepo.deleteAllByResearchId(researchId);
                 research.getContributors().clear();
                 if (!req.contributors().isEmpty())
                     saveContributors(research, req.contributors(), researcherId);
+
+                final Research notifyRef = research;
+                notifyRef.getContributors().stream()
+                        .filter(c -> !priorUserIds.contains(c.getUser().getId()))
+                        .forEach(c -> notifyContributorAdded(notifyRef, c.getUser(), c.getRole()));
             }
 
             research = researchRepo.save(research);
@@ -1955,6 +1974,8 @@ public class ResearchServiceImpl implements ResearchService {
         log.info("Contributor added: research={} user={} role={} by={}",
                 researchId, contributor.getId(), row.getRole(), researcherId);
 
+        notifyContributorAdded(research, contributor, row.getRole());
+
         return mapper.toContributorResponse(row);
     }
 
@@ -1964,10 +1985,25 @@ public class ResearchServiceImpl implements ResearchService {
                                                           List<ContributorRequest> contributors,
                                                           UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+
+        // Snapshot prior contributors so we only notify users who are NEWLY
+        // being added — re-ordering or note edits via a full replace shouldn't
+        // re-spam the same users.
+        Set<UUID> priorUserIds = contributorRepo
+                .findByResearchIdOrderByDisplayOrderAsc(researchId)
+                .stream()
+                .map(c -> c.getUser().getId())
+                .collect(Collectors.toSet());
+
         contributorRepo.deleteAllByResearchId(researchId);
         research.getContributors().clear();
         if (!CollectionUtils.isEmpty(contributors))
             saveContributors(research, contributors, researcherId);
+
+        research.getContributors().stream()
+                .filter(c -> !priorUserIds.contains(c.getUser().getId()))
+                .forEach(c -> notifyContributorAdded(research, c.getUser(), c.getRole()));
+
         return research.getContributors().stream()
                 .map(mapper::toContributorResponse)
                 .toList();
@@ -2021,6 +2057,47 @@ public class ResearchServiceImpl implements ResearchService {
                 .stream()
                 .map(mapper::toContributorResponse)
                 .toList();
+    }
+
+    /**
+     * Push a one-shot {@code RESEARCH_CONTRIBUTOR_ADDED} notification to the
+     * person who was just attached to a research paper. Silent if the
+     * contributor is the corresponding researcher (defensive — the add path
+     * already rejects that) or if the notification dispatch fails (we don't
+     * want a transient inbox issue to roll back the contributor write).
+     */
+    private void notifyContributorAdded(Research research,
+                                        User contributor,
+                                        ak.dev.irc.app.research.enums.ContributorRole role) {
+        User owner = research.getResearcher();
+        if (owner == null || contributor == null) return;
+        if (owner.getId().equals(contributor.getId())) return; // never self-notify
+
+        try {
+            String roleLabel = role != null ? role.name().toLowerCase().replace('_', ' ') : "contributor";
+            String paperTitle = research.getTitle() != null ? research.getTitle() : "a research paper";
+
+            Notification draft = Notification.builder()
+                    .user(contributor)
+                    .actor(owner)
+                    .type(NotificationType.RESEARCH_CONTRIBUTOR_ADDED)
+                    .title("You were added to a research paper")
+                    .body(owner.getFullName() + " (@" + owner.getUsername()
+                            + ") added you as a " + roleLabel
+                            + " on \"" + paperTitle + "\".")
+                    .resourceId(research.getId())
+                    .resourceType("Research")
+                    .build();
+
+            notificationDispatcher.dispatch(draft);
+
+            log.debug("RESEARCH_CONTRIBUTOR_ADDED dispatched: research={} contributor={} owner={}",
+                    research.getId(), contributor.getId(), owner.getId());
+        } catch (Exception e) {
+            // Notification failures must never break a successful contributor add.
+            log.warn("Failed to dispatch RESEARCH_CONTRIBUTOR_ADDED for research={} contributor={}: {}",
+                    research.getId(), contributor.getId(), e.getMessage());
+        }
     }
 
     private void saveSources(Research research, List<SourceRequest> sourceRequests) {

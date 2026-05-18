@@ -294,6 +294,7 @@ public class EmailTemplate {
             case PUBLICATION_COMMENTED        -> "commented on your research";
             case PUBLICATION_COMMENT_REACTED  -> "reacted to your comment on a research";
             case PUBLICATION_CITED            -> "cited your research";
+            case RESEARCH_CONTRIBUTOR_ADDED   -> "added you as a contributor on their research";
 
             case QUESTION_NEW              -> "posted a new question";
             case QUESTION_ANSWERED         -> "answered your question";
@@ -318,7 +319,8 @@ public class EmailTemplate {
             case POST_NEW, POST_REACTED, POST_COMMENTED,
                  POST_COMMENT_REPLIED, POST_COMMENT_REACTED, POST_SHARED -> "on IRC";
             case PUBLICATION_LIKED, PUBLICATION_COMMENTED,
-                 PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED -> "in your research";
+                 PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED,
+                 RESEARCH_CONTRIBUTOR_ADDED -> "in your research";
             case QUESTION_NEW, QUESTION_ANSWERED, ANSWER_REPLIED,
                  ANSWER_REACTED, ANSWER_ACCEPTED, ANSWER_FEEDBACK_RECEIVED -> "in Q&A";
             default -> "";

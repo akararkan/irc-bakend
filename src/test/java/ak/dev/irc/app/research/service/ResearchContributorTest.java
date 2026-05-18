@@ -94,6 +94,7 @@ class ResearchContributorTest {
     @Mock private RateLimiter                rateLimiter;
     @Mock private ResearchViewTracker        viewTracker;
     @Mock private ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
+    @Mock private ak.dev.irc.app.user.service.NotificationDispatcher notificationDispatcher;
     @Mock private EntityManager              entityManager;
 
     @InjectMocks private ResearchServiceImpl service;
@@ -268,6 +269,39 @@ class ResearchContributorTest {
         ArgumentCaptor<ResearchContributor> saved = ArgumentCaptor.forClass(ResearchContributor.class);
         verify(contributorRepo).save(saved.capture());
         assertThat(saved.getValue().getDisplayOrder()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("addContributor: dispatches RESEARCH_CONTRIBUTOR_ADDED notification to the new contributor")
+    void addContributor_sendsNotification() {
+        when(researchRepo.findByIdAndDeletedAtIsNull(researchId)).thenReturn(Optional.of(research));
+        when(contributorRepo.existsByResearchIdAndUserId(researchId, coAuthorId)).thenReturn(false);
+        when(userRepo.findById(coAuthorId)).thenReturn(Optional.of(coAuthor));
+        when(contributorRepo.countByResearchId(researchId)).thenReturn(0L);
+        when(contributorRepo.save(any(ResearchContributor.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(mapper.toContributorResponse(any(ResearchContributor.class)))
+                .thenAnswer(inv -> stubbedResponse((ResearchContributor) inv.getArgument(0)));
+
+        ContributorRequest req = new ContributorRequest(
+                coAuthorId, ContributorRole.CO_AUTHOR, null, "Wrote section 3");
+
+        service.addContributor(researchId, req, ownerId);
+
+        ArgumentCaptor<ak.dev.irc.app.user.entity.Notification> sent =
+                ArgumentCaptor.forClass(ak.dev.irc.app.user.entity.Notification.class);
+        verify(notificationDispatcher).dispatch(sent.capture());
+
+        ak.dev.irc.app.user.entity.Notification n = sent.getValue();
+        assertThat(n.getUser().getId()).isEqualTo(coAuthorId);
+        assertThat(n.getActor().getId()).isEqualTo(ownerId);
+        assertThat(n.getType())
+                .isEqualTo(ak.dev.irc.app.user.enums.NotificationType.RESEARCH_CONTRIBUTOR_ADDED);
+        assertThat(n.getResourceId()).isEqualTo(researchId);
+        assertThat(n.getResourceType()).isEqualTo("Research");
+        assertThat(n.getBody())
+                .as("body should name the owner and mention 'co author'")
+                .contains("co author");
     }
 
     // ── update ─────────────────────────────────────────────────────────────────
