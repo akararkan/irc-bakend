@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.cache.CounterCache;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.entity.*;
+import ak.dev.irc.app.research.enums.ReactionType;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,6 +43,26 @@ public class ResearchMapper {
     // ── Full detail ──────────────────────────────────────────────────────────
 
     public ResearchResponse toResponse(Research r, UUID currentUserId) {
+        return toResponse(r, currentUserId, null);
+    }
+
+    /**
+     * Block-aware overload that takes a pre-resolved {@code isSavedOverride} so
+     * listing endpoints can batch the save lookup instead of streaming
+     * {@code r.getSaves()} (which lazy-loads every save row on every card).
+     * Pass {@code null} to fall back to the lazy-collection scan.
+     */
+    public ResearchResponse toResponse(Research r, UUID currentUserId, Boolean isSavedOverride) {
+        return toResponse(r, currentUserId, isSavedOverride, null);
+    }
+
+    /**
+     * Full overload: caller supplies both {@code isSavedOverride} and
+     * {@code reactedOverride}. Either can be null to fall back to the lazy
+     * collection scan, but both should be supplied on hot feed paths.
+     */
+    public ResearchResponse toResponse(Research r, UUID currentUserId,
+                                       Boolean isSavedOverride, Boolean reactedOverride) {
         User author = r.getResearcher();
         long[] c = resolveCounters(r);
 
@@ -50,15 +71,21 @@ public class ResearchMapper {
         boolean saved = false;
 
         if (currentUserId != null) {
-            for (ResearchReaction rx : r.getReactions()) {
-                if (rx.getUser().getId().equals(currentUserId)) {
-                    reacted = true;
-                    reactionType = rx.getReactionType().name();
-                    break;
+            if (reactedOverride != null) {
+                reacted = reactedOverride;
+                reactionType = reacted ? ReactionType.LIKE.name() : null;
+            } else {
+                for (ResearchReaction rx : r.getReactions()) {
+                    if (rx.getUser().getId().equals(currentUserId)) {
+                        reacted = true;
+                        reactionType = rx.getReactionType().name();
+                        break;
+                    }
                 }
             }
-            saved = r.getSaves().stream()
-                    .anyMatch(s -> s.getUser().getId().equals(currentUserId));
+            saved = isSavedOverride != null
+                    ? isSavedOverride
+                    : r.getSaves().stream().anyMatch(s -> s.getUser().getId().equals(currentUserId));
         }
 
         return new ResearchResponse(
@@ -110,6 +137,28 @@ public class ResearchMapper {
     // ── Summary (feed / card) ────────────────────────────────────────────────
 
     public ResearchSummaryResponse toSummary(Research r, UUID currentUserId) {
+        return toSummary(r, currentUserId, null);
+    }
+
+    /**
+     * Block-aware overload — see {@link #toResponse(Research, UUID, Boolean)}.
+     * Pass the pre-resolved {@code isSavedOverride} from a batched
+     * {@code findSavedResearchIds} lookup to avoid N+1 on feed renders.
+     */
+    public ResearchSummaryResponse toSummary(Research r, UUID currentUserId, Boolean isSavedOverride) {
+        return toSummary(r, currentUserId, isSavedOverride, null);
+    }
+
+    /**
+     * Full overload: pre-resolved {@code isSavedOverride} and
+     * {@code reactedOverride} from batched lookups so feed pages don't lazy-load
+     * the full {@code r.getReactions()} / {@code r.getSaves()} collections per
+     * card. Without {@code reactedOverride}, a user signing back in sees
+     * reactions they've made counted in {@code reactionCount} but
+     * {@code currentUserReacted=false}, leading to a double-react bug on tap.
+     */
+    public ResearchSummaryResponse toSummary(Research r, UUID currentUserId,
+                                             Boolean isSavedOverride, Boolean reactedOverride) {
         User author = r.getResearcher();
         long[] c = resolveCounters(r);
 
@@ -117,10 +166,12 @@ public class ResearchMapper {
         boolean saved   = false;
 
         if (currentUserId != null) {
-            reacted = r.getReactions().stream()
-                    .anyMatch(rx -> rx.getUser().getId().equals(currentUserId));
-            saved   = r.getSaves().stream()
-                    .anyMatch(s -> s.getUser().getId().equals(currentUserId));
+            reacted = reactedOverride != null
+                    ? reactedOverride
+                    : r.getReactions().stream().anyMatch(rx -> rx.getUser().getId().equals(currentUserId));
+            saved   = isSavedOverride != null
+                    ? isSavedOverride
+                    : r.getSaves().stream().anyMatch(s -> s.getUser().getId().equals(currentUserId));
         }
 
         return new ResearchSummaryResponse(

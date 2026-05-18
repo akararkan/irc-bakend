@@ -205,7 +205,7 @@ public class QuestionServiceImpl implements QuestionService {
             // Hide existence — same shape as a missing question for blocked viewers.
             throw new ResourceNotFoundException("Question", "id", questionId);
         }
-        return mapper.toQuestionResponse(q);
+        return mapper.toQuestionResponse(q, isQuestionSaved(questionId, viewerId));
     }
 
     @Override
@@ -220,7 +220,15 @@ public class QuestionServiceImpl implements QuestionService {
         // View bump runs in a separate write tx so the read path stays readOnly.
         // Routed through the proxy so REQUIRES_NEW actually applies.
         self.recordView(questionId, viewerId, viewerKey);
-        return mapper.toQuestionResponse(q);
+        return mapper.toQuestionResponse(q, isQuestionSaved(questionId, viewerId));
+    }
+
+    private boolean isQuestionSaved(UUID questionId, UUID viewerId) {
+        if (viewerId == null) return false;
+        QuestionSaveId sid = new QuestionSaveId();
+        sid.setQuestionId(questionId);
+        sid.setUserId(viewerId);
+        return saveRepository.existsById(sid);
     }
 
     @Override
@@ -274,7 +282,7 @@ public class QuestionServiceImpl implements QuestionService {
         Page<Question> page = blocked.isEmpty()
                 ? questionRepository.findByDeletedAtIsNullOrderByCreatedAtDesc(pageable)
                 : questionRepository.findFeedExcluding(blocked, pageable);
-        return page.map(mapper::toQuestionResponse);
+        return mapQuestionsWithSaves(page, viewerId);
     }
 
     @Override
@@ -303,7 +311,14 @@ public class QuestionServiceImpl implements QuestionService {
         boolean hasMore = rows.size() > safeLimit;
         if (hasMore) rows = rows.subList(0, safeLimit);
 
-        List<QuestionResponse> items = rows.stream().map(mapper::toQuestionResponse).toList();
+        java.util.Set<UUID> savedIds = (viewerId == null || rows.isEmpty())
+                ? java.util.Collections.emptySet()
+                : saveRepository.findSavedQuestionIds(viewerId,
+                        rows.stream().map(Question::getId).toList());
+
+        List<QuestionResponse> items = rows.stream()
+                .map(q -> mapper.toQuestionResponse(q, savedIds.contains(q.getId())))
+                .toList();
         LocalDateTime nextCursor = hasMore && !items.isEmpty()
                 ? rows.get(rows.size() - 1).getCreatedAt()
                 : null;
@@ -324,16 +339,31 @@ public class QuestionServiceImpl implements QuestionService {
         if (followingIds.isEmpty()) {
             return Page.empty(pageable);
         }
-        return questionRepository.findFollowingFeed(followingIds, pageable)
-                .map(mapper::toQuestionResponse);
+        return mapQuestionsWithSaves(
+                questionRepository.findFollowingFeed(followingIds, pageable), userId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getMyQuestions(UUID authorId, Pageable pageable) {
         findScholarOrThrow(authorId);
-        return questionRepository.findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(authorId, pageable)
-                .map(mapper::toQuestionResponse);
+        return mapQuestionsWithSaves(
+                questionRepository.findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(authorId, pageable),
+                authorId);
+    }
+
+    /**
+     * Batch the {@code isSaved} lookup across a feed page so we don't pay an
+     * N+1 per-card existsById round trip for logged-in viewers. Anonymous
+     * viewers and empty pages short-circuit to {@code isSaved=false}.
+     */
+    private Page<QuestionResponse> mapQuestionsWithSaves(Page<Question> page, UUID viewerId) {
+        if (viewerId == null || page.isEmpty()) {
+            return page.map(q -> mapper.toQuestionResponse(q, false));
+        }
+        List<UUID> ids = page.getContent().stream().map(Question::getId).toList();
+        java.util.Set<UUID> savedIds = saveRepository.findSavedQuestionIds(viewerId, ids);
+        return page.map(q -> mapper.toQuestionResponse(q, savedIds.contains(q.getId())));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

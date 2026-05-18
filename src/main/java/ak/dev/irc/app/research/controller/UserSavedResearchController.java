@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -43,5 +44,19 @@ public class UserSavedResearchController {
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(researchService.getSavedByCollection(user.getId(), collectionName, pageable));
+    }
+
+    /**
+     * Rename a save collection across every research-save row owned by the viewer.
+     * Mirrors {@code PATCH /api/v1/posts/me/saved/collections} and
+     * {@code PATCH /api/v1/questions/me/saved/collections}.
+     */
+    @PatchMapping("/collections")
+    public ResponseEntity<Void> renameCollection(
+            @RequestParam String oldName,
+            @RequestParam String newName,
+            @AuthenticationPrincipal User user) {
+        researchService.renameCollection(user.getId(), oldName, newName);
+        return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 }

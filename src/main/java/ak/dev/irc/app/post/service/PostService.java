@@ -550,18 +550,17 @@ public class PostService {
     @Transactional(readOnly = true)
     public Page<PostResponse> getPublicFeed(UUID viewerId, Pageable pageable) {
         if (viewerId == null) {
-            return postRepository
-                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
-                    .map(postMapper::toResponse);
+            return mapPostsForViewer(postRepository
+                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable),
+                    null);
         }
         List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
         if (blocked.isEmpty()) {
-            return postRepository
-                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
-                    .map(postMapper::toResponse);
+            return mapPostsForViewer(postRepository
+                    .findByStatusAndVisibilityOrderByCreatedAtDesc(PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable),
+                    viewerId);
         }
-        return postRepository.findPublicFeedExcluding(blocked, pageable)
-                .map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository.findPublicFeedExcluding(blocked, pageable), viewerId);
     }
 
     /**
@@ -597,7 +596,7 @@ public class PostService {
         boolean hasMore = rows.size() > safeLimit;
         if (hasMore) rows = rows.subList(0, safeLimit);
 
-        List<PostResponse> items = rows.stream().map(postMapper::toResponse).toList();
+        List<PostResponse> items = mapPostListForViewer(rows, viewerId);
         LocalDateTime nextCursor = hasMore && !items.isEmpty()
                 ? rows.get(rows.size() - 1).getCreatedAt()
                 : null;
@@ -635,9 +634,9 @@ public class PostService {
         //   stranger  → PUBLIC only
         // anonymous viewers fall in the "stranger" bucket.
         List<PostVisibility> allowed = visibleVisibilitiesFor(authorId, requesterId);
-        return postRepository
-                .findAuthorPostsByVisibilities(authorId, allowed, pageable)
-                .map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository
+                .findAuthorPostsByVisibilities(authorId, allowed, pageable),
+                requesterId);
     }
 
     @Transactional(readOnly = true)
@@ -646,8 +645,7 @@ public class PostService {
         if (followingIds.isEmpty()) {
             return Page.empty(pageable);
         }
-        return postRepository.findFollowingFeed(followingIds, pageable)
-                .map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository.findFollowingFeed(followingIds, pageable), userId);
     }
 
     /**
@@ -669,7 +667,7 @@ public class PostService {
                 : postRepository.findFollowingFeedAfter(followingIds, cursor, pageReq);
         boolean hasMore = rows.size() > safe;
         if (hasMore) rows = rows.subList(0, safe);
-        List<PostResponse> items = rows.stream().map(postMapper::toResponse).toList();
+        List<PostResponse> items = mapPostListForViewer(rows, userId);
         LocalDateTime nextCursor = hasMore && !items.isEmpty()
                 ? rows.get(rows.size() - 1).getCreatedAt()
                 : null;
@@ -683,8 +681,7 @@ public class PostService {
         if (followingIds.isEmpty()) {
             return Page.empty(pageable);
         }
-        return postRepository.findFollowingReelFeed(followingIds, pageable)
-                .map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository.findFollowingReelFeed(followingIds, pageable), userId);
     }
 
     @Transactional(readOnly = true)
@@ -695,20 +692,19 @@ public class PostService {
     @Transactional(readOnly = true)
     public Page<PostResponse> getReelFeed(UUID viewerId, Pageable pageable) {
         if (viewerId == null) {
-            return postRepository
+            return mapPostsForViewer(postRepository
                     .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
-                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
-                    .map(postMapper::toResponse);
+                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable),
+                    null);
         }
         List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
         if (blocked.isEmpty()) {
-            return postRepository
+            return mapPostsForViewer(postRepository
                     .findByPostTypeAndStatusAndVisibilityOrderByCreatedAtDesc(
-                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable)
-                    .map(postMapper::toResponse);
+                            PostType.REEL, PostStatus.PUBLISHED, PostVisibility.PUBLIC, pageable),
+                    viewerId);
         }
-        return postRepository.findReelFeedExcluding(blocked, pageable)
-                .map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository.findReelFeedExcluding(blocked, pageable), viewerId);
     }
 
     @Transactional(readOnly = true)
@@ -719,13 +715,50 @@ public class PostService {
     @Transactional(readOnly = true)
     public Page<PostResponse> searchPosts(String query, UUID viewerId, Pageable pageable) {
         if (viewerId == null) {
-            return postRepository.search(query, pageable).map(postMapper::toResponse);
+            return mapPostsForViewer(postRepository.search(query, pageable), null);
         }
         List<UUID> blocked = socialGuard.findRelatedBlockedIds(viewerId);
         if (blocked.isEmpty()) {
-            return postRepository.search(query, pageable).map(postMapper::toResponse);
+            return mapPostsForViewer(postRepository.search(query, pageable), viewerId);
         }
-        return postRepository.searchExcluding(query, blocked, pageable).map(postMapper::toResponse);
+        return mapPostsForViewer(postRepository.searchExcluding(query, blocked, pageable), viewerId);
+    }
+
+    /**
+     * Hydrate every card in a feed with the viewer's per-post {@code myReaction}
+     * and {@code isSaved} using one batched query each. Without this, a viewer
+     * that signs out and back in sees their own reactions show up in the count
+     * but not as "reacted by me" — the next tap then bumps the counter instead
+     * of toggling the existing reaction.
+     */
+    private Page<PostResponse> mapPostsForViewer(Page<Post> page, UUID viewerId) {
+        if (viewerId == null || page.isEmpty()) {
+            return page.map(postMapper::toResponse);
+        }
+        List<UUID> ids = page.getContent().stream().map(Post::getId).toList();
+        java.util.Map<UUID, PostReactionType> myReactions = loadViewerReactions(viewerId, ids);
+        java.util.Set<UUID> savedIds = saveRepository.findSavedPostIds(viewerId, ids);
+        return page.map(p -> postMapper.toResponse(p, myReactions.get(p.getId()), savedIds.contains(p.getId())));
+    }
+
+    private List<PostResponse> mapPostListForViewer(List<Post> rows, UUID viewerId) {
+        if (viewerId == null || rows.isEmpty()) {
+            return rows.stream().map(postMapper::toResponse).toList();
+        }
+        List<UUID> ids = rows.stream().map(Post::getId).toList();
+        java.util.Map<UUID, PostReactionType> myReactions = loadViewerReactions(viewerId, ids);
+        java.util.Set<UUID> savedIds = saveRepository.findSavedPostIds(viewerId, ids);
+        return rows.stream()
+                .map(p -> postMapper.toResponse(p, myReactions.get(p.getId()), savedIds.contains(p.getId())))
+                .toList();
+    }
+
+    private java.util.Map<UUID, PostReactionType> loadViewerReactions(UUID viewerId, List<UUID> postIds) {
+        java.util.Map<UUID, PostReactionType> out = new java.util.HashMap<>();
+        for (Object[] row : reactionRepository.findViewerReactions(viewerId, postIds)) {
+            out.put((UUID) row[0], (PostReactionType) row[1]);
+        }
+        return out;
     }
 
     // ── React ─────────────────────────────────────────────────
@@ -1013,8 +1046,9 @@ public class PostService {
 
     @Transactional(readOnly = true)
     public Page<PostResponse> getSavedPosts(UUID userId, Pageable pageable) {
-        return saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                .map(s -> postMapper.toResponse(s.getPost(), null, true));
+        Page<Post> posts = saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
+                .map(PostSave::getPost);
+        return mapSavedPostsForViewer(posts, userId);
     }
 
     @Transactional(readOnly = true)
@@ -1023,9 +1057,18 @@ public class PostService {
         if (collectionName == null || collectionName.isBlank()) {
             throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
         }
-        return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
+        Page<Post> posts = saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
                         userId, collectionName.trim(), pageable)
-                .map(s -> postMapper.toResponse(s.getPost(), null, true));
+                .map(PostSave::getPost);
+        return mapSavedPostsForViewer(posts, userId);
+    }
+
+    /** Saved list — every row is saved by definition, but we still resolve myReaction per-card. */
+    private Page<PostResponse> mapSavedPostsForViewer(Page<Post> page, UUID viewerId) {
+        if (page.isEmpty()) return page.map(p -> postMapper.toResponse(p, null, true));
+        List<UUID> ids = page.getContent().stream().map(Post::getId).toList();
+        java.util.Map<UUID, PostReactionType> myReactions = loadViewerReactions(viewerId, ids);
+        return page.map(p -> postMapper.toResponse(p, myReactions.get(p.getId()), true));
     }
 
     @Transactional(readOnly = true)

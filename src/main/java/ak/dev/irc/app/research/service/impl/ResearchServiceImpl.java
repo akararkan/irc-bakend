@@ -774,7 +774,7 @@ public class ResearchServiceImpl implements ResearchService {
         Page<ak.dev.irc.app.research.entity.Research> page = blocked.isEmpty()
                 ? researchRepo.findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(ResearchStatus.PUBLISHED, pageable)
                 : researchRepo.findFeedExcluding(ResearchStatus.PUBLISHED, blocked, pageable);
-        return page.map(r -> mapper.toSummary(r, currentUserId));
+        return mapSummariesWithSaves(page, currentUserId);
     }
 
     @Override
@@ -788,17 +788,17 @@ public class ResearchServiceImpl implements ResearchService {
         if (followingIds.isEmpty()) {
             return Page.empty(pageable);
         }
-        return researchRepo.findFollowingFeed(followingIds, pageable)
-                .map(r -> mapper.toSummary(r, userId));
+        return mapSummariesWithSaves(
+                researchRepo.findFollowingFeed(followingIds, pageable), userId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getByResearcher(UUID researcherId, Pageable pageable, UUID currentUserId) {
         if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
-        return researchRepo
-                .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.PUBLISHED, pageable)
-                .map(r -> mapper.toSummary(r, currentUserId));
+        return mapSummariesWithSaves(researchRepo
+                .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.PUBLISHED, pageable),
+                currentUserId);
     }
 
     @Override
@@ -806,7 +806,7 @@ public class ResearchServiceImpl implements ResearchService {
     public Page<ResearchSummaryResponse> search(String query, Pageable pageable, UUID currentUserId) {
         if (query == null || query.trim().length() < 2)
             throw new BadRequestException("Search query must be at least 2 characters", "INVALID_QUERY");
-        return researchRepo.searchPublished(query, pageable).map(r -> mapper.toSummary(r, currentUserId));
+        return mapSummariesWithSaves(researchRepo.searchPublished(query, pageable), currentUserId);
     }
 
     @Override
@@ -818,7 +818,7 @@ public class ResearchServiceImpl implements ResearchService {
                 .filter(w -> !w.isBlank())
                 .map(w -> w + ":*")
                 .collect(Collectors.joining(" & "));
-        return researchRepo.fullTextSearch(tsQuery, pageable).map(r -> mapper.toSummary(r, currentUserId));
+        return mapSummariesWithSaves(researchRepo.fullTextSearch(tsQuery, pageable), currentUserId);
     }
 
     @Override
@@ -830,25 +830,50 @@ public class ResearchServiceImpl implements ResearchService {
                 .map(t -> t != null ? t.trim().toLowerCase() : "")
                 .filter(t -> !t.isEmpty()).distinct().toList();
         if (normalised.isEmpty()) throw new BadRequestException("Tags cannot be empty", "INVALID_TAGS");
-        return researchRepo.findByTags(normalised, pageable).map(r -> mapper.toSummary(r, currentUserId));
+        return mapSummariesWithSaves(researchRepo.findByTags(normalised, pageable), currentUserId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getMyDrafts(UUID researcherId, Pageable pageable) {
         if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
-        return researchRepo
-                .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.DRAFT, pageable)
-                .map(r -> mapper.toSummary(r, researcherId));
+        return mapSummariesWithSaves(researchRepo
+                .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.DRAFT, pageable),
+                researcherId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getMyResearches(UUID researcherId, Pageable pageable) {
         if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
-        return researchRepo
-                .findByResearcherIdAndDeletedAtIsNull(researcherId, pageable)
-                .map(r -> mapper.toSummary(r, researcherId));
+        return mapSummariesWithSaves(researchRepo
+                .findByResearcherIdAndDeletedAtIsNull(researcherId, pageable),
+                researcherId);
+    }
+
+    /**
+     * Batch the {@code currentUserSaved} AND {@code currentUserReacted} lookups
+     * across a feed page so we don't pay an N+1 per-card scan over the lazy
+     * {@code research.getSaves()} / {@code research.getReactions()} collections.
+     * Without the reaction lookup, a viewer signing back in sees their own
+     * reactions counted but not marked as reacted-by-me — a re-tap then bumps
+     * the counter instead of toggling, causing the "double-like then snaps back
+     * to one" bug.
+     */
+    private Page<ResearchSummaryResponse> mapSummariesWithSaves(
+            Page<ak.dev.irc.app.research.entity.Research> page, UUID viewerId) {
+        if (viewerId == null || page.isEmpty()) {
+            return page.map(r -> mapper.toSummary(r, viewerId,
+                    viewerId == null ? null : Boolean.FALSE,
+                    viewerId == null ? null : Boolean.FALSE));
+        }
+        List<UUID> ids = page.getContent().stream()
+                .map(ak.dev.irc.app.research.entity.Research::getId).toList();
+        Set<UUID> savedIds   = saveRepo.findSavedResearchIds(viewerId, ids);
+        Set<UUID> reactedIds = reactionRepo.findReactedResearchIds(viewerId, ids);
+        return page.map(r -> mapper.toSummary(r, viewerId,
+                savedIds.contains(r.getId()),
+                reactedIds.contains(r.getId())));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1486,7 +1511,7 @@ public class ResearchServiceImpl implements ResearchService {
                     user);
             Research fresh = researchRepo.findById(researchId)
                     .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
-            return mapper.toResponse(fresh, userId);
+            return mapper.toResponse(fresh, userId, Boolean.TRUE);
         }
 
         saveRepo.save(ResearchSave.builder()
@@ -1501,7 +1526,7 @@ public class ResearchServiceImpl implements ResearchService {
 
         Research fresh = researchRepo.findById(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
-        return mapper.toResponse(fresh, userId);
+        return mapper.toResponse(fresh, userId, Boolean.TRUE);
     }
 
     @Override
@@ -1527,15 +1552,20 @@ public class ResearchServiceImpl implements ResearchService {
 
         Research fresh = researchRepo.findById(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
-        return mapper.toResponse(fresh, userId);
+        return mapper.toResponse(fresh, userId, Boolean.FALSE);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getSavedResearches(UUID userId, Pageable pageable) {
         if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
-        return saveRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                .map(s -> mapper.toSummary(s.getResearch(), userId));
+        // Every row on this page is by definition saved by the viewer — pass
+        // true for saved directly. Reactions still need a batched lookup so a
+        // user that reacted-and-saved sees the heart filled in.
+        Page<ak.dev.irc.app.research.entity.Research> page =
+                saveRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable)
+                        .map(ResearchSave::getResearch);
+        return mapSavedSummaries(page, userId);
     }
 
     @Override
@@ -1544,8 +1574,22 @@ public class ResearchServiceImpl implements ResearchService {
         if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
         if (collectionName == null || collectionName.isBlank())
             throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
-        return saveRepo.findByUserIdAndCollectionNameOrderByCreatedAtDesc(userId, collectionName.trim(), pageable)
-                .map(s -> mapper.toSummary(s.getResearch(), userId));
+        Page<ak.dev.irc.app.research.entity.Research> page =
+                saveRepo.findByUserIdAndCollectionNameOrderByCreatedAtDesc(userId, collectionName.trim(), pageable)
+                        .map(ResearchSave::getResearch);
+        return mapSavedSummaries(page, userId);
+    }
+
+    private Page<ResearchSummaryResponse> mapSavedSummaries(
+            Page<ak.dev.irc.app.research.entity.Research> page, UUID viewerId) {
+        if (page.isEmpty()) {
+            return page.map(r -> mapper.toSummary(r, viewerId, Boolean.TRUE, Boolean.FALSE));
+        }
+        List<UUID> ids = page.getContent().stream()
+                .map(ak.dev.irc.app.research.entity.Research::getId).toList();
+        Set<UUID> reactedIds = reactionRepo.findReactedResearchIds(viewerId, ids);
+        return page.map(r -> mapper.toSummary(r, viewerId, Boolean.TRUE,
+                reactedIds.contains(r.getId())));
     }
 
     @Override

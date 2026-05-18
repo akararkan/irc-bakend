@@ -12,6 +12,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.data.jpa.repository.Modifying;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -33,6 +34,14 @@ public interface ResearchSaveRepository extends JpaRepository<ResearchSave, Rese
         ORDER BY s.collectionName ASC
     """)
     List<String> findDistinctCollectionNamesByUserId(@Param("userId") UUID userId);
+
+    /** Batch lookup so feed renders can mark currentUserSaved per research without N+1 round trips. */
+    @Query("""
+        SELECT s.id.researchId FROM ResearchSave s
+        WHERE s.user.id = :userId AND s.id.researchId IN :researchIds
+    """)
+    Set<UUID> findSavedResearchIds(@Param("userId") UUID userId,
+                                   @Param("researchIds") List<UUID> researchIds);
 
     long countByResearchId(UUID researchId);
 
