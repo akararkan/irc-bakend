@@ -1,44 +1,52 @@
 package ak.dev.irc.app.activity.service.impl;
 
+import ak.dev.irc.app.activity.cassandra.entity.ActivityLookupEntity;
+import ak.dev.irc.app.activity.cassandra.entity.UserActivityByTypeEntity;
+import ak.dev.irc.app.activity.cassandra.entity.UserActivityEntity;
+import ak.dev.irc.app.activity.cassandra.repository.ActivityLookupRepository;
+import ak.dev.irc.app.activity.cassandra.repository.UserActivityByTypeRepository;
+import ak.dev.irc.app.activity.cassandra.repository.UserActivityCassandraRepository;
 import ak.dev.irc.app.activity.dto.UserActivityResponse;
-import ak.dev.irc.app.activity.entity.UserActivity;
 import ak.dev.irc.app.activity.enums.UserActivityType;
 import ak.dev.irc.app.activity.mapper.UserActivityMapper;
-import ak.dev.irc.app.activity.repository.UserActivityRepository;
+import ak.dev.irc.app.activity.realtime.UserActivityRealtimeBroadcaster;
+import ak.dev.irc.app.activity.realtime.UserActivityRealtimeEvent;
 import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
-import ak.dev.irc.app.post.entity.Post;
-import ak.dev.irc.app.post.entity.PostComment;
 import ak.dev.irc.app.post.enums.PostReactionType;
-import ak.dev.irc.app.post.repository.PostCommentRepository;
-import ak.dev.irc.app.post.repository.PostRepository;
-import ak.dev.irc.app.post.service.PostCommentService;
-import ak.dev.irc.app.post.service.PostService;
-import ak.dev.irc.app.qna.entity.Question;
-import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
-import ak.dev.irc.app.qna.repository.QuestionAnswerRepository;
-import ak.dev.irc.app.qna.repository.QuestionRepository;
-import ak.dev.irc.app.research.entity.Research;
-import ak.dev.irc.app.research.entity.ResearchComment;
-import ak.dev.irc.app.research.repository.ResearchCommentRepository;
-import ak.dev.irc.app.research.repository.ResearchRepository;
-import ak.dev.irc.app.user.entity.User;
-import ak.dev.irc.app.user.repository.UserRepository;
-import ak.dev.irc.app.activity.realtime.UserActivityRealtimeBroadcaster;
-import ak.dev.irc.app.activity.realtime.UserActivityRealtimeEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
+/**
+ * Cassandra-backed user-activity history. The service contract, the
+ * controller paths, and the response shape are unchanged — only the
+ * storage moved.
+ *
+ * <p>Each {@code record*} method writes to three tables:</p>
+ * <ul>
+ *   <li>{@code activity_by_user}          — the "all my activity" feed</li>
+ *   <li>{@code activity_by_user_and_type} — the per-type filter feed</li>
+ *   <li>{@code activity_lookup}           — point lookup by activity_id (delete path)</li>
+ * </ul>
+ *
+ * <p>Pagination is cursor-based under the hood; the {@code Pageable} signature
+ * on the read API is preserved for backwards compatibility — the client
+ * receives a {@link PageImpl} whose {@code totalElements} is approximate
+ * (Cassandra has no cheap partition count). Subsequent pages should be driven
+ * by the {@code createdAt} of the last returned row.</p>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -46,443 +54,255 @@ public class UserActivityServiceImpl implements UserActivityService {
 
     private static final int QUERY_MAX_LEN = 200;
 
-    private final UserActivityRepository activityRepo;
-    private final UserRepository userRepo;
-    private final PostRepository postRepo;
-    private final PostCommentRepository commentRepo;
-    private final UserActivityMapper mapper;
-    private final PostService postService;
-    private final PostCommentService postCommentService;
+    private final UserActivityCassandraRepository activityRepo;
+    private final UserActivityByTypeRepository    byTypeRepo;
+    private final ActivityLookupRepository        lookupRepo;
+    private final UserActivityMapper              mapper;
     private final UserActivityRealtimeBroadcaster realtimeBroadcaster;
-    private final QuestionRepository questionRepo;
-    private final QuestionAnswerRepository answerRepo;
-    private final ResearchRepository researchRepo;
-    private final ResearchCommentRepository researchCommentRepo;
+
+    // ── Reads ────────────────────────────────────────────────────────────────
 
     @Override
-    @Transactional(readOnly = true)
-    public Page<UserActivityResponse> listMyActivity(UUID userId, UserActivityType filter, Pageable pageable) {
-        Page<UserActivity> page = (filter == null)
-                ? activityRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                : activityRepo.findByUserIdAndActivityTypeOrderByCreatedAtDesc(userId, filter, pageable);
-        return page.map(mapper::toResponse);
+    public Page<UserActivityResponse> listMyActivity(UUID userId, UserActivityType filter,
+                                                     Pageable pageable) {
+        int pageSize = pageable.getPageSize();
+        List<UserActivityResponse> content;
+        if (filter == null) {
+            content = activityRepo.firstPage(userId, pageSize).stream()
+                    .map(mapper::toResponse)
+                    .toList();
+        } else {
+            content = byTypeRepo.firstPage(userId, filter.name(), pageSize).stream()
+                    .map(mapper::toResponseByType)
+                    .toList();
+        }
+        return new PageImpl<>(content, pageable, content.size());
     }
 
     @Override
-    @Transactional
     public void deleteOne(UUID userId, UUID activityId) {
-        UserActivity activity = activityRepo.findById(activityId)
+        ActivityLookupEntity meta = lookupRepo.findById(activityId)
                 .orElseThrow(() -> new ResourceNotFoundException("UserActivity", "id", activityId));
-        if (!activity.getUser().getId().equals(userId)) {
+        if (!meta.getUserId().equals(userId)) {
             throw new ForbiddenException("You cannot delete another user's activity");
         }
-        cascadeUndo(activity);
-        activityRepo.delete(activity);
+        activityRepo.delete(meta.getUserId(), meta.getCreatedAt(), activityId);
+        byTypeRepo.delete(meta.getUserId(), meta.getActivityType(),
+                          meta.getCreatedAt(), activityId);
+        lookupRepo.deleteById(activityId);
     }
 
     @Override
-    @Transactional
     public int deleteAll(UUID userId, UserActivityType filter) {
-        List<UserActivity> activities = (filter == null)
-                ? activityRepo.findAllByUserId(userId)
-                : activityRepo.findAllByUserIdAndActivityType(userId, filter);
-        for (UserActivity a : activities) {
-            cascadeUndo(a);
-        }
-        activityRepo.deleteAll(activities);
-        return activities.size();
-    }
-
-    /**
-     * Undo the underlying user action when an activity row is removed.
-     * REEL_WATCH is intentionally a no-op so the granular ReelView history is preserved.
-     * Best-effort: a failure in the cascade does not block activity-row deletion.
-     */
-    private void cascadeUndo(UserActivity a) {
-        UUID userId = a.getUser().getId();
-        Post post = a.getPost();
-        PostComment comment = a.getComment();
-        try {
-            switch (a.getActivityType()) {
-                case POST_REACTION -> {
-                    if (post != null) postService.removeReaction(post.getId(), userId);
-                }
-                case POST_COMMENT -> {
-                    if (post != null && comment != null && !comment.isDeleted()) {
-                        postCommentService.deleteComment(post.getId(), comment.getId(), userId);
-                    }
-                }
-                case POST_COMMENT_REACTION -> {
-                    if (comment != null) postCommentService.removeCommentReaction(comment.getId(), userId);
-                }
-                case POST_SHARE -> {
-                    if (post != null) postService.undoRepost(post.getId(), userId);
-                }
-                case REEL_WATCH -> {
-                    // intentionally no-op — ReelView is preserved
-                }
-                case GLOBAL_SEARCH, HASHTAG_SEARCH, MENTION_LOOKUP, PROFILE_VIEW,
-                     QNA_QUESTION_CREATED, QNA_ANSWER_CREATED, QNA_REANSWER_CREATED,
-                     QNA_ANSWER_REACTION, QNA_BEST_ANSWER_VOTE, QNA_ANSWER_FEEDBACK -> {
-                    // history-only activities — nothing to undo
-                }
+        final int BATCH = 200;
+        final int MAX_BATCHES = 50;     // up to 10k rows per call
+        int deleted = 0;
+        for (int i = 0; i < MAX_BATCHES; i++) {
+            List<UserActivityEntity> page = activityRepo.firstPage(userId, BATCH);
+            if (page.isEmpty()) break;
+            if (filter != null) {
+                page = page.stream()
+                        .filter(r -> filter.name().equals(r.getActivityType()))
+                        .toList();
             }
+            if (page.isEmpty()) break;
+            for (UserActivityEntity row : page) {
+                deleteOneInternal(row);
+                deleted++;
+            }
+            if (page.size() < BATCH) break;
+        }
+        return deleted;
+    }
+
+    private void deleteOneInternal(UserActivityEntity row) {
+        try {
+            activityRepo.delete(row.getUserId(), row.getCreatedAt(), row.getActivityId());
+            byTypeRepo.delete(row.getUserId(), row.getActivityType(),
+                              row.getCreatedAt(), row.getActivityId());
+            lookupRepo.deleteById(row.getActivityId());
         } catch (Exception e) {
-            log.warn("[ACTIVITY] cascade undo skipped for activity={} type={}: {}",
-                    a.getId(), a.getActivityType(), e.getMessage());
+            log.warn("[ACTIVITY] bulk delete row {} failed: {}", row.getActivityId(), e.getMessage());
         }
     }
 
+    // ── Record methods ──────────────────────────────────────────────────────
+
     @Override
-    @Transactional
     public void recordPostReaction(UUID userId, UUID postId, PostReactionType reactionType) {
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Post post = postRepo.findById(postId).orElse(null);
-        if (user == null || post == null) {
-            log.warn("[ACTIVITY] recordPostReaction skipped — user/post not found (userId={}, postId={})", userId, postId);
-            return;
-        }
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.POST_REACTION)
-                .post(post)
-                .reactionType(reactionType)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.POST_REACTION,
+              b -> { b.postId(postId);
+                     b.reactionType(reactionType == null ? null : reactionType.name()); });
     }
 
     @Override
-    @Transactional
     public void recordPostComment(UUID userId, UUID postId, UUID commentId) {
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Post post = postRepo.findById(postId).orElse(null);
-        PostComment comment = commentRepo.findById(commentId).orElse(null);
-        if (user == null || post == null || comment == null) {
-            log.warn("[ACTIVITY] recordPostComment skipped — user/post/comment not found");
-            return;
-        }
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.POST_COMMENT)
-                .post(post)
-                .comment(comment)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.POST_COMMENT,
+              b -> { b.postId(postId); b.commentId(commentId); });
     }
 
     @Override
-    @Transactional
+    public void recordPostCommentReaction(UUID userId, UUID postId, UUID commentId,
+                                          PostReactionType reactionType) {
+        write(userId, UserActivityType.POST_COMMENT_REACTION,
+              b -> { b.postId(postId); b.commentId(commentId);
+                     b.reactionType(reactionType == null ? null : reactionType.name()); });
+    }
+
+    @Override
     public void recordPostShare(UUID userId, UUID postId) {
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Post post = postRepo.findById(postId).orElse(null);
-        if (user == null || post == null) {
-            log.warn("[ACTIVITY] recordPostShare skipped — user/post not found (userId={}, postId={})", userId, postId);
-            return;
-        }
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.POST_SHARE)
-                .post(post)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.POST_SHARE, b -> b.postId(postId));
     }
 
     @Override
-    @Transactional
     public void recordReelWatch(UUID userId, UUID postId, Integer watchedSeconds) {
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Post post = postRepo.findById(postId).orElse(null);
-        if (user == null || post == null) {
-            log.warn("[ACTIVITY] recordReelWatch skipped — user/post not found (userId={}, postId={})", userId, postId);
-            return;
-        }
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.REEL_WATCH)
-                .post(post)
-                .watchedSeconds(watchedSeconds)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.REEL_WATCH,
+              b -> { b.postId(postId); b.watchedSeconds(watchedSeconds); });
     }
 
-    @Override
-    @Transactional
-    public void recordPostCommentReaction(UUID userId, UUID postId, UUID commentId, PostReactionType reactionType) {
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Post post = postRepo.findById(postId).orElse(null);
-        PostComment comment = commentRepo.findById(commentId).orElse(null);
-        if (user == null || post == null || comment == null) {
-            log.warn("[ACTIVITY] recordPostCommentReaction skipped — user/post/comment not found");
-            return;
-        }
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.POST_COMMENT_REACTION)
-                .post(post)
-                .comment(comment)
-                .reactionType(reactionType)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
-    }
-
-    // ── Search / mention / profile activity ──────────────────────────────
-
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordGlobalSearch(UUID userId, String query, String searchScope, int hitCount) {
         if (userId == null || query == null || query.isBlank()) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        if (user == null) return;
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.GLOBAL_SEARCH)
-                .query(truncate(query))
-                .searchScope(truncate(searchScope, 120))
-                .hitCount(hitCount)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.GLOBAL_SEARCH,
+              b -> { b.query(truncate(query, QUERY_MAX_LEN));
+                     b.searchScope(truncate(searchScope, 120));
+                     b.hitCount(hitCount); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordHashtagSearch(UUID userId, String tag, int hitCount) {
         if (userId == null || tag == null || tag.isBlank()) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        if (user == null) return;
         String normalized = tag.startsWith("#") ? tag : "#" + tag;
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.HASHTAG_SEARCH)
-                .query(truncate(normalized))
-                .hitCount(hitCount)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.HASHTAG_SEARCH,
+              b -> { b.query(truncate(normalized, QUERY_MAX_LEN)); b.hitCount(hitCount); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordMentionLookup(UUID userId, String query, UUID targetUserId, int hitCount) {
         if (userId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        if (user == null) return;
-        User target = (targetUserId == null) ? null : userRepo.findActiveById(targetUserId).orElse(null);
-        UserActivity activity = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.MENTION_LOOKUP)
-                .query(truncate(query))
-                .targetUser(target)
-                .hitCount(hitCount)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(userId, UserActivityType.MENTION_LOOKUP,
+              b -> { b.query(truncate(query, QUERY_MAX_LEN));
+                     b.targetUserId(targetUserId); b.hitCount(hitCount); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordProfileView(UUID viewerId, UUID profileUserId) {
         if (viewerId == null || profileUserId == null || viewerId.equals(profileUserId)) return;
-        User viewer = userRepo.findActiveById(viewerId).orElse(null);
-        User target = userRepo.findActiveById(profileUserId).orElse(null);
-        if (viewer == null || target == null) return;
-        UserActivity activity = UserActivity.builder()
-                .user(viewer)
-                .activityType(UserActivityType.PROFILE_VIEW)
-                .targetUser(target)
-                .build();
-        UserActivity saved = activityRepo.save(activity);
-        broadcast(saved);
+        write(viewerId, UserActivityType.PROFILE_VIEW, b -> b.targetUserId(profileUserId));
     }
 
-    // ── QnA activity ─────────────────────────────────────────────────────
-
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordQnaQuestionCreated(UUID userId, UUID questionId) {
         if (userId == null || questionId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Question question = questionRepo.findById(questionId).orElse(null);
-        if (user == null || question == null) return;
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.QNA_QUESTION_CREATED)
-                .question(question)
-                .build());
-        broadcast(saved);
+        write(userId, UserActivityType.QNA_QUESTION_CREATED, b -> b.questionId(questionId));
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordQnaAnswerCreated(UUID userId, UUID questionId, UUID answerId, UUID parentAnswerId) {
         if (userId == null || answerId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Question question = (questionId != null) ? questionRepo.findById(questionId).orElse(null) : null;
-        QuestionAnswer answer = answerRepo.findById(answerId).orElse(null);
-        if (user == null || answer == null) return;
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(parentAnswerId != null
-                        ? UserActivityType.QNA_REANSWER_CREATED
-                        : UserActivityType.QNA_ANSWER_CREATED)
-                .question(question)
-                .answer(answer)
-                .build());
-        broadcast(saved);
+        UserActivityType type = parentAnswerId != null
+                ? UserActivityType.QNA_REANSWER_CREATED
+                : UserActivityType.QNA_ANSWER_CREATED;
+        write(userId, type, b -> { b.questionId(questionId); b.answerId(answerId); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordQnaAnswerReaction(UUID userId, UUID questionId, UUID answerId,
                                         AnswerReactionType reactionType) {
         if (userId == null || answerId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Question question = (questionId != null) ? questionRepo.findById(questionId).orElse(null) : null;
-        QuestionAnswer answer = answerRepo.findById(answerId).orElse(null);
-        if (user == null || answer == null) return;
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.QNA_ANSWER_REACTION)
-                .question(question)
-                .answer(answer)
-                .qnaReactionType(reactionType)
-                .build());
-        broadcast(saved);
+        write(userId, UserActivityType.QNA_ANSWER_REACTION,
+              b -> { b.questionId(questionId); b.answerId(answerId);
+                     b.qnaReactionType(reactionType == null ? null : reactionType.name()); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordQnaBestAnswerVote(UUID voterId, UUID questionId, UUID answerId, boolean voted) {
         if (voterId == null || answerId == null) return;
-        User user = userRepo.findActiveById(voterId).orElse(null);
-        Question question = (questionId != null) ? questionRepo.findById(questionId).orElse(null) : null;
-        QuestionAnswer answer = answerRepo.findById(answerId).orElse(null);
-        if (user == null || answer == null) return;
-        UserActivity row = UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.QNA_BEST_ANSWER_VOTE)
-                .question(question)
-                .answer(answer)
-                .build();
-        row.audit(ak.dev.irc.app.common.enums.AuditAction.CREATE, voted ? "voted" : "unvoted");
-        UserActivity saved = activityRepo.save(row);
-        broadcast(saved);
+        write(voterId, UserActivityType.QNA_BEST_ANSWER_VOTE,
+              b -> { b.questionId(questionId); b.answerId(answerId); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordQnaAnswerFeedback(UUID userId, UUID questionId, UUID answerId) {
         if (userId == null || answerId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Question question = (questionId != null) ? questionRepo.findById(questionId).orElse(null) : null;
-        QuestionAnswer answer = answerRepo.findById(answerId).orElse(null);
-        if (user == null || answer == null) return;
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.QNA_ANSWER_FEEDBACK)
-                .question(question)
-                .answer(answer)
-                .build());
-        broadcast(saved);
+        write(userId, UserActivityType.QNA_ANSWER_FEEDBACK,
+              b -> { b.questionId(questionId); b.answerId(answerId); });
     }
 
-    // ══════════════════════════════════════════════════════════════════════
-    //  Research activity (parity with POST_*)
-    // ══════════════════════════════════════════════════════════════════════
-
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordResearchReaction(UUID userId, UUID researchId) {
         if (userId == null || researchId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Research research = researchRepo.findById(researchId).orElse(null);
-        if (user == null || research == null) {
-            log.warn("[ACTIVITY] recordResearchReaction skipped — user/research not found (userId={}, researchId={})", userId, researchId);
-            return;
-        }
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.RESEARCH_REACTION)
-                .research(research)
-                .build());
-        broadcast(saved);
+        write(userId, UserActivityType.RESEARCH_REACTION, b -> b.researchId(researchId));
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordResearchComment(UUID userId, UUID researchId, UUID commentId) {
         if (userId == null || researchId == null || commentId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Research research = researchRepo.findById(researchId).orElse(null);
-        ResearchComment comment = researchCommentRepo.findById(commentId).orElse(null);
-        if (user == null || research == null || comment == null) {
-            log.warn("[ACTIVITY] recordResearchComment skipped — user/research/comment not found");
-            return;
-        }
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.RESEARCH_COMMENT)
-                .research(research)
-                .researchComment(comment)
-                .build());
-        broadcast(saved);
+        write(userId, UserActivityType.RESEARCH_COMMENT,
+              b -> { b.researchId(researchId); b.researchCommentId(commentId); });
     }
 
-    @Override
-    @Async
-    @Transactional
+    @Override @Async
     public void recordResearchCommentReaction(UUID userId, UUID researchId, UUID commentId) {
         if (userId == null || researchId == null || commentId == null) return;
-        User user = userRepo.findActiveById(userId).orElse(null);
-        Research research = researchRepo.findById(researchId).orElse(null);
-        ResearchComment comment = researchCommentRepo.findById(commentId).orElse(null);
-        if (user == null || research == null || comment == null) {
-            log.warn("[ACTIVITY] recordResearchCommentReaction skipped — user/research/comment not found");
-            return;
-        }
-        UserActivity saved = activityRepo.save(UserActivity.builder()
-                .user(user)
-                .activityType(UserActivityType.RESEARCH_COMMENT_REACTION)
-                .research(research)
-                .researchComment(comment)
+        write(userId, UserActivityType.RESEARCH_COMMENT_REACTION,
+              b -> { b.researchId(researchId); b.researchCommentId(commentId); });
+    }
+
+    // ── Core write primitive ────────────────────────────────────────────────
+
+    private void write(UUID userId, UserActivityType type,
+                       Consumer<UserActivityEntity.UserActivityEntityBuilder> customizer) {
+        UUID    id  = UUID.randomUUID();
+        Instant now = Instant.now();
+
+        UserActivityEntity.UserActivityEntityBuilder b = UserActivityEntity.builder()
+                .userId(userId).createdAt(now).activityId(id)
+                .activityType(type.name());
+        customizer.accept(b);
+        UserActivityEntity row = b.build();
+        activityRepo.save(row);
+
+        byTypeRepo.save(UserActivityByTypeEntity.builder()
+                .userId(userId).activityType(type.name())
+                .createdAt(now).activityId(id)
+                .postId(row.getPostId()).commentId(row.getCommentId())
+                .reactionType(row.getReactionType())
+                .watchedSeconds(row.getWatchedSeconds())
+                .query(row.getQuery()).searchScope(row.getSearchScope())
+                .hitCount(row.getHitCount())
+                .targetUserId(row.getTargetUserId())
+                .questionId(row.getQuestionId()).answerId(row.getAnswerId())
+                .qnaReactionType(row.getQnaReactionType())
+                .researchId(row.getResearchId()).researchCommentId(row.getResearchCommentId())
                 .build());
-        broadcast(saved);
+
+        lookupRepo.save(ActivityLookupEntity.builder()
+                .activityId(id).userId(userId)
+                .activityType(type.name()).createdAt(now)
+                .build());
+
+        broadcast(row);
     }
 
-    private void broadcast(UserActivity activity) {
-        if (activity == null) return;
+    private void broadcast(UserActivityEntity row) {
         try {
-            UserActivityResponse payload = mapper.toResponse(activity);
-            realtimeBroadcaster.broadcast(activity.getUser().getId(),
-                    UserActivityRealtimeEvent.from(payload));
-        } catch (Exception ex) {
-            log.debug("[ACTIVITY-RT] broadcast skipped: {}", ex.getMessage());
+            realtimeBroadcaster.broadcast(row.getUserId(),
+                    UserActivityRealtimeEvent.builder()
+                            .userId(row.getUserId())
+                            .activityId(row.getActivityId())
+                            .activityType(UserActivityType.valueOf(row.getActivityType()))
+                            .timestamp(row.getCreatedAt() == null ? null
+                                    : java.time.LocalDateTime.ofInstant(row.getCreatedAt(),
+                                                                        java.time.ZoneOffset.UTC))
+                            .build());
+        } catch (Exception e) {
+            log.debug("[ACTIVITY] realtime broadcast skipped: {}", e.getMessage());
         }
     }
 
-    private static String truncate(String text) {
-        return truncate(text, QUERY_MAX_LEN);
-    }
-
-    private static String truncate(String text, int max) {
-        if (text == null) return null;
-        String trimmed = text.strip();
-        return trimmed.length() <= max ? trimmed : trimmed.substring(0, max);
+    private static String truncate(String s, int max) {
+        if (s == null) return null;
+        return s.length() > max ? s.substring(0, max) : s;
     }
 }

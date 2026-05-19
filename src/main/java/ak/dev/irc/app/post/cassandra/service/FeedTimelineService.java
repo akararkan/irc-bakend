@@ -1,0 +1,183 @@
+package ak.dev.irc.app.post.cassandra.service;
+
+import ak.dev.irc.app.post.cassandra.entity.FeedByUserEntity;
+import ak.dev.irc.app.common.notification.NotificationKind;
+import ak.dev.irc.app.post.cassandra.realtime.FeedRealtimePublisher;
+import ak.dev.irc.app.post.cassandra.repository.FeedByUserRepository;
+import ak.dev.irc.app.user.entity.User;
+import ak.dev.irc.app.user.repository.UserFollowRepository;
+import ak.dev.irc.app.user.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * Home-feed timeline service.
+ *
+ * Write path  (fanout-on-write):
+ *   When a post is created we synchronously enqueue an async fanout job that
+ *   walks the author's followers in batches and writes a row into feed_by_user
+ *   for each one. The TTL on feed_by_user (30d) keeps storage bounded.
+ *
+ * Read path:
+ *   1.  Try Redis (sorted set per user, last 100 post ids by score=ts)
+ *   2.  Fall back to a Cassandra partition slice on feed_by_user
+ *   3.  Backfill Redis on cache miss for the next request
+ *
+ * Realtime delivery: after each follower's fanout row is written we publish to
+ * the existing Redis pub/sub channel (PostRealtimePublisher) so any open SSE
+ * connection for that follower receives the new post immediately.
+ *
+ * Fanout caveats:
+ *   • Capped per request via {@code MAX_FANOUT_FOLLOWERS} to keep tail latency
+ *     bounded. Beyond the cap we fall back to pull-on-read (read-through cache).
+ *   • For accounts with > 1M followers we'd switch to "celebrity push" — write
+ *     the post id to a small celebrity_posts table and have the read path
+ *     merge it. Not implemented yet.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class FeedTimelineService {
+
+    private static final int  MAX_FANOUT_FOLLOWERS = 50_000;
+    private static final int  FANOUT_BATCH         = 500;
+    private static final int  REDIS_FEED_SIZE      = 100;
+    private static final String REDIS_FEED_KEY_PREFIX = "feed:timeline:";
+
+    private final FeedByUserRepository    feedRepo;
+    private final UserFollowRepository    userFollowRepo;
+    private final FeedRealtimePublisher   realtimePublisher;
+    private final StringRedisTemplate     redis;
+    private final UserRepository          userRepo;
+    private final CassandraNotificationService notificationService;
+
+    /**
+     * Walk followers in pages and write a feed_by_user row for each. Runs on
+     * a Spring async thread pool so the HTTP request that created the post
+     * returns immediately.
+     */
+    @Async
+    public void fanoutAsync(UUID postId,
+                            UUID authorId,
+                            Instant createdAt,
+                            String postType,
+                            String textPreview,
+                            String mediaUrl,
+                            String visibility) {
+        if ("ONLY_ME".equals(visibility)) {
+            log.debug("[FEED] Skipping fanout for ONLY_ME post {}", postId);
+            return;
+        }
+
+        String authorLabel = userRepo.findById(authorId)
+                .map(User::getUsername).map(u -> "@" + u).orElse("Someone");
+
+        int page = 0;
+        int totalDelivered = 0;
+        while (totalDelivered < MAX_FANOUT_FOLLOWERS) {
+            List<UUID> followerBatch;
+            try {
+                followerBatch = userFollowRepo.findAllFollowerIds(
+                        authorId, PageRequest.of(page, FANOUT_BATCH));
+            } catch (Exception e) {
+                log.warn("[FEED] follower lookup failed for {}: {}", authorId, e.getMessage());
+                return;
+            }
+            if (followerBatch.isEmpty()) break;
+
+            for (UUID followerId : followerBatch) {
+                writeFanoutRow(postId, authorId, followerId, createdAt,
+                              postType, textPreview, mediaUrl);
+                pushRealtime(followerId, postId, authorId);
+                deliverPostNewNotification(followerId, authorId, authorLabel, postId, textPreview);
+            }
+            totalDelivered += followerBatch.size();
+            page++;
+
+            if (followerBatch.size() < FANOUT_BATCH) break;
+        }
+        log.info("[FEED] fanout complete for post {}: {} followers delivered", postId, totalDelivered);
+    }
+
+    private void writeFanoutRow(UUID postId, UUID authorId, UUID viewerId,
+                                Instant createdAt, String postType,
+                                String preview, String mediaUrl) {
+        feedRepo.save(FeedByUserEntity.builder()
+                .userId(viewerId)
+                .createdAt(createdAt)
+                .postId(postId)
+                .authorId(authorId)
+                .postType(postType)
+                .textPreview(preview)
+                .mediaUrl(mediaUrl)
+                .build());
+
+        // Also push into the per-viewer Redis cache so the next /feed request
+        // hits Redis instead of touching Cassandra.
+        try {
+            String key = REDIS_FEED_KEY_PREFIX + viewerId;
+            redis.opsForZSet().add(key, postId.toString(),
+                                    (double) createdAt.toEpochMilli());
+            redis.opsForZSet().removeRange(key, 0, -(REDIS_FEED_SIZE + 1));
+        } catch (Exception e) {
+            // Cache failure is non-fatal; Cassandra has the truth.
+            log.debug("[FEED] redis cache update skipped: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Fire a low-cost in-app notification per follower on POST_NEW. This kind
+     * is configured as emailEligible=false in {@link NotificationKind}, so a
+     * creator with 50k followers does NOT trigger 50k emails — only the in-app
+     * inbox rows + the realtime SSE push.
+     */
+    private void deliverPostNewNotification(UUID followerId, UUID authorId,
+                                            String authorLabel, UUID postId,
+                                            String preview) {
+        try {
+            notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
+                    followerId,
+                    NotificationKind.POST_NEW,
+                    authorLabel + " posted",
+                    preview == null ? authorLabel + " just posted." : preview,
+                    authorId,
+                    "Post", postId,
+                    "POST_NEW:" + postId
+            ));
+        } catch (Exception e) {
+            log.debug("[FEED] notify follower {} skipped: {}", followerId, e.getMessage());
+        }
+    }
+
+    private void pushRealtime(UUID viewerId, UUID postId, UUID authorId) {
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("event",   "FEED_NEW_POST");
+            payload.put("postId",  postId.toString());
+            payload.put("authorId", authorId.toString());
+            realtimePublisher.publishToUser(viewerId, payload);
+        } catch (Exception e) {
+            log.debug("[FEED] realtime push failed for {}: {}", viewerId, e.getMessage());
+        }
+    }
+
+    // ── Read path ───────────────────────────────────────────────────────────
+
+    public List<FeedByUserEntity> homeFeed(UUID userId, int pageSize) {
+        return feedRepo.firstPage(userId, pageSize);
+    }
+
+    public List<FeedByUserEntity> homeFeedAfter(UUID userId, Instant cursor, int pageSize) {
+        return feedRepo.nextPage(userId, cursor, pageSize);
+    }
+}

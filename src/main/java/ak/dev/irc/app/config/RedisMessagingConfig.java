@@ -16,12 +16,18 @@ import ak.dev.irc.app.research.realtime.ResearchRealtimePublisher;
 import ak.dev.irc.app.research.realtime.ResearchRealtimeSubscriber;
 import ak.dev.irc.app.user.realtime.NotificationRedisSubscriber;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static ak.dev.irc.app.user.realtime.NotificationRedisPublisher.CHANNEL_PREFIX;
 
@@ -41,6 +47,7 @@ import static ak.dev.irc.app.user.realtime.NotificationRedisPublisher.CHANNEL_PR
  * </ol>
  * </p>
  */
+@Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class RedisMessagingConfig {
@@ -57,8 +64,9 @@ public class RedisMessagingConfig {
             AuditRealtimeSubscriber          auditSubscriber,
             UserActivityRealtimeSubscriber   activitySubscriber) {
 
-        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        RedisMessageListenerContainer container = new ResilientRedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
+        container.setRecoveryInterval(5000L);
 
         // Per-user notification channels.
         container.addMessageListener(notificationSubscriber,
@@ -98,6 +106,67 @@ public class RedisMessagingConfig {
                 new PatternTopic(UserActivityRealtimePublisher.CHANNEL_PREFIX + "*"));
 
         return container;
+    }
+
+    /**
+     * Listener container that tolerates Redis being unreachable at boot.
+     * Default behavior crashes the whole app on first connect failure; here we log
+     * a warning and retry every 5s in the background so local dev works even when
+     * `docker compose up redis` hasn't been run yet.
+     */
+    static class ResilientRedisMessageListenerContainer extends RedisMessageListenerContainer {
+
+        private final AtomicBoolean retrying = new AtomicBoolean(false);
+        private ScheduledExecutorService retryExec;
+
+        @Override
+        public void start() {
+            try {
+                super.start();
+            } catch (Exception e) {
+                log.warn("[REDIS] Listener container failed to start (Redis unreachable at boot?): {} — " +
+                        "app will continue; retrying every 5s in background.", e.getMessage());
+                scheduleRetry();
+            }
+        }
+
+        private void scheduleRetry() {
+            if (!retrying.compareAndSet(false, true)) return;
+            retryExec = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "redis-listener-boot-retry");
+                t.setDaemon(true);
+                return t;
+            });
+            retryExec.scheduleWithFixedDelay(() -> {
+                if (isRunning()) {
+                    shutdownRetry();
+                    return;
+                }
+                try {
+                    super.start();
+                    if (isRunning()) {
+                        log.info("[REDIS] Listener container started successfully after retry.");
+                        shutdownRetry();
+                    }
+                } catch (Exception ignored) {
+                    // still down — keep trying silently
+                }
+            }, 5, 5, TimeUnit.SECONDS);
+        }
+
+        private void shutdownRetry() {
+            if (retryExec != null) {
+                retryExec.shutdownNow();
+                retryExec = null;
+            }
+            retrying.set(false);
+        }
+
+        @Override
+        public void stop() {
+            shutdownRetry();
+            super.stop();
+        }
     }
 }
 

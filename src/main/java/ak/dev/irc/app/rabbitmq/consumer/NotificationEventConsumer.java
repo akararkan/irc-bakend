@@ -30,7 +30,6 @@ import ak.dev.irc.app.rabbitmq.event.user.UserFollowedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserMentionedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnblockedEvent;
 import ak.dev.irc.app.rabbitmq.event.user.UserUnfollowedEvent;
-import ak.dev.irc.app.post.repository.PostCommentRepository;
 import ak.dev.irc.app.user.entity.Notification;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.enums.NotificationType;
@@ -110,7 +109,6 @@ public class NotificationEventConsumer {
         private final UserRepository         userRepo;
         private final UserFollowRepository   followRepo;
         private final UserRestrictionRepository restrictionRepo;
-        private final PostCommentRepository  postCommentRepo;
         private final ResearchCommentRepository researchCommentRepo;
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
@@ -1189,12 +1187,11 @@ public class NotificationEventConsumer {
             return event.getParentCommentAuthorId();
         }
 
-        if (event.getParentCommentId() != null) {
-            return postCommentRepo.findById(event.getParentCommentId())
-                    .map(comment -> comment.getAuthor().getId())
-                    .orElse(null);
-        }
-
+        // Parent-comment author resolution used to do a JPA lookup on
+        // post_comments. Comments now live in Cassandra and the event
+        // payload should already carry parentCommentAuthorId. If it doesn't,
+        // we silently skip the reply notification rather than do a slow
+        // cross-store lookup on the hot path.
         return null;
     }
 

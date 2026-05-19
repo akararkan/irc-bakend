@@ -1,140 +1,100 @@
 package ak.dev.irc.app.activity.service.impl;
 
+import ak.dev.irc.app.activity.cassandra.entity.ReelViewEntity;
+import ak.dev.irc.app.activity.cassandra.repository.ReelViewCassandraRepository;
 import ak.dev.irc.app.activity.dto.ReelViewResponse;
-import ak.dev.irc.app.activity.entity.ReelView;
 import ak.dev.irc.app.activity.mapper.ReelViewMapper;
-import ak.dev.irc.app.activity.repository.ReelViewRepository;
 import ak.dev.irc.app.activity.service.ReelViewService;
 import ak.dev.irc.app.activity.service.UserActivityService;
-import ak.dev.irc.app.common.exception.BadRequestException;
-import ak.dev.irc.app.common.exception.ForbiddenException;
-import ak.dev.irc.app.common.exception.ResourceNotFoundException;
-import ak.dev.irc.app.common.cache.CounterCache;
-import ak.dev.irc.app.post.entity.Post;
-import ak.dev.irc.app.post.enums.PostType;
-import ak.dev.irc.app.post.realtime.PostRealtimeBroadcaster;
-import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
-import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
-import ak.dev.irc.app.post.realtime.PostViewTracker;
-import ak.dev.irc.app.post.repository.PostRepository;
-import ak.dev.irc.app.user.entity.User;
-import ak.dev.irc.app.user.repository.UserRepository;
+import ak.dev.irc.app.post.cassandra.service.CassandraViewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
+/**
+ * Reel-watch history — Cassandra-backed.
+ *
+ * Per-watch rows live in {@code reel_views_by_user}; the underlying post's
+ * unique-viewer counter still bumps through {@link CassandraViewService},
+ * which is idempotent via Redis NX dedupe.
+ *
+ * The {@link ReelViewService} contract is unchanged.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ReelViewServiceImpl implements ReelViewService {
 
-    private final ReelViewRepository reelViewRepo;
-    private final UserRepository userRepo;
-    private final PostRepository postRepo;
-    private final ReelViewMapper mapper;
-    private final UserActivityService userActivityService;
-    private final PostRealtimeBroadcaster postRealtime;
-    private final PostViewTracker viewTracker;
-    private final CounterCache counterCache;
-
-    // Self-reference for proxy-mediated calls (so REQUIRES_NEW takes effect on internal calls).
-    @Autowired @Lazy
-    private ReelViewService self;
+    private final ReelViewCassandraRepository reelRepo;
+    private final ReelViewMapper              mapper;
+    private final UserActivityService         userActivityService;
+    private final CassandraViewService        viewService;
 
     @Override
-    @Transactional
     public ReelViewResponse recordWatch(UUID userId, UUID postId, Integer watchedSeconds) {
-        User user = userRepo.findActiveById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
-        Post post = postRepo.findById(postId)
-                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
-
-        if (post.getPostType() != PostType.REEL) {
-            throw new BadRequestException("Post is not a reel", "NOT_A_REEL");
-        }
-
-        ReelView view = ReelView.builder()
-                .user(user)
-                .post(post)
-                .watchedSeconds(watchedSeconds)
+        ReelViewEntity row = ReelViewEntity.builder()
+                .userId(userId).createdAt(Instant.now())
+                .reelViewId(UUID.randomUUID())
+                .postId(postId).watchedSeconds(watchedSeconds)
                 .build();
-        ReelView saved = reelViewRepo.save(view);
+        reelRepo.save(row);
 
-        // Watch-history row is always saved (per-watch analytics), but the
-        // displayed view counter on the underlying post is deduped + broadcast
-        // through the self proxy so REQUIRES_NEW gives us a fresh L1 cache —
-        // otherwise the post entity already loaded above would shadow the
-        // increment and the broadcast would carry a stale count.
-        self.recordPostView(post.getId(), userId);
-
+        // Bump the post's unique-viewer counter (idempotent per (post,user)
+        // within the dedupe window), then log the watch in activity history.
+        viewService.recordView(postId, userId);
         userActivityService.recordReelWatch(userId, postId, watchedSeconds);
 
-        return mapper.toResponse(saved);
+        return mapper.toResponse(row);
     }
 
     @Override
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordPostView(UUID postId, UUID viewerId) {
-        try {
-            // Authed viewer → count once per (reel, user) FOREVER (durable
-            // post_views ledger). The ReelView analytics row above is still
-            // written on every watch, but the displayed view counter only
-            // bumps on the user's first watch ever.
-            if (!viewTracker.shouldCount(postId, viewerId, viewerId.toString())) return;
-
-            postRepo.incrementViewCount(postId);
-
-            // Fresh read in this REQUIRES_NEW tx — no stale L1 cache from the caller.
-            Long freshCount = postRepo.findById(postId).map(Post::getViewCount).orElse(null);
-            if (freshCount != null) {
-                // Write-through to Redis so the feed and detail pages render the
-                // post-increment count without falling back to Postgres on the
-                // next mapper.getOr(...). Without this, the reel-watch path was
-                // desyncing the cache (DB bumped, Redis stale).
-                counterCache.set(CounterCache.Kind.POST, postId,
-                        CounterCache.F_VIEWS, freshCount);
-                postRealtime.broadcast(PostRealtimeEvent.builder()
-                        .eventType(PostRealtimeEventType.VIEW_COUNT_UPDATED)
-                        .postId(postId)
-                        .actorId(viewerId)
-                        .postViewCount(freshCount)
-                        .build());
-            }
-        } catch (Exception e) {
-            // View counts are best-effort — never let a counter failure break a watch.
-            log.warn("Failed to bump view count for reel {}: {}", postId, e.getMessage());
-        }
+        viewService.recordView(postId, viewerId);
     }
 
     @Override
-    @Transactional(readOnly = true)
     public Page<ReelViewResponse> listMyWatched(UUID userId, Pageable pageable) {
-        return reelViewRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                .map(mapper::toResponse);
+        List<ReelViewResponse> content = reelRepo.firstPage(userId, pageable.getPageSize())
+                .stream().map(mapper::toResponse).toList();
+        return new PageImpl<>(content, pageable, content.size());
     }
 
     @Override
-    @Transactional
     public void deleteOne(UUID userId, UUID reelViewId) {
-        ReelView view = reelViewRepo.findById(reelViewId)
-                .orElseThrow(() -> new ResourceNotFoundException("ReelView", "id", reelViewId));
-        if (!view.getUser().getId().equals(userId)) {
-            throw new ForbiddenException("You cannot delete another user's watch history");
+        // We don't store a separate lookup table for reel views — scan the
+        // user's recent slice and remove the matching row. Reel-views are
+        // typically short windows so this is cheap.
+        for (ReelViewEntity row : reelRepo.firstPage(userId, 500)) {
+            if (reelViewId.equals(row.getReelViewId())) {
+                reelRepo.delete(row.getUserId(), row.getCreatedAt(), reelViewId);
+                return;
+            }
         }
-        reelViewRepo.delete(view);
+        log.debug("[REEL] delete {} miss (not in recent 500) — silently ignored", reelViewId);
     }
 
     @Override
-    @Transactional
     public int deleteAll(UUID userId) {
-        return reelViewRepo.deleteAllByUserId(userId);
+        final int BATCH = 200;
+        int deleted = 0;
+        while (true) {
+            List<ReelViewEntity> page = reelRepo.firstPage(userId, BATCH);
+            if (page.isEmpty()) break;
+            for (ReelViewEntity row : page) {
+                try {
+                    reelRepo.delete(row.getUserId(), row.getCreatedAt(), row.getReelViewId());
+                    deleted++;
+                } catch (Exception ignored) { /* best-effort */ }
+            }
+            if (page.size() < BATCH) break;
+        }
+        return deleted;
     }
 }

@@ -1,10 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-#  IRC PLATFORM — APPLICATION CONFIGURATION
-#
-#  ONE file. Every value is overridable through an environment variable.
-#  - Local dev: just `./mvnw spring-boot:run` — the localhost defaults below
-#    work against `docker compose up` (Postgres / Redis / RabbitMQ).
-#  - Railway:   set the env vars listed in .env.example, deploy, done.
+#  IRC PLATFORM — APPLICATION CONFIGURATION (UPDATED WITH CASSANDRA)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 spring:
@@ -12,60 +7,78 @@ spring:
   application:
     name: irc
 
-  # ── Database ──────────────────────────────────────────────────────────────────
-  # On Railway: set SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME /
-  # SPRING_DATASOURCE_PASSWORD (Spring Boot reads them automatically).
+  # ── Database: PostgreSQL (Primary Relational DB) ───────────────────────────────
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/irc}
-    username: ${SPRING_DATASOURCE_USERNAME:${DB_USERNAME:khi}}
-    password: ${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:}}
+    url: jdbc:postgresql://localhost:5432/irc
+    username: ${DB_USERNAME:khi}
+    password: ${DB_PASSWORD:}
     hikari:
-      maximum-pool-size: ${DB_POOL_MAX:10}
-      minimum-idle: ${DB_POOL_MIN:2}
+      maximum-pool-size: 20
+      minimum-idle: 5
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
 
-  # ── JPA ───────────────────────────────────────────────────────────────────────
+  # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:create-drop} # create-drop for dev, validate or none for prod
+      ddl-auto: create-drop
     open-in-view: false
-    show-sql: ${JPA_SHOW_SQL:false}
-    defer-datasource-initialization: true
+    show-sql: true
     properties:
       hibernate:
+        format_sql: true
+        use_sql_comments: true
         jdbc:
           batch_size: 30
           fetch_size: 50
-          # Force every TIMESTAMP write/read through UTC. Without this Hibernate
-          # uses the JVM default, so a non-UTC container would silently write
-          # local-time values into the DB and the frontend would show wrong
-          # relative times ("3 hours ago" right after posting).
-          time_zone: UTC
         order_inserts: true
         order_updates: true
         default_batch_fetch_size: 20
         query:
           in_clause_parameter_padding: true
 
-  # ── SQL init (runs schema.sql / data.sql AFTER Hibernate DDL) ──────────────
+  # ── SQL init disabled (no mock/seed data) ──────────────────────────────────────
   sql:
     init:
-      mode: ${SQL_INIT_MODE:always}
-      continue-on-error: true
+      mode: never
 
-  # ── Redis ─────────────────────────────────────────────────────────────────────
-  # Railway's "Redis" plugin gives a single REDIS_URL. Set
-  # SPRING_DATA_REDIS_URL=$REDIS_URL in the service variables — it wins.
+  # ── Cassandra Configuration (Time-Series & Events) ────────────────────────────
+  cassandra:
+    keyspace-name: ${CASSANDRA_KEYSPACE:irc_keyspace}
+    contact-points: ${CASSANDRA_CONTACT_POINTS:localhost:9042}
+    local-datacenter: ${CASSANDRA_DATACENTER:datacenter1}
+    username: ${CASSANDRA_USERNAME:cassandra}
+    password: ${CASSANDRA_PASSWORD:cassandra}
+
+    # Schema action: CREATE_IF_NOT_EXISTS, CREATE, UPDATE, NONE
+    schema-action: create_if_not_exists
+
+    # Connection pool settings
+    pool:
+      heartbeat-interval: 30s
+      idle-timeout: 5m
+      max-queue-size: 256
+
+    # Request settings
+    request:
+      timeout: 10s
+      consistency: LOCAL_ONE
+
+  # ── Elasticsearch (Search Engine: posts, users, hashtags) ─────────────────────
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    username: ${ELASTICSEARCH_USERNAME:}
+    password: ${ELASTICSEARCH_PASSWORD:}
+    connection-timeout: 2s
+    socket-timeout: 10s
+
+  # ── Redis ──────────────────────────────────────────────────────────────────────
   data:
     redis:
-      url:      ${SPRING_DATA_REDIS_URL:}
-      host:     ${SPRING_DATA_REDIS_HOST:${REDIS_HOST:localhost}}
-      port:     ${SPRING_DATA_REDIS_PORT:${REDIS_PORT:6379}}
-      password: ${SPRING_DATA_REDIS_PASSWORD:${REDIS_PASSWORD:}}
-      ssl:
-        enabled: ${REDIS_SSL_ENABLED:false}
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
       timeout: 2000ms
       lettuce:
         pool:
@@ -79,15 +92,33 @@ spring:
       time-to-live: 300000
       cache-null-values: false
 
-  # ── RabbitMQ ──────────────────────────────────────────────────────────────────
+  # ── OAuth2 Client ──────────────────────────────────────────────────────────────
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID:your-client-id}
+            client-secret: ${GOOGLE_CLIENT_SECRET:your-client-secret}
+            scope:
+              - email
+              - profile
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            client-name: Google
+        provider:
+          google:
+            authorization-uri: https://accounts.google.com/o/oauth2/v2/auth
+            token-uri: https://oauth2.googleapis.com/token
+            user-info-uri: https://www.googleapis.com/oauth2/v3/userinfo
+            user-name-attribute: sub
+
+  # ── RabbitMQ ───────────────────────────────────────────────────────────────────
   rabbitmq:
-    host:         ${SPRING_RABBITMQ_HOST:${RABBITMQ_HOST:localhost}}
-    port:         ${SPRING_RABBITMQ_PORT:${RABBITMQ_PORT:5672}}
-    username:     ${SPRING_RABBITMQ_USERNAME:${RABBITMQ_USERNAME:guest}}
-    password:     ${SPRING_RABBITMQ_PASSWORD:${RABBITMQ_PASSWORD:guest}}
-    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:${RABBITMQ_VHOST:/}}
-    ssl:
-      enabled: ${RABBITMQ_SSL_ENABLED:false}
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    virtual-host: ${RABBITMQ_VHOST:/}
     publisher-confirm-type: correlated
     publisher-returns: true
     listener:
@@ -106,7 +137,7 @@ spring:
     template:
       mandatory: true
 
-  # ── Jackson ───────────────────────────────────────────────────────────────────
+  # ── Jackson ────────────────────────────────────────────────────────────────────
   jackson:
     default-property-inclusion: non_null
     time-zone: UTC
@@ -114,13 +145,17 @@ spring:
     serialization:
       write-dates-as-timestamps: false
 
-  # ── Mail (SMTP) ──────────────────────────────────────────────────────────────
-  # Gmail: turn on 2-Step, generate an App Password, use that as MAIL_PASSWORD.
+  # ── Mail (SMTP) ────────────────────────────────────────────────────────────────
+  # Gmail / Google Workspace:
+  #   1. Turn on 2-Step Verification on the sending Google account.
+  #   2. Generate an "App password" — use that as MAIL_PASSWORD (not the login password).
+  #   3. Set MAIL_USERNAME = <full email address>.
+  # Custom SMTP: override MAIL_HOST / MAIL_PORT.
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME:}
-    password: ${MAIL_PASSWORD:}
+    username: ${MAIL_USERNAME:ika.center26@gmail.com}
+    password: ${MAIL_PASSWORD:dbfrczyhfkxqylwn}
     default-encoding: UTF-8
     properties:
       mail:
@@ -136,20 +171,15 @@ spring:
           protocol: smtp
         debug: false
 
-  # ── File Upload ───────────────────────────────────────────────────────────────
+  # ── File Upload ────────────────────────────────────────────────────────────────
   servlet:
     multipart:
-      max-file-size: ${MAX_UPLOAD_SIZE:500MB}
-      max-request-size: ${MAX_UPLOAD_SIZE:500MB}
+      max-file-size: 500MB
+      max-request-size: 500MB
 
-  # ── MVC ───────────────────────────────────────────────────────────────────────
+  # ── MVC ────────────────────────────────────────────────────────────────────────
   mvc:
     throw-exception-if-no-handler-found: true
-    # SSE / async support — long timeout so the notification stream is not killed
-    # by Spring's default 30s async-request-timeout. SseEmitter timeouts are still
-    # honoured per-connection.
-    async:
-      request-timeout: 86400000
 
   web:
     resources:
@@ -161,66 +191,43 @@ spring:
 # ═══════════════════════════════════════════════════════════════════════════════
 irc:
   doi:
-    prefix: ${DOI_PREFIX:10.12345}
+    prefix: "10.12345"
 
-  base-url: ${IRC_BASE_URL:http://localhost:8080}
+  base-url: "https://irc.example.com"
 
+  # Notification email branding + reply-to.
   email:
+    # Resolves to ${MAIL_FROM} → ${spring.mail.username} (which itself defaults
+    # to MAIL_USERNAME from the spring.mail block) → a no-reply placeholder.
+    # Reading spring.mail.username here (instead of MAIL_USERNAME directly)
+    # means the YAML default chain is honoured even when the env var is unset.
     from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
     from-name: ${MAIL_FROM_NAME:IRC Platform}
     enabled: ${MAIL_ENABLED:true}
+    # Throttle window — same (recipient, groupKey) won't be emailed twice
+    # inside this duration. Mirrors the in-app aggregation window.
     throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
-    # Transport: "smtp" (local dev / providers that allow SMTP egress) or
-    # "resend" (Railway / Heroku / Render / GCP / Fly — anywhere outbound
-    # SMTP is blocked). Resend speaks HTTPS over 443 which every PaaS allows.
-    # When set to "resend", RESEND_API_KEY must also be set.
-    provider: ${MAIL_PROVIDER:smtp}
-    reply-to: ${MAIL_REPLY_TO:}
 
   verification:
-    # Override IRC_VERIFICATION_SECRET in production with `openssl rand -hex 24`.
-    secret: ${IRC_VERIFICATION_SECRET:dev-only-32-char-verification-secret-xx}
+    secret: ${IRC_VERIFICATION_SECRET:9fK2LmQ7xA4vZpR8sD1cYwN5TgH3UeB6}
 
-# Resend HTTPS transport — generate a key at https://resend.com/api-keys
-resend:
-  api-key: ${RESEND_API_KEY:}
+  # Cassandra configuration (for events, audit logs, notifications)
+  cassandra:
+    enabled: ${CASSANDRA_ENABLED:true}
+    max-batch-size: 1000
+    async-enabled: true
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  APPLICATION SPECIFIC CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
-#  JWT — keys read by JwtTokenProvider via @Value("${jwt.*}").
-#  MUST be a top-level `jwt:` block (not `app.jwt`) — that's what the code
-#  binds to. Missing this causes a "Could not resolve placeholder 'jwt.secret'"
-#  failure on boot.
-# ═══════════════════════════════════════════════════════════════════════════════
-jwt:
-  # Override APP_JWT_SECRET in production with `openssl rand -base64 64`.
-  secret:             ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
-  # Access 24h, refresh 90d — long sessions. Refresh rotates on use, so an
-  # active user stays logged in indefinitely.
-  expiration-ms:         ${APP_JWT_ACCESS_MS:86400000}
-  refresh-expiration-ms: ${APP_JWT_REFRESH_MS:7776000000}
-  issuer:                ${APP_JWT_ISSUER:irc-platform}
-  # Cookie settings — IRC_TOKEN cookie carrying the access token. Set
-  # JWT_COOKIE_SECURE=true on Railway (HTTPS) so the cookie is HTTPS-only.
-  cookie-name:      ${JWT_COOKIE_NAME:IRC_TOKEN}
-  cookie-secure:    ${JWT_COOKIE_SECURE:false}
-  cookie-http-only: ${JWT_COOKIE_HTTP_ONLY:true}
-  cookie-same-site: ${JWT_COOKIE_SAME_SITE:Lax}
-  cookie-path:      ${JWT_COOKIE_PATH:/}
-  cookie-max-age:   ${JWT_COOKIE_MAX_AGE:86400}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  STORAGE + CORS — bound under `app.*` to match the existing Java @Values.
-# ═══════════════════════════════════════════════════════════════════════════════
 app:
 
-  # Public-facing frontend URL — used to build user-clickable links inside
-  # emails and the social share preview pages (/p, /r, /q). Falls back to
-  # the request origin when unset, so dev still works without env vars.
-  frontend-url: ${FRONTEND_URL:https://irc-frontend-517u.vercel.app}
+  jwt:
+    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
+    access-token-expiration-ms: 3600000
+    refresh-token-expiration-ms: 604800000
+    issuer: irc-platform
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
@@ -229,26 +236,37 @@ app:
     allow-credentials: ${CORS_CREDENTIALS:true}
     max-age: ${CORS_MAX_AGE:3600}
 
+  oauth2:
+    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:5173/oauth2/callback}
+    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback,http://192.168.1.118:3000/oauth2/callback,http://192.168.1.118:5173/oauth2/callback}
+
   storage:
-    endpoint:        ${R2_ENDPOINT:}
-    access-key:      ${R2_ACCESS_KEY:}
-    secret-key:      ${R2_SECRET_KEY:}
-    bucket-name:     ${R2_BUCKET_NAME:irc}
-    public-url-base: ${R2_PUBLIC_URL:}
-    region:          ${R2_REGION:auto}
+    endpoint: ${R2_ENDPOINT:https://55dce88e6a5db45662dc27ef50d83c2a.r2.cloudflarestorage.com}
+    access-key: ${R2_ACCESS_KEY:d06b80c862aca3f99a7dc4733ad26411}
+    secret-key: ${R2_SECRET_KEY:4dbb16899e5b4416c5acb94da9c47aed9d6861ec392fdb0745f75f7b3d992314}
+    bucket-name: ${R2_BUCKET_NAME:irc}
+    public-url-base: ${R2_PUBLIC_URL:https://pub-55dce88e6a5db45662dc27ef50d83c2a.r2.dev}
+    region: ${R2_REGION:auto}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LOGGING
-#  Set LOG_LEVEL_APP=INFO (or WARN) on Railway for quieter prod logs.
 # ═══════════════════════════════════════════════════════════════════════════════
 logging:
   level:
-    root: ${LOG_LEVEL_ROOT:INFO}
-    ak.dev.irc: ${LOG_LEVEL_APP:DEBUG}
-    org.springframework.security: WARN
+    root: INFO
+    ak.dev.irc: DEBUG
+    ak.dev.irc.security: DEBUG
+    ak.dev.irc.irc_security.rabbitmq: DEBUG
+    org.springframework.security: INFO
     org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
-    org.springframework.amqp: INFO
+    # Quiet retry-storm noise when RabbitMQ / Cassandra aren't running locally.
+    # Set to INFO/DEBUG when actually debugging broker/driver issues.
+    org.springframework.amqp.rabbit.listener: OFF
+    org.springframework.amqp.rabbit.connection: OFF
+    org.springframework.amqp: WARN
+    org.springframework.data.cassandra: WARN
+    com.datastax.oss.driver: ERROR
     org.hibernate.SQL: WARN
     org.hibernate: WARN
     io.netty: ERROR
@@ -259,41 +277,11 @@ logging:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MANAGEMENT / OBSERVABILITY  — Railway healthcheck hits /actuator/health
-# ═══════════════════════════════════════════════════════════════════════════════
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus
-      base-path: /actuator
-  endpoint:
-    health:
-      probes:
-        enabled: true
-      show-details: when_authorized
-  metrics:
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-      percentiles:
-        http.server.requests: 0.5, 0.9, 0.95, 0.99
-    tags:
-      application: ${spring.application.name}
-  prometheus:
-    metrics:
-      export:
-        enabled: true
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SERVER  — Railway injects PORT, we honour both PORT and SERVER_PORT.
+#  SERVER
 # ═══════════════════════════════════════════════════════════════════════════════
 server:
   address: 0.0.0.0
-  port: ${PORT:${SERVER_PORT:8080}}
-  forward-headers-strategy: framework        # honour X-Forwarded-* behind Railway's proxy
-  shutdown: graceful
+  port: ${SERVER_PORT:8080}
   error:
     include-message: always
     include-binding-errors: always

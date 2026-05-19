@@ -12,6 +12,7 @@ import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.retry.interceptor.RetryOperationsInterceptor;
+import org.springframework.util.backoff.ExponentialBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -244,6 +245,16 @@ public class RabbitMQConfig {
         factory.setConcurrentConsumers(2);
         factory.setMaxConcurrentConsumers(5);
         factory.setAdviceChain(retryInterceptor);
+
+        // When the broker is down (local dev without `docker compose up rabbitmq`),
+        // back off exponentially instead of restarting every 5s and flooding the
+        // console with stack traces. Starts at 5s, doubles up to a 60s cap.
+        ExponentialBackOff recoveryBackOff = new ExponentialBackOff(5_000L, 2.0);
+        recoveryBackOff.setMaxInterval(60_000L);
+        factory.setRecoveryBackOff(recoveryBackOff);
+
+        // Don't kill the container if a queue is briefly missing during reconnect.
+        factory.setMissingQueuesFatal(false);
         return factory;
     }
 }
