@@ -76,7 +76,13 @@ public class NotificationSseService {
         });
 
         try {
-            // 1) A 2KB SSE comment frame forces proxies (Cloudflare, Nginx, Railway's
+            // 1) Tell EventSource to back off 3s between reconnects. Without this,
+            //    Firefox retries every ~100ms during a JVM restart window and the
+            //    user sees a storm of NS_ERROR_CONNECTION_REFUSED in the console.
+            //    SSE spec: `retry: <ms>` is honoured by every modern browser.
+            emitter.send(SseEmitter.event().reconnectTime(3000L));
+
+            // 2) A 2KB SSE comment frame forces proxies (Cloudflare, Nginx, Railway's
             //    edge) past their write-buffer threshold so the response is flushed
             //    to the client immediately. Without this the browser sits in
             //    "loading" state and EventSource fires onerror after the page

@@ -59,9 +59,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        // SSE endpoints carry their own auth via `?token=<jwt>` query param
+        // because browser EventSource cannot send custom headers. If the
+        // cookie we extracted is invalid (typically a stale cookie that has
+        // expired since the user opened the tab), DON'T 401 the request —
+        // pass through with no SecurityContext and let the controller's
+        // `?token=` fallback handle auth. Otherwise the browser sees a 401
+        // and surfaces it as a misleading "CORS / status null" error.
+        boolean isSseEndpoint = request.getRequestURI().endsWith("/stream");
+
         try {
             // ── 2. Validate JWT ──
             if (!jwtTokenProvider.validateToken(jwt)) {
+                if (isSseEndpoint) {
+                    log.debug("Invalid JWT on SSE {} {} — passing through for ?token= fallback",
+                            request.getMethod(), request.getRequestURI());
+                    filterChain.doFilter(request, response);
+                    return;
+                }
                 log.warn("Invalid JWT on {} {}", request.getMethod(), request.getRequestURI());
                 writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
                         "Invalid or expired JWT token. Please log in again.",
@@ -72,6 +87,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             // ── 3. Ensure it's an ACCESS token ──
             String tokenType = jwtTokenProvider.getTokenType(jwt);
             if (!"ACCESS".equals(tokenType)) {
+                if (isSseEndpoint) {
+                    log.debug("Non-access token on SSE {} {} — passing through for ?token= fallback",
+                            request.getMethod(), request.getRequestURI());
+                    filterChain.doFilter(request, response);
+                    return;
+                }
                 log.warn("Non-access token type '{}' used on {} {}",
                         tokenType, request.getMethod(), request.getRequestURI());
                 writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
@@ -89,6 +110,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 UserDetails userDetails = userDetailsService.loadUserByUsername(email);
 
                 if (!userDetails.isEnabled()) {
+                    if (isSseEndpoint) {
+                        log.debug("Disabled user [{}] on SSE {} {} — passing through",
+                                userId, request.getMethod(), request.getRequestURI());
+                        filterChain.doFilter(request, response);
+                        return;
+                    }
                     log.warn("Disabled user [{}] attempted access on {} {}",
                             userId, request.getMethod(), request.getRequestURI());
                     writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
@@ -98,6 +125,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 }
 
                 if (!userDetails.isAccountNonLocked()) {
+                    if (isSseEndpoint) {
+                        log.debug("Locked user [{}] on SSE {} {} — passing through",
+                                userId, request.getMethod(), request.getRequestURI());
+                        filterChain.doFilter(request, response);
+                        return;
+                    }
                     log.warn("Locked user [{}] attempted access on {} {}",
                             userId, request.getMethod(), request.getRequestURI());
                     writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
@@ -121,7 +154,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
 
         } catch (JwtException | IllegalArgumentException ex) {
-            // Expected JWT failures: malformed, expired, unsupported, bad signature
+            // Expected JWT failures: malformed, expired, unsupported, bad signature.
+            // SSE: don't 401 — let the controller's ?token= fallback try.
+            if (isSseEndpoint) {
+                log.debug("JWT error on SSE {} {} — passing through for ?token= fallback ({})",
+                        request.getMethod(), request.getRequestURI(), ex.getMessage());
+                filterChain.doFilter(request, response);
+                return;
+            }
             log.warn("JWT error on {} {} — {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
             writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
                     "Invalid or expired token. Please log in again.",
@@ -131,6 +171,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             // Token is well-formed and unexpired but the user it points to no
             // longer exists (typical after a DB reset or account purge). This
             // is an authentication failure, not a 500 — surface it as such.
+            if (isSseEndpoint) {
+                log.debug("JWT references unknown user on SSE {} {} — passing through for ?token= fallback",
+                        request.getMethod(), request.getRequestURI());
+                filterChain.doFilter(request, response);
+                return;
+            }
             log.warn("JWT references unknown user on {} {} — {}",
                     request.getMethod(), request.getRequestURI(), ex.getMessage());
             writeErrorResponse(response, request, HttpStatus.UNAUTHORIZED,

@@ -34,4 +34,38 @@ public interface UserActivityByTypeRepository
                 @Param("type") String activityType,
                 @Param("createdAt") Instant createdAt,
                 @Param("activityId") UUID activityId);
+
+    // ── Date-range scans for the type-filtered view ──────────────────────
+
+    @Query("SELECT * FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type " +
+           "AND created_at >= :from AND created_at <= :to LIMIT :pageSize")
+    List<UserActivityByTypeEntity> firstPageBetween(@Param("userId") UUID userId,
+                                                    @Param("type") String activityType,
+                                                    @Param("from") Instant from,
+                                                    @Param("to") Instant to,
+                                                    @Param("pageSize") int pageSize);
+
+    @Query("SELECT * FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type " +
+           "AND created_at >= :from AND created_at < :cursor LIMIT :pageSize")
+    List<UserActivityByTypeEntity> nextPageBetween(@Param("userId") UUID userId,
+                                                   @Param("type") String activityType,
+                                                   @Param("from") Instant from,
+                                                   @Param("cursor") Instant cursor,
+                                                   @Param("pageSize") int pageSize);
+
+    @Query("SELECT * FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type AND created_at >= :from LIMIT :pageSize")
+    List<UserActivityByTypeEntity> firstPageSince(@Param("userId") UUID userId,
+                                                  @Param("type") String activityType,
+                                                  @Param("from") Instant from,
+                                                  @Param("pageSize") int pageSize);
+
+    @Query("SELECT * FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type AND created_at <= :to LIMIT :pageSize")
+    List<UserActivityByTypeEntity> firstPageUntil(@Param("userId") UUID userId,
+                                                  @Param("type") String activityType,
+                                                  @Param("to") Instant to,
+                                                  @Param("pageSize") int pageSize);
 }

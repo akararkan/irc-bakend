@@ -79,6 +79,8 @@ public class QuestionServiceImpl implements QuestionService {
     private final UserActivityService userActivityService;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
+    private final ak.dev.irc.app.qna.search.service.QnaSearchService qnaSearch;
+    private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -127,6 +129,8 @@ public class QuestionServiceImpl implements QuestionService {
                 authorId,
                 author.getUsername(),
                 /* allowFollowersToken */ true);
+
+        qnaSearch.indexAsync(question);
 
         return mapper.toQuestionResponse(question);
     }
@@ -185,6 +189,8 @@ public class QuestionServiceImpl implements QuestionService {
                 null,
                 requesterId,
                 author.getUsername());
+
+        qnaSearch.indexAsync(question);
 
         return mapper.toQuestionResponse(question);
     }
@@ -376,6 +382,17 @@ public class QuestionServiceImpl implements QuestionService {
         rateLimiter.checkComment(authorId);
         User author = findAnswerAuthorOrThrow(authorId);
         Question question = findQuestionOrThrow(questionId);
+
+        // Dedup window — double-click / retry safety. Returns the recent matching
+        // answer instead of writing a second copy.
+        UUID dedupScope = request.getParentAnswerId() != null ? request.getParentAnswerId() : questionId;
+        String dedupKind = request.getParentAnswerId() != null ? "qna-reanswer" : "qna-answer";
+        if (dedupGuard.isDuplicate(dedupKind, dedupScope, authorId, request.getBody())) {
+            QuestionAnswer existing = answerRepository
+                    .findRecentByAuthorAndBody(questionId, authorId, request.getBody())
+                    .stream().findFirst().orElse(null);
+            if (existing != null) return mapper.toAnswerResponse(existing, null, 0L);
+        }
 
         if (question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.CLOSED
                 || question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED) {
@@ -642,6 +659,8 @@ public class QuestionServiceImpl implements QuestionService {
         question.setDeletedAt(LocalDateTime.now());
         question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED);
         questionRepository.save(question);
+
+        qnaSearch.deleteAsync(question.getId());
 
         eventPublisher.publishQuestionDeleted(question.getId(), requesterId);
 
@@ -1416,6 +1435,14 @@ public class QuestionServiceImpl implements QuestionService {
                 .questionSaveCount(question.getSaveCount())
                 .build());
 
+        // Activity feed: log the save on the saver's history (toggle ON only —
+        // unsaves are intentionally not recorded so the feed doesn't churn).
+        try {
+            userActivityService.recordQnaQuestionSaved(userId, questionId);
+        } catch (Exception e) {
+            log.debug("[QNA] save activity record skipped: {}", e.getMessage());
+        }
+
         return mapper.toQuestionResponse(question, true);
     }
 
@@ -1466,7 +1493,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getSavedQuestions(UUID userId, Pageable pageable) {
         return saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true));
+                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true, s.getCreatedAt()));
     }
 
     @Override
@@ -1478,7 +1505,7 @@ public class QuestionServiceImpl implements QuestionService {
         }
         return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
                         userId, collectionName.trim(), pageable)
-                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true));
+                .map(s -> mapper.toQuestionResponse(s.getQuestion(), true, s.getCreatedAt()));
     }
 
     @Override

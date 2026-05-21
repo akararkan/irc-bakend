@@ -100,6 +100,21 @@ public class CassandraReactionService {
 
     // ── COMMENTS ─────────────────────────────────────────────────────────────
 
+    /** Idempotent unlike — no-op if the user isn't currently liking this comment. */
+    public void removeCommentReaction(UUID commentId, UUID postId, UUID userId) {
+        if (commentReactionRepo.find(commentId, userId).isEmpty()) return;
+        commentReactionRepo.delete(commentId, userId);
+        counterService.decrementCommentReactions(commentId);
+        broadcastCommentReaction(postId, commentId, userId,
+                                 PostRealtimeEventType.COMMENT_REACTION_REMOVED);
+    }
+
+    /** Idempotent unlike for a post. */
+    public void removePostReaction(UUID postId, UUID userId) {
+        if (!hasUserReacted(postId, userId)) return;
+        togglePostReaction(postId, userId);   // flips true → false
+    }
+
     /** Toggle a user's like on a comment. Returns post-toggle liked state. */
     public boolean toggleCommentReaction(UUID commentId, UUID postId, UUID userId) {
         Optional<CommentReactionEntity> existing = commentReactionRepo.find(commentId, userId);

@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.entity;
 
 import lombok.*;
+import org.springframework.data.cassandra.core.mapping.CassandraType;
 import org.springframework.data.cassandra.core.mapping.Column;
 import org.springframework.data.cassandra.core.mapping.PrimaryKey;
 import org.springframework.data.cassandra.core.mapping.Table;
@@ -20,9 +21,9 @@ public class PostCounterEntity {
     @Column("post_id")
     private UUID postId;
 
-    @Column("reaction_count") private Long reactionCount;
-    @Column("comment_count")  private Long commentCount;
-    @Column("share_count")    private Long shareCount;
-    @Column("view_count")     private Long viewCount;
-    @Column("save_count")     private Long saveCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("reaction_count") private Long reactionCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("comment_count")  private Long commentCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("share_count")    private Long shareCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("view_count")     private Long viewCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("save_count")     private Long saveCount;
 }

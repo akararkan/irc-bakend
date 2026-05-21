@@ -163,27 +163,6 @@ public class ResearchSocialController {
                 researchService.removeCommentReaction(researchId, commentId, user.getId()));
     }
 
-    // ── Comment likes (back-compat — LIKE-typed shortcut over /reactions) ────
-
-    @PostMapping("/comments/{commentId}/like")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> likeComment(
-            @PathVariable UUID researchId,
-            @PathVariable UUID commentId,
-            @AuthenticationPrincipal User user) {
-        researchService.likeComment(researchId, commentId, user.getId());
-        return ResponseEntity.status(HttpStatus.CREATED).build();
-    }
-
-    @DeleteMapping("/comments/{commentId}/like")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<CommentResponse> unlikeComment(
-            @PathVariable UUID researchId,
-            @PathVariable UUID commentId,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.unlikeComment(researchId, commentId, user.getId()));
-    }
-
     // ══════════════════════════════════════════════════════════════════════════
     //  Save / Bookmark
     // ══════════════════════════════════════════════════════════════════════════

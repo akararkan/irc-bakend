@@ -86,6 +86,9 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
     private final ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
+    private final ak.dev.irc.app.research.search.service.ResearchSearchService researchSearch;
+    private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
+    private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -337,6 +340,8 @@ public class ResearchServiceImpl implements ResearchService {
                     researcherId,
                     research.getResearcher() != null ? research.getResearcher().getUsername() : null);
 
+            researchSearch.indexAsync(research);
+
             return mapper.toResponse(research, researcherId);
 
         } catch (OptimisticLockingFailureException e) {
@@ -385,6 +390,7 @@ public class ResearchServiceImpl implements ResearchService {
         cleanupS3Files(research);
         research.setDeletedAt(LocalDateTime.now());
         researchRepo.save(research);
+        researchSearch.deleteAsync(researchId);
         log.info("Research soft-deleted: {}", researchId);
     }
 
@@ -428,6 +434,13 @@ public class ResearchServiceImpl implements ResearchService {
 
         researchEventPublisher.publishResearchPublished(research);
 
+        // Activity feed: log the publication on the researcher's history.
+        try {
+            userActivityService.recordResearchPublished(researcherId, research.getId());
+        } catch (Exception e) {
+            log.debug("[RESEARCH] activity record skipped: {}", e.getMessage());
+        }
+
         // Scan title + abstract + description for @mentions / @followers.
         // Concatenate so a single event covers all three text fields.
         String mentionSource = joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription());
@@ -439,6 +452,8 @@ public class ResearchServiceImpl implements ResearchService {
                 researcherId,
                 research.getResearcher().getUsername(),
                 /* allowFollowersToken */ true);
+
+        researchSearch.indexAsync(research);
 
         log.info("Research published: {} [{}] DOI={}", research.getId(), research.getIrcId(), research.getDoi());
         return mapper.toResponse(research, researcherId);
@@ -456,6 +471,7 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Research is already archived", "ALREADY_ARCHIVED");
         research.setStatus(ResearchStatus.ARCHIVED);
         research = researchRepo.save(research);
+        researchSearch.deleteAsync(research.getId());
         log.info("Research archived: {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -472,6 +488,7 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Only published research can be retracted", "NOT_PUBLISHED");
         research.setStatus(ResearchStatus.RETRACTED);
         research = researchRepo.save(research);
+        researchSearch.deleteAsync(research.getId());
         log.info("Research retracted: {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -489,6 +506,7 @@ public class ResearchServiceImpl implements ResearchService {
         research.setStatus(ResearchStatus.DRAFT);
         research.setPublishedAt(null);
         research = researchRepo.save(research);
+        researchSearch.deleteAsync(research.getId());
         log.info("Research unpublished (reverted to draft): {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -1013,6 +1031,17 @@ public class ResearchServiceImpl implements ResearchService {
                     "RESEARCH_COMMENT_BLOCKED_RELATIONSHIP");
         }
         User user = findUserOrThrow(userId);
+
+        // Dedup window — double-click / retry safety. Returns the most recent
+        // matching comment instead of writing a second copy.
+        UUID dedupScope = request.parentId() != null ? request.parentId() : researchId;
+        String dedupKind = request.parentId() != null ? "research-reply" : "research-comment";
+        if (dedupGuard.isDuplicate(dedupKind, dedupScope, userId, request.content())) {
+            ResearchComment existing = commentRepo
+                    .findRecentByAuthorAndContent(researchId, userId, request.content())
+                    .stream().findFirst().orElse(null);
+            if (existing != null) return mapper.toCommentResponse(existing, false);
+        }
 
         try {
             ResearchComment comment = ResearchComment.builder()
@@ -1556,6 +1585,14 @@ public class ResearchServiceImpl implements ResearchService {
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
                 user);
 
+        // Activity feed: log the save on the saver's history (toggle ON only —
+        // unsaves are intentionally not recorded so the feed doesn't churn).
+        try {
+            userActivityService.recordResearchSaved(userId, researchId);
+        } catch (Exception e) {
+            log.debug("[RESEARCH] save activity record skipped: {}", e.getMessage());
+        }
+
         Research fresh = researchRepo.findById(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
         return mapper.toResponse(fresh, userId, Boolean.TRUE);
@@ -1591,12 +1628,10 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getSavedResearches(UUID userId, Pageable pageable) {
         if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
-        // Every row on this page is by definition saved by the viewer — pass
-        // true for saved directly. Reactions still need a batched lookup so a
-        // user that reacted-and-saved sees the heart filled in.
-        Page<ak.dev.irc.app.research.entity.Research> page =
-                saveRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable)
-                        .map(ResearchSave::getResearch);
+        // Keep the ResearchSave row through the mapping so we can carry the
+        // save's createdAt onto the response as `savedAt` (the bookmark time
+        // — distinct from the paper's own publishedAt / createdAt).
+        Page<ResearchSave> page = saveRepo.findByUserIdOrderByCreatedAtDesc(userId, pageable);
         return mapSavedSummaries(page, userId);
     }
 
@@ -1606,22 +1641,23 @@ public class ResearchServiceImpl implements ResearchService {
         if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
         if (collectionName == null || collectionName.isBlank())
             throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
-        Page<ak.dev.irc.app.research.entity.Research> page =
-                saveRepo.findByUserIdAndCollectionNameOrderByCreatedAtDesc(userId, collectionName.trim(), pageable)
-                        .map(ResearchSave::getResearch);
+        Page<ResearchSave> page =
+                saveRepo.findByUserIdAndCollectionNameOrderByCreatedAtDesc(userId, collectionName.trim(), pageable);
         return mapSavedSummaries(page, userId);
     }
 
-    private Page<ResearchSummaryResponse> mapSavedSummaries(
-            Page<ak.dev.irc.app.research.entity.Research> page, UUID viewerId) {
+    private Page<ResearchSummaryResponse> mapSavedSummaries(Page<ResearchSave> page, UUID viewerId) {
         if (page.isEmpty()) {
-            return page.map(r -> mapper.toSummary(r, viewerId, Boolean.TRUE, Boolean.FALSE));
+            return page.map(s -> mapper.toSummary(s.getResearch(), viewerId,
+                    Boolean.TRUE, Boolean.FALSE, s.getCreatedAt()));
         }
         List<UUID> ids = page.getContent().stream()
-                .map(ak.dev.irc.app.research.entity.Research::getId).toList();
+                .map(s -> s.getResearch().getId()).toList();
         Set<UUID> reactedIds = reactionRepo.findReactedResearchIds(viewerId, ids);
-        return page.map(r -> mapper.toSummary(r, viewerId, Boolean.TRUE,
-                reactedIds.contains(r.getId())));
+        return page.map(s -> mapper.toSummary(s.getResearch(), viewerId,
+                Boolean.TRUE,
+                reactedIds.contains(s.getResearch().getId()),
+                s.getCreatedAt()));
     }
 
     @Override

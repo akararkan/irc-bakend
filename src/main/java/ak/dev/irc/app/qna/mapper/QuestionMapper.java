@@ -22,7 +22,7 @@ public class QuestionMapper {
     private static long nz(Long v) { return v == null ? 0L : v; }
 
     public QuestionResponse toQuestionResponse(Question question) {
-        return toQuestionResponse(question, false);
+        return toQuestionResponse(question, false, null);
     }
 
     /**
@@ -31,6 +31,16 @@ public class QuestionMapper {
      * instead of N+1 round trips.
      */
     public QuestionResponse toQuestionResponse(Question question, boolean isSaved) {
+        return toQuestionResponse(question, isSaved, null);
+    }
+
+    /**
+     * Saved-list overload: also carries the bookmark timestamp (from the
+     * {@code QuestionSave} row's {@code createdAt}) onto the response so the
+     * frontend can render "Saved &lt;date&gt;" without an extra fetch.
+     */
+    public QuestionResponse toQuestionResponse(Question question, boolean isSaved,
+                                               java.time.LocalDateTime savedAt) {
         User author = question.getAuthor();
         return new QuestionResponse(
                 question.getId(),
@@ -53,7 +63,8 @@ public class QuestionMapper {
                 question.getCreatedAt(),
                 question.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(question.getCreatedAt()),
-                TimeDisplayUtil.formattedDate(question.getCreatedAt())
+                TimeDisplayUtil.formattedDate(question.getCreatedAt()),
+                savedAt
         );
     }
 

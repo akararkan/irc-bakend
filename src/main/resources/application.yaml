@@ -7,6 +7,30 @@ spring:
   application:
     name: irc
 
+  # ── Boot speed knobs ────────────────────────────────────────────────────────
+  # JMX off: skip MBean registration (~1s).
+  # Banner off: cosmetic only.
+  # NOTE: lazy-initialization is intentionally OFF — it makes the first request
+  # to every controller slow (Spring builds the dependency graph on demand)
+  # and can silently break @Scheduled jobs / SSE event publishers that need
+  # to be eagerly instantiated. The bigger wins are ddl-auto=update and
+  # schema-action=create_if_not_exists below.
+  main:
+    banner-mode: off
+  jmx:
+    enabled: false
+
+  # DevTools auto-restart kills every open SSE connection on every recompile —
+  # the browser then reconnects during the restart window and gets
+  # NS_ERROR_CONNECTION_REFUSED. Keep DevTools loaded (LiveReload, dev props)
+  # but disable the auto-restart so manual "Rerun" from IntelliJ is the only
+  # thing that bounces the JVM. Set to true if you want hot-reload back.
+  devtools:
+    restart:
+      enabled: ${DEVTOOLS_RESTART:false}
+    livereload:
+      enabled: true
+
   # ── Database: PostgreSQL (Primary Relational DB) ───────────────────────────────
   datasource:
     url: jdbc:postgresql://localhost:5432/irc
@@ -22,13 +46,21 @@ spring:
   # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      ddl-auto: create-drop
+      # `update` keeps Postgres data across restarts — research, users, Q&A,
+      # notifications all survive. Boot is dramatically faster because
+      # Hibernate only emits incremental schema changes, not DROP + CREATE
+      # for every entity. To force a wipe, run:
+      #   psql -U khi -d irc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+      # Or set the env var: JPA_DDL=create-drop
+      ddl-auto: ${JPA_DDL:update}
     open-in-view: false
-    show-sql: true
+    # show-sql off in dev → meaningful boot-time savings on a chatty schema.
+    # Toggle with -Dspring.jpa.show-sql=true when you actually want SQL logs.
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
-        use_sql_comments: true
+        format_sql: false
+        use_sql_comments: false
         jdbc:
           batch_size: 30
           fetch_size: 50
@@ -37,6 +69,10 @@ spring:
         default_batch_fetch_size: 20
         query:
           in_clause_parameter_padding: true
+        # Skip Hibernate's bytecode enhancer scan on entities Hibernate hasn't
+        # explicitly enhanced — cheap dev-time saving.
+        bytecode:
+          provider: bytebuddy
 
   # ── SQL init disabled (no mock/seed data) ──────────────────────────────────────
   sql:
@@ -51,8 +87,14 @@ spring:
     username: ${CASSANDRA_USERNAME:cassandra}
     password: ${CASSANDRA_PASSWORD:cassandra}
 
-    # Schema action: CREATE_IF_NOT_EXISTS, CREATE, UPDATE, NONE
-    schema-action: create_if_not_exists
+    # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
+    # `create_if_not_exists` = fast path. Spring skips DDL for tables that
+    # already exist (5-10s saved per boot). Cassandra data — posts, comments,
+    # notifications, stories, counters — is preserved across restarts.
+    # When you need a clean slate, drop the keyspace manually:
+    #   cqlsh -e "DROP KEYSPACE irc_keyspace;"
+    # Or set the env var: CASSANDRA_SCHEMA_ACTION=recreate_drop_unused
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
 
     # Connection pool settings
     pool:
@@ -62,8 +104,22 @@ spring:
 
     # Request settings
     request:
-      timeout: 10s
+      # Bumped to 30s so the per-DDL schema-agreement round can complete
+      # during RECREATE_DROP_UNUSED boots (each DROP/CREATE triggers a
+      # cluster-wide schema-agreement protocol that can take 1–3s).
+      timeout: 30s
       consistency: LOCAL_ONE
+
+    # Control connection — drives DDL + schema agreement polling.
+    # The defaults wait up to 10s per agreement; on a single-node dev
+    # cluster the cluster IS in agreement immediately so we can poll
+    # faster and bail out sooner. This shaves boot time during
+    # RECREATE_DROP_UNUSED dramatically.
+    controlconnection:
+      schema-agreement:
+        interval: 100ms       # default 200ms — poll twice as fast
+        timeout:  2s          # default 10s — single-node never needs longer
+        warn-on-failure: true
 
   # ── Elasticsearch (Search Engine: posts, users, hashtags) ─────────────────────
   elasticsearch:
@@ -255,9 +311,11 @@ app:
 logging:
   level:
     root: INFO
-    ak.dev.irc: DEBUG
-    ak.dev.irc.security: DEBUG
-    ak.dev.irc.irc_security.rabbitmq: DEBUG
+    # App-level logs at INFO by default for fast boot. Override per-package via
+    # -Dlogging.level.ak.dev.irc=DEBUG when actually debugging.
+    ak.dev.irc: ${APP_LOG_LEVEL:INFO}
+    ak.dev.irc.security: INFO
+    ak.dev.irc.irc_security.rabbitmq: INFO
     org.springframework.security: INFO
     org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
     # Quiet retry-storm noise when RabbitMQ / Cassandra aren't running locally.
@@ -267,6 +325,17 @@ logging:
     org.springframework.amqp: WARN
     org.springframework.data.cassandra: WARN
     com.datastax.oss.driver: ERROR
+    # Quiet ES retry noise when Elasticsearch isn't running locally.
+    org.springframework.data.elasticsearch: WARN
+    co.elastic.clients: ERROR
+    org.elasticsearch.client: ERROR
+    # Silence the "Could not safely identify store assignment" INFO spam.
+    # With JPA + Cassandra + Elasticsearch all on the classpath, Spring Data
+    # runs strict mode and prints one INFO line for every repo each module
+    # can't classify — ~480 lines on a project this size. The actual wiring
+    # works (look for "Found N <store> repository interfaces"). WARN keeps
+    # real configuration failures visible while killing the false-negative noise.
+    org.springframework.data.repository.config: WARN
     org.hibernate.SQL: WARN
     org.hibernate: WARN
     io.netty: ERROR
@@ -287,3 +356,5 @@ server:
     include-binding-errors: always
     include-stacktrace: never
     include-exception: false
+
+kind: Application

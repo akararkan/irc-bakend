@@ -47,6 +47,7 @@ public class CassandraSaveService {
     private final PostCounterRepository postCounterRepo;
     private final CounterService        counterService;
     private final PostRealtimePublisher realtimePublisher;
+    private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
 
     /**
      * Toggle a user's save on a post.
@@ -77,6 +78,15 @@ public class CassandraSaveService {
                 .build());
         counterService.incrementPostSaves(postId);
         broadcast(postId, userId);
+
+        // Activity feed: record the save on the saver's history (only when
+        // the toggle goes ON — unsaves are not logged).
+        try {
+            userActivityService.recordPostSaved(userId, postId);
+        } catch (Exception e) {
+            log.debug("[SAVE] activity record skipped: {}", e.getMessage());
+        }
+
         return true;
     }
 

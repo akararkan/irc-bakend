@@ -36,6 +36,8 @@ public class UserSocialServiceImpl implements UserSocialService {
 
     // ── Replaces the old synchronous NotificationService calls ───────────────
     private final UserEventPublisher userEventPublisher;
+    private final ak.dev.irc.app.post.cassandra.service.FeedTimelineService feedTimelineService;
+    private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  FOLLOW
@@ -85,6 +87,17 @@ public class UserSocialServiceImpl implements UserSocialService {
         followRepository.save(follow);
 
         userEventPublisher.publishFollowed(meUser, target);
+
+        // Backfill the followed user's recent ~50 posts into my home feed so
+        // I see content immediately instead of waiting for them to post again.
+        feedTimelineService.backfillFollowerFeed(me, targetId);
+
+        // Activity feed: record the follow on the actor's history.
+        try {
+            userActivityService.recordFollowedUser(me, targetId);
+        } catch (Exception e) {
+            log.debug("[FOLLOW] activity record skipped: {}", e.getMessage());
+        }
 
         log.info("User [{}] ({}) now follows user [{}] ({})",
                 me, meUser.getUsername(), targetId, target.getUsername());

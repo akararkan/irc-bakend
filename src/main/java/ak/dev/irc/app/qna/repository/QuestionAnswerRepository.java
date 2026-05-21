@@ -19,6 +19,19 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     Page<QuestionAnswer> findByQuestionIdAndDeletedAtIsNullOrderByCreatedAtAsc(UUID questionId, Pageable pageable);
 
+    /** Used by the dedup window to recover the original write on a duplicate submission. */
+    @Query("""
+           SELECT a FROM QuestionAnswer a
+           WHERE a.question.id = :questionId
+             AND a.author.id   = :authorId
+             AND a.body        = :body
+             AND a.deletedAt   IS NULL
+           ORDER BY a.createdAt DESC
+           """)
+    List<QuestionAnswer> findRecentByAuthorAndBody(@Param("questionId") UUID questionId,
+                                                   @Param("authorId") UUID authorId,
+                                                   @Param("body") String body);
+
     /** Top-level answers only (no reanswers). */
     @EntityGraph(attributePaths = {"author", "parentAnswer"})
     Page<QuestionAnswer> findByQuestionIdAndParentAnswerIsNullAndDeletedAtIsNullOrderByCreatedAtAsc(

@@ -148,21 +148,38 @@ public class GlobalExceptionHandler {
         String traceId = traceId();
         String requiredType = ex.getRequiredType() != null
                 ? ex.getRequiredType().getSimpleName() : "unknown";
+        String received = String.valueOf(ex.getValue());
 
-        log.warn("[{}] Type mismatch for '{}' — expected '{}', got '{}' on {} {}",
-                traceId, ex.getName(), requiredType, ex.getValue(),
-                request.getMethod(), request.getRequestURI());
+        // Hot-path antipattern: the frontend templated `undefined` / `null`
+        // into the URL because the JS variable wasn't hydrated before the
+        // fetch. Same 400 + same errorCode, but the message points the
+        // frontend developer straight at the bug.
+        boolean jsLiteralUndefined = "undefined".equals(received) || "null".equals(received);
+
+        log.warn("[{}] Type mismatch for '{}' — expected '{}', got '{}' on {} {}{}",
+                traceId, ex.getName(), requiredType, received,
+                request.getMethod(), request.getRequestURI(),
+                jsLiteralUndefined ? " [LIKELY FRONTEND BUG — calling API before hydrating path param]" : "");
+
+        String message = jsLiteralUndefined
+                ? String.format("Parameter '%s' was the JS literal '%s' — the frontend templated an unhydrated " +
+                                "variable into the URL. Guard the call site (e.g. `if (!%s) return;`) before fetching.",
+                                ex.getName(), received, ex.getName())
+                : String.format("Parameter '%s' must be of type '%s'. Received: '%s'",
+                                ex.getName(), requiredType, received);
 
         ApiErrorResponse body = ApiErrorResponse.builder()
                 .status(HttpStatus.BAD_REQUEST.value())
                 .error("Bad Request")
-                .message(String.format("Parameter '%s' must be of type '%s'. Received: '%s'",
-                        ex.getName(), requiredType, ex.getValue()))
+                .message(message)
                 .path(request.getRequestURI())
                 .errorCode("TYPE_MISMATCH")
                 .details(Map.of("parameter", ex.getName(),
                                 "expectedType", requiredType,
-                                "receivedValue", String.valueOf(ex.getValue())))
+                                "receivedValue", received,
+                                "hint", jsLiteralUndefined
+                                        ? "frontend_path_param_unhydrated"
+                                        : "value_not_convertible"))
                 .traceId(traceId)
                 .build();
 

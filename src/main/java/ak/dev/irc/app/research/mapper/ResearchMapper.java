@@ -160,6 +160,19 @@ public class ResearchMapper {
      */
     public ResearchSummaryResponse toSummary(Research r, UUID currentUserId,
                                              Boolean isSavedOverride, Boolean reactedOverride) {
+        return toSummary(r, currentUserId, isSavedOverride, reactedOverride, /* savedAt */ null);
+    }
+
+    /**
+     * Saved-list overload: like {@link #toSummary(Research, UUID, Boolean, Boolean)}
+     * but additionally carries the bookmark timestamp (from the
+     * {@code ResearchSave} row's {@code createdAt}) onto the response so the
+     * frontend can render the "Saved &lt;date&gt;" label without an extra
+     * round-trip.
+     */
+    public ResearchSummaryResponse toSummary(Research r, UUID currentUserId,
+                                             Boolean isSavedOverride, Boolean reactedOverride,
+                                             java.time.LocalDateTime savedAt) {
         User author = r.getResearcher();
         long[] c = resolveCounters(r);
 
@@ -199,7 +212,8 @@ public class ResearchMapper {
                 r.getTags().stream().map(ResearchTag::getTagName).toList(),
                 buildShareUrl(r.getShareToken()),
                 reacted,
-                saved
+                saved,
+                savedAt
         );
     }
 

@@ -24,4 +24,11 @@ public interface PostByAuthorRepository extends CassandraRepository<PostByAuthor
     List<PostByAuthorEntity> nextPage(@Param("authorId") UUID authorId,
                                       @Param("cursor")   java.time.Instant cursor,
                                       @Param("pageSize") int pageSize);
+
+    /** Used to remove the author's own profile-feed row after a post delete. */
+    @Query("DELETE FROM posts_by_author WHERE author_id = :authorId " +
+           "AND created_at = :createdAt AND post_id = :postId")
+    void deleteRow(@Param("authorId") UUID authorId,
+                   @Param("createdAt") java.time.Instant createdAt,
+                   @Param("postId") UUID postId);
 }

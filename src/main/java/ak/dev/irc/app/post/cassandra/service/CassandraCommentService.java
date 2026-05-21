@@ -16,6 +16,7 @@ import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
+import ak.dev.irc.app.common.cache.DedupGuard;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -65,11 +66,18 @@ public class CassandraCommentService {
     private final PostByIdRepository        postRepo;
     private final UserRepository            userRepo;
     private final CassandraNotificationService notificationService;
+    private final DedupGuard                   dedupGuard;
 
     // ── Create top-level comment ─────────────────────────────────────────────
 
     public CommentByPostEntity createComment(UUID postId, UUID authorId,
                                              String text, String mediaUrl, String mediaType) {
+        if (dedupGuard.isDuplicate("post-comment", postId, authorId, text)) {
+            log.debug("[COMMENT] dedup hit — author={} post={} skipping duplicate", authorId, postId);
+            CommentByPostEntity existing = mostRecentMatchingComment(postId, authorId, text);
+            if (existing != null) return existing;
+        }
+
         UUID    commentId = UUID.randomUUID();
         Instant now       = Instant.now();
 
@@ -100,6 +108,14 @@ public class CassandraCommentService {
         CommentLookupEntity target = lookupRepo.findById(targetCommentId).orElse(null);
         if (target == null) {
             throw new IllegalArgumentException("Comment not found: " + targetCommentId);
+        }
+
+        if (dedupGuard.isDuplicate("post-reply", targetCommentId, authorId, text)) {
+            log.debug("[REPLY] dedup hit — author={} target={} skipping duplicate", authorId, targetCommentId);
+            ReplyByCommentEntity existing = mostRecentMatchingReply(
+                    Boolean.TRUE.equals(target.getReply()) ? target.getParentId() : targetCommentId,
+                    authorId, text);
+            if (existing != null) return existing;
         }
 
         // Resolve the *true* parent. If target itself is a reply, attach to
@@ -191,6 +207,22 @@ public class CassandraCommentService {
     private CommentLookupEntity requireLookup(UUID commentId) {
         return lookupRepo.findById(commentId)
                 .orElseThrow(() -> new IllegalArgumentException("Comment not found: " + commentId));
+    }
+
+    private CommentByPostEntity mostRecentMatchingComment(UUID postId, UUID authorId, String text) {
+        return commentRepo.firstPage(postId, 10).stream()
+                .filter(r -> authorId.equals(r.getAuthorId()))
+                .filter(r -> text == null ? r.getTextContent() == null : text.equals(r.getTextContent()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private ReplyByCommentEntity mostRecentMatchingReply(UUID parentId, UUID authorId, String text) {
+        return replyRepo.firstPage(parentId, 10).stream()
+                .filter(r -> authorId.equals(r.getAuthorId()))
+                .filter(r -> text == null ? r.getTextContent() == null : text.equals(r.getTextContent()))
+                .findFirst()
+                .orElse(null);
     }
 
     // ── Notification fan-out (async, deduped, blocked-aware) ───────────────

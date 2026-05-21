@@ -37,9 +37,27 @@ public class UserActivityResponse {
     /** Reaction emoji for QNA_ANSWER_REACTION (string form to keep DTO independent). */
     private String qnaReactionType;
 
+    /** Research references for RESEARCH_* types (PUBLISHED / SAVED / REACTION / COMMENT / COMMENT_REACTION). */
+    private ResearchSummary research;
+    /** Set on RESEARCH_COMMENT and RESEARCH_COMMENT_REACTION — the comment row id. */
+    private CommentSummary researchComment;
+
     private LocalDateTime createdAt;
     private String timeAgo;
     private String formattedDate;
+
+    /**
+     * Server-rendered human label for the row, e.g. {@code "Saved a post"},
+     * {@code "Liked a research paper"}, {@code "Reacted to an answer"}.
+     * Populated by the mapper from the activity type so the frontend can
+     * render {@code activity.label} without an enum→string map. Falls back
+     * to a generic {@code "Activity"} for unknown types — never returns
+     * {@code null} when {@code activityType} is set.
+     */
+    private String label;
+
+    /** Same idea, slightly longer copy suitable for a card subtitle. */
+    private String subtitle;
 
     @Data
     @Builder
@@ -83,6 +101,17 @@ public class UserActivityResponse {
         private String bodyPreview;
         private boolean accepted;
         private long bestAnswerVoteCount;
+        private AuthorSummary author;
+    }
+
+    @Data
+    @Builder
+    public static class ResearchSummary {
+        private UUID id;
+        /** Official IRC identifier — populated when the mapper has it. */
+        private String ircId;
+        private String title;
+        private String coverImageUrl;
         private AuthorSummary author;
     }
 }

@@ -51,6 +51,7 @@ public class MentionService {
     private final UserRepository userRepo;
     private final UserBlockRepository blockRepo;
     private final UserMentionEventPublisher publisher;
+    private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
 
     /**
      * Scan the given text and, if anything is mentioned, publish a single
@@ -100,6 +101,20 @@ public class MentionService {
                 .build();
 
         publisher.publish(event);
+
+        // Activity feed: one USER_MENTIONED row per recipient (the receiver
+        // side — the actor's own MENTION_LOOKUP entry is written elsewhere).
+        // Followers fan-out is intentionally NOT recorded — it would flood
+        // every follower's activity feed on every @followers post.
+        for (UUID recipient : directRecipients) {
+            try {
+                userActivityService.recordUserMentioned(
+                        recipient, mentionerId,
+                        sourceType == null ? null : sourceType.name(), sourceId);
+            } catch (Exception e) {
+                log.debug("[MENTION] activity record skipped for {}: {}", recipient, e.getMessage());
+            }
+        }
     }
 
     /**

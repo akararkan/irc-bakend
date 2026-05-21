@@ -1,6 +1,5 @@
 package ak.dev.irc.app.user.controller;
 
-import ak.dev.irc.app.common.exception.UnauthorizedException;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import ak.dev.irc.app.user.dto.response.NotificationResponse;
@@ -72,10 +71,20 @@ public class NotificationController {
             }
         }
 
+        // Auth failure path: throwing an exception here causes Spring's
+        // GlobalExceptionHandler to try writing a JSON body into a response
+        // already negotiated as text/event-stream → HttpMediaTypeNotAcceptable
+        // → 500 with empty body. Write the 401 status directly instead and
+        // return null so Spring closes the connection cleanly.
         if (userId == null) {
-            throw new UnauthorizedException(
-                    "You must be authenticated to subscribe to notifications. " +
-                    "Pass your access token as ?token=<jwt> for SSE connections.");
+            try {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType(MediaType.TEXT_PLAIN_VALUE);
+                response.getWriter().write(
+                        "Authentication required. Pass access token as ?token=<jwt>.");
+                response.flushBuffer();
+            } catch (Exception ignored) { /* swallowed — connection is going to close anyway */ }
+            return null;
         }
 
         // Disable proxy buffering (Railway/Nginx/Cloudflare) so events stream

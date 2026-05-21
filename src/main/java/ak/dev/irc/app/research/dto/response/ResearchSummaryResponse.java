@@ -43,5 +43,13 @@ public record ResearchSummaryResponse(
     String shareUrl,
 
     boolean currentUserReacted,
-    boolean currentUserSaved
+    boolean currentUserSaved,
+
+    /**
+     * When the viewer bookmarked this research — populated only by saved-list
+     * endpoints ({@code GET /me/saved}, {@code /me/saved/collection}). Null on
+     * every other endpoint. Distinct from {@code publishedAt} (the paper's
+     * own publish time).
+     */
+    LocalDateTime savedAt
 ) {}

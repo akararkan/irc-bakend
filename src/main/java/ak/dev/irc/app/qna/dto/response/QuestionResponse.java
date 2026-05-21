@@ -25,6 +25,13 @@ public record QuestionResponse(
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
         String timeAgo,
-        String formattedDate
+        String formattedDate,
+        /**
+         * When the viewer bookmarked this question — populated only by saved-list
+         * endpoints ({@code GET /me/saved}, {@code /me/saved/collection}). Null on
+         * every other endpoint. Distinct from {@code createdAt} (when the
+         * question was posted).
+         */
+        LocalDateTime savedAt
 ) {
 }

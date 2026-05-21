@@ -10,7 +10,8 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 import java.util.UUID;
 
-@Repository
+// Disambiguated bean name — clashes with the JPA ResearchViewRepository.
+@Repository("cassandraResearchViewRepository")
 public interface ResearchViewRepository
         extends CassandraRepository<ResearchViewEntity, MapId> {
 

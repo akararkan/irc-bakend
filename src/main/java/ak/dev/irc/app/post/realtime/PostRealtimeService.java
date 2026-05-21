@@ -66,6 +66,9 @@ public class PostRealtimeService {
         });
 
         try {
+            // Tell EventSource to back off 3s between reconnect attempts so a
+            // JVM restart doesn't trigger a NS_ERROR_CONNECTION_REFUSED storm.
+            emitter.send(SseEmitter.event().reconnectTime(3000L));
             emitter.send(SseEmitter.event()
                     .name("connected")
                     .data(Map.of(
@@ -98,8 +101,13 @@ public class PostRealtimeService {
         }
 
         String name = event.getEventType() == null ? "post-event" : event.getEventType().name();
+        UUID actorId = event.getActorId();
 
         for (Subscription sub : subs) {
+            // Skip the actor's own subscription — they already have the result
+            // from the originating HTTP response, echoing the event back would
+            // cause the UI to render the comment / reaction twice.
+            if (actorId != null && actorId.equals(sub.viewerId)) continue;
             try {
                 sub.emitter.send(SseEmitter.event().name(name).data(event));
             } catch (IOException | IllegalStateException ex) {

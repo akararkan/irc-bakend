@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.entity;
 
 import lombok.*;
+import org.springframework.data.cassandra.core.mapping.CassandraType;
 import org.springframework.data.cassandra.core.mapping.Column;
 import org.springframework.data.cassandra.core.mapping.PrimaryKey;
 import org.springframework.data.cassandra.core.mapping.Table;
@@ -16,5 +17,5 @@ public class SoundCounterEntity {
     @Column("sound_id")
     private UUID soundId;
 
-    @Column("use_count") private Long useCount;
+    @CassandraType(type = CassandraType.Name.COUNTER) @Column("use_count") private Long useCount;
 }

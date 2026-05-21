@@ -11,7 +11,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-@Repository
+// Bean name disambiguated to avoid clash with the legacy JPA NotificationRepository
+// in app.user.repository (which NotificationServiceImpl + NotificationEventConsumer
+// still use). Type-based @Autowired wiring still resolves either correctly.
+@Repository("cassandraNotificationRepository")
 public interface NotificationRepository extends CassandraRepository<NotificationEntity, MapId> {
 
     @Query("SELECT * FROM notifications_by_user WHERE user_id = :userId LIMIT :pageSize")
@@ -40,4 +43,11 @@ public interface NotificationRepository extends CassandraRepository<Notification
                   @Param("body") String body,
                   @Param("lastActorId") UUID lastActorId,
                   @Param("aggregateCount") Long aggregateCount);
+
+    /** Hard-delete one notification row given the full PK from the lookup table. */
+    @Query("DELETE FROM notifications_by_user " +
+           "WHERE user_id = :userId AND created_at = :createdAt AND notification_id = :notificationId")
+    void deleteRow(@Param("userId") UUID userId,
+                   @Param("createdAt") Instant createdAt,
+                   @Param("notificationId") UUID notificationId);
 }

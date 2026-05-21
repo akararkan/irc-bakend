@@ -20,7 +20,10 @@ import java.util.UUID;
  *
  * Index name: irc-posts (one shard per node is plenty for early scale).
  */
-@Document(indexName = "irc-posts")
+// createIndex=false → don't ping Elasticsearch from the repository constructor
+// at boot. Without this, a missing ES instance crashes startup. The index is
+// created lazily by the first save() / search() call instead.
+@Document(indexName = "irc-posts", createIndex = false)
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class PostSearchDocument {
 

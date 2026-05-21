@@ -96,8 +96,12 @@ public class QnaRealtimeService {
         }
 
         String name = event.getEventType() == null ? "qna-event" : event.getEventType().name();
+        UUID actorId = event.getActorId();
 
         for (Subscription sub : subs) {
+            // Skip the actor's own subscription — they already have the result
+            // from the originating HTTP response.
+            if (actorId != null && actorId.equals(sub.viewerId)) continue;
             try {
                 sub.emitter.send(SseEmitter.event().name(name).data(event));
             } catch (IOException | IllegalStateException ex) {

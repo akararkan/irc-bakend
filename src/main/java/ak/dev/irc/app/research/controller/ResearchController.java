@@ -46,6 +46,7 @@ public class ResearchController {
 
     private final ResearchService researchService;
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeService researchRealtimeService;
+    private final ak.dev.irc.app.research.search.service.ResearchSearchService researchSearchService;
 
     /**
      * Live event stream for a single research publication.
@@ -434,22 +435,14 @@ public class ResearchController {
     //  SEARCH
     // ══════════════════════════════════════════════════════════════════════════
 
-    /** Basic LIKE search across title, abstract, and keywords. */
+    /** Elasticsearch full-text search ranked by BM25 — returns research UUIDs. */
     @GetMapping("/search")
-    public ResponseEntity<Page<ResearchSummaryResponse>> search(
+    public Map<String, Object> search(
             @RequestParam String q,
-            @PageableDefault(size = 20) Pageable pageable,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.search(q, pageable, user != null ? user.getId() : null));
-    }
-
-    /** PostgreSQL full-text search (ranked by relevance). */
-    @GetMapping("/search/fts")
-    public ResponseEntity<Page<ResearchSummaryResponse>> fullTextSearch(
-            @RequestParam String q,
-            @PageableDefault(size = 20) Pageable pageable,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.fullTextSearch(q, pageable, user != null ? user.getId() : null));
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "20") int size) {
+        List<UUID> ids = researchSearchService.search(q, page, size);
+        return Map.of("query", q, "page", page, "size", size, "results", ids);
     }
 
     /** Filter published researches by one or more tags. */
@@ -474,46 +467,8 @@ public class ResearchController {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  REACTIONS
-    // ══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Add or update a reaction on a research.
-     * If the user has already reacted, the reaction type is updated.
-     */
-    @PostMapping("/{id}/react")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> react(
-            @PathVariable UUID id,
-            @RequestBody(required = false) ReactRequest request,
-            @AuthenticationPrincipal User user) {
-        researchService.react(id, request != null ? request : new ReactRequest(), user.getId());
-        return ResponseEntity.ok().build();
-    }
-
-    /** Remove the authenticated user's reaction from a research. */
-    @DeleteMapping("/{id}/react")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<ResearchResponse> removeReaction(
-            @PathVariable UUID id,
-            @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.removeReaction(id, user.getId()));
-    }
-
-    /**
-     * Get a breakdown of reactions by type.
-     * Returns a map of {@code ReactionType → count}.
-     *
-     * <p>Example response: {@code {"LIKE": 87, "INSIGHTFUL": 12, "LOVE": 3}}
-     */
-    @GetMapping("/{id}/reactions")
-    public ResponseEntity<Map<ReactionType, Long>> getReactionBreakdown(@PathVariable UUID id) {
-        return ResponseEntity.ok(researchService.getReactionBreakdown(id));
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
     //  SAVE / BOOKMARK  — read-only "me" queries live here;
-    //  mutating save/unsave is in ResearchSocialController
+    //  mutating save/unsave + reactions live in ResearchSocialController
     // ══════════════════════════════════════════════════════════════════════════
 
     /** All saved researches for the authenticated user. */
@@ -557,16 +512,6 @@ public class ResearchController {
     // ══════════════════════════════════════════════════════════════════════════
     //  SHARE & CITATIONS
     // ══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Legacy: increment share counter and return the plain share URL string.
-     * <p>Prefer {@link #shareResearch} which returns the unified
-     * {@link ak.dev.irc.app.share.ShareLinkInfo} payload.</p>
-     */
-    @PostMapping("/{id}/share-legacy")
-    public ResponseEntity<String> getShareLink(@PathVariable UUID id) {
-        return ResponseEntity.ok(researchService.getShareLink(id));
-    }
 
     /**
      * Returns the unified share-link info without bumping the counter — for the

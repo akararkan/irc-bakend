@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -96,6 +97,19 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
     /** Live (non-deleted) comments on a research. Used to rebuild {@code research.commentCount}. */
     @Query("SELECT COUNT(c) FROM ResearchComment c WHERE c.research.id = :researchId AND c.deletedAt IS NULL")
     long countLiveByResearchId(@Param("researchId") UUID researchId);
+
+    /** Used by the dedup window to recover the original write on a duplicate submission. */
+    @Query("""
+           SELECT c FROM ResearchComment c
+           WHERE c.research.id = :researchId
+             AND c.user.id     = :userId
+             AND c.content     = :content
+             AND c.deletedAt   IS NULL
+           ORDER BY c.createdAt DESC
+           """)
+    List<ResearchComment> findRecentByAuthorAndContent(@Param("researchId") UUID researchId,
+                                                       @Param("userId") UUID userId,
+                                                       @Param("content") String content);
 
     // ── Bulk reconcile from source-of-truth row counts ──────────────────────
 

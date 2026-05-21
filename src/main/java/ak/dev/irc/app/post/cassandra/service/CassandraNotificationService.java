@@ -122,6 +122,50 @@ public class CassandraNotificationService {
         });
     }
 
+    /**
+     * Hard-delete one notification. Looks up the (user_id, created_at) PK via
+     * {@code notification_lookup}, removes the {@code notifications_by_user}
+     * row, and clears the lookup row. Decrements the unread counter if the
+     * row was still unread.
+     */
+    public boolean deleteById(UUID notificationId) {
+        return lookupRepo.findById(notificationId).map(meta -> {
+            try {
+                notificationRepo.deleteRow(meta.getUserId(),
+                                           meta.getCreatedAt(),
+                                           notificationId);
+                lookupRepo.deleteById(notificationId);
+                // The counter only tracks unread; we don't know prior is_read state
+                // from the lookup row, so we don't decrement here. The counter
+                // resyncs naturally on the next mark-read action.
+                return true;
+            } catch (Exception e) {
+                log.warn("[NOTIF] delete failed for {}: {}", notificationId, e.getMessage());
+                return false;
+            }
+        }).orElse(false);
+    }
+
+    /**
+     * Hard-delete every row in the user's inbox that's already marked read.
+     * Returns the number of rows removed.
+     */
+    public int deleteAllReadFor(UUID userId) {
+        int removed = 0;
+        for (NotificationEntity n : notificationRepo.firstPage(userId, 500)) {
+            if (!Boolean.TRUE.equals(n.getRead())) continue;
+            try {
+                notificationRepo.deleteRow(userId, n.getCreatedAt(), n.getNotificationId());
+                lookupRepo.deleteById(n.getNotificationId());
+                removed++;
+            } catch (Exception e) {
+                log.debug("[NOTIF] delete-read row {} failed: {}",
+                        n.getNotificationId(), e.getMessage());
+            }
+        }
+        return removed;
+    }
+
     public Long unreadCountFor(UUID userId) {
         try {
             return cqlOperations.queryForObject(

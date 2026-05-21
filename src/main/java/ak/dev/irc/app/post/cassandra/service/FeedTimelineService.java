@@ -1,9 +1,11 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.post.cassandra.entity.FeedByUserEntity;
+import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.realtime.FeedRealtimePublisher;
 import ak.dev.irc.app.post.cassandra.repository.FeedByUserRepository;
+import ak.dev.irc.app.post.cassandra.repository.PostByAuthorRepository;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -55,6 +57,7 @@ public class FeedTimelineService {
     private static final String REDIS_FEED_KEY_PREFIX = "feed:timeline:";
 
     private final FeedByUserRepository    feedRepo;
+    private final PostByAuthorRepository  postByAuthorRepo;
     private final UserFollowRepository    userFollowRepo;
     private final FeedRealtimePublisher   realtimePublisher;
     private final StringRedisTemplate     redis;
@@ -75,12 +78,22 @@ public class FeedTimelineService {
                             String mediaUrl,
                             String visibility) {
         if ("ONLY_ME".equals(visibility)) {
-            log.debug("[FEED] Skipping fanout for ONLY_ME post {}", postId);
+            // Even private posts go into the author's OWN feed so they see
+            // their own timeline when they hit /api/v1/posts/feed.
+            writeFanoutRow(postId, authorId, authorId, createdAt, postType, textPreview, mediaUrl);
+            log.debug("[FEED] ONLY_ME post {} — self-fanout only", postId);
             return;
         }
 
         String authorLabel = userRepo.findById(authorId)
                 .map(User::getUsername).map(u -> "@" + u).orElse("Someone");
+
+        // Self-fanout — the author always sees their own posts in their home feed.
+        // Without this row, /api/v1/posts/feed for the author returns an empty
+        // list until someone they follow also posts something. Twitter / IG /
+        // Facebook all do this; users expect it.
+        writeFanoutRow(postId, authorId, authorId, createdAt, postType, textPreview, mediaUrl);
+        pushRealtime(authorId, postId, authorId);
 
         int page = 0;
         int totalDelivered = 0;
@@ -107,6 +120,36 @@ public class FeedTimelineService {
             if (followerBatch.size() < FANOUT_BATCH) break;
         }
         log.info("[FEED] fanout complete for post {}: {} followers delivered", postId, totalDelivered);
+    }
+
+    /**
+     * Backfill: when {@code newFollowerId} starts following {@code authorId},
+     * copy the author's most recent ~50 posts into the new follower's
+     * {@code feed_by_user} so their home feed isn't empty until the author
+     * posts something fresh. Mirrors what Twitter / Instagram do on follow.
+     *
+     * <p>Pulls from {@code posts_by_author} (already sorted DESC by createdAt)
+     * and writes each row in. Skips ONLY_ME posts. Best-effort — failures
+     * are logged but don't break the follow operation.</p>
+     */
+    @Async
+    public void backfillFollowerFeed(UUID newFollowerId, UUID authorId) {
+        if (newFollowerId == null || authorId == null) return;
+        try {
+            List<PostByAuthorEntity> recent = postByAuthorRepo.firstPage(authorId, 50);
+            int written = 0;
+            for (PostByAuthorEntity p : recent) {
+                writeFanoutRow(p.getPostId(), p.getAuthorId(), newFollowerId,
+                               p.getCreatedAt(), p.getPostType(),
+                               p.getTextPreview(), p.getMediaUrl());
+                written++;
+            }
+            log.info("[FEED] backfilled {} posts from author={} into follower={}",
+                    written, authorId, newFollowerId);
+        } catch (Exception e) {
+            log.warn("[FEED] backfill failed for follower={} author={}: {}",
+                    newFollowerId, authorId, e.getMessage());
+        }
     }
 
     private void writeFanoutRow(UUID postId, UUID authorId, UUID viewerId,

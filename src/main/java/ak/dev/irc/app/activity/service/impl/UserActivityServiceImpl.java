@@ -25,7 +25,12 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -65,14 +70,59 @@ public class UserActivityServiceImpl implements UserActivityService {
     @Override
     public Page<UserActivityResponse> listMyActivity(UUID userId, UserActivityType filter,
                                                      Pageable pageable) {
+        // Back-compat shim: delegate to the multi-filter overload.
+        Set<UserActivityType> single = filter == null ? null : Set.of(filter);
+        return listMyActivity(userId, single, null, null, pageable);
+    }
+
+    @Override
+    public Page<UserActivityResponse> listMyActivity(UUID userId,
+                                                     Collection<UserActivityType> types,
+                                                     Instant from,
+                                                     Instant to,
+                                                     Pageable pageable) {
         int pageSize = pageable.getPageSize();
+        boolean noTypes = types == null || types.isEmpty();
+        boolean hasFrom = from != null;
+        boolean hasTo   = to   != null;
+
         List<UserActivityResponse> content;
-        if (filter == null) {
-            content = activityRepo.firstPage(userId, pageSize).stream()
-                    .map(mapper::toResponse)
-                    .toList();
+
+        if (noTypes) {
+            // ─ All types path: scan activity_by_user ────────────────────
+            List<UserActivityEntity> rows;
+            if (hasFrom && hasTo)         rows = activityRepo.firstPageBetween(userId, from, to, pageSize);
+            else if (hasFrom)             rows = activityRepo.firstPageSince(userId, from, pageSize);
+            else if (hasTo)               rows = activityRepo.firstPageUntil(userId, to, pageSize);
+            else                          rows = activityRepo.firstPage(userId, pageSize);
+            content = rows.stream().map(mapper::toResponse).toList();
+        } else if (types.size() == 1) {
+            // ─ Single type path: scan activity_by_user_and_type ─────────
+            String typeName = types.iterator().next().name();
+            List<UserActivityByTypeEntity> rows;
+            if (hasFrom && hasTo)         rows = byTypeRepo.firstPageBetween(userId, typeName, from, to, pageSize);
+            else if (hasFrom)             rows = byTypeRepo.firstPageSince(userId, typeName, from, pageSize);
+            else if (hasTo)               rows = byTypeRepo.firstPageUntil(userId, typeName, to, pageSize);
+            else                          rows = byTypeRepo.firstPage(userId, typeName, pageSize);
+            content = rows.stream().map(mapper::toResponseByType).toList();
         } else {
-            content = byTypeRepo.firstPage(userId, filter.name(), pageSize).stream()
+            // ─ Multi-type union: scan each type partition, merge & trim ─
+            // Cassandra can't OR across partition keys in one query, so we
+            // do N small partition scans (one per type) and k-way merge by
+            // createdAt DESC. Each per-type scan honours the date range.
+            List<UserActivityByTypeEntity> merged = new ArrayList<>(pageSize * types.size());
+            for (UserActivityType t : new HashSet<>(types)) {
+                List<UserActivityByTypeEntity> page;
+                if (hasFrom && hasTo)     page = byTypeRepo.firstPageBetween(userId, t.name(), from, to, pageSize);
+                else if (hasFrom)         page = byTypeRepo.firstPageSince(userId, t.name(), from, pageSize);
+                else if (hasTo)           page = byTypeRepo.firstPageUntil(userId, t.name(), to, pageSize);
+                else                      page = byTypeRepo.firstPage(userId, t.name(), pageSize);
+                merged.addAll(page);
+            }
+            merged.sort(Comparator.comparing(UserActivityByTypeEntity::getCreatedAt,
+                                             Comparator.reverseOrder()));
+            content = merged.stream()
+                    .limit(pageSize)
                     .map(mapper::toResponseByType)
                     .toList();
         }
@@ -128,6 +178,17 @@ public class UserActivityServiceImpl implements UserActivityService {
 
     // ── Record methods ──────────────────────────────────────────────────────
 
+    @Override @Async
+    public void recordPostCreated(UUID userId, UUID postId, String postType) {
+        if (userId == null || postId == null) return;
+        // postType is reused on the reactionType column to avoid a schema
+        // change — the mapper / frontend reads it back via the same field
+        // when activityType == POST_CREATED. Cheap denormalisation.
+        write(userId, UserActivityType.POST_CREATED,
+              b -> { b.postId(postId);
+                     b.reactionType(postType); });
+    }
+
     @Override
     public void recordPostReaction(UUID userId, UUID postId, PostReactionType reactionType) {
         write(userId, UserActivityType.POST_REACTION,
@@ -152,6 +213,12 @@ public class UserActivityServiceImpl implements UserActivityService {
     @Override
     public void recordPostShare(UUID userId, UUID postId) {
         write(userId, UserActivityType.POST_SHARE, b -> b.postId(postId));
+    }
+
+    @Override @Async
+    public void recordPostSaved(UUID userId, UUID postId) {
+        if (userId == null || postId == null) return;
+        write(userId, UserActivityType.POST_SAVED, b -> b.postId(postId));
     }
 
     @Override
@@ -192,9 +259,45 @@ public class UserActivityServiceImpl implements UserActivityService {
     }
 
     @Override @Async
+    public void recordUserMentioned(UUID mentionedUserId, UUID mentionerId,
+                                    String sourceType, UUID sourceId) {
+        if (mentionedUserId == null || mentionerId == null) return;
+        if (mentionedUserId.equals(mentionerId)) return;     // self-mention noise
+        // Recipient is the activity owner. The mentioner is denormalised onto
+        // target_user_id; the source post/comment/question/answer/research id
+        // is denormalised onto post_id (when sourceType POST/POST_COMMENT) or
+        // question_id (QUESTION/QUESTION_ANSWER) or research_id otherwise.
+        write(mentionedUserId, UserActivityType.USER_MENTIONED, b -> {
+            b.targetUserId(mentionerId);
+            b.query(truncate(sourceType, 60));      // re-use the query column as the source-type label
+            if (sourceType == null) {
+                b.postId(sourceId);
+            } else switch (sourceType) {
+                case "POST", "POST_COMMENT" -> b.postId(sourceId);
+                case "QUESTION", "QUESTION_ANSWER" -> b.questionId(sourceId);
+                case "RESEARCH", "RESEARCH_COMMENT" -> b.researchId(sourceId);
+                default -> b.postId(sourceId);
+            }
+        });
+    }
+
+    @Override @Async
+    public void recordFollowedUser(UUID actorId, UUID targetUserId) {
+        if (actorId == null || targetUserId == null) return;
+        if (actorId.equals(targetUserId)) return;
+        write(actorId, UserActivityType.FOLLOWED_USER, b -> b.targetUserId(targetUserId));
+    }
+
+    @Override @Async
     public void recordQnaQuestionCreated(UUID userId, UUID questionId) {
         if (userId == null || questionId == null) return;
         write(userId, UserActivityType.QNA_QUESTION_CREATED, b -> b.questionId(questionId));
+    }
+
+    @Override @Async
+    public void recordQnaQuestionSaved(UUID userId, UUID questionId) {
+        if (userId == null || questionId == null) return;
+        write(userId, UserActivityType.QNA_QUESTION_SAVED, b -> b.questionId(questionId));
     }
 
     @Override @Async
@@ -227,6 +330,18 @@ public class UserActivityServiceImpl implements UserActivityService {
         if (userId == null || answerId == null) return;
         write(userId, UserActivityType.QNA_ANSWER_FEEDBACK,
               b -> { b.questionId(questionId); b.answerId(answerId); });
+    }
+
+    @Override @Async
+    public void recordResearchPublished(UUID userId, UUID researchId) {
+        if (userId == null || researchId == null) return;
+        write(userId, UserActivityType.RESEARCH_PUBLISHED, b -> b.researchId(researchId));
+    }
+
+    @Override @Async
+    public void recordResearchSaved(UUID userId, UUID researchId) {
+        if (userId == null || researchId == null) return;
+        write(userId, UserActivityType.RESEARCH_SAVED, b -> b.researchId(researchId));
     }
 
     @Override @Async

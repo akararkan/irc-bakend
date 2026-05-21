@@ -11,28 +11,26 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * One-shot, idempotent install of the search infrastructure on startup.
+ * One-shot, idempotent install of the Postgres search infrastructure on startup.
  *
- * <p>Strategy: Postgres full-text search (FTS) + trigram fuzzy fallback.
- * Both scale into the hundreds of millions of rows on a single Postgres
- * instance with sub-100ms latency when the indexes are warm. For genuine
- * billion-scale workloads, the same {@code SearchService} contract maps
- * cleanly to Elasticsearch / OpenSearch / Meilisearch — only the repository
- * implementations change.</p>
+ * <p>Scope after the Cassandra migration: this runner only manages indexes for
+ * tables that <b>still live in Postgres</b> — research, questions, question
+ * answers, users. Posts (and reels) moved to Cassandra and are searched via
+ * Elasticsearch ({@code PostSearchService}), so post-table index attempts
+ * were removed from here.</p>
  *
- * <p>Two index families are installed per searchable corpus:
+ * <p>Two index families per Postgres-resident corpus:
  * <ul>
  *   <li><b>GIN on {@code to_tsvector(...)}</b> — exact-token, ranked search via
- *       {@code websearch_to_tsquery} / {@code ts_rank_cd}. Hot path.</li>
+ *       {@code websearch_to_tsquery} / {@code ts_rank_cd}.</li>
  *   <li><b>GIN on {@code gin_trgm_ops}</b> — typo-tolerant similarity search
  *       via the {@code %} operator. Fallback for "no FTS hits" and for
  *       prefix lookups (usernames, tags).</li>
  * </ul>
  *
  * <p>Everything is wrapped in {@code IF NOT EXISTS} so the runner is safe
- * to execute on every boot. JPA owns the column DDL via
- * {@code spring.jpa.hibernate.ddl-auto=update}; we add nothing to the schema
- * here, only function indexes.</p>
+ * to execute on every boot. JPA owns the column DDL; we add only function
+ * indexes here.</p>
  */
 @Slf4j
 @Configuration
@@ -56,12 +54,6 @@ public class SearchInfrastructureInitializer {
      * stemming is desired for that field.
      */
     private static final List<String> INDEXES = List.of(
-            // ── Posts (also covers reels — same table, postType=REEL) ────
-            "CREATE INDEX IF NOT EXISTS idx_post_fts " +
-                    "ON posts USING GIN (to_tsvector('simple', coalesce(text_content, '')))",
-            "CREATE INDEX IF NOT EXISTS idx_post_trgm " +
-                    "ON posts USING GIN (text_content gin_trgm_ops)",
-
             // ── Research: title + abstract + description + keywords ──────
             "CREATE INDEX IF NOT EXISTS idx_research_fts " +
                     "ON researches USING GIN (to_tsvector('simple', " +
@@ -83,11 +75,13 @@ public class SearchInfrastructureInitializer {
             "CREATE INDEX IF NOT EXISTS idx_qanswer_fts " +
                     "ON question_answers USING GIN (to_tsvector('simple', coalesce(body, '')))",
 
-            // ── Users: username + fullName fragments ────────────────────
+            // ── Users: username + first/last name fragments ─────────────
+            // Bio lives on user_profiles now, not users — left out of the
+            // composite FTS so the index doesn't reference a missing column.
             "CREATE INDEX IF NOT EXISTS idx_user_fts " +
                     "ON users USING GIN (to_tsvector('simple', " +
                     "  coalesce(username, '') || ' ' || coalesce(fname, '') || ' ' || " +
-                    "  coalesce(lname, '') || ' ' || coalesce(profile_bio, '')))",
+                    "  coalesce(lname, '')))",
             "CREATE INDEX IF NOT EXISTS idx_user_username_trgm " +
                     "ON users USING GIN (username gin_trgm_ops)",
             "CREATE INDEX IF NOT EXISTS idx_user_fname_trgm " +

@@ -313,6 +313,14 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+					<!--
+					  JDK 22+ flags restricted methods (System::load via JNR/JFFI,
+					  used by the DataStax Cassandra driver and Netty) as warnings,
+					  and will block them in a future release. Pre-authorising
+					  native access on ALL-UNNAMED makes the warnings go away and
+					  forward-proofs the build.
+					-->
+					<jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>
 				</configuration>
 			</plugin>
 

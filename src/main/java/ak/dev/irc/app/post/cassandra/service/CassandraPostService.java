@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReelsByDayEntity;
@@ -41,6 +42,7 @@ public class CassandraPostService {
     private final PostSearchService        postSearchService;
     private final CassandraSoundService    soundService;
     private final CassandraHashtagService  hashtagService;
+    private final UserActivityService      userActivityService;
 
     /**
      * Create a post and persist it across every denormalized table that needs
@@ -117,6 +119,13 @@ public class CassandraPostService {
         hashtagService.indexEntitiesForPost(id, cmd.authorId(),
                                             cmd.textContent(), now, coverMedia);
 
+        // 8. record on the author's activity feed.
+        try {
+            userActivityService.recordPostCreated(cmd.authorId(), id, cmd.postType());
+        } catch (Exception e) {
+            log.debug("[POST] activity record skipped: {}", e.getMessage());
+        }
+
         return canonical;
     }
 
@@ -127,6 +136,101 @@ public class CassandraPostService {
 
     public PostByIdEntity getById(UUID postId) {
         return postByIdRepo.findById(postId).orElse(null);
+    }
+
+    /**
+     * Author-only partial update. Each non-null field on {@link EditPostCommand}
+     * overwrites the corresponding column on {@code posts_by_id}. The fast
+     * mirror on {@code posts_by_author} is updated best-effort so the profile
+     * feed reflects the edit on next read; failures there are logged but do
+     * not fail the request.
+     *
+     * @return the updated row, or {@code null} if the post did not exist
+     * @throws SecurityException when {@code actorId} is not the post's author
+     */
+    public PostByIdEntity editPost(UUID postId, UUID actorId, EditPostCommand cmd) {
+        PostByIdEntity existing = postByIdRepo.findById(postId).orElse(null);
+        if (existing == null) return null;
+        if (!actorId.equals(existing.getAuthorId())) {
+            throw new SecurityException("Not the author");
+        }
+
+        boolean changed = false;
+        if (cmd.textContent() != null) { existing.setTextContent(cmd.textContent()); changed = true; }
+        if (cmd.visibility()  != null) { existing.setVisibility(cmd.visibility());   changed = true; }
+        if (cmd.mediaUrls()   != null) { existing.setMediaUrls(cmd.mediaUrls());     changed = true; }
+        if (cmd.mediaTypes()  != null) { existing.setMediaTypes(cmd.mediaTypes());   changed = true; }
+        if (cmd.audioTrackUrl()  != null) { existing.setAudioTrackUrl(cmd.audioTrackUrl());   changed = true; }
+        if (cmd.audioTrackName() != null) { existing.setAudioTrackName(cmd.audioTrackName()); changed = true; }
+        if (cmd.locationName()   != null) { existing.setLocationName(cmd.locationName());     changed = true; }
+        if (cmd.locationLat()    != null) { existing.setLocationLat(cmd.locationLat());       changed = true; }
+        if (cmd.locationLng()    != null) { existing.setLocationLng(cmd.locationLng());       changed = true; }
+
+        if (!changed) return existing;
+
+        existing.setUpdatedAt(Instant.now());
+        postByIdRepo.save(existing);
+
+        // Best-effort mirror onto the profile-feed denorm row. We don't have
+        // a primary-key-aware updateRow on posts_by_author — re-save with the
+        // (author, created_at, post) tuple intact.
+        try {
+            postByAuthorRepo.save(PostByAuthorEntity.builder()
+                    .authorId(existing.getAuthorId())
+                    .createdAt(existing.getCreatedAt())
+                    .postId(postId)
+                    .postType(existing.getPostType())
+                    .visibility(existing.getVisibility())
+                    .textPreview(preview(existing.getTextContent()))
+                    .mediaUrl(existing.getMediaUrls() == null || existing.getMediaUrls().isEmpty()
+                              ? null : existing.getMediaUrls().get(0))
+                    .build());
+        } catch (Exception e) {
+            log.warn("[POST] profile-feed mirror update failed for {}: {}", postId, e.getMessage());
+        }
+
+        // Best-effort search re-index — async.
+        postSearchService.indexAsync(existing);
+
+        log.info("[POST] edited {} (author={})", postId, actorId);
+        return existing;
+    }
+
+    /**
+     * Hard-delete a post and every denormalized copy. Caller must check
+     * ownership (only the author can delete their own post — the controller
+     * enforces this via the JWT principal). Returns {@code true} if the
+     * post existed and was removed.
+     *
+     * <p>Cleans:
+     * <ul>
+     *   <li>{@code posts_by_id} — canonical row</li>
+     *   <li>{@code posts_by_author} — profile feed entry</li>
+     *   <li>{@code post_search} (Elasticsearch) — async best-effort</li>
+     * </ul>
+     * {@code feed_by_user} rows for followers and {@code reels_by_day} entries
+     * expire naturally via TTL; we don't sweep them because Cassandra wide-row
+     * deletions across N partitions would be expensive.</p>
+     */
+    public boolean deletePost(UUID postId) {
+        PostByIdEntity canonical = postByIdRepo.findById(postId).orElse(null);
+        if (canonical == null) return false;
+
+        postByIdRepo.deleteById(postId);
+
+        if (canonical.getAuthorId() != null && canonical.getCreatedAt() != null) {
+            try {
+                postByAuthorRepo.deleteRow(canonical.getAuthorId(),
+                                           canonical.getCreatedAt(),
+                                           postId);
+            } catch (Exception e) {
+                log.warn("[POST] profile-feed cleanup failed for {}: {}", postId, e.getMessage());
+            }
+        }
+
+        postSearchService.deleteAsync(postId);
+        log.info("[POST] deleted {} (author={})", postId, canonical.getAuthorId());
+        return true;
     }
 
     public List<PostByAuthorEntity> profileFeed(UUID authorId, int pageSize) {
@@ -158,5 +262,21 @@ public class CassandraPostService {
             /** Optional — when set, this post is registered as a use of the
              *  sound library entry, incrementing its use_count. */
             UUID   soundId
+    ) {}
+
+    /**
+     * Partial-update payload for {@link #editPost}. Every field is nullable;
+     * a {@code null} field is left untouched on the existing post.
+     */
+    public record EditPostCommand(
+            String textContent,
+            String visibility,
+            String audioTrackUrl,
+            String audioTrackName,
+            String locationName,
+            Double locationLat,
+            Double locationLng,
+            List<String> mediaUrls,
+            List<String> mediaTypes
     ) {}
 }

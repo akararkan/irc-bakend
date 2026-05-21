@@ -10,7 +10,10 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 import java.util.UUID;
 
-@Repository
+// Disambiguated bean name — clashes with the JPA QuestionViewRepository in
+// app.qna.repository (still used by the QnA service for the canonical question
+// row's view-count denormalisation).
+@Repository("cassandraQuestionViewRepository")
 public interface QuestionViewRepository
         extends CassandraRepository<QuestionViewEntity, MapId> {
 
