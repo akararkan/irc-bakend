@@ -29,6 +29,11 @@ public class CounterService {
     public void decrementPostReactions(UUID postId)  { addPost(postId, "reaction_count", -1); }
     public void incrementPostComments(UUID postId)   { addPost(postId, "comment_count",   1); }
     public void decrementPostComments(UUID postId)   { addPost(postId, "comment_count",  -1); }
+    /** Subtract N from a post's comment counter in one statement. */
+    public void decrementPostCommentsBy(UUID postId, long n) {
+        if (n <= 0) return;
+        addPost(postId, "comment_count", -n);
+    }
     public void incrementPostShares(UUID postId)     { addPost(postId, "share_count",     1); }
     public void incrementPostViews(UUID postId)      { addPost(postId, "view_count",      1); }
     public void incrementPostSaves(UUID postId)      { addPost(postId, "save_count",      1); }

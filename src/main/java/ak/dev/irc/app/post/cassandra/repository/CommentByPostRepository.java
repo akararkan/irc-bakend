@@ -31,10 +31,17 @@ public interface CommentByPostRepository extends CassandraRepository<CommentByPo
                   @Param("commentId") UUID commentId,
                   @Param("text") String text);
 
-    @Query("UPDATE comments_by_post SET is_deleted = true, text_content = null, " +
-           "media_url = null, media_type = null " +
+    /**
+     * Hard delete the comment row. Replaces the legacy {@code softDelete}
+     * pattern (UPDATE … SET is_deleted=true), which left the row in place
+     * forever and caused thread-partition bloat. A DELETE writes one row
+     * tombstone; the tombstone is GC'd after the table's
+     * {@code gc_grace_seconds} (default 10d, can be tuned per table) and
+     * disappears entirely, so long-lived threads stay scan-cheap.
+     */
+    @Query("DELETE FROM comments_by_post " +
            "WHERE post_id = :postId AND created_at = :createdAt AND comment_id = :commentId")
-    void softDelete(@Param("postId") UUID postId,
+    void hardDelete(@Param("postId") UUID postId,
                     @Param("createdAt") Instant createdAt,
                     @Param("commentId") UUID commentId);
 }

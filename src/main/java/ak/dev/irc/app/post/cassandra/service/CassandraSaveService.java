@@ -2,7 +2,6 @@ package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.post.cassandra.entity.SaveByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.SaveLookupEntity;
-import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.SaveByUserRepository;
 import ak.dev.irc.app.post.cassandra.repository.SaveLookupRepository;
 import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
@@ -10,6 +9,7 @@ import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.cassandra.core.cql.CqlOperations;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -44,13 +44,16 @@ public class CassandraSaveService {
 
     private final SaveByUserRepository  savesByUserRepo;
     private final SaveLookupRepository  saveLookupRepo;
-    private final PostCounterRepository postCounterRepo;
     private final CounterService        counterService;
     private final PostRealtimePublisher realtimePublisher;
+    private final CqlOperations         cqlOperations;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
 
     /**
-     * Toggle a user's save on a post.
+     * Toggle a user's save on a post. LWT-guarded via {@code IF NOT EXISTS} /
+     * {@code IF EXISTS} on the lookup row, so concurrent toggles from the same
+     * user can't double-bump the save counter. Only the request that actually
+     * flipped the row owns the counter + mirror writes + broadcast.
      *
      * @param collectionName optional folder name; null = the default "All" bucket
      * @return true if the post is saved AFTER the call, false if it was unsaved
@@ -60,21 +63,31 @@ public class CassandraSaveService {
 
         if (existing.isPresent()) {
             SaveLookupEntity prior = existing.get();
+            boolean removed = cqlOperations.execute(
+                    "DELETE FROM saves_by_post_user WHERE post_id = ? AND user_id = ? IF EXISTS",
+                    postId, userId);
+            if (!removed) {
+                // Lost the race: a concurrent toggle already unsaved.
+                return false;
+            }
             savesByUserRepo.delete(userId, prior.getCreatedAt(), postId);
-            saveLookupRepo.delete(postId, userId);
             counterService.decrementPostSaves(postId);
             broadcast(postId, userId);
             return false;
         }
 
         Instant now = Instant.now();
+        boolean inserted = cqlOperations.execute(
+                "INSERT INTO saves_by_post_user (post_id, user_id, created_at, collection_name) " +
+                        "VALUES (?, ?, ?, ?) IF NOT EXISTS",
+                postId, userId, now, collectionName);
+        if (!inserted) {
+            // Lost the race: a concurrent toggle already saved.
+            return true;
+        }
         savesByUserRepo.save(SaveByUserEntity.builder()
                 .userId(userId).createdAt(now).postId(postId)
                 .collectionName(collectionName)
-                .build());
-        saveLookupRepo.save(SaveLookupEntity.builder()
-                .postId(postId).userId(userId)
-                .createdAt(now).collectionName(collectionName)
                 .build());
         counterService.incrementPostSaves(postId);
         broadcast(postId, userId);
@@ -104,15 +117,15 @@ public class CassandraSaveService {
 
     // ── realtime ─────────────────────────────────────────────────────────────
 
+    // Counter columns are eventually consistent — re-reading right after an
+    // increment can return a stale value. Clients apply the delta locally
+    // from the event type and reconcile via REST on next fetch.
     private void broadcast(UUID postId, UUID actorId) {
         try {
-            Long latest = postCounterRepo.findByPostId(postId)
-                    .map(c -> c.getSaveCount()).orElse(null);
             realtimePublisher.publish(postId, PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
                     .postId(postId)
                     .actorId(actorId)
-                    .postSaveCount(latest)
                     .build());
         } catch (Exception e) {
             log.debug("[SAVE] realtime broadcast skipped: {}", e.getMessage());

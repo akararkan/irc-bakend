@@ -25,10 +25,23 @@ public interface ReplyByCommentRepository extends CassandraRepository<ReplyByCom
                   @Param("replyId") UUID replyId,
                   @Param("text") String text);
 
-    @Query("UPDATE replies_by_comment SET is_deleted = true, text_content = null, " +
-           "media_url = null " +
+    /**
+     * Hard delete the reply row. Same rationale as
+     * {@link CommentByPostRepository#hardDelete}: a single row tombstone
+     * cleared after {@code gc_grace_seconds}, no accumulating soft-deleted
+     * rows under the parent's clustering range.
+     */
+    @Query("DELETE FROM replies_by_comment " +
            "WHERE parent_id = :parentId AND created_at = :createdAt AND reply_id = :replyId")
-    void softDelete(@Param("parentId") UUID parentId,
+    void hardDelete(@Param("parentId") UUID parentId,
                     @Param("createdAt") Instant createdAt,
                     @Param("replyId") UUID replyId);
+
+    /**
+     * Range-delete every reply under a hard-deleted parent. Single range
+     * tombstone — used when a top-level comment is removed and we want to
+     * sweep its reply partition rather than leaving orphan replies behind.
+     */
+    @Query("DELETE FROM replies_by_comment WHERE parent_id = :parentId")
+    void deleteAllUnder(@Param("parentId") UUID parentId);
 }

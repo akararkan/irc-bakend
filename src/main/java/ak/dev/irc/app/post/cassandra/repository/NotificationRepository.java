@@ -50,4 +50,14 @@ public interface NotificationRepository extends CassandraRepository<Notification
     void deleteRow(@Param("userId") UUID userId,
                    @Param("createdAt") Instant createdAt,
                    @Param("notificationId") UUID notificationId);
+
+    /**
+     * Range-delete everything in the user's inbox older than {@code before}.
+     * Produces a single range tombstone instead of one tombstone per row,
+     * keeping subsequent inbox scans cheap even after heavy cleanup.
+     */
+    @Query("DELETE FROM notifications_by_user " +
+           "WHERE user_id = :userId AND created_at < :before")
+    void deleteOlderThan(@Param("userId") UUID userId,
+                         @Param("before") Instant before);
 }

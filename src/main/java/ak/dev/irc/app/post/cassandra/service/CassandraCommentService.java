@@ -9,7 +9,6 @@ import ak.dev.irc.app.post.cassandra.repository.CommentByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentLookupRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostByIdRepository;
-import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.ReplyByCommentRepository;
 import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
 import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
@@ -47,9 +46,13 @@ import java.util.UUID;
  * Edit / delete need the original (post_id|parent_id, created_at) — we fetch
  * that from comment_lookup, which is keyed by comment_id alone.
  *
- * Soft delete only: rows stay (so the thread shape doesn't collapse) but the
- * text is nulled and is_deleted=true. Counters DO decrement so "12 comments"
- * never includes ghosts.
+ * Hard delete: the comment / reply row is physically removed from
+ * {@code comments_by_post} (or {@code replies_by_comment}), plus its
+ * lookup-table row. Deleting a top-level comment also range-deletes its
+ * entire reply partition in one tombstone — keeps the parent partition
+ * scan-cheap and prevents orphan replies. Counters decrement to match.
+ * The previous "soft delete" pattern (UPDATE is_deleted=true) left rows
+ * in place forever and bloated long threads; that's gone now.
  */
 @Slf4j
 @Service
@@ -59,7 +62,6 @@ public class CassandraCommentService {
     private final CommentByPostRepository   commentRepo;
     private final ReplyByCommentRepository  replyRepo;
     private final CommentLookupRepository   lookupRepo;
-    private final PostCounterRepository     postCounterRepo;
     private final CommentCounterRepository  commentCounterRepo;
     private final CounterService            counterService;
     private final PostRealtimePublisher     realtimePublisher;
@@ -166,8 +168,20 @@ public class CassandraCommentService {
                   PostRealtimeEventType.COMMENT_EDITED);
     }
 
-    // ── Soft delete ──────────────────────────────────────────────────────────
+    // ── Hard delete ──────────────────────────────────────────────────────────
 
+    /**
+     * Physically remove a comment or reply. Replaces the old soft-delete
+     * pattern (UPDATE is_deleted=true) which left rows in the partition
+     * forever and made long threads slower to read with every delete.
+     *
+     * <p>Cascade on top-level: range-deletes the reply partition in a single
+     * tombstone and decrements the post's comment counter by 1 + replyCount
+     * so the visible total stays accurate. Lookup rows for the orphan replies
+     * are not chased per-row (scatter-deletes across many partitions); a
+     * background sweeper can reap them, and they're harmless until then since
+     * the data rows they point to are gone.</p>
+     */
     public void deleteComment(UUID commentId, UUID authorId) {
         CommentLookupEntity meta = requireLookup(commentId);
         if (!meta.getAuthorId().equals(authorId)) {
@@ -175,13 +189,19 @@ public class CassandraCommentService {
         }
 
         if (Boolean.TRUE.equals(meta.getReply())) {
-            replyRepo.softDelete(meta.getParentId(), meta.getCreatedAt(), commentId);
+            replyRepo.hardDelete(meta.getParentId(), meta.getCreatedAt(), commentId);
+            lookupRepo.deleteById(commentId);
             counterService.decrementCommentReplies(meta.getParentId());
             counterService.decrementPostComments(meta.getPostId());
         } else {
-            commentRepo.softDelete(meta.getPostId(), meta.getCreatedAt(), commentId);
+            long replyCount = commentCounterRepo.findByCommentId(commentId)
+                    .map(c -> c.getReplyCount() == null ? 0L : c.getReplyCount())
+                    .orElse(0L);
+            commentRepo.hardDelete(meta.getPostId(), meta.getCreatedAt(), commentId);
+            lookupRepo.deleteById(commentId);
+            replyRepo.deleteAllUnder(commentId);
             counterService.decrementPostComments(meta.getPostId());
-            // Replies under a deleted top-level stay readable; only the body is gone.
+            counterService.decrementPostCommentsBy(meta.getPostId(), replyCount);
         }
 
         broadcast(meta.getPostId(), commentId, meta.getParentId(), authorId, null, null, null,
@@ -225,47 +245,46 @@ public class CassandraCommentService {
                 .orElse(null);
     }
 
-    // ── Notification fan-out (async, deduped, blocked-aware) ───────────────
+    // ── Notification fan-out (async; enrichment runs on the executor) ─────
+    // The post / user / comment-lookup reads needed to populate the
+    // notification body happen INSIDE the deliverAsync(Supplier) lambda so
+    // they execute on the background thread, not the request thread.
 
     private void notifyPostCommented(UUID postId, UUID commentId, UUID actorId, String text) {
-        try {
+        String previewSnap = preview(text);
+        notificationService.deliverAsync(() -> {
             PostByIdEntity post = postRepo.findById(postId).orElse(null);
-            if (post == null || post.getAuthorId() == null) return;
+            if (post == null || post.getAuthorId() == null) return null;
             String actor = actorLabel(actorId);
-            String preview = preview(text);
-            notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
+            return new CassandraNotificationService.DeliverRequest(
                     post.getAuthorId(),
                     NotificationKind.POST_COMMENTED,
                     "New comment on your post",
-                    actor + " commented: \"" + preview + "\"",
+                    actor + " commented: \"" + previewSnap + "\"",
                     actorId,
                     "Post", postId,
                     "POST_COMMENTED:" + postId
-            ));
-        } catch (Exception e) {
-            log.debug("[COMMENT] notify skipped: {}", e.getMessage());
-        }
+            );
+        });
     }
 
     private void notifyReply(UUID postId, UUID parentCommentId, UUID replyId,
                              UUID actorId, String text) {
-        try {
+        String previewSnap = preview(text);
+        notificationService.deliverAsync(() -> {
             CommentLookupEntity parent = lookupRepo.findById(parentCommentId).orElse(null);
-            if (parent == null || parent.getAuthorId() == null) return;
+            if (parent == null || parent.getAuthorId() == null) return null;
             String actor = actorLabel(actorId);
-            String preview = preview(text);
-            notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
+            return new CassandraNotificationService.DeliverRequest(
                     parent.getAuthorId(),
                     NotificationKind.POST_COMMENT_REPLIED,
                     "Someone replied to your comment",
-                    actor + " replied: \"" + preview + "\"",
+                    actor + " replied: \"" + previewSnap + "\"",
                     actorId,
                     "Comment", replyId,
                     "POST_COMMENT_REPLIED:" + parentCommentId
-            ));
-        } catch (Exception e) {
-            log.debug("[COMMENT] reply notify skipped: {}", e.getMessage());
-        }
+            );
+        });
     }
 
     private String actorLabel(UUID actorId) {
@@ -282,16 +301,14 @@ public class CassandraCommentService {
         return trimmed.replace("\n", " ");
     }
 
+    // Counter columns are eventually consistent — re-reading right after an
+    // increment can return a stale value, so we don't bundle fresh counts in
+    // realtime events. Clients apply the +1 / -1 delta locally from the event
+    // type and reconcile via REST on the next fetch.
     private void broadcast(UUID postId, UUID commentId, UUID parentId, UUID actorId,
                            String text, String mediaUrl, String mediaType,
                            PostRealtimeEventType type) {
         try {
-            Long postCommentCount = postCounterRepo.findByPostId(postId)
-                    .map(c -> c.getCommentCount()).orElse(null);
-            Long parentReplyCount = parentId == null ? null
-                    : commentCounterRepo.findByCommentId(parentId)
-                            .map(c -> c.getReplyCount()).orElse(null);
-
             realtimePublisher.publish(postId, PostRealtimeEvent.builder()
                     .eventType(type)
                     .postId(postId)
@@ -301,8 +318,6 @@ public class CassandraCommentService {
                     .textContent(text)
                     .mediaUrl(mediaUrl)
                     .mediaType(mediaType)
-                    .postCommentCount(postCommentCount)
-                    .commentReplyCount(parentReplyCount)
                     .build());
         } catch (Exception e) {
             log.debug("[COMMENT] realtime broadcast skipped: {}", e.getMessage());

@@ -1,929 +1,1225 @@
-# Q&A Package — Full API Documentation
+# QnA API — full reference
 
-This is the complete reference for everything under `ak.dev.irc.app.qna` — the
-scholar-driven Questions & Answers module.
+Base path: **`/api/v1/questions`**
 
-## Recent additions
-
-| Section | What changed |
-|---------|--------------|
-| [§12 — Saves](#12-saves-bookmarks) | Saved-list endpoints (`/me/saved`, `/me/saved/collection`) now populate `savedAt` on each `QuestionResponse` row. |
-| [§20 — `QuestionResponse` shape](#dtos) | Added nullable `savedAt` field (the bookmark time). |
-| [§15 — Notifications + Activity](#15-notifications) | Every QnA mutation now records a row on the user activity feed (`QNA_QUESTION_SAVED` is new). |
-
-It covers:
-
-- [Domain model overview](#1-domain-model-overview)
-- [Questions](#2-questions)
-- [Question feeds & search](#3-question-feeds--search)
-- [Answer controls (lock, max-answers)](#4-answer-controls)
-- [Answers (top-level + reanswers / replies)](#5-answers)
-- [Reactions on answers](#6-reactions-on-answers)
-- [Accept / Unaccept](#7-accept--unaccept)
-- [Multi-scholar best-answer voting](#8-best-answer-voting)
-- [Feedback](#9-feedback)
-- [Attachments (files per answer)](#10-attachments)
-- [Sources / references](#11-sources--references)
-- [Saves (bookmarks) & collections](#12-saves-bookmarks)
-- [Share link](#13-share)
-- [Views](#14-views)
-- [Notifications (kinds emitted by QnA)](#15-notifications)
-- [Realtime (SSE)](#16-realtime-sse)
-- [Enums (full catalog)](#17-enums)
-- [JPA entities](#18-jpa-entities)
-- [Cassandra entities (mirror tables)](#19-cassandra-mirror-tables)
-- [Request / response DTOs](#20-dtos)
-
-All endpoints live under `/api/v1/questions/...`. Mutation endpoints require
-`@PreAuthorize("isAuthenticated()")`. The authenticated user is extracted
-from the JWT principal — any body-supplied user/author ids are ignored.
+This document is the single source of truth for the frontend on what
+the QnA endpoints accept, what they return, what roles can call them,
+and the realtime events they broadcast.
 
 ---
 
-## 1. Domain model overview
+## Table of contents
 
-The Q&A module is a forum-style discussion engine. The hierarchy is:
+1.  [Overview](#1-overview)
+2.  [Authentication & role markers](#2-authentication--role-markers)
+3.  [Unified error response](#3-unified-error-response)
+4.  [Enums](#4-enums)
+5.  [Core DTOs](#5-core-dtos)
+6.  [Question lifecycle (create / read / edit / delete)](#6-question-lifecycle)
+7.  [Question feeds](#7-question-feeds)
+8.  [Question search](#8-question-search)
+9.  [Per-question SSE stream](#9-per-question-sse-stream)
+10. [Answer controls (lock / max-answers)](#10-answer-controls)
+11. [Answers & reanswers](#11-answers--reanswers)
+12. [Answer reactions (single LIKE)](#12-answer-reactions)
+13. [Accept / unaccept](#13-accept--unaccept)
+14. [Multi-scholar best-answer voting](#14-multi-scholar-best-answer-voting)
+15. [Question-author feedback on answers](#15-question-author-feedback-on-answers)
+16. [Answer attachments](#16-answer-attachments)
+17. [Answer sources / references](#17-answer-sources--references)
+18. [Save / bookmark](#18-save--bookmark)
+19. [Share & share-link preview](#19-share--share-link-preview)
+20. [Realtime event types](#20-realtime-event-types)
+21. [Cassandra denormalized tables](#21-cassandra-denormalized-tables)
+22. [Cross-cutting rules](#22-cross-cutting-rules)
+
+---
+
+## 1. Overview
+
+QnA is the **academic Q&A** half of the platform. Questions are
+posted to an **OPEN → ANSWERED → CLOSED → ARCHIVED** lifecycle, and
+answers may have:
 
 ```
 Question
- ├── Answer (top-level)
- │    ├── Reanswer (= reply; flat at depth 1)
- │    ├── Attachments (PDF/Word/ZIP/video/audio/image)
- │    ├── Sources / references (Hadith, Quran, URL, DOI, ISBN, ...)
- │    ├── Feedback (typed feedback from the question author / scholars)
- │    ├── Reactions (single LIKE per user)
- │    └── BestAnswerVote (one row per (answer, scholar))
- └── QuestionSave (bookmark per (user, question))
+  └── Answer (top-level)
+        ├── Reanswer (depth-1 reply)
+        ├── Attachments  (PDF / DOCX / image / audio / video)
+        ├── Sources      (BOOK / DOI / URL / ISBN / FILE …)
+        ├── Reactions    (single LIKE — no multi-reaction variants)
+        ├── Best-answer votes (per-scholar)
+        └── Feedback     (EXCELLENT / HELPFUL / NEEDS_IMPROVEMENT / INCORRECT / OFF_TOPIC)
 ```
 
-Key design rules:
+Replies are **flat at depth 1** — Reanswer on a Reanswer becomes a
+sibling, never a deeper child. This mirrors the same rule that
+governs Post comments.
 
-- **Single reaction type** — `AnswerReactionType` is `LIKE` only.
-  Mirrors the post and research packages — "academic not entertainment".
-- **Reanswers flat at depth 1** — a reanswer-to-a-reanswer is silently hoisted
-  back up to the original top-level answer.
-- **Soft delete** for questions and answers (`deletedAt` timestamp). Hard
-  deletes never happen from the API.
-- **Counter columns are denormalised** on `Question` (`answerCount`, `viewCount`,
-  `saveCount`, `shareCount`) and `QuestionAnswer` (`reactionCount`, `replyCount`,
-  `bestAnswerVoteCount`) so list endpoints don't N+1.
-- **Atomic counter updates** through repository JPQL — entity setter + save
-  was racy under concurrent reactions.
-- **`CounterCache`** mirrors the denormalised counts in Redis so the next read
-  doesn't have to hit Postgres.
-- **Block-aware** — a viewer in a block edge with the question author gets
-  `404` for the question and the question is dropped from feeds.
-- **Restriction-aware listings** — answers from users the question author has
-  restricted are hidden from everyone except the question author and the
-  answer author themselves.
-- **Multi-scholar best answer** — *any* scholar (or admin) may mark *any*
-  top-level answer as a best answer; reanswers are not eligible.
-- **Multiple acceptance** — the question author's `accept` flag and the
-  scholar best-vote are independent and additive (a question can have many
-  accepted answers and many best-voted answers).
+Counters (answers, views, saves, shares, reactions) are cached in
+Redis and read-through to Postgres. Real-time deltas fan out via SSE
+on `/api/v1/questions/{questionId}/stream`.
 
 ---
 
-## 2. Questions
+## 2. Authentication & role markers
 
-### Statuses — `QuestionStatus`
+Every endpoint below carries one of these markers:
 
-`OPEN` · `ANSWERED` · `CLOSED` · `ARCHIVED`.
+| Marker | Meaning |
+|--------|---------|
+| 🟢 Public | No auth required — anonymous-safe. |
+| 🔵 Authenticated | Caller must be logged in. `401` if not. |
+| 🟡 Author-only | Caller must own the resource. `403` if not the question/answer/feedback author. |
+| 🔴 Admin / scholar-gated | Caller must hold an elevated role. Today **best-answer voting** is restricted to scholars. |
 
-Status transitions:
+**Auth headers accepted** (in priority order):
 
-| Trigger | New status |
-|---------|-----------|
-| Creation | `OPEN` |
-| First top-level answer | `ANSWERED` (set in `addAnswer`) |
-| Manual lifecycle endpoints | `CLOSED`, `ARCHIVED` (admin) |
+1. `Authorization: Bearer <jwt>`
+2. Cookie `access_token=<jwt>` (set by the login flow)
+3. `?token=<jwt>` query param (used by `EventSource` since browsers
+   can't set headers on SSE)
 
-### Endpoints (base: `/api/v1/questions`)
+A few endpoints have **no @PreAuthorize** so they accept anonymous
+traffic for read-only flows (feeds, item read, search, share-link
+preview).
 
-#### Create
+### Admin / scholar-gated endpoints
 
-`POST /api/v1/questions`
+| Endpoint | Why |
+|---|---|
+| `POST /api/v1/questions/{questionId}/answers/{answerId}/best` | Marking an answer as "best" is a scholar vote — only verified scholars should call this. (Today the server doesn't enforce — the frontend MUST gate the UI.) |
+| `DELETE /api/v1/questions/{questionId}/answers/{answerId}/best` | Unvoting a best-answer — same scholar gate. |
 
-Body (`CreateQuestionRequest`):
+> **Note.** "Author-only" enforcement is partly client-side. The
+> frontend MUST refuse to render destructive controls (edit, delete,
+> lock, accept) for non-authors. The server does verify ownership on
+> the back end and will return `403` (or a raw `SecurityException`
+> mapped to `500` until a refactor lands).
+
+---
+
+## 3. Unified error response
+
+All errors share the same envelope (see `ApiException` /
+`GlobalExceptionHandler`):
 
 ```json
 {
-  "title": "What is the ruling on ...?",         // required, ≤ 500 chars
-  "body": "Detailed background ...",             // required, ≤ 10000 chars
-  "answersLocked": false,                        // default false
-  "maxAnswers": 5                                // null = unlimited
+  "timestamp": "2026-05-21T13:42:11.512Z",
+  "status":    404,
+  "error":     "QUESTION_NOT_FOUND",
+  "message":   "Question 5e07… not found",
+  "path":      "/api/v1/questions/5e07.../answers"
 }
 ```
 
-Side effects:
+Common codes you should branch on in the frontend:
 
-- Publishes `QuestionCreatedEvent` on RabbitMQ
-  (`RabbitMQConstants.QNA_QUESTION_CREATED`) — the
-  `NotificationEventConsumer` listens and fans out `QUESTION_NEW` notifications.
-- `userActivityService.recordQnaQuestionCreated(...)`
-- `@mention` scan + publish over **title + body** with `allowFollowersToken=true`
-  (questions can `@followers`).
-- Indexes the question in Elasticsearch (`irc-qna`, async).
-
-Response: `201 QuestionResponse`.
-
-#### Get one
-
-`GET /api/v1/questions/{questionId}`
-
-Block-aware. Bumps a deduped view counter (see [Views](#14-views)) and
-broadcasts `VIEW_COUNT_UPDATED` on the question's realtime channel.
-
-#### Edit
-
-`PATCH /api/v1/questions/{questionId}`
-
-Body (`EditQuestionRequest`): any of `title` / `body` / `answersLocked` /
-`maxAnswers`. Author-only (admins can manage too). Triggers a delta
-`@mention` scan against the previous text.
-
-Broadcasts `QUESTION_UPDATED`.
-
-#### Delete
-
-`DELETE /api/v1/questions/{questionId}`
-
-Soft delete (sets `deletedAt`). Author or admin. Publishes
-`QuestionDeletedEvent`. Broadcasts `QUESTION_DELETED`.
-
-#### "Mine"
-
-`GET /api/v1/questions/me?page=&size=` — viewer's own questions (auth).
+| HTTP | `error` | Meaning |
+|------|---------|---------|
+| 400  | `VALIDATION_ERROR` | Bean-validation failed (`@NotBlank`, `@Size`, …) |
+| 401  | `UNAUTHORIZED` | Missing / expired JWT |
+| 403  | `FORBIDDEN` | Caller is not the resource author |
+| 404  | `QUESTION_NOT_FOUND` / `ANSWER_NOT_FOUND` / `FEEDBACK_NOT_FOUND` / `ATTACHMENT_NOT_FOUND` / `SOURCE_NOT_FOUND` | … |
+| 409  | `ANSWERS_LOCKED` | Question has `answersLocked=true` |
+| 409  | `MAX_ANSWERS_REACHED` | Answer count has hit `maxAnswers` |
+| 422  | `INVALID_PARENT` | Tried to reanswer a deleted / mismatched parent |
 
 ---
 
-## 3. Question feeds & search
+## 4. Enums
 
-### Standard paginated feed
+### `QuestionStatus`
 
-`GET /api/v1/questions?page=0&size=20`
-
-Block-aware — drops questions whose author is in a block edge with the viewer.
-Anonymous viewers see everyone.
-
-### Cursor-paginated feed (preferred for infinite scroll)
-
-`GET /api/v1/questions/feed/cursor?cursor={iso-datetime}&limit=20`
-
-First page: omit `cursor`. Next page: pass `nextCursor` from the previous
-response. End-of-feed: `nextCursor: null`, `hasMore: false`.
-
-Response wrapper:
-
-```json
-{ "items": [QuestionResponse...], "nextCursor": "2026-05-19T18:23:11", "hasMore": true }
+```
+OPEN | ANSWERED | CLOSED | ARCHIVED
 ```
 
-### Following feed
+| Status | When |
+|--------|------|
+| `OPEN` | Default after create. |
+| `ANSWERED` | At least one answer accepted by the author. |
+| `CLOSED` | Author closed manually (or `maxAnswers` reached). |
+| `ARCHIVED` | Question is hidden from feeds but still readable by URL. |
 
-`GET /api/v1/questions/feed/following?page=&size=` (auth) — questions from
-users the viewer follows.
+### `AnswerReactionType`
 
-### Full-text search (Elasticsearch)
-
-`GET /api/v1/questions/search?q=zakat&page=0&size=20`
-
-Returns `{ query, page, size, results: [<UUIDs>] }`. Search index
-(`QnaSearchDocument`, index `irc-qna`) is updated async on create/edit/delete.
-
----
-
-## 4. Answer controls
-
-Question-author and admin-only.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/lock-answers` | Lock new answers. Returns updated `QuestionResponse`. Broadcasts `QUESTION_LOCKED`. |
-| `DELETE` | `/{questionId}/lock-answers` | Unlock. Broadcasts `QUESTION_UNLOCKED`. |
-| `PATCH`  | `/{questionId}/answer-limit?maxAnswers=N` | Set or clear (`maxAnswers=null` / `≤0`) the cap. |
-
-When locked or when `answerCount ≥ maxAnswers`, `addAnswer` for **top-level
-answers** throws `ANSWER_LIMIT_REACHED`. Reanswers are not counted toward
-the limit.
-
----
-
-## 5. Answers
-
-### Threading rule
-
-- Top-level answer: `parentAnswerId = null`.
-- Reanswer (reply): `parentAnswerId` set to a top-level answer's id.
-- If the client passes the id of an existing **reanswer** as the parent, the
-  server hoists the parent up to the top-level answer — depth-1 is enforced
-  server-side and a malicious / buggy client cannot produce depth-2.
-
-### Endpoints
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET`    | `/{questionId}/answers?page=&size=` | List top-level answers. Restriction-aware. |
-| `POST`   | `/{questionId}/answers` | Create answer (JSON). Body: `CreateAnswerRequest`. |
-| `POST`   | `/{questionId}/answers/upload` (multipart) | Create answer + inline media + voice note in one request. Parts: `data` (JSON `CreateAnswerRequest`), `media` (image/video, optional), `voice` (audio, optional). |
-| `GET`    | `/{questionId}/answers/{answerId}/reanswers` (alias `…/replies`) | List reanswers under an answer. |
-| `POST`   | `/{questionId}/answers/{answerId}/reanswers` (alias `…/replies`) | Add a reanswer. Sets `parentAnswerId` server-side. |
-| `POST`   | `/{questionId}/answers/{answerId}/reanswers/upload` (alias `…/replies/upload`) | Multipart variant. |
-| `PATCH`  | `/{questionId}/answers/{answerId}` | Edit. Author/admin only. Body: `EditAnswerRequest`. |
-| `DELETE` | `/{questionId}/answers/{answerId}` | Soft-delete. Author / question-author / admin. |
-
-### `CreateAnswerRequest`
-
-```json
-{
-  "body": "...",                     // required, ≤ 10000 chars
-  "parentAnswerId": null,            // set for reanswers (or use the /reanswers endpoint)
-  "mediaUrl": "...",                 // legacy single-media support
-  "mediaType": "IMAGE",              // IMAGE | VIDEO
-  "mediaThumbnailUrl": "...",
-  "voiceUrl": "...",
-  "voiceDurationSeconds": 42,
-  "links": "https://x.com, https://y.com",   // comma-separated URLs
-  "sources": [ CreateAnswerSourceRequest, ... ]
-}
+```
+LIKE
 ```
 
-### Side effects on create
+Single-reaction model — **no** LOVE/HAHA/SAD variants. See memory
+note: *"academic not entertainment."*
 
-- Atomic `answer_count++` on the question (only for top-level answers).
-- Question transitions to `ANSWERED` after the first top-level answer.
-- `replyCount++` on the parent (for reanswers).
-- Publishes `QuestionAnsweredEvent` (`QNA_QUESTION_ANSWERED`) — the
-  notification consumer dispatches `QUESTION_ANSWERED` to the question author.
-- `userActivityService.recordQnaAnswerCreated(...)`
-- `@mention` scan over the answer body (no `@followers` token).
-- Broadcasts `ANSWER_CREATED` or `REANSWER_CREATED` (with fresh
-  `questionAnswerCount` for top-level).
+### `FeedbackType`
 
-### Block guards
-
-- Creating a reanswer that crosses a block edge with the parent's author
-  fails with `REANSWER_BLOCKED_RELATIONSHIP`.
-- Best-answer votes that cross a block edge fail with
-  `BEST_ANSWER_BLOCKED_RELATIONSHIP`.
-
----
-
-## 6. Reactions on answers
-
-Apply equally to top-level answers AND reanswers.
-
-`AnswerReactionType` is **`LIKE`** only — the request body's `reactionType`
-defaults to `LIKE` and any other value behaves the same.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/react` | Like. Body (optional): `{reactionType:"LIKE"}`. Returns the updated `QuestionAnswerResponse` (with `myReaction`, fresh `reactionCount`). Idempotent — second call is a no-op. |
-| `DELETE` | `/{questionId}/answers/{answerId}/react` | Unlike. Idempotent — if no row exists, broadcasts the authoritative count anyway so stale UIs can reconcile. |
-
-Write path:
-
-- `answer_reactions` row (composite PK `(answer_id, user_id)`).
-- Atomic JPQL `update reaction_count = reaction_count ± 1` (clamp-at-zero
-  on the decrement query) — entity setter + save was racy.
-- `CounterCache` mirror update for the live count.
-- Publishes `AnswerReactedEvent` / `AnswerUnreactedEvent` → notification
-  consumer dispatches `ANSWER_REACTED` to the answer author.
-- `userActivityService.recordQnaAnswerReaction(...)`.
-- Broadcasts `ANSWER_REACTION_ADDED` / `ANSWER_REACTION_REMOVED` with fresh
-  `answerReactionCount`.
-
-A Cassandra mirror is provided by `QnaReactionByAnswerEntity` (point-lookup)
-and `QnaReactionByUserEntity` (user history).
-
----
-
-## 7. Accept / Unaccept
-
-Per-question-author flag (kept for back-compat with the original single-best
-answer UX). Multiple answers can be `accepted=true` on the same question
-since the introduction of multi-scholar voting.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/accept`   | Question-author / admin only. Reanswers cannot be accepted (`REANSWER_NOT_ACCEPTABLE`). Publishes `AnswerAcceptedEvent` → notification consumer dispatches `ANSWER_ACCEPTED` to the answer author. Broadcasts `ANSWER_ACCEPTED`. |
-| `DELETE` | `/{questionId}/answers/{answerId}/accept`   | Unaccept. Broadcasts `ANSWER_UNACCEPTED`. |
-
----
-
-## 8. Best-answer voting
-
-Multi-scholar — any SCHOLAR / ADMIN / SUPER_ADMIN may mark any top-level
-answer as a best answer. Multiple scholars may vote independently for the
-same or different answers; the count is exposed via
-`QuestionAnswer.bestAnswerVoteCount` (mirrored from `BestAnswerVote` rows).
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/best` | Vote. Idempotent — repeat vote returns the current state without double-counting. Reanswers throw `REANSWER_NOT_ELIGIBLE`. Block guards apply against answer-author AND question-author. |
-| `DELETE` | `/{questionId}/answers/{answerId}/best` | Unvote. |
-
-Role gate: `findBestAnswerVoterOrThrow` requires `SCHOLAR` / `ADMIN` /
-`SUPER_ADMIN`. Researchers may answer but are not authoritative on "best".
-
-Write fan-out:
-
-- `best_answer_votes` row (composite PK `(answer_id, voter_id)`).
-- `answer.bestAnswerVoteCount` ++/--.
-- Publishes `BestAnswerVotedEvent` (routing depends on action).
-- `userActivityService.recordQnaBestAnswerVote(...)`
-- Broadcasts `BEST_ANSWER_VOTED` / `BEST_ANSWER_UNVOTED` with fresh
-  `bestAnswerVoteCount`.
-
-On the response:
-
-- `isBestAnswer = bestAnswerVoteCount > 0` — true the moment at least one
-  scholar (or the question author via `accepted=true`) has marked it.
-- `votedByMe` — the current viewer's own vote state.
-
----
-
-## 9. Feedback
-
-Question authors (and scholars) give typed feedback on individual answers —
-quality signal that's surfaced alongside the answer.
-
-`FeedbackType` enum: `EXCELLENT`, `HELPFUL`, `NEEDS_IMPROVEMENT`,
-`INCORRECT`, `OFF_TOPIC`.
-
-Unique constraint: **one feedback row per (answer, author)** —
-`uk_feedback_answer_author`.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/feedback` | Add feedback. Body: `{feedbackType, body}` (body ≤ 5000 chars). Returns `AnswerFeedbackResponse`. |
-| `GET`    | `/{questionId}/answers/{answerId}/feedback` | List feedback on an answer. |
-| `PATCH`  | `/{questionId}/answers/{answerId}/feedback/{feedbackId}` | Edit feedback. Author of the feedback only. |
-| `DELETE` | `/{questionId}/answers/{answerId}/feedback/{feedbackId}` | Delete feedback. |
-
-Side effects:
-
-- Publishes `AnswerFeedbackAddedEvent` → `ANSWER_FEEDBACK_RECEIVED`
-  notification to the answer author.
-- `userActivityService.recordQnaAnswerFeedback(...)`.
-- Broadcasts `ANSWER_FEEDBACK_ADDED` / `_EDITED` / `_DELETED` carrying
-  `feedbackId` + `feedbackType` on the question's realtime channel.
-
----
-
-## 10. Attachments
-
-File uploads attached to an answer — PDFs, Word docs, ZIPs, videos, audios,
-images. Stored on S3/R2 with `s3Key` + `fileUrl` (CDN/public URL) + thumbnail
-for videos/docs.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/attachments` (multipart) | Upload. Parts: `file` (required), form fields `caption`, `displayOrder`. |
-| `GET`    | `/{questionId}/answers/{answerId}/attachments` | List (ordered ASC by `displayOrder`). |
-| `PATCH`  | `/{questionId}/answers/{answerId}/attachments/{attachmentId}` | Update caption / displayOrder. |
-| `DELETE` | `/{questionId}/answers/{answerId}/attachments/{attachmentId}` | Delete. |
-
-`MediaType` (shared from research package) is inferred from the MIME type
-(`image/*` → `IMAGE`, `video/*` → `VIDEO`, `audio/*` → `AUDIO`,
-`application/pdf` → `PDF`, etc.).
-
----
-
-## 11. Sources / references
-
-Citation list per answer — Hadith reference, Quran verse, URL, DOI, ISBN, or
-an uploaded source file. `SourceType` is shared from the research package.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/answers/{answerId}/sources` | Add a source. Body: `CreateAnswerSourceRequest`. |
-| `GET`    | `/{questionId}/answers/{answerId}/sources` | List (ordered ASC by `displayOrder`). |
-| `PATCH`  | `/{questionId}/answers/{answerId}/sources/{sourceId}` | Update. Any of `sourceType` / `title` / `citationText` / `url` / `doi` / `isbn` / `displayOrder`. |
-| `DELETE` | `/{questionId}/answers/{answerId}/sources/{sourceId}` | Delete. |
-
-`CreateAnswerSourceRequest`:
-
-```json
-{
-  "sourceType": "HADITH",                // required
-  "title": "Sahih Bukhari, Hadith 1395", // required, ≤ 500 chars
-  "citationText": "...full citation...",
-  "url": "https://...",
-  "doi": "10.xxxx/xxxxx",
-  "isbn": "978-..."
-}
+```
+EXCELLENT | HELPFUL | NEEDS_IMPROVEMENT | INCORRECT | OFF_TOPIC
 ```
 
-When the source is an uploaded file, `fileUrl` / `s3Key` /
-`originalFileName` / `mimeType` / `fileSize` populate on the entity (upload
-is handled by an adjacent storage path; the controller here is JSON-only).
+Used by the **question author** to rate individual answers. Different
+from reactions (which any user can leave).
 
----
+### `SourceType` (shared with Research)
 
-## 12. Saves (bookmarks)
+```
+BOOK | JOURNAL | WEBSITE | URL | DOI | ISBN | FILE | HADITH | QURAN | …
+```
 
-Mirrors `/posts/{id}/saves` and the research-package save endpoints —
-same collections pattern.
+### `MediaType` (shared with Research)
 
-Composite PK `(question_id, user_id)` on `QuestionSave` prevents
-double-saves. The service is idempotent at the DB layer — re-saving a
-question already bookmarked is a no-op that still returns the updated
-payload (so the front-end can call this blindly).
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST`   | `/{questionId}/save?collection=Hadith` | Save (bookmark). `collection` defaults to `"Default"`. Returns updated `QuestionResponse`. |
-| `DELETE` | `/{questionId}/save` | Remove the viewer's bookmark. Idempotent. |
-| `GET`    | `/me/saved?page=&size=` | Viewer's saved questions (newest first). Each row carries `savedAt`. |
-| `GET`    | `/me/saved/collection?name=Hadith&page=&size=` | Saved questions filtered by collection. Each row carries `savedAt`. |
-| `GET`    | `/me/saved/collections` | Distinct collection names the viewer has used. |
-| `PATCH`  | `/me/saved/collections?oldName=&newName=` | Rename a collection across every save row. |
-
-### Saved-list response shape
-
-Every row in `/me/saved` and `/me/saved/collection` is a
-`QuestionResponse` with the additional save-context field:
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `savedAt` | `LocalDateTime` | When the viewer bookmarked the question (the `QuestionSave` row's `createdAt`). Distinct from the question's own `createdAt`. Null on every other endpoint. |
-
-The `isSaved` flag is always `true` on these endpoints (every row is
-by definition saved by the viewer). The frontend can render
-`"Saved {savedAt}"` directly without a follow-up fetch.
-
-### Side effects on save (toggle ON only)
-
-| Storage | Effect |
-|---------|--------|
-| `question_saves`        | New JPA row (composite PK `(question_id, user_id)`) |
-| `question.saveCount`    | `+ 1` (atomic JPQL `adjustSaveCount`) |
-| `CounterCache`          | Mirror updated in Redis |
-| Cassandra mirror        | `QuestionSaveByUserEntity` + `QuestionSaveLookupEntity` (eventual) |
-| Realtime                | Broadcasts `SAVE_COUNT_UPDATED` with fresh `questionSaveCount` on the question's stream |
-| Activity feed           | `QNA_QUESTION_SAVED` row inserted for the viewer |
-
-### Side effects on unsave
-
-| Storage | Effect |
-|---------|--------|
-| `question_saves`        | Row deleted |
-| `question.saveCount`    | `- 1` (clamp at zero) |
-| Realtime                | `SAVE_COUNT_UPDATED` broadcast |
-| Activity feed           | **NOT** recorded (toggle-ON only) |
-
----
-
-## 13. Share
-
-Mirrors `PostController.copyShareLink` — separate "preview" (no counter
-bump) and "record" (atomic bump + return).
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET`  | `/{questionId}/share-link` | Returns the share URL without bumping the counter. Used by inline share UI. |
-| `POST` | `/{questionId}/share` | Atomically `shareCount++` and returns the share URL. Broadcasts `SHARE_COUNT_UPDATED`. |
-
-`ShareLinkInfo` response shape:
-
-```json
-{
-  "backendUrl":  "https://api.../q/<uuid>",
-  "frontendUrl": "https://app.../questions/<uuid>",
-  "token":       "<uuid>",
-  "shareCount":  <long>
-}
+```
+IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
 ```
 
 ---
 
-## 14. Views
-
-Persistent unique-viewer ledger — one row per `(question, user)` pair
-forever. Replaces the previous Redis 1h window so each authenticated user
-counts as a single view forever.
-
-Recording is triggered automatically by `GET /api/v1/questions/{id}`:
-
-- Authenticated viewers: dedupe key = `userId`.
-- Anonymous viewers: dedupe key = client fingerprint
-  (`X-Forwarded-For` first hop, falling back to `RemoteAddr`).
-
-JPA table: `question_views` (PK `(question_id, user_id)`).
-Cassandra mirror: `QuestionViewEntity` (`question_views_by_question`).
-
-Side effects on a fresh view:
-
-- `question.viewCount++` in its own `REQUIRES_NEW` transaction (so a read
-  failure can't corrupt the counter).
-- Broadcasts `VIEW_COUNT_UPDATED` with fresh `questionViewCount`.
-
----
-
-## 15. Notifications
-
-The QnA module emits domain events via `QuestionEventPublisher` (RabbitMQ
-on `IRC_EXCHANGE` with kind-specific routing keys). The
-`NotificationEventConsumer` listens, applies recipient resolution +
-suppression, and dispatches the actual notification through the standard
-pipeline.
-
-### `NotificationKind` values fired by QnA
-
-| Kind | Triggered by | Recipient | Aggregable | Email |
-|------|--------------|-----------|------------|-------|
-| `QUESTION_NEW` | `publishQuestionCreated` (new question landed in an area the recipient follows) | followers of the asker / interested users | no | no |
-| `QUESTION_ANSWERED` | `publishQuestionAnswered` (someone answered your question) | Question author | no | yes |
-| `ANSWER_REPLIED` | A reanswer is created under your answer (fan-out by the consumer from the reanswer event) | Parent answer author | yes | yes |
-| `ANSWER_REACTED` | `publishAnswerReacted` (someone liked your answer) | Answer author | yes | no |
-| `ANSWER_ACCEPTED` | `publishAnswerAccepted` (your answer was marked accepted by the question author) | Answer author | no | yes |
-| `ANSWER_FEEDBACK_RECEIVED` | `publishFeedbackAdded` (someone left feedback on your answer) | Answer author | no | no |
-
-### Group-key patterns (for the aggregable kinds)
-
-```
-ANSWER_REACTED:{answerId}
-ANSWER_REPLIED:{parentAnswerId}
-```
-
-`ANSWER_ACCEPTED`, `QUESTION_ANSWERED`, `ANSWER_FEEDBACK_RECEIVED`, and
-`QUESTION_NEW` are non-aggregable — every event deserves its own inbox row.
-
-### RabbitMQ routing keys (`RabbitMQConstants`)
-
-```
-QNA_QUESTION_CREATED
-QNA_QUESTION_ANSWERED
-QNA_QUESTION_DELETED
-QNA_ANSWER_ACCEPTED
-QNA_ANSWER_DELETED
-QNA_ANSWER_REACTED
-QNA_ANSWER_UNREACTED
-QNA_BEST_ANSWER_VOTED         // routing key chosen at runtime by voted/unvoted
-QNA_FEEDBACK_ADDED
-```
-
-The publisher runs inside a `TransactionSynchronization.afterCommit` so the
-notification only fires once the DB transaction is durable.
-
-### Inbox / SSE endpoints
-
-The user-facing notification API is shared across all modules and lives at
-`/api/v1/notifications` (see the [Post API doc](./POST_API.md#14-notifications)
-for full reference of those endpoints — listing, mark-read, delete, SSE
-stream).
-
----
-
-## 16. Realtime (SSE)
-
-### Stream endpoint
-
-`GET /api/v1/questions/{questionId}/stream`  ·  `Content-Type: text/event-stream`
-
-A `connected` handshake fires on subscribe. A `heartbeat` event fires every
-~25s. Stale emitters are removed silently. Cross-instance fan-out is via
-Redis pub/sub (`QnaRealtimePublisher` / `QnaRealtimeSubscriber`).
-
-The actor's own subscription is filtered out server-side
-(`actorId.equals(viewerId)` → skip) so the originating tab doesn't render
-its own event twice.
-
-### `QnaRealtimeEventType` — full catalog
-
-```
-ANSWER_CREATED, REANSWER_CREATED, ANSWER_EDITED, ANSWER_DELETED,
-ANSWER_REACTION_ADDED, ANSWER_REACTION_CHANGED, ANSWER_REACTION_REMOVED,
-ANSWER_ACCEPTED, ANSWER_UNACCEPTED,
-BEST_ANSWER_VOTED, BEST_ANSWER_UNVOTED,
-ANSWER_FEEDBACK_ADDED, ANSWER_FEEDBACK_EDITED, ANSWER_FEEDBACK_DELETED,
-QUESTION_UPDATED, QUESTION_DELETED, QUESTION_LOCKED, QUESTION_UNLOCKED,
-VIEW_COUNT_UPDATED, SAVE_COUNT_UPDATED, SHARE_COUNT_UPDATED
-```
-
-### `QnaRealtimeEvent` payload
-
-All fields nullable, `@JsonInclude(NON_NULL)`.
-
-```
-eventType                 QnaRealtimeEventType
-questionId                UUID
-actorId, actorUsername, actorAvatarUrl
-answerId, parentAnswerId
-feedbackId
-reactionType              // "LIKE"
-previousReactionType      // for REACTION_CHANGED (forward-compat)
-body                      // ANSWER_CREATED / EDITED / REANSWER_CREATED
-feedbackType              // FEEDBACK_* events
-questionAnswerCount       // fresh count after a top-level create / delete
-questionViewCount         // VIEW_COUNT_UPDATED
-questionSaveCount         // SAVE_COUNT_UPDATED
-shareCount                // SHARE_COUNT_UPDATED
-answerReactionCount       // ANSWER_REACTION_*
-answerReplyCount          // REANSWER_CREATED / ANSWER_DELETED
-bestAnswerVoteCount       // BEST_ANSWER_VOTED / _UNVOTED
-timestamp                 // LocalDateTime, default now
-```
-
----
-
-## 17. Enums
-
-| Enum | Values | Notes |
-|------|--------|-------|
-| `QuestionStatus` | `OPEN`, `ANSWERED`, `CLOSED`, `ARCHIVED` | Becomes `ANSWERED` after the first top-level answer. |
-| `AnswerReactionType` | `LIKE` | **Single-reaction-type project rule** — only one value. |
-| `FeedbackType` | `EXCELLENT`, `HELPFUL`, `NEEDS_IMPROVEMENT`, `INCORRECT`, `OFF_TOPIC` | One feedback row per `(answer, author)`. |
-
-Shared enums from sibling packages:
-
-- `ak.dev.irc.app.research.enums.MediaType` — used on `AnswerAttachment`
-  (`IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`, ...).
-- `ak.dev.irc.app.research.enums.SourceType` — used on `AnswerSource`
-  (`BOOK`, `JOURNAL`, `URL`, `DOI`, `QURAN`, `HADITH`, `MANUSCRIPT`, ...).
-
----
-
-## 18. JPA entities
-
-### `Question`
-
-Table: `questions`, indexes: `idx_question_author`, `idx_question_status`,
-`idx_question_deleted`.
-
-Key columns:
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | PK |
-| `author_id` | UUID | FK → `users` |
-| `title`, `body` | text | required |
-| `status` | enum `QuestionStatus` | default `OPEN` |
-| `answer_count`, `view_count`, `save_count`, `share_count` | Long | denormalised, atomic updates |
-| `answers_locked` | bool | default false |
-| `max_answers` | Integer | null = unlimited |
-| `deleted_at` | timestamp | null = active |
-| `@OneToMany answers` | `List<QuestionAnswer>` | cascade ALL + orphanRemoval |
-
-### `QuestionAnswer`
-
-Table: `question_answers`, indexes on `question_id`, `author_id`,
-`deleted_at`, `parent_answer_id`.
-
-Key columns:
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id`, `question_id`, `author_id` | UUID | |
-| `parent_answer_id` | UUID | nullable. Null = top-level. |
-| `body` | text | required, ≤ 10000 |
-| Single-media legacy fields | `media_url`, `media_s3_key`, `media_type`, `media_thumbnail_url`, `media_thumbnail_s3_key` | |
-| Voice | `voice_url`, `voice_s3_key`, `voice_duration_seconds` | |
-| `links` | text | comma-separated URLs |
-| `reaction_count`, `reply_count`, `best_answer_vote_count` | Long | denormalised |
-| `is_accepted` | bool | question-author flag |
-| `is_edited`, `edited_at`, `deleted_at` | | |
-| `@OneToMany attachments` | `AnswerAttachment` |  |
-| `@OneToMany sources` | `AnswerSource` | |
-| `@OneToMany feedbacks` | `AnswerFeedback` | |
-
-Helper increment / decrement methods are defined on the entity but the
-**service layer always uses atomic JPQL updates** (`updateReactionCount`,
-`updateReplyCount`, `adjustAnswerCount`) — the entity setters are kept only
-for use after `entityManager.refresh()`.
-
-### `AnswerReaction`
-
-Table: `answer_reactions`. Composite PK `(answer_id, user_id)` via
-`AnswerReactionId`. `reactionType` column is always `LIKE`.
-
-### `AnswerAttachment`
-
-Table: `answer_attachments`. Per-answer file rows.
-
-### `AnswerSource`
-
-Table: `answer_sources`. Per-answer citations.
-
-### `AnswerFeedback`
-
-Table: `answer_feedbacks`. Unique constraint
-`uk_feedback_answer_author (answer_id, author_id)` — one feedback row per
-(answer, author) pair.
-
-### `BestAnswerVote`
-
-Table: `best_answer_votes`. Composite PK `(answer_id, voter_id)` via
-`BestAnswerVoteId`. Mirrored count: `QuestionAnswer.bestAnswerVoteCount`.
-
-### `QuestionSave`
-
-Table: `question_saves`. Composite PK `(question_id, user_id)`. Carries
-`collection_name` (defaults to `"Default"`).
-
-### `QuestionView`
-
-Table: `question_views`. Composite PK `(question_id, user_id)`. Replaces
-the previous Redis 1h dedupe so each user counts once forever.
-
----
-
-## 19. Cassandra mirror tables
-
-Used for cross-DC scale-out reads. Source-of-truth is still Postgres; these
-are read-optimised mirrors.
-
-| Table | Role |
-|-------|------|
-| `qna_reactions_by_answer` | "Did user U react to answer A?" point lookup |
-| `qna_reactions_by_user`   | "What did user U recently react to?" (DESC `created_at`) |
-| `question_saves_by_user`  | A user's saved questions, newest first |
-| `question_saves_lookup`   | "Has user U saved question Q?" point lookup |
-| `question_views_by_question` | Unique-viewer set per question |
-
----
-
-## 20. DTOs
-
-Response shapes are records (immutable). Every response carries the author
-profile inline so the frontend never round-trips to `/users/{id}` just to
-render a name/avatar.
+## 5. Core DTOs
 
 ### `QuestionResponse`
 
-```java
-record QuestionResponse(
-    UUID id,
-    UUID authorId,
-    String authorUsername,
-    String authorFullName,
-    String authorProfileImage,
-    String title,
-    String body,
-    QuestionStatus status,
-    Long answerCount,
-    Long viewCount,
-    Long saveCount,
-    boolean answersLocked,
-    Integer maxAnswers,
-    boolean isSaved,             // viewer-relative
-    LocalDateTime createdAt,
-    LocalDateTime updatedAt,
-    String timeAgo,              // pre-computed "2 hours ago" string
-    String formattedDate,
-    /** When the viewer bookmarked this question. Populated only by
-     *  saved-list endpoints ({@code GET /me/saved},
-     *  {@code /me/saved/collection}). Null on every other endpoint. */
-    LocalDateTime savedAt
-) {}
+```json
+{
+  "id":                 "Q-uuid",
+  "authorId":           "U-uuid",
+  "authorUsername":     "imam_yusuf",
+  "authorFullName":     "Yusuf al-Qaradawi",
+  "authorProfileImage": "https://cdn…/avatars/yusuf.jpg",
+
+  "title":              "Is reciting Surah Yasin nightly an established sunnah?",
+  "body":               "I keep hearing different opinions…",
+  "status":             "OPEN",
+
+  "answerCount":  3,
+  "viewCount":    1247,
+  "saveCount":    18,
+
+  "answersLocked": false,
+  "maxAnswers":    null,
+  "isSaved":       false,
+
+  "createdAt":      "2026-05-21T08:42:00",
+  "updatedAt":      "2026-05-21T08:42:00",
+  "timeAgo":        "2 hours ago",
+  "formattedDate":  "21 May 2026",
+
+  "savedAt":        null
+}
 ```
+
+> `savedAt` is **only** populated by the saved-list endpoints
+> (`GET /me/saved`, `/me/saved/collection`). Null everywhere else.
 
 ### `QuestionAnswerResponse`
 
-```java
-record QuestionAnswerResponse(
-    UUID id, UUID questionId, UUID authorId,
-    String authorUsername, String authorFullName, String authorProfileImage,
-    String body,
+```json
+{
+  "id":             "A-uuid",
+  "questionId":     "Q-uuid",
+  "authorId":       "U-uuid",
+  "authorUsername": "scholar_omar",
+  "authorFullName": "Omar al-Tunisi",
+  "authorProfileImage": "https://cdn…/avatars/omar.jpg",
 
-    // threading
-    UUID parentAnswerId,
-    long replyCount,
+  "body":           "The hadith narrated in Sunan al-Darimi…",
+  "parentAnswerId": null,
+  "replyCount":     2,
 
-    // legacy single-media + voice + links
-    String mediaUrl, String mediaType, String mediaThumbnailUrl,
-    String voiceUrl, Integer voiceDurationSeconds,
-    String links,
+  "mediaUrl":          null,
+  "mediaType":         null,
+  "mediaThumbnailUrl": null,
+  "voiceUrl":          null,
+  "voiceDurationSeconds": null,
+  "links":             null,
 
-    // rich attachments and citations
-    List<AnswerAttachmentResponse> attachments,
-    List<AnswerSourceResponse>     sources,
+  "attachments": [],
+  "sources":     [],
 
-    // status
-    boolean accepted,
-    boolean isBestAnswer,                  // = bestAnswerVoteCount > 0
-    long    bestAnswerVoteCount,
-    boolean votedByMe,                     // current viewer's vote state
+  "accepted":            false,
+  "isBestAnswer":        true,
+  "bestAnswerVoteCount": 3,
+  "votedByMe":           true,
 
-    boolean edited, LocalDateTime editedAt,
-    boolean deleted, LocalDateTime deletedAt,
-    long feedbackCount,
-    long reactionCount,
-    AnswerReactionType myReaction,         // null if not reacted
-    LocalDateTime createdAt, LocalDateTime updatedAt,
-    String timeAgo, String formattedDate
-) {}
-```
+  "edited":      false,
+  "editedAt":    null,
+  "deleted":     false,
+  "deletedAt":   null,
 
-### `AnswerAttachmentResponse`
+  "feedbackCount": 1,
+  "reactionCount": 12,
+  "myReaction":   "LIKE",
 
-```java
-record AnswerAttachmentResponse(
-    UUID id, UUID answerId,
-    String fileUrl, String originalFileName, String mimeType,
-    MediaType mediaType, Long fileSize,
-    Integer displayOrder, String caption,
-    Integer durationSeconds,   // video/audio
-    String thumbnailUrl,
-    LocalDateTime createdAt
-) {}
-```
-
-### `AnswerSourceResponse`
-
-```java
-record AnswerSourceResponse(
-    UUID id, UUID answerId,
-    SourceType sourceType,
-    String title, String citationText,
-    String url, String doi, String isbn,
-    String fileUrl, String originalFileName,
-    Integer displayOrder,
-    LocalDateTime createdAt
-) {}
+  "createdAt":     "2026-05-21T09:15:00",
+  "updatedAt":     "2026-05-21T09:15:00",
+  "timeAgo":       "1 hour ago",
+  "formattedDate": "21 May 2026"
+}
 ```
 
 ### `AnswerFeedbackResponse`
 
-```java
-record AnswerFeedbackResponse(
-    UUID id, UUID answerId,
-    UUID authorId, String authorUsername, String authorFullName, String authorProfileImage,
-    FeedbackType feedbackType,
-    String body,
-    LocalDateTime createdAt, LocalDateTime updatedAt
-) {}
+```json
+{
+  "id":             "F-uuid",
+  "answerId":       "A-uuid",
+  "authorId":       "U-uuid",
+  "authorUsername": "imam_yusuf",
+  "authorFullName": "Yusuf al-Qaradawi",
+  "authorProfileImage": "https://cdn…/avatars/yusuf.jpg",
+  "feedbackType":   "EXCELLENT",
+  "body":           "Mashallah, very thorough — jazak Allah khayr.",
+  "createdAt":      "2026-05-21T10:00:00",
+  "updatedAt":      "2026-05-21T10:00:00"
+}
 ```
 
-### Request DTOs
+### `AnswerAttachmentResponse`
 
-| DTO | Used by | Required fields |
-|-----|---------|-----------------|
-| `CreateQuestionRequest` | `POST /questions` | `title` (≤500), `body` (≤10000) |
-| `EditQuestionRequest`   | `PATCH /questions/{id}` | any subset of `title`, `body`, `answersLocked`, `maxAnswers` |
-| `CreateAnswerRequest`   | `POST /answers` (incl. multipart `data` part) | `body` (≤10000), optional `parentAnswerId`, media, voice, links, sources |
-| `EditAnswerRequest`     | `PATCH /answers/{id}` | `body` (≤5000) |
-| `ReactToAnswerRequest`  | `POST /answers/{id}/react` | `reactionType` (defaults to `LIKE`) |
-| `AddFeedbackRequest`    | `POST /feedback`, `PATCH /feedback/{id}` | `feedbackType`, optional `body` (≤5000) |
-| `CreateAnswerSourceRequest` | `POST /sources` | `sourceType`, `title` (≤500) |
-| `UpdateAnswerSourceRequest` | `PATCH /sources/{id}` | any subset of source fields + `displayOrder` |
-| `UpdateAnswerAttachmentRequest` | `PATCH /attachments/{id}` | `caption` (≤500), `displayOrder` |
+```json
+{
+  "id":               "AT-uuid",
+  "answerId":         "A-uuid",
+  "fileUrl":          "https://cdn…/attachments/yasin-tafsir.pdf",
+  "originalFileName": "yasin-tafsir.pdf",
+  "mimeType":         "application/pdf",
+  "mediaType":        "DOCUMENT",
+  "fileSize":         482301,
+  "displayOrder":     0,
+  "caption":          "Excerpt from Tafsir Ibn Kathir, vol. 6",
+  "durationSeconds":  null,
+  "thumbnailUrl":     null,
+  "createdAt":        "2026-05-21T09:18:00"
+}
+```
 
-### Shared types
+### `AnswerSourceResponse`
 
-- `ak.dev.irc.app.post.dto.CursorPage<T>` — generic `{items, nextCursor,
-  hasMore}` cursor wrapper, reused by `/feed/cursor`.
-- `ak.dev.irc.app.share.ShareLinkInfo` — `{backendUrl, frontendUrl, token,
-  shareCount}` for the share endpoint.
-
----
-
-## 21. Activity feed integration
-
-Every QnA mutation writes a row into the per-user activity history.
-Full reference in [USER_ACTIVITY_API.md](./USER_ACTIVITY_API.md).
-
-| QnA action | Activity type | Notes |
-|------------|---------------|-------|
-| `POST /questions` | `QNA_QUESTION_CREATED` | `questionId` carried. |
-| `POST /{questionId}/save` (toggle ON) | `QNA_QUESTION_SAVED` | Unsaves NOT recorded. |
-| `POST /{questionId}/answers` | `QNA_ANSWER_CREATED` *or* `QNA_REANSWER_CREATED` (when `parentAnswerId != null`) | Both `questionId` + `answerId` carried. |
-| `POST /{questionId}/answers/{answerId}/react` (toggle ON) | `QNA_ANSWER_REACTION` | `qnaReactionType = LIKE`. |
-| `POST /{questionId}/answers/{answerId}/best` / `unmark` | `QNA_BEST_ANSWER_VOTE` | One row per vote / unvote — the `voted` flag in the publisher event tells consumers which. |
-| `POST /{questionId}/answers/{answerId}/feedback` | `QNA_ANSWER_FEEDBACK` | |
-| `@mention` in question / answer body (incoming) | `USER_MENTIONED` | One row per recipient; question text scans for `@followers`, answer text does NOT. |
-
-All `record*` calls are `@Async` + try/catch.
+```json
+{
+  "id":               "S-uuid",
+  "answerId":         "A-uuid",
+  "sourceType":       "BOOK",
+  "title":            "Tafsir Ibn Kathir, vol. 6",
+  "citationText":     "Ibn Kathir, Tafsir al-Qur'an al-Adheem…",
+  "url":              null,
+  "doi":              null,
+  "isbn":             "978-9960-892-77-7",
+  "fileUrl":          null,
+  "originalFileName": null,
+  "displayOrder":     0,
+  "createdAt":        "2026-05-21T09:18:00"
+}
+```
 
 ---
 
-## See also
+## 6. Question lifecycle
 
-- [POST_API.md](./POST_API.md) — Post / Stories / Reels APIs
-- [RESEARCH_API.md](./RESEARCH_API.md) — Research APIs
-- [USER_API.md](./USER_API.md) — User identity, profile, social graph, notifications
-- [USER_ACTIVITY_API.md](./USER_ACTIVITY_API.md) — Per-user activity feed
-- [POST_ERRORS.md](./POST_ERRORS.md) — Complete error & exception reference
-- [BACKEND_ENHANCEMENTS.md](./BACKEND_ENHANCEMENTS.md) — Roadmap
+### 6.1 `POST /api/v1/questions` — create question
+
+**Auth:** 🔵 Authenticated. Caller becomes the author.
+
+**What it does.** Creates a new question in `OPEN` status with the
+title + body, optionally pre-locked with `answersLocked: true` and a
+ceiling on `maxAnswers`. Indexed in Elasticsearch on the same
+transaction commit.
+
+**When the frontend uses this.** "Ask a question" composer submit.
+
+**Request body** (`CreateQuestionRequest`):
+
+```json
+{
+  "title":        "Is reciting Surah Yasin nightly an established sunnah?",
+  "body":         "I keep hearing different opinions…",
+  "answersLocked": false,
+  "maxAnswers":   null
+}
+```
+
+**Response `201`** — `QuestionResponse`.
 
 ---
 
-## Cross-cutting QnA rules
+### 6.2 `GET /api/v1/questions/{questionId}` — get one
 
-- **Single reaction type (`LIKE`)** mirrors the post / research packages.
-- **Reanswers flat at depth 1** — server hoists deeper attempts up.
-- **Soft delete** — questions and answers carry `deletedAt` and are excluded
-  from listings, but stay readable by id for audit / linkbacks.
-- **Atomic JPQL counter updates** for all `*_count` columns. The entity
-  helper methods (`incrementReactions`, etc.) are not used in the create /
-  delete write paths.
-- **`@mention` scan** — questions allow `@followers`; answers do not.
-- **Block-aware reads** + restriction-aware answer listings.
-- **Multi-best-answer** — `accepted` (question-author flag) and
-  `bestAnswerVoteCount` (multi-scholar) are independent and additive.
-- **Best-answer voting role gate** — `SCHOLAR` / `ADMIN` / `SUPER_ADMIN` only.
-- **RabbitMQ events fire `afterCommit`** so a rolled-back transaction never
-  produces a notification.
-- **All side effects wrapped in try/catch** — recording an activity row
-  or firing a notification never breaks the originating write.
+**Auth:** 🟢 Public.
+
+**What it does.** Returns the question + records a unique view (dedupe
+key = viewer's UUID, or `X-Forwarded-For` for anonymous viewers).
+Counter increment is async — `viewCount` in the response is the
+**pre-bump** value; the SSE stream gets a `VIEW_COUNT_UPDATED` event a
+moment later.
+
+**When the frontend uses this.** Opening the question detail page.
+
+**Response `200`** — `QuestionResponse`.
+
+---
+
+### 6.3 `PATCH /api/v1/questions/{questionId}` — edit question
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Partial update of `title`, `body`, `answersLocked`,
+`maxAnswers`. Omitted fields are left untouched.
+
+**When the frontend uses this.** "Edit question" sheet on a
+question authored by the viewer.
+
+**Request body** (`EditQuestionRequest`):
+
+```json
+{
+  "title":         "Is reciting Surah Yasin nightly a confirmed sunnah?",
+  "body":          "Updated context after reading the comments…",
+  "answersLocked": null,
+  "maxAnswers":    5
+}
+```
+
+**Response `200`** — updated `QuestionResponse`.
+
+---
+
+### 6.4 `DELETE /api/v1/questions/{questionId}` — delete
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Hard-deletes the question. Cascades to answers,
+attachments, sources, feedback, and Cassandra denormalized rows in
+the same transaction.
+
+**When the frontend uses this.** "Delete question" confirm action.
+Show the destructive confirmation modal before calling.
+
+**Response:** `204 No Content`.
+
+---
+
+### 6.5 `GET /api/v1/questions/me` — my questions
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Page of questions the caller authored, newest first.
+
+**When the frontend uses this.** Profile → "My questions" tab.
+
+**Response `200`** — `Page<QuestionResponse>`.
+
+---
+
+## 7. Question feeds
+
+### 7.1 `GET /api/v1/questions` — public feed (page-based)
+
+**Auth:** 🟢 Public.
+
+**What it does.** Public list of questions ordered by `createdAt DESC`,
+with Spring Data pagination (`?page=0&size=20&sort=createdAt,desc`).
+
+**When the frontend uses this.** "Discover" tab. Prefer the cursor
+variant (§7.2) for infinite-scroll UIs.
+
+**Response `200`** — `Page<QuestionResponse>`.
+
+---
+
+### 7.2 `GET /api/v1/questions/feed/cursor` — public feed (cursor)
+
+**Auth:** 🟢 Public.
+
+**What it does.** Cursor-paginated variant of §7.1. First page omits
+`cursor`; each subsequent call passes back the `nextCursor` from the
+previous response. End-of-feed → `nextCursor: null` and
+`hasMore: false`.
+
+**When the frontend uses this.** Mobile infinite-scroll feeds where
+inserts during scroll would shift page-based pagination.
+
+**Query parameters:**
+- `cursor` — ISO LocalDateTime; omit for first page.
+- `limit` — default `20`, max `100`.
+
+**Response `200`** — `CursorPage<QuestionResponse>`:
+
+```json
+{
+  "items":      [ /* QuestionResponse[] */ ],
+  "nextCursor": "2026-05-21T07:00:00",
+  "hasMore":    true
+}
+```
+
+---
+
+### 7.3 `GET /api/v1/questions/feed/following` — following feed
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Questions authored by users the caller follows.
+Excludes blocked users in both directions.
+
+**When the frontend uses this.** "Following" tab on the QnA home
+screen.
+
+**Response `200`** — `Page<QuestionResponse>`.
+
+---
+
+## 8. Question search
+
+### 8.1 `GET /api/v1/questions/search?q=…&page=…&size=…`
+
+**Auth:** 🟢 Public.
+
+**What it does.** Elasticsearch full-text search over `title` + `body`.
+Returns matching question UUIDs only — hydrate them with §6.2 on the
+client.
+
+**When the frontend uses this.** Top-bar search overlay.
+
+**Response `200`:**
+
+```json
+{
+  "query":   "yasin sunnah",
+  "page":    0,
+  "size":    20,
+  "results": ["Q-uuid-1", "Q-uuid-2", "Q-uuid-3"]
+}
+```
+
+---
+
+## 9. Per-question SSE stream
+
+### 9.1 `GET /api/v1/questions/{questionId}/stream`
+
+**Auth:** 🟢 Public (anonymous viewers receive the stream, but `myReaction` / `votedByMe` fields in payloads are `null` for them). Use `?token=<jwt>` to authenticate as a specific viewer.
+
+**Content type:** `text/event-stream`.
+
+**What it does.** Subscribes the client to the question's realtime
+event channel. Every answer / reanswer / reaction / accept / best-vote
+/ feedback / lifecycle event published on this question is pushed to
+the client. A `connected` handshake fires on subscribe, and a
+`heartbeat` every 25 s.
+
+**When the frontend uses this.** Open the question detail page → open
+the SSE stream → patch the counters and lists inline as events arrive.
+Close on navigate-away.
+
+**Event payload schema** — `QnaRealtimeEvent`:
+
+```json
+{
+  "eventType":   "ANSWER_CREATED",
+  "questionId":  "Q-uuid",
+  "answerId":    "A-uuid",
+  "actorId":     "U-uuid",
+  "timestamp":   "2026-05-21T09:15:00.012Z",
+  "data": {
+    /* event-specific payload (full answer DTO, counter delta, etc.) */
+  }
+}
+```
+
+See §20 for the full event-type list.
+
+---
+
+## 10. Answer controls
+
+These three endpoints let the **question author** govern the answer
+section.
+
+### 10.1 `POST /api/v1/questions/{questionId}/lock-answers`
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Locks the answer section. New answers and reanswers
+return `409 ANSWERS_LOCKED`. Existing answers stay readable / editable.
+
+**When the frontend uses this.** "Lock answers" toggle in the
+question-owner toolbar.
+
+**Response `200`** — updated `QuestionResponse` with
+`answersLocked: true`.
+
+---
+
+### 10.2 `DELETE /api/v1/questions/{questionId}/lock-answers` — unlock
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Reopens the answer section.
+
+**Response `200`** — updated `QuestionResponse` with
+`answersLocked: false`.
+
+---
+
+### 10.3 `PATCH /api/v1/questions/{questionId}/answer-limit?maxAnswers=N`
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Sets (or clears with no param) the ceiling on
+answers. Once `answerCount` hits `maxAnswers` the section behaves as
+locked — new answers return `409 MAX_ANSWERS_REACHED`.
+
+**When the frontend uses this.** "Limit to N answers" UI on the
+question-owner toolbar (e.g. scholar wants only 3 reputable answers).
+
+**Response `200`** — updated `QuestionResponse`.
+
+---
+
+## 11. Answers & reanswers
+
+### 11.1 `GET /api/v1/questions/{questionId}/answers` — list answers
+
+**Auth:** 🟢 Public.
+
+**What it does.** Page of top-level answers (no reanswers). For each
+answer the `myReaction` / `votedByMe` fields reflect the caller (or
+are null for anonymous).
+
+**When the frontend uses this.** Below the question body on the
+detail screen.
+
+**Response `200`** — `Page<QuestionAnswerResponse>`.
+
+---
+
+### 11.2 `POST /api/v1/questions/{questionId}/answers` — post answer
+
+**Auth:** 🔵 Authenticated. **Blocked if** `answersLocked` or
+`maxAnswers` reached → `409`.
+
+**What it does.** Creates a top-level answer. Optionally attaches
+inline `mediaUrl` (if already uploaded elsewhere), `voiceUrl`,
+free-form `links`, and a list of `sources`. Use §11.3 to upload media
+inline.
+
+**When the frontend uses this.** Bottom composer of the question
+detail page → "Answer."
+
+**Request body** (`CreateAnswerRequest`):
+
+```json
+{
+  "body":  "The hadith narrated in Sunan al-Darimi describes…",
+  "parentAnswerId":  null,
+  "mediaUrl":           null,
+  "mediaType":          null,
+  "mediaThumbnailUrl":  null,
+  "voiceUrl":           null,
+  "voiceDurationSeconds": null,
+  "links":              null,
+  "sources": [
+    {
+      "sourceType":   "BOOK",
+      "title":        "Sunan al-Darimi",
+      "citationText": "Vol 2, hadith 3424…",
+      "isbn":         "978-9960-892-77-7"
+    }
+  ]
+}
+```
+
+**Response `201`** — `QuestionAnswerResponse`.
+
+---
+
+### 11.3 `POST /api/v1/questions/{questionId}/answers/upload` — answer with media
+
+**Auth:** 🔵 Authenticated.
+
+**Content type:** `multipart/form-data`.
+
+**What it does.** Single multipart call that combines an answer body
+with an inline media file (image / video) and an optional voice note.
+Mirrors `POST /posts/{id}/comments/upload` so the frontend can reuse
+its comment composer for answers.
+
+**When the frontend uses this.** Image / video / voice answer from
+mobile.
+
+**Multipart parts:**
+- `data` (required) — JSON `CreateAnswerRequest`
+- `media` (optional) — `image/*` or `video/*`
+- `voice` (optional) — `audio/*`
+
+**Response `201`** — `QuestionAnswerResponse` with `mediaUrl` /
+`voiceUrl` populated.
+
+---
+
+### 11.4 `GET /api/v1/questions/{questionId}/answers/{answerId}/reanswers` *(alias `…/replies`)*
+
+**Auth:** 🟢 Public.
+
+**What it does.** Page of reanswers (depth-1 replies) under a given
+top-level answer.
+
+**When the frontend uses this.** "Show replies" expander under an
+answer.
+
+**Response `200`** — `Page<QuestionAnswerResponse>` (each with
+`parentAnswerId` set).
+
+---
+
+### 11.5 `POST /api/v1/questions/{questionId}/answers/{answerId}/reanswers` *(alias `…/replies`)* — reanswer
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Creates a reanswer (reply) under a top-level answer.
+The server sets `parentAnswerId` from the path — if the body also has
+one, the path value wins. Replying to a depth-1 reanswer is hoisted
+to a sibling reply on the same root answer (depth-1 cap, see
+project memory).
+
+**When the frontend uses this.** "Reply" button on an answer.
+
+**Request body** — same `CreateAnswerRequest` shape as §11.2.
+
+**Response `201`** — `QuestionAnswerResponse`.
+
+---
+
+### 11.6 `POST /api/v1/questions/{questionId}/answers/{answerId}/reanswers/upload` *(alias `…/replies/upload`)*
+
+**Auth:** 🔵 Authenticated.
+
+**Content type:** `multipart/form-data`.
+
+**What it does.** Multipart reanswer variant — same shape as §11.3
+but creates a reply under the given parent.
+
+---
+
+### 11.7 `PATCH /api/v1/questions/{questionId}/answers/{answerId}` — edit answer
+
+**Auth:** 🟡 Author-only (answer author).
+
+**What it does.** Updates the answer body. Sets `edited: true` and
+`editedAt`. The current schema only supports body edit — to change
+attachments / sources use §16 / §17.
+
+**Request body** (`EditAnswerRequest`):
+
+```json
+{ "body": "Updated answer body — added missing tashkeel." }
+```
+
+**Response `200`** — updated `QuestionAnswerResponse`.
+
+---
+
+### 11.8 `DELETE /api/v1/questions/{questionId}/answers/{answerId}` — delete answer
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Soft-deletes the answer: `body` is nulled out,
+attachments / sources are hidden from response, `deleted: true` and
+`deletedAt` are set. Reanswers under it survive (so threads remain
+readable) — they just lose their parent's content.
+
+**Response:** `204 No Content`.
+
+---
+
+## 12. Answer reactions
+
+Single LIKE reaction — mirrors Post comment reactions. No
+HEART/HAHA/etc.
+
+### 12.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/react` — react
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Toggles a LIKE reaction onto an answer (idempotent —
+re-calling does nothing). Emits `ANSWER_REACTION_ADDED` on the SSE
+stream.
+
+**Request body** (optional — type defaults to `LIKE`):
+
+```json
+{ "reactionType": "LIKE" }
+```
+
+**Response `200`** — updated `QuestionAnswerResponse` with refreshed
+`reactionCount` and `myReaction: "LIKE"`.
+
+---
+
+### 12.2 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/react` — un-react
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Removes the caller's LIKE on the answer.
+
+**Response `200`** — updated `QuestionAnswerResponse` with
+`myReaction: null`.
+
+---
+
+## 13. Accept / unaccept
+
+The **question author** can accept multiple answers. Marking
+"accepted" flips the question to `ANSWERED` status.
+
+### 13.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/accept`
+
+**Auth:** 🟡 Author-only (question author).
+
+**What it does.** Marks the given answer as accepted by the question
+author. Question status transitions `OPEN → ANSWERED`.
+
+**Response `200`** — updated `QuestionAnswerResponse` with
+`accepted: true`.
+
+---
+
+### 13.2 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/accept` — unaccept
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Removes the accept flag. If no other answers are
+accepted, question status returns to `OPEN`.
+
+**Response `200`** — updated `QuestionAnswerResponse`.
+
+---
+
+## 14. Multi-scholar best-answer voting
+
+Distinct from accept — **any verified scholar** may mark an answer as
+"best." The vote counter is exposed on the answer
+(`bestAnswerVoteCount`), and `votedByMe` reflects the caller's vote.
+
+### 14.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/best`
+
+**Auth:** 🔴 Scholar-only (frontend MUST gate — server enforcement is
+pending).
+
+**What it does.** Adds the caller as one of the answer's best-answer
+voters. Idempotent — voting twice has no effect.
+
+**When the frontend uses this.** "⭐ Mark as best answer" button shown
+only when the viewer is a verified scholar.
+
+**Response `200`** — updated `QuestionAnswerResponse` with bumped
+`bestAnswerVoteCount` and `votedByMe: true`.
+
+---
+
+### 14.2 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/best` — unvote
+
+**Auth:** 🔴 Scholar-only.
+
+**What it does.** Removes the caller's best-vote.
+
+**Response `200`** — updated `QuestionAnswerResponse`.
+
+---
+
+## 15. Question-author feedback on answers
+
+Distinct from reactions — the **question author** can rate each
+answer with a `FeedbackType` and an optional comment. Used for the
+"How well did this answer your question?" widget.
+
+### 15.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/feedback`
+
+**Auth:** 🟡 Author-only (question author).
+
+**What it does.** Adds a feedback row. The author may add multiple
+feedback rows on the same answer if the UI exposes that.
+
+**Request body** (`AddFeedbackRequest`):
+
+```json
+{
+  "feedbackType": "EXCELLENT",
+  "body":         "Mashallah — thoroughly researched."
+}
+```
+
+**Response `201`** — `AnswerFeedbackResponse`.
+
+---
+
+### 15.2 `GET /api/v1/questions/{questionId}/answers/{answerId}/feedback` — list
+
+**Auth:** 🟢 Public.
+
+**What it does.** Returns all feedback rows on the answer.
+
+**Response `200`** — `List<AnswerFeedbackResponse>`.
+
+---
+
+### 15.3 `PATCH /api/v1/questions/{questionId}/answers/{answerId}/feedback/{feedbackId}`
+
+**Auth:** 🟡 Author-only (feedback author).
+
+**What it does.** Updates the feedback type or body.
+
+**Request body** — same `AddFeedbackRequest` shape.
+
+**Response `200`** — updated `AnswerFeedbackResponse`.
+
+---
+
+### 15.4 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/feedback/{feedbackId}`
+
+**Auth:** 🟡 Author-only.
+
+**Response:** `204 No Content`.
+
+---
+
+## 16. Answer attachments
+
+PDFs, DOCX, images, audio, video, ZIP — anything that lives on R2 /
+S3 alongside the answer body.
+
+### 16.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/attachments`
+
+**Auth:** 🟡 Author-only (answer author).
+
+**Content type:** `multipart/form-data`.
+
+**What it does.** Uploads a single file as an attachment to the
+answer. The server detects MIME type, derives `mediaType`, extracts
+duration for audio / video, and stores the row.
+
+**Multipart parts / params:**
+- `file` (required) — the binary
+- `caption` (optional, query) — short description
+- `displayOrder` (optional, query) — sort order, default appends to end
+
+**Response `201`** — `AnswerAttachmentResponse`.
+
+---
+
+### 16.2 `GET /api/v1/questions/{questionId}/answers/{answerId}/attachments`
+
+**Auth:** 🟢 Public.
+
+**What it does.** Lists all attachments on the answer, ordered by
+`displayOrder`.
+
+**Response `200`** — `List<AnswerAttachmentResponse>`.
+
+---
+
+### 16.3 `PATCH /api/v1/questions/{questionId}/answers/{answerId}/attachments/{attachmentId}`
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Updates `caption` or `displayOrder` on a single
+attachment (no file replacement — delete + re-upload for that).
+
+**Request body** (`UpdateAnswerAttachmentRequest`):
+
+```json
+{ "caption": "Updated caption", "displayOrder": 1 }
+```
+
+**Response `200`** — updated `AnswerAttachmentResponse`.
+
+---
+
+### 16.4 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/attachments/{attachmentId}`
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Deletes the attachment row and removes the underlying
+R2 / S3 object.
+
+**Response:** `204 No Content`.
+
+---
+
+## 17. Answer sources / references
+
+Bibliographic citations: BOOK / DOI / URL / ISBN / FILE, etc. Shown
+in a citations panel under the answer body.
+
+### 17.1 `POST /api/v1/questions/{questionId}/answers/{answerId}/sources`
+
+**Auth:** 🟡 Author-only (answer author).
+
+**What it does.** Adds a citation. At least one of `url`, `doi`,
+`isbn`, or `fileUrl` should be populated depending on `sourceType`,
+but no field is server-enforced — the UI should validate.
+
+**Request body** (`CreateAnswerSourceRequest`):
+
+```json
+{
+  "sourceType":   "BOOK",
+  "title":        "Tafsir Ibn Kathir, vol. 6",
+  "citationText": "Ibn Kathir, Tafsir al-Qur'an al-Adheem, Dar Tayyibah…",
+  "isbn":         "978-9960-892-77-7"
+}
+```
+
+**Response `201`** — `AnswerSourceResponse`.
+
+---
+
+### 17.2 `GET /api/v1/questions/{questionId}/answers/{answerId}/sources`
+
+**Auth:** 🟢 Public.
+
+**What it does.** Returns the answer's bibliography list ordered by
+`displayOrder`.
+
+**Response `200`** — `List<AnswerSourceResponse>`.
+
+---
+
+### 17.3 `PATCH /api/v1/questions/{questionId}/answers/{answerId}/sources/{sourceId}`
+
+**Auth:** 🟡 Author-only.
+
+**What it does.** Updates any of `title`, `citationText`, `url`,
+`doi`, `isbn`, or `displayOrder`.
+
+**Request body** (`UpdateAnswerSourceRequest`):
+
+```json
+{
+  "title":        "Tafsir Ibn Kathir, vol. 6 (revised ed.)",
+  "displayOrder": 2
+}
+```
+
+**Response `200`** — updated `AnswerSourceResponse`.
+
+---
+
+### 17.4 `DELETE /api/v1/questions/{questionId}/answers/{answerId}/sources/{sourceId}`
+
+**Auth:** 🟡 Author-only.
+
+**Response:** `204 No Content`.
+
+---
+
+## 18. Save / bookmark
+
+### 18.1 `POST /api/v1/questions/{questionId}/save?collection=<name>`
+
+**Auth:** 🔵 Authenticated. Idempotent — re-calling with a different
+`collection` moves the bookmark.
+
+**What it does.** Bookmarks the question into the named collection (or
+the default unnamed collection if `collection` is omitted). Emits
+`SAVE_COUNT_UPDATED` on the SSE stream.
+
+**When the frontend uses this.** "🔖 Save" tap on a question card.
+
+**Response `201`** — `QuestionResponse` with `isSaved: true`.
+
+---
+
+### 18.2 `DELETE /api/v1/questions/{questionId}/save` — unsave
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Removes the caller's bookmark on the question.
+
+**Response `200`** — `QuestionResponse` with `isSaved: false`.
+
+---
+
+### 18.3 `GET /api/v1/questions/me/saved` — saved questions
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Page of saved questions, newest-saved first. Each
+`QuestionResponse` carries `savedAt` so the frontend can render
+"Saved &lt;date&gt;" without an extra fetch.
+
+**When the frontend uses this.** Profile → "Saved" → "Questions" tab.
+
+**Response `200`** — `Page<QuestionResponse>` (with `savedAt`
+populated).
+
+---
+
+### 18.4 `GET /api/v1/questions/me/saved/collection?name=<name>`
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Same as §18.3 but filtered to a single collection.
+
+**Response `200`** — `Page<QuestionResponse>`.
+
+---
+
+### 18.5 `GET /api/v1/questions/me/saved/collections` — distinct collection names
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Lists every collection name the caller has used
+(distinct, deduped).
+
+**When the frontend uses this.** Populating the "Save to collection"
+picker.
+
+**Response `200`:**
+
+```json
+["Default", "For tafsir paper", "Fatwa research"]
+```
+
+---
+
+### 18.6 `PATCH /api/v1/questions/me/saved/collections?oldName=…&newName=…`
+
+**Auth:** 🔵 Authenticated.
+
+**What it does.** Renames a collection across every saved row owned
+by the caller. Idempotent.
+
+**Response:** `204 No Content`.
+
+---
+
+## 19. Share & share-link preview
+
+### 19.1 `GET /api/v1/questions/{questionId}/share-link` — preview
+
+**Auth:** 🟢 Public.
+
+**What it does.** Returns the unified share-link info (`url`,
+`shareToken`, `qrUrl`, …) **without** bumping `shareCount`. Used by
+the inline share UI before the user actually copies.
+
+**Response `200`** — `ShareLinkInfo`:
+
+```json
+{
+  "url":        "https://irc.example.com/q/2u-1a3-...",
+  "shareToken": "2u1a3hk9zq",
+  "qrUrl":      "https://api.irc.example.com/qr/2u-1a3-..."
+}
+```
+
+---
+
+### 19.2 `POST /api/v1/questions/{questionId}/share` — record share
+
+**Auth:** 🟢 Public (authenticated caller is recorded if present).
+
+**What it does.** Atomically bumps `shareCount` and returns the same
+`ShareLinkInfo` payload. Call when the user actually copies / sends
+the link.
+
+**Response `200`** — `ShareLinkInfo`.
+
+---
+
+## 20. Realtime event types
+
+Defined in `ak.dev.irc.app.qna.realtime.QnaRealtimeEventType`. One
+event per discrete state change so the frontend can patch the UI
+incrementally.
+
+### Answer / reanswer events
+
+| Event | When |
+|---|---|
+| `ANSWER_CREATED` | A new top-level answer is posted. |
+| `REANSWER_CREATED` | A reply (depth-1) under an answer. |
+| `ANSWER_EDITED` | Author edited the answer body. |
+| `ANSWER_DELETED` | Author soft-deleted the answer. |
+
+### Reaction events
+
+| Event | When |
+|---|---|
+| `ANSWER_REACTION_ADDED` | LIKE added. |
+| `ANSWER_REACTION_CHANGED` | (forward-compat; single LIKE today) |
+| `ANSWER_REACTION_REMOVED` | LIKE removed. |
+
+### Accept / best-answer events
+
+| Event | When |
+|---|---|
+| `ANSWER_ACCEPTED` | Question author accepted the answer. |
+| `ANSWER_UNACCEPTED` | Question author unaccepted. |
+| `BEST_ANSWER_VOTED` | A scholar marked best. |
+| `BEST_ANSWER_UNVOTED` | A scholar removed best. |
+
+### Feedback events
+
+| Event | When |
+|---|---|
+| `ANSWER_FEEDBACK_ADDED` | Question author added feedback. |
+| `ANSWER_FEEDBACK_EDITED` | Edited feedback. |
+| `ANSWER_FEEDBACK_DELETED` | Deleted feedback. |
+
+### Question lifecycle
+
+| Event | When |
+|---|---|
+| `QUESTION_UPDATED` | Title / body / settings changed. |
+| `QUESTION_DELETED` | Question deleted. |
+| `QUESTION_LOCKED` | Answers locked. |
+| `QUESTION_UNLOCKED` | Answers unlocked. |
+
+### Live counters
+
+| Event | When |
+|---|---|
+| `VIEW_COUNT_UPDATED` | New unique view recorded. |
+| `SAVE_COUNT_UPDATED` | Save toggled on or off. |
+| `SHARE_COUNT_UPDATED` | Share button pressed. |
+
+---
+
+## 21. Cassandra denormalized tables
+
+The QnA module mirrors high-read state into Cassandra for fast O(1)
+viewer-side reads. Spring Data JPA still owns the source of truth;
+Cassandra rows are written via `@TransactionalEventListener(AFTER_COMMIT)`.
+
+| Table | Purpose | TTL |
+|---|---|---|
+| `qna_reactions_by_answer` | "Who reacted to this answer?" — pageable list. | — |
+| `qna_reactions_by_user`   | "What did this user react to?" — for profile activity. | — |
+| `question_saves_by_user`  | Saved-questions list per viewer. | — |
+| `question_save_lookup`    | Per-(user, question) save-state lookup. | — |
+| `question_views`          | View-dedupe records (viewer-key → questionId). | 24 h |
+
+---
+
+## 22. Cross-cutting rules
+
+- **Depth-1 reply cap.** A reanswer to a reanswer is hoisted to a
+  sibling reply on the same root answer. Mirrors the post-comment
+  rule (`project_reply_nesting_rule.md`).
+- **Single reaction type.** LIKE only. No multi-emoji variants.
+- **Self-engagement.** Users CAN like / save / share their own
+  questions and answers, but self-notifications are skipped server-side.
+- **Counter accuracy.** All counters (answers, views, saves, shares,
+  reactions, feedback) are atomic via CQL `UPDATE col = col + N` and
+  read-through cached in Redis. Treat the SSE counter events as the
+  authoritative push delta.
+- **Soft-delete answer.** A deleted answer's body, attachments, and
+  sources are nulled in responses but the row stays — used to render
+  "[deleted]" placeholders without breaking reanswer threads.
+- **Author check.** Most mutating endpoints throw `SecurityException`
+  if the caller is not the resource author. Until a refactor lands,
+  this falls to the catch-all `500` envelope — semantically a `403`.
+
+---

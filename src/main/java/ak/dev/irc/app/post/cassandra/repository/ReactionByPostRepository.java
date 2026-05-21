@@ -7,6 +7,8 @@ import org.springframework.data.cassandra.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,6 +18,16 @@ public interface ReactionByPostRepository extends CassandraRepository<ReactionBy
     @Query("SELECT * FROM reactions_by_post WHERE post_id = :postId AND user_id = :userId")
     Optional<ReactionByPostEntity> find(@Param("postId") UUID postId,
                                         @Param("userId") UUID userId);
+
+    /**
+     * Bulk "which of these posts has user U reacted to?" — single driver
+     * round-trip via a multi-partition IN query. Use ONLY for bounded sets
+     * (feed pages of 20–50); IN over hundreds of partitions stresses the
+     * coordinator and breaks token-aware routing.
+     */
+    @Query("SELECT * FROM reactions_by_post WHERE post_id IN :postIds AND user_id = :userId")
+    List<ReactionByPostEntity> findForUserAcrossPosts(@Param("postIds") Collection<UUID> postIds,
+                                                      @Param("userId") UUID userId);
 
     @Query("DELETE FROM reactions_by_post WHERE post_id = :postId AND user_id = :userId")
     void delete(@Param("postId") UUID postId,

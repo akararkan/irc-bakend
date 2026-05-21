@@ -95,27 +95,38 @@ public class FeedTimelineService {
         writeFanoutRow(postId, authorId, authorId, createdAt, postType, textPreview, mediaUrl);
         pushRealtime(authorId, postId, authorId);
 
-        int page = 0;
+        // Keyset-paginated follower scan: each page is constant-time on the
+        // (following.id, follower.id) index, so depth doesn't degrade the
+        // per-page cost the way the old OFFSET-based pager did. Within each
+        // batch the per-follower writes go through parallelStream so the 500
+        // Cassandra writes don't serialize on this @Async thread.
+        UUID cursor = null;
         int totalDelivered = 0;
         while (totalDelivered < MAX_FANOUT_FOLLOWERS) {
             List<UUID> followerBatch;
             try {
-                followerBatch = userFollowRepo.findAllFollowerIds(
-                        authorId, PageRequest.of(page, FANOUT_BATCH));
+                followerBatch = userFollowRepo.findFollowerIdsAfter(
+                        authorId, cursor, PageRequest.of(0, FANOUT_BATCH));
             } catch (Exception e) {
                 log.warn("[FEED] follower lookup failed for {}: {}", authorId, e.getMessage());
                 return;
             }
             if (followerBatch.isEmpty()) break;
 
-            for (UUID followerId : followerBatch) {
-                writeFanoutRow(postId, authorId, followerId, createdAt,
-                              postType, textPreview, mediaUrl);
-                pushRealtime(followerId, postId, authorId);
-                deliverPostNewNotification(followerId, authorId, authorLabel, postId, textPreview);
-            }
+            followerBatch.parallelStream().forEach(followerId -> {
+                try {
+                    writeFanoutRow(postId, authorId, followerId, createdAt,
+                                  postType, textPreview, mediaUrl);
+                    pushRealtime(followerId, postId, authorId);
+                    deliverPostNewNotification(followerId, authorId, authorLabel,
+                                               postId, textPreview);
+                } catch (Exception e) {
+                    log.debug("[FEED] per-follower fanout {} failed: {}",
+                            followerId, e.getMessage());
+                }
+            });
             totalDelivered += followerBatch.size();
-            page++;
+            cursor = followerBatch.get(followerBatch.size() - 1);  // keyset advance
 
             if (followerBatch.size() < FANOUT_BATCH) break;
         }

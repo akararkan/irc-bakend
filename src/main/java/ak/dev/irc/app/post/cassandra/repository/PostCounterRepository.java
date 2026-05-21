@@ -6,6 +6,8 @@ import org.springframework.data.cassandra.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,4 +22,12 @@ public interface PostCounterRepository extends CassandraRepository<PostCounterEn
 
     @Query("SELECT * FROM post_counters WHERE post_id = :postId")
     Optional<PostCounterEntity> findByPostId(@Param("postId") UUID postId);
+
+    /**
+     * Bulk counter fetch for a feed page. Pulls all counters in one driver
+     * round-trip via a multi-partition IN. Bounded callers only — feeds size
+     * 20–50 are fine; do not pass arbitrarily large sets.
+     */
+    @Query("SELECT * FROM post_counters WHERE post_id IN :postIds")
+    List<PostCounterEntity> findAllByPostIds(@Param("postIds") Collection<UUID> postIds);
 }

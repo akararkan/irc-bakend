@@ -96,16 +96,14 @@ public class CassandraViewService {
         return viewRepo.find(postId, userId).isPresent();
     }
 
+    // Counter columns are eventually consistent — clients apply +1 locally
+    // and reconcile via REST on next fetch.
     private void broadcast(UUID postId, UUID viewerId) {
         try {
-            Long latest = postCounterRepo.findByPostId(postId)
-                    .map(c -> c.getViewCount())
-                    .orElse(null);
             realtimePublisher.publish(postId, PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.VIEW_COUNT_UPDATED)
                     .postId(postId)
                     .actorId(viewerId)
-                    .postViewCount(latest)
                     .build());
         } catch (Exception e) {
             log.debug("[VIEW] realtime broadcast skipped: {}", e.getMessage());

@@ -82,6 +82,32 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         """)
     List<UUID> findAllFollowerIds(@Param("userId") UUID userId, Pageable pageable);
 
+    /**
+     * Keyset-paginated follower scan for home-feed fan-out. Returns the next
+     * page of follower IDs strictly greater than {@code afterId} (pass
+     * {@code null} for the first page), ordered by {@code follower.id ASC}.
+     *
+     * <p>Why not {@link #findAllFollowerIds(UUID, Pageable)}? That call uses
+     * offset pagination ({@code OFFSET N LIMIT M}). At page 100 it scans
+     * 50,000 rows just to skip them. Keyset on the indexed follower id is
+     * constant-time per page regardless of depth, so a viral account's
+     * fan-out doesn't quadratically slow down as we walk through followers.</p>
+     *
+     * <p>Order does not match {@link #findAllFollowerIds} (this orders by id,
+     * the other by followedAt DESC). For fan-out the visit order doesn't
+     * matter — we just need every follower exactly once.</p>
+     */
+    @Query("""
+        SELECT uf.follower.id FROM UserFollow uf
+        WHERE uf.following.id = :userId
+          AND uf.follower.deletedAt IS NULL
+          AND (:afterId IS NULL OR uf.follower.id > :afterId)
+        ORDER BY uf.follower.id ASC
+        """)
+    List<UUID> findFollowerIdsAfter(@Param("userId") UUID userId,
+                                    @Param("afterId") UUID afterId,
+                                    Pageable pageable);
+
     /** Delete all follow rows between two users in both directions */
     @Modifying
     @Query("""

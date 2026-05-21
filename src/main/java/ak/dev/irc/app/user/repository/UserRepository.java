@@ -19,6 +19,14 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     Optional<User> findByUsername(String username);
 
+    /**
+     * Batched username lookup — single SQL round-trip via {@code WHERE
+     * username IN (?)}. Used by mention resolution in post creation so a
+     * single post with N @mentions resolves all of them at once instead of
+     * issuing N sequential point reads.
+     */
+    List<User> findAllByUsernameIn(Collection<String> usernames);
+
     /** Finds a non-deleted user by email — use for profile lookups and auth. */
     Optional<User> findByEmailAndDeletedAtIsNull(String email);
 

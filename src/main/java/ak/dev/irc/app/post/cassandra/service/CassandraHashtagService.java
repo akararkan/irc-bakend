@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -60,6 +62,14 @@ public class CassandraHashtagService {
      * Extract hashtags + mentions from post text, persist the feed rows and
      * bump counters. Idempotent at the per-tag level (re-extracting the same
      * post would double-count, so do this exactly once per create).
+     *
+     * <p>Mention resolution uses a single {@code WHERE username IN (?)} query
+     * — a post with N @mentions costs ONE Postgres round-trip, not N
+     * sequential ones. The author-label lookup needed for the notification
+     * body is deferred onto the async executor via
+     * {@link CassandraNotificationService#deliverAllAsync(java.util.function.Supplier)},
+     * so neither it nor the mention notifications block the post-create
+     * response.</p>
      */
     public ExtractedEntities indexEntitiesForPost(UUID postId, UUID authorId,
                                                   String textContent, Instant createdAt,
@@ -80,39 +90,62 @@ public class CassandraHashtagService {
             }
         }
 
-        // Mentions — resolve @username → UUID via Postgres UserRepository
+        // Mentions — single batched Postgres query for all @usernames.
         Set<String> usernames = extractLower(MENTION, textContent);
         List<UUID> mentionedIds = new ArrayList<>();
-        String authorLabel = userRepo.findById(authorId)
-                .map(User::getUsername).map(u -> "@" + u).orElse("Someone");
-        for (String username : usernames) {
-            try {
-                userRepo.findByUsername(username).ifPresent(user -> {
-                    mentionByUserRepo.save(MentionByUserEntity.builder()
-                            .mentionedUserId(user.getId())
-                            .createdAt(createdAt)
-                            .postId(postId)
-                            .authorId(authorId)
-                            .textPreview(preview)
-                            .build());
-                    mentionedIds.add(user.getId());
+        if (usernames.isEmpty()) {
+            return new ExtractedEntities(new ArrayList<>(tags), mentionedIds);
+        }
 
-                    // Fire USER_MENTIONED notification per mentioned user.
-                    notificationService.deliverAsync(
-                            new CassandraNotificationService.DeliverRequest(
-                                    user.getId(),
-                                    NotificationKind.USER_MENTIONED,
-                                    "You were mentioned",
-                                    authorLabel + " mentioned you: \""
-                                            + (preview == null ? "" : preview) + "\"",
-                                    authorId,
-                                    "Post", postId,
-                                    "USER_MENTIONED:" + postId + ":" + user.getId()
-                            ));
-                });
+        List<User> resolved;
+        try {
+            resolved = userRepo.findAllByUsernameIn(usernames);
+        } catch (Exception e) {
+            log.warn("[MENTION] batched resolve failed: {}", e.getMessage());
+            return new ExtractedEntities(new ArrayList<>(tags), mentionedIds);
+        }
+
+        // Write the mention-mirror rows synchronously (they're per-recipient
+        // partition, fast). The notification + author-label lookup is async.
+        Map<UUID, String> mentionedUsernames = new HashMap<>(resolved.size());
+        for (User user : resolved) {
+            try {
+                mentionByUserRepo.save(MentionByUserEntity.builder()
+                        .mentionedUserId(user.getId())
+                        .createdAt(createdAt)
+                        .postId(postId)
+                        .authorId(authorId)
+                        .textPreview(preview)
+                        .build());
+                mentionedIds.add(user.getId());
+                mentionedUsernames.put(user.getId(), user.getUsername());
             } catch (Exception e) {
-                log.warn("[MENTION] resolve @{} failed: {}", username, e.getMessage());
+                log.warn("[MENTION] mirror @{} failed: {}", user.getUsername(), e.getMessage());
             }
+        }
+
+        // Build + deliver all USER_MENTIONED notifications in one async task.
+        // The author-label read happens on the executor thread, not here.
+        if (!mentionedUsernames.isEmpty()) {
+            notificationService.deliverAllAsync(() -> {
+                String authorLabel = userRepo.findById(authorId)
+                        .map(User::getUsername).map(u -> "@" + u).orElse("Someone");
+                List<CassandraNotificationService.DeliverRequest> batch =
+                        new ArrayList<>(mentionedUsernames.size());
+                for (UUID mentionedId : mentionedUsernames.keySet()) {
+                    batch.add(new CassandraNotificationService.DeliverRequest(
+                            mentionedId,
+                            NotificationKind.USER_MENTIONED,
+                            "You were mentioned",
+                            authorLabel + " mentioned you: \""
+                                    + (preview == null ? "" : preview) + "\"",
+                            authorId,
+                            "Post", postId,
+                            "USER_MENTIONED:" + postId + ":" + mentionedId
+                    ));
+                }
+                return batch;
+            });
         }
 
         return new ExtractedEntities(new ArrayList<>(tags), mentionedIds);

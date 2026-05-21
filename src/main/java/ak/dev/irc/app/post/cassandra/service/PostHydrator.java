@@ -37,9 +37,13 @@ import java.util.function.Function;
  * needs to render — name, avatar, reaction count, comment count, view count,
  * saved/liked flags — without a single extra round-trip from the frontend.
  *
- * <p>Counter rows are point-reads on partition key (post_id / comment_id) and
- * cost ~1ms each; on a 20-item feed that's a 20ms overhead, well worth eliminating
- * client-side N+1.</p>
+ * <p>Bulk strategy: for every list-hydration path, we pre-fetch (in 3 parallel
+ * driver calls) the post counters, the viewer's reactions across the page, and
+ * the viewer's saves across the page. That replaces the prior per-row N+1
+ * point-reads (3 × pageSize round-trips → 3 round-trips total).</p>
+ *
+ * <p>Single-row hydrate variants keep the per-row reads — they're already 1
+ * round-trip and don't benefit from batching.</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -75,34 +79,7 @@ public class PostHydrator {
         // shortcut savedByMe to true without an extra point read.
         boolean savedByMe = savedAt != null
                 || (viewerId != null && saveRepo.find(p.getId(), viewerId).isPresent());
-        return new PostResponse(
-                p.getId(),
-                p.getAuthorId(),
-                authorOf(p.getAuthorId()),
-                p.getPostType(),
-                p.getStatus(),
-                p.getVisibility(),
-                p.getTextContent(),
-                p.getAudioTrackUrl(),
-                p.getAudioTrackName(),
-                p.getLocationName(),
-                p.getLocationLat(),
-                p.getLocationLng(),
-                p.getSharedPostId(),
-                p.getShareLink(),
-                p.getMediaUrls(),
-                p.getMediaTypes(),
-                nullSafe(counters == null ? null : counters.getReactionCount()),
-                nullSafe(counters == null ? null : counters.getCommentCount()),
-                nullSafe(counters == null ? null : counters.getViewCount()),
-                nullSafe(counters == null ? null : counters.getSaveCount()),
-                nullSafe(counters == null ? null : counters.getShareCount()),
-                likedByMe,
-                savedByMe,
-                p.getCreatedAt(),
-                p.getUpdatedAt(),
-                savedAt,
-                savedCollectionName);
+        return buildPostResponse(p, counters, likedByMe, savedByMe, savedAt, savedCollectionName);
     }
 
     // ── saved-posts hydration ────────────────────────────────────────────────
@@ -120,14 +97,32 @@ public class PostHydrator {
     @Transactional(readOnly = true)
     public List<PostResponse> hydrateSavedPosts(List<SaveByUserEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        return rows.stream()
-                .map(r -> {
-                    PostByIdEntity post = postByIdRepo.findById(r.getPostId()).orElse(null);
-                    if (post == null) return null;
-                    return hydrate(post, r.getCreatedAt(), r.getCollectionName());
-                })
-                .filter(Objects::nonNull)
-                .toList();
+
+        Set<UUID> postIds = collectIds(rows, SaveByUserEntity::getPostId);
+        Map<UUID, PostByIdEntity> postsById = bulkLoadPosts(postIds);
+        if (postsById.isEmpty()) return List.of();
+
+        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postsById.keySet());
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(postsById.values(), PostByIdEntity::getAuthorId);
+        UUID viewerId = currentViewerId();
+        Set<UUID> likedSet = bulkLikedPosts(viewerId, postsById.keySet());
+        // savedByMe is always true here (we're hydrating the viewer's own saves)
+        // but we still need bulk authors/counters and to honor savedAt/collection.
+
+        List<PostResponse> out = new ArrayList<>(rows.size());
+        for (SaveByUserEntity r : rows) {
+            PostByIdEntity p = postsById.get(r.getPostId());
+            if (p == null) continue;
+            out.add(buildPostResponse(
+                    p,
+                    counters.get(p.getId()),
+                    likedSet.contains(p.getId()),
+                    true,
+                    r.getCreatedAt(),
+                    r.getCollectionName(),
+                    authors.get(p.getAuthorId())));
+        }
+        return out;
     }
 
     // ── feed hydration (bulk) ────────────────────────────────────────────────
@@ -135,82 +130,97 @@ public class PostHydrator {
     @Transactional(readOnly = true)
     public List<FeedItemResponse> hydrateHomeFeed(List<FeedByUserEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        Map<UUID, AuthorSummary> authors = bulkLoad(rows, FeedByUserEntity::getAuthorId);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, FeedByUserEntity::getAuthorId);
+        Set<UUID> postIds = collectIds(rows, FeedByUserEntity::getPostId);
+        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
-        return rows.stream()
-                .map(r -> {
-                    PostCounterEntity c = postCounterRepo.findByPostId(r.getPostId()).orElse(null);
-                    return new FeedItemResponse(
-                            r.getPostId(),
-                            r.getAuthorId(),
-                            authors.get(r.getAuthorId()),
-                            r.getPostType(),
-                            r.getTextPreview(),
-                            r.getMediaUrl(),
-                            nullSafe(c == null ? null : c.getReactionCount()),
-                            nullSafe(c == null ? null : c.getCommentCount()),
-                            nullSafe(c == null ? null : c.getViewCount()),
-                            nullSafe(c == null ? null : c.getSaveCount()),
-                            nullSafe(c == null ? null : c.getShareCount()),
-                            viewerId != null && reactionRepo.find(r.getPostId(), viewerId).isPresent(),
-                            viewerId != null && saveRepo.find(r.getPostId(), viewerId).isPresent(),
-                            r.getCreatedAt());
-                })
-                .toList();
+        Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
+        Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+
+        List<FeedItemResponse> out = new ArrayList<>(rows.size());
+        for (FeedByUserEntity r : rows) {
+            PostCounterEntity c = counters.get(r.getPostId());
+            out.add(new FeedItemResponse(
+                    r.getPostId(),
+                    r.getAuthorId(),
+                    authors.get(r.getAuthorId()),
+                    r.getPostType(),
+                    r.getTextPreview(),
+                    r.getMediaUrl(),
+                    nullSafe(c == null ? null : c.getReactionCount()),
+                    nullSafe(c == null ? null : c.getCommentCount()),
+                    nullSafe(c == null ? null : c.getViewCount()),
+                    nullSafe(c == null ? null : c.getSaveCount()),
+                    nullSafe(c == null ? null : c.getShareCount()),
+                    likedSet.contains(r.getPostId()),
+                    savedSet.contains(r.getPostId()),
+                    r.getCreatedAt()));
+        }
+        return out;
     }
 
     @Transactional(readOnly = true)
     public List<FeedItemResponse> hydrateProfileFeed(List<PostByAuthorEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        Map<UUID, AuthorSummary> authors = bulkLoad(rows, PostByAuthorEntity::getAuthorId);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, PostByAuthorEntity::getAuthorId);
+        Set<UUID> postIds = collectIds(rows, PostByAuthorEntity::getPostId);
+        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
-        return rows.stream()
-                .map(r -> {
-                    PostCounterEntity c = postCounterRepo.findByPostId(r.getPostId()).orElse(null);
-                    return new FeedItemResponse(
-                            r.getPostId(),
-                            r.getAuthorId(),
-                            authors.get(r.getAuthorId()),
-                            r.getPostType(),
-                            r.getTextPreview(),
-                            r.getMediaUrl(),
-                            nullSafe(c == null ? null : c.getReactionCount()),
-                            nullSafe(c == null ? null : c.getCommentCount()),
-                            nullSafe(c == null ? null : c.getViewCount()),
-                            nullSafe(c == null ? null : c.getSaveCount()),
-                            nullSafe(c == null ? null : c.getShareCount()),
-                            viewerId != null && reactionRepo.find(r.getPostId(), viewerId).isPresent(),
-                            viewerId != null && saveRepo.find(r.getPostId(), viewerId).isPresent(),
-                            toInstant(r.getCreatedAt()));
-                })
-                .toList();
+        Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
+        Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+
+        List<FeedItemResponse> out = new ArrayList<>(rows.size());
+        for (PostByAuthorEntity r : rows) {
+            PostCounterEntity c = counters.get(r.getPostId());
+            out.add(new FeedItemResponse(
+                    r.getPostId(),
+                    r.getAuthorId(),
+                    authors.get(r.getAuthorId()),
+                    r.getPostType(),
+                    r.getTextPreview(),
+                    r.getMediaUrl(),
+                    nullSafe(c == null ? null : c.getReactionCount()),
+                    nullSafe(c == null ? null : c.getCommentCount()),
+                    nullSafe(c == null ? null : c.getViewCount()),
+                    nullSafe(c == null ? null : c.getSaveCount()),
+                    nullSafe(c == null ? null : c.getShareCount()),
+                    likedSet.contains(r.getPostId()),
+                    savedSet.contains(r.getPostId()),
+                    toInstant(r.getCreatedAt())));
+        }
+        return out;
     }
 
     @Transactional(readOnly = true)
     public List<FeedItemResponse> hydrateReels(List<ReelsByDayEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        Map<UUID, AuthorSummary> authors = bulkLoad(rows, ReelsByDayEntity::getAuthorId);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, ReelsByDayEntity::getAuthorId);
+        Set<UUID> postIds = collectIds(rows, ReelsByDayEntity::getPostId);
+        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
-        return rows.stream()
-                .map(r -> {
-                    PostCounterEntity c = postCounterRepo.findByPostId(r.getPostId()).orElse(null);
-                    return new FeedItemResponse(
-                            r.getPostId(),
-                            r.getAuthorId(),
-                            authors.get(r.getAuthorId()),
-                            "REEL",
-                            r.getTextPreview(),
-                            r.getMediaUrl(),
-                            nullSafe(c == null ? null : c.getReactionCount()),
-                            nullSafe(c == null ? null : c.getCommentCount()),
-                            nullSafe(c == null ? null : c.getViewCount()),
-                            nullSafe(c == null ? null : c.getSaveCount()),
-                            nullSafe(c == null ? null : c.getShareCount()),
-                            viewerId != null && reactionRepo.find(r.getPostId(), viewerId).isPresent(),
-                            viewerId != null && saveRepo.find(r.getPostId(), viewerId).isPresent(),
-                            toInstant(r.getCreatedAt()));
-                })
-                .toList();
+        Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
+        Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+
+        List<FeedItemResponse> out = new ArrayList<>(rows.size());
+        for (ReelsByDayEntity r : rows) {
+            PostCounterEntity c = counters.get(r.getPostId());
+            out.add(new FeedItemResponse(
+                    r.getPostId(),
+                    r.getAuthorId(),
+                    authors.get(r.getAuthorId()),
+                    "REEL",
+                    r.getTextPreview(),
+                    r.getMediaUrl(),
+                    nullSafe(c == null ? null : c.getReactionCount()),
+                    nullSafe(c == null ? null : c.getCommentCount()),
+                    nullSafe(c == null ? null : c.getViewCount()),
+                    nullSafe(c == null ? null : c.getSaveCount()),
+                    nullSafe(c == null ? null : c.getShareCount()),
+                    likedSet.contains(r.getPostId()),
+                    savedSet.contains(r.getPostId()),
+                    toInstant(r.getCreatedAt())));
+        }
+        return out;
     }
 
     // ── comment hydration ────────────────────────────────────────────────────
@@ -239,28 +249,31 @@ public class PostHydrator {
     @Transactional(readOnly = true)
     public List<CommentResponse> hydrateComments(List<CommentByPostEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        Map<UUID, AuthorSummary> authors = bulkLoad(rows, CommentByPostEntity::getAuthorId);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, CommentByPostEntity::getAuthorId);
+        Set<UUID> commentIds = collectIds(rows, CommentByPostEntity::getCommentId);
+        Map<UUID, CommentCounterEntity> counters = bulkLoadCommentCounters(commentIds);
         UUID viewerId = currentViewerId();
-        return rows.stream()
-                .map(c -> {
-                    CommentCounterEntity counters =
-                            commentCounterRepo.findByCommentId(c.getCommentId()).orElse(null);
-                    return new CommentResponse(
-                            c.getCommentId(),
-                            c.getPostId(),
-                            c.getAuthorId(),
-                            authors.get(c.getAuthorId()),
-                            c.getTextContent(),
-                            c.getMediaUrl(),
-                            c.getMediaType(),
-                            nullSafe(counters == null ? null : counters.getReactionCount()),
-                            nullSafe(counters == null ? null : counters.getReplyCount()),
-                            viewerId != null && commentReactionRepo.find(c.getCommentId(), viewerId).isPresent(),
-                            c.getDeleted(),
-                            c.getEdited(),
-                            c.getCreatedAt());
-                })
-                .toList();
+        Set<UUID> likedCommentSet = bulkLikedComments(viewerId, commentIds);
+
+        List<CommentResponse> out = new ArrayList<>(rows.size());
+        for (CommentByPostEntity c : rows) {
+            CommentCounterEntity ctr = counters.get(c.getCommentId());
+            out.add(new CommentResponse(
+                    c.getCommentId(),
+                    c.getPostId(),
+                    c.getAuthorId(),
+                    authors.get(c.getAuthorId()),
+                    c.getTextContent(),
+                    c.getMediaUrl(),
+                    c.getMediaType(),
+                    nullSafe(ctr == null ? null : ctr.getReactionCount()),
+                    nullSafe(ctr == null ? null : ctr.getReplyCount()),
+                    likedCommentSet.contains(c.getCommentId()),
+                    c.getDeleted(),
+                    c.getEdited(),
+                    c.getCreatedAt()));
+        }
+        return out;
     }
 
     @Transactional(readOnly = true)
@@ -286,30 +299,80 @@ public class PostHydrator {
     @Transactional(readOnly = true)
     public List<ReplyResponse> hydrateReplies(List<ReplyByCommentEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
-        Map<UUID, AuthorSummary> authors = bulkLoad(rows, ReplyByCommentEntity::getAuthorId);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, ReplyByCommentEntity::getAuthorId);
+        Set<UUID> replyIds = collectIds(rows, ReplyByCommentEntity::getReplyId);
+        Map<UUID, CommentCounterEntity> counters = bulkLoadCommentCounters(replyIds);
         UUID viewerId = currentViewerId();
-        return rows.stream()
-                .map(r -> {
-                    CommentCounterEntity counters =
-                            commentCounterRepo.findByCommentId(r.getReplyId()).orElse(null);
-                    return new ReplyResponse(
-                            r.getReplyId(),
-                            r.getParentId(),
-                            r.getPostId(),
-                            r.getAuthorId(),
-                            authors.get(r.getAuthorId()),
-                            r.getTextContent(),
-                            r.getMediaUrl(),
-                            nullSafe(counters == null ? null : counters.getReactionCount()),
-                            viewerId != null && commentReactionRepo.find(r.getReplyId(), viewerId).isPresent(),
-                            r.getDeleted(),
-                            r.getEdited(),
-                            r.getCreatedAt());
-                })
-                .toList();
+        Set<UUID> likedReplySet = bulkLikedComments(viewerId, replyIds);
+
+        List<ReplyResponse> out = new ArrayList<>(rows.size());
+        for (ReplyByCommentEntity r : rows) {
+            CommentCounterEntity ctr = counters.get(r.getReplyId());
+            out.add(new ReplyResponse(
+                    r.getReplyId(),
+                    r.getParentId(),
+                    r.getPostId(),
+                    r.getAuthorId(),
+                    authors.get(r.getAuthorId()),
+                    r.getTextContent(),
+                    r.getMediaUrl(),
+                    nullSafe(ctr == null ? null : ctr.getReactionCount()),
+                    likedReplySet.contains(r.getReplyId()),
+                    r.getDeleted(),
+                    r.getEdited(),
+                    r.getCreatedAt()));
+        }
+        return out;
     }
 
     // ── internals ────────────────────────────────────────────────────────────
+
+    private PostResponse buildPostResponse(PostByIdEntity p,
+                                           PostCounterEntity counters,
+                                           boolean likedByMe,
+                                           boolean savedByMe,
+                                           Instant savedAt,
+                                           String savedCollectionName) {
+        return buildPostResponse(p, counters, likedByMe, savedByMe, savedAt, savedCollectionName,
+                                 authorOf(p.getAuthorId()));
+    }
+
+    private PostResponse buildPostResponse(PostByIdEntity p,
+                                           PostCounterEntity counters,
+                                           boolean likedByMe,
+                                           boolean savedByMe,
+                                           Instant savedAt,
+                                           String savedCollectionName,
+                                           AuthorSummary author) {
+        return new PostResponse(
+                p.getId(),
+                p.getAuthorId(),
+                author,
+                p.getPostType(),
+                p.getStatus(),
+                p.getVisibility(),
+                p.getTextContent(),
+                p.getAudioTrackUrl(),
+                p.getAudioTrackName(),
+                p.getLocationName(),
+                p.getLocationLat(),
+                p.getLocationLng(),
+                p.getSharedPostId(),
+                p.getShareLink(),
+                p.getMediaUrls(),
+                p.getMediaTypes(),
+                nullSafe(counters == null ? null : counters.getReactionCount()),
+                nullSafe(counters == null ? null : counters.getCommentCount()),
+                nullSafe(counters == null ? null : counters.getViewCount()),
+                nullSafe(counters == null ? null : counters.getSaveCount()),
+                nullSafe(counters == null ? null : counters.getShareCount()),
+                likedByMe,
+                savedByMe,
+                p.getCreatedAt(),
+                p.getUpdatedAt(),
+                savedAt,
+                savedCollectionName);
+    }
 
     private static long nullSafe(Long v) { return v == null ? 0L : v; }
 
@@ -322,7 +385,16 @@ public class PostHydrator {
         return userRepo.findById(userId).map(PostHydrator::toSummary).orElse(null);
     }
 
-    private <T> Map<UUID, AuthorSummary> bulkLoad(List<T> rows, Function<T, UUID> idFn) {
+    private <T> Set<UUID> collectIds(List<T> rows, Function<T, UUID> idFn) {
+        Set<UUID> ids = new HashSet<>(rows.size() * 2);
+        for (T r : rows) {
+            UUID id = idFn.apply(r);
+            if (id != null) ids.add(id);
+        }
+        return ids;
+    }
+
+    private <T> Map<UUID, AuthorSummary> bulkLoadAuthors(Iterable<T> rows, Function<T, UUID> idFn) {
         Set<UUID> ids = new HashSet<>();
         for (T r : rows) {
             UUID id = idFn.apply(r);
@@ -332,6 +404,55 @@ public class PostHydrator {
         Map<UUID, AuthorSummary> out = new HashMap<>(ids.size());
         userRepo.findAllById(ids).forEach(u -> out.put(u.getId(), toSummary(u)));
         return out;
+    }
+
+    private Map<UUID, PostByIdEntity> bulkLoadPosts(Set<UUID> postIds) {
+        if (postIds.isEmpty()) return Map.of();
+        Map<UUID, PostByIdEntity> out = new HashMap<>(postIds.size());
+        postByIdRepo.findAllById(postIds).forEach(p -> out.put(p.getId(), p));
+        return out;
+    }
+
+    private Map<UUID, PostCounterEntity> bulkLoadCounters(Set<UUID> postIds) {
+        if (postIds.isEmpty()) return Map.of();
+        Map<UUID, PostCounterEntity> out = new HashMap<>(postIds.size());
+        for (PostCounterEntity c : postCounterRepo.findAllByPostIds(postIds)) {
+            out.put(c.getPostId(), c);
+        }
+        return out;
+    }
+
+    private Map<UUID, CommentCounterEntity> bulkLoadCommentCounters(Set<UUID> commentIds) {
+        if (commentIds.isEmpty()) return Map.of();
+        Map<UUID, CommentCounterEntity> out = new HashMap<>(commentIds.size());
+        for (CommentCounterEntity c : commentCounterRepo.findAllByCommentIds(commentIds)) {
+            out.put(c.getCommentId(), c);
+        }
+        return out;
+    }
+
+    private Set<UUID> bulkLikedPosts(UUID viewerId, Set<UUID> postIds) {
+        if (viewerId == null || postIds.isEmpty()) return Set.of();
+        Set<UUID> liked = new HashSet<>();
+        reactionRepo.findForUserAcrossPosts(postIds, viewerId)
+                .forEach(r -> liked.add(r.getPostId()));
+        return liked;
+    }
+
+    private Set<UUID> bulkSavedPosts(UUID viewerId, Set<UUID> postIds) {
+        if (viewerId == null || postIds.isEmpty()) return Set.of();
+        Set<UUID> saved = new HashSet<>();
+        saveRepo.findForUserAcrossPosts(postIds, viewerId)
+                .forEach(r -> saved.add(r.getPostId()));
+        return saved;
+    }
+
+    private Set<UUID> bulkLikedComments(UUID viewerId, Set<UUID> commentIds) {
+        if (viewerId == null || commentIds.isEmpty()) return Set.of();
+        Set<UUID> liked = new HashSet<>();
+        commentReactionRepo.findForUserAcrossComments(commentIds, viewerId)
+                .forEach(r -> liked.add(r.getCommentId()));
+        return liked;
     }
 
     private static AuthorSummary toSummary(User u) {

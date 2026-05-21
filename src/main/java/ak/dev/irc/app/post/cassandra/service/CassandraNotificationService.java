@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Notification engine — Cassandra-native, realtime via Redis, email through
@@ -96,6 +97,50 @@ public class CassandraNotificationService {
         }
     }
 
+    /**
+     * Deferred-enrichment delivery. The supplier runs on the async executor
+     * — use this when building the {@link DeliverRequest} requires extra
+     * database reads (e.g. fetching the post author or the actor's username)
+     * that should not block the originating write's HTTP response.
+     *
+     * <p>Returning {@code null} from the supplier is a no-op (used to short
+     * out when the referenced post/comment has been deleted or the recipient
+     * can't be resolved).</p>
+     */
+    @Async
+    public void deliverAsync(Supplier<DeliverRequest> builder) {
+        try {
+            DeliverRequest req = builder.get();
+            if (req == null) return;
+            deliverSync(req);
+        } catch (Exception e) {
+            log.warn("[NOTIF] enriched-deliver failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Bulk variant of {@link #deliverAsync(Supplier)} — the supplier yields
+     * many {@link DeliverRequest} rows in one shot (typically because the
+     * caller batched a Postgres / Cassandra lookup to resolve N recipients
+     * at once, like @mention fan-out). All requests share one executor task.
+     */
+    @Async
+    public void deliverAllAsync(Supplier<List<DeliverRequest>> builder) {
+        try {
+            List<DeliverRequest> batch = builder.get();
+            if (batch == null || batch.isEmpty()) return;
+            for (DeliverRequest req : batch) {
+                try {
+                    deliverSync(req);
+                } catch (Exception e) {
+                    log.debug("[NOTIF] one-of-batch deliver failed: {}", e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[NOTIF] batched-deliver build failed: {}", e.getMessage());
+        }
+    }
+
     public Optional<UUID> deliverSync(DeliverRequest req) {
         if (req.userId() == null || req.kind() == null) return Optional.empty();
         if (suppressed(req))                            return Optional.empty();
@@ -149,21 +194,81 @@ public class CassandraNotificationService {
     /**
      * Hard-delete every row in the user's inbox that's already marked read.
      * Returns the number of rows removed.
+     *
+     * <p>Strategy: do a single partition scan to find the boundary timestamp
+     * — the {@code created_at} of the oldest UNREAD row in the page. Then
+     * issue ONE range delete for everything strictly older than that boundary
+     * (everyone older than the oldest unread MUST be read, since rows arrive
+     * in time order). That collapses up to N row tombstones into a single
+     * range tombstone, so subsequent inbox reads aren't slowed down by ghost
+     * scans during the 10-day gc_grace window.</p>
+     *
+     * <p>If no unread rows exist on the page, range-delete the whole partition.
+     * Any read rows newer than the oldest unread fall back to per-row delete
+     * — this is the rare "user read a middle notification but not older ones"
+     * case and is bounded by the page size.</p>
+     *
+     * <p>Lookup rows ({@code notification_lookup}) are not range-deletable
+     * because they're keyed by {@code notification_id}. We let them expire
+     * naturally via their 90-day TTL rather than scatter-deleting them and
+     * paying tombstones in many other partitions.</p>
      */
     public int deleteAllReadFor(UUID userId) {
-        int removed = 0;
-        for (NotificationEntity n : notificationRepo.firstPage(userId, 500)) {
-            if (!Boolean.TRUE.equals(n.getRead())) continue;
-            try {
-                notificationRepo.deleteRow(userId, n.getCreatedAt(), n.getNotificationId());
-                lookupRepo.deleteById(n.getNotificationId());
-                removed++;
-            } catch (Exception e) {
-                log.debug("[NOTIF] delete-read row {} failed: {}",
-                        n.getNotificationId(), e.getMessage());
+        List<NotificationEntity> page = notificationRepo.firstPage(userId, 500);
+        if (page.isEmpty()) return 0;
+
+        // Find the OLDEST unread row in the page. Page is ordered newest-first,
+        // so we walk it and remember the last (= oldest in page) unread we see.
+        Instant oldestUnread = null;
+        int readInPage = 0;
+        for (NotificationEntity n : page) {
+            if (Boolean.TRUE.equals(n.getRead())) {
+                readInPage++;
+            } else {
+                oldestUnread = n.getCreatedAt();
             }
         }
+        if (readInPage == 0) return 0;
+
+        int removed = 0;
+        if (oldestUnread == null) {
+            // Entire page is read — range-delete everything in (or older than) the page.
+            // Use page's newest createdAt + 1ms as the upper bound so we include
+            // every read row currently on the page. Rows newer than the page (none
+            // by definition of "first page") are unaffected.
+            Instant upperBound = page.get(0).getCreatedAt().plusMillis(1);
+            notificationRepo.deleteOlderThan(userId, upperBound);
+            removed = readInPage;
+        } else {
+            // Range-delete everyone strictly older than the oldest unread —
+            // those are guaranteed to be read, since rows arrive in time order.
+            notificationRepo.deleteOlderThan(userId, oldestUnread);
+            // Anything READ but newer than oldestUnread is a "user opened a
+            // middle notification" case. Per-row delete for those.
+            for (NotificationEntity n : page) {
+                if (!Boolean.TRUE.equals(n.getRead())) continue;
+                if (!n.getCreatedAt().isAfter(oldestUnread)) continue;
+                try {
+                    notificationRepo.deleteRow(userId, n.getCreatedAt(), n.getNotificationId());
+                } catch (Exception e) {
+                    log.debug("[NOTIF] delete-read row {} failed: {}",
+                            n.getNotificationId(), e.getMessage());
+                }
+            }
+            removed = readInPage;
+        }
         return removed;
+    }
+
+    /**
+     * Bulk-delete every notification in the user's inbox strictly older than
+     * {@code before}. Produces ONE range tombstone — safe for big sweeps
+     * (e.g. nightly purge of 60-day-old read items). Lookup rows expire on
+     * their own via the 90-day TTL.
+     */
+    public void deleteOlderThan(UUID userId, Instant before) {
+        if (userId == null || before == null) return;
+        notificationRepo.deleteOlderThan(userId, before);
     }
 
     public Long unreadCountFor(UUID userId) {
