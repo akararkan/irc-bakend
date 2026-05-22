@@ -3,23 +3,20 @@ package ak.dev.irc.app.qna.search.service;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.search.document.QnaSearchDocument;
 import ak.dev.irc.app.qna.search.repository.QnaSearchRepository;
-import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.elasticsearch.client.elc.NativeQuery;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
-import org.springframework.data.elasticsearch.core.SearchHit;
-import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.UUID;
 
 /**
- * Elasticsearch-backed search for Q&A questions.
+ * Elasticsearch-backed indexer for Q&A questions.
+ *
+ * Index-only: query-time search is served by the unified
+ * {@code /api/v1/search} endpoint (see {@code GlobalSearchService}). This
+ * class owns the {@code irc-qna} index and keeps it in sync with Postgres.
  *
  * Indexing is async — never blocks the write path. Canonical store is Postgres.
  */
@@ -28,8 +25,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class QnaSearchService {
 
-    private final QnaSearchRepository     searchRepo;
-    private final ElasticsearchOperations esOps;
+    private final QnaSearchRepository searchRepo;
 
     @Async
     public void indexAsync(Question question) {
@@ -71,33 +67,5 @@ public class QnaSearchService {
         } catch (Exception e) {
             log.warn("[SEARCH] delete question {} failed: {}", questionId, e.getMessage());
         }
-    }
-
-    /**
-     * Full-text search over question title + body + author fields.
-     * Returns question UUIDs ranked by BM25 — caller hydrates from Postgres.
-     */
-    public List<UUID> search(String query, int page, int size) {
-        if (query == null || query.isBlank()) return List.of();
-
-        Query esQuery = Query.of(q -> q.bool(b -> b
-                .must(m -> m.multiMatch(mm -> mm
-                        .query(query)
-                        .fields("title^4", "body^2",
-                                "authorName", "authorUsername")))));
-
-        NativeQuery native_ = NativeQuery.builder()
-                .withQuery(esQuery)
-                .withPageable(PageRequest.of(page, size))
-                .build();
-
-        SearchHits<QnaSearchDocument> hits =
-                esOps.search(native_, QnaSearchDocument.class);
-
-        return hits.getSearchHits().stream()
-                .map(SearchHit::getContent)
-                .map(QnaSearchDocument::getId)
-                .map(UUID::fromString)
-                .toList();
     }
 }

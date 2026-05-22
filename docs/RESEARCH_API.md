@@ -889,24 +889,23 @@ of status — drafts, published, archived, retracted.
 
 ## 14. Search & tags
 
-### 14.1 `GET /api/v1/researches/search?q=…&page=…&size=…`
+### 14.1 Full-text search — migrated to the unified API
 
-**Auth:** 🟢 Public.
-
-**What it does.** Elasticsearch full-text search ranked by BM25 over
-title, abstract, keywords, citation. Returns matching UUIDs only —
-hydrate with §12.1 on the client.
-
-**Response `200`:**
-
-```json
-{
-  "query":   "tafsir methodology",
-  "page":    0,
-  "size":    20,
-  "results": ["R-uuid-1", "R-uuid-2"]
-}
-```
+> The research-only `GET /api/v1/researches/search` endpoint has been
+> **removed**. Full-text search across title / abstract / keywords /
+> tags / researcher name now lives on the cross-index endpoint:
+>
+> **`GET /api/v1/search?q=…&types=RESEARCH&page=…&size=…`**
+>
+> The response is a list of entity-stamped hits — clients still call
+> §12.1 to hydrate each `RESEARCH` UUID. See [`SEARCH_API.md`](./SEARCH_API.md)
+> for the full contract.
+>
+> Tag filtering (§14.2 below) is unchanged — it's a structured Postgres
+> query, not relevance search, and stays on the research controller.
+>
+> The `irc-research` Elasticsearch index is unchanged; only the
+> query-time entry point moved.
 
 ---
 

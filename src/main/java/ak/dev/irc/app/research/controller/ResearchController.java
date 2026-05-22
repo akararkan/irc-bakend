@@ -19,7 +19,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -46,7 +45,6 @@ public class ResearchController {
 
     private final ResearchService researchService;
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeService researchRealtimeService;
-    private final ak.dev.irc.app.research.search.service.ResearchSearchService researchSearchService;
 
     /**
      * Live event stream for a single research publication.
@@ -433,17 +431,12 @@ public class ResearchController {
 
     // ══════════════════════════════════════════════════════════════════════════
     //  SEARCH
+    //
+    //  Full-text search lives on the unified endpoint GET /api/v1/search
+    //  (see GlobalSearchController). Pass {@code types=RESEARCH} to scope it
+    //  to research only. Tag filtering remains here because it's a structured
+    //  Postgres query, not a relevance search.
     // ══════════════════════════════════════════════════════════════════════════
-
-    /** Elasticsearch full-text search ranked by BM25 — returns research UUIDs. */
-    @GetMapping("/search")
-    public Map<String, Object> search(
-            @RequestParam String q,
-            @RequestParam(defaultValue = "0")  int page,
-            @RequestParam(defaultValue = "20") int size) {
-        List<UUID> ids = researchSearchService.search(q, page, size);
-        return Map.of("query", q, "page", page, "size", size, "results", ids);
-    }
 
     /** Filter published researches by one or more tags. */
     @GetMapping("/search/tags")

@@ -13,8 +13,13 @@ import java.util.*;
  * Single global search endpoint — one ES query hits posts, Q&A and research
  * indices in parallel and returns score-ordered hits stamped with entity type.
  *
- * Per-entity endpoints (/api/v1/posts/search, /api/v1/researches/search,
- * /api/v1/questions/search) still exist for type-specific search UIs.
+ * This is the <em>only</em> full-text search entry point in the API: the
+ * per-entity {@code /search} endpoints that used to live on
+ * {@code /api/v1/posts}, {@code /api/v1/researches} and
+ * {@code /api/v1/questions} were retired in favour of this unified path.
+ * To scope the search to one entity type, pass {@code types=POST},
+ * {@code types=REEL}, {@code types=QUESTION} or {@code types=RESEARCH}
+ * (CSV combinations are supported, e.g. {@code types=POST,REEL}).
  */
 @RestController
 @RequestMapping("/api/v1/search")

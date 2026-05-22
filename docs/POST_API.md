@@ -163,7 +163,6 @@ a sensible empty / default response:
 - `GET /posts/{id}` — public post detail
 - `GET /posts/by-author/{authorId}` — public profile feed
 - `GET /posts/reels` — public reels
-- `GET /posts/search` — public search
 - `GET /posts/{id}/stream` — public SSE (anon viewer)
 - `GET /posts/{postId}/reactions/me` — returns `{ liked: false }`
 - `GET /posts/{postId}/saves/me` — returns `{ saved: false }`
@@ -1220,54 +1219,20 @@ Backed by `reels_by_day` — partitioned per UTC date so partition size stays bo
 
 ## 8. Search endpoints
 
-### 8.1 `GET /api/v1/posts/search` — Elasticsearch full-text search
-
-**Auth:** 🟢 Public (anonymous-safe).
-
-**What it does.** Searches the post Elasticsearch index by free-text
-query, returning ranked post UUIDs. The frontend then hydrates each
-via `GET /api/v1/posts/{id}`. The index is updated asynchronously on
-post create / edit / delete — eventually consistent (typically <1s).
-
-**When the frontend uses this.** Global search bar, advanced search,
-hashtag search disambiguation.
-
-**Future.** Today the response is bare UUIDs; on the roadmap is
-returning `PostSummary` preview rows inline (with `textPreview`,
-`thumbnailUrl`, `author`, `createdAt`) to avoid the N+1 hydration. See
-`BACKEND_ENHANCEMENTS.md` §1.4-ish search-preview note.
-
-**Query parameters:**
-
-| Name | Type | Required | Default |
-|------|------|----------|---------|
-| `q` | string | yes | — |
-| `page` | int | no | 0 |
-| `size` | int | no | 20 |
-
-**Response `200`:** ranked post UUIDs — frontend hydrates each via `GET /posts/{id}`.
-
-```json
-{
-  "query":   "zakat",
-  "page":    0,
-  "size":    20,
-  "results": [
-    "f66aebce-d659-45b8-8479-75195f5d6d4b",
-    "a1b2c3d4-5e6f-7890-1234-567890abcdef",
-    "bb22cc33-4455-6677-8899-aabbccddeeff"
-  ]
-}
-```
-
-Empty result: `{ "query": "...", "page": 0, "size": 20, "results": [] }`.
-
-### Error responses
-
-| Condition | HTTP | `errorCode` |
-|-----------|------|-------------|
-| Missing `q` | `400` | `MISSING_PARAMETER` |
-| Elasticsearch unreachable | `500` | `INTERNAL_ERROR` |
+> **Migrated to the unified search API.** The post-only
+> `GET /api/v1/posts/search` endpoint has been **removed**. Full-text
+> search across posts, reels, Q&A and research now lives on a single
+> cross-index endpoint:
+>
+> **`GET /api/v1/search?q=…&types=POST,REEL&page=…&size=…`**
+>
+> See [`SEARCH_API.md`](./SEARCH_API.md) for the full contract,
+> including the `types` filter (`POST`, `REEL`, `QUESTION`, `RESEARCH`),
+> the entity-stamped result shape, and pagination semantics.
+>
+> The post Elasticsearch index (`irc-posts`) is unchanged — only the
+> query-time entry point moved. The async indexing pipeline still runs
+> on every post create / edit / delete (see §§ 7–9 of this document).
 
 ---
 
@@ -3808,6 +3773,7 @@ All counter writes go through `CounterService` (raw CQL `UPDATE … SET col = co
 
 - `QNA_API.md` — Q&A APIs
 - `RESEARCH_API.md` — Research APIs
+- `SEARCH_API.md` — Unified cross-entity full-text search endpoint
 - `USER_API.md` — User identity, profile, social graph, notifications
 - `USER_ACTIVITY_API.md` — Per-user activity feed
 - `POST_ERRORS.md` — Complete error & exception reference

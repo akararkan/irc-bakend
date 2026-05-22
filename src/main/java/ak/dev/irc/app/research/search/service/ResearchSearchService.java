@@ -5,14 +5,8 @@ import ak.dev.irc.app.research.entity.ResearchTag;
 import ak.dev.irc.app.research.enums.ResearchStatus;
 import ak.dev.irc.app.research.search.document.ResearchSearchDocument;
 import ak.dev.irc.app.research.search.repository.ResearchSearchRepository;
-import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.elasticsearch.client.elc.NativeQuery;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
-import org.springframework.data.elasticsearch.core.SearchHit;
-import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -21,7 +15,11 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Elasticsearch-backed search for research papers.
+ * Elasticsearch-backed indexer for research papers.
+ *
+ * Index-only: query-time search is served by the unified
+ * {@code /api/v1/search} endpoint (see {@code GlobalSearchService}). This
+ * class owns the {@code irc-research} index and keeps it in sync with Postgres.
  *
  * Only PUBLISHED research is indexed. Draft / archived / retracted research
  * is removed from the index so the index acts as the public catalog.
@@ -34,7 +32,6 @@ import java.util.UUID;
 public class ResearchSearchService {
 
     private final ResearchSearchRepository searchRepo;
-    private final ElasticsearchOperations  esOps;
 
     /**
      * Index (or re-index) a research record. Drafts/archived/retracted are
@@ -90,35 +87,5 @@ public class ResearchSearchService {
         } catch (Exception e) {
             log.warn("[SEARCH] delete research {} failed: {}", researchId, e.getMessage());
         }
-    }
-
-    /**
-     * Full-text search over title, abstract, description, keywords, tags.
-     * Returns research UUIDs ranked by ES BM25 — caller hydrates from Postgres.
-     */
-    public List<UUID> search(String query, int page, int size) {
-        if (query == null || query.isBlank()) return List.of();
-
-        Query esQuery = Query.of(q -> q.bool(b -> b
-                .must(m -> m.multiMatch(mm -> mm
-                        .query(query)
-                        .fields("title^4", "abstractText^2", "keywords^2",
-                                "tags^2", "description",
-                                "researcherName", "researcherUsername")))
-                .filter(f -> f.term(t -> t.field("status").value("PUBLISHED")))));
-
-        NativeQuery native_ = NativeQuery.builder()
-                .withQuery(esQuery)
-                .withPageable(PageRequest.of(page, size))
-                .build();
-
-        SearchHits<ResearchSearchDocument> hits =
-                esOps.search(native_, ResearchSearchDocument.class);
-
-        return hits.getSearchHits().stream()
-                .map(SearchHit::getContent)
-                .map(ResearchSearchDocument::getId)
-                .map(UUID::fromString)
-                .toList();
     }
 }

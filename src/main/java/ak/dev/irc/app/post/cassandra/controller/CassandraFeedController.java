@@ -22,7 +22,6 @@ import ak.dev.irc.app.post.cassandra.service.PostHydrator;
 import ak.dev.irc.app.post.dto.FeedItemResponse;
 import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.realtime.PostRealtimeService;
-import ak.dev.irc.app.post.search.service.PostSearchService;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
@@ -63,7 +62,6 @@ public class CassandraFeedController {
     private final CassandraPostService     postService;
     private final FeedTimelineService      feedService;
     private final FriendSuggestionService  suggestionService;
-    private final PostSearchService        searchService;
     private final CassandraReactionService reactionService;
     private final CassandraViewService     viewService;
     private final CassandraCommentService  commentService;
@@ -346,15 +344,6 @@ public class CassandraFeedController {
         int effective = size > 0 ? size : pageSize;
         String bucket = day != null ? day : LocalDate.now(ZoneOffset.UTC).toString();
         return hydrator.hydrateReels(postService.reelsForDay(bucket, effective));
-    }
-
-    /** Elasticsearch full-text search. Returns post UUIDs ranked by relevance. */
-    @GetMapping("/search")
-    public Map<String, Object> search(@RequestParam String q,
-                                      @RequestParam(defaultValue = "0")  int page,
-                                      @RequestParam(defaultValue = "20") int size) {
-        List<UUID> ids = searchService.search(q, page, size);
-        return Map.of("query", q, "page", page, "size", size, "results", ids);
     }
 
     /** Friend suggestions — already sorted by mutual-count DESC at the table level. */

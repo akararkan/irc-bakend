@@ -35,7 +35,6 @@ public class QuestionController {
 
     private final QuestionService questionService;
     private final QnaRealtimeService qnaRealtimeService;
-    private final ak.dev.irc.app.qna.search.service.QnaSearchService qnaSearchService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  QUESTIONS
@@ -59,15 +58,7 @@ public class QuestionController {
         return ResponseEntity.ok(questionService.getFeed(viewerId, pageable));
     }
 
-    /** Elasticsearch full-text search over question title + body — returns question UUIDs. */
-    @GetMapping("/search")
-    public java.util.Map<String, Object> search(
-            @RequestParam String q,
-            @RequestParam(defaultValue = "0")  int page,
-            @RequestParam(defaultValue = "20") int size) {
-        List<UUID> ids = qnaSearchService.search(q, page, size);
-        return java.util.Map.of("query", q, "page", page, "size", size, "results", ids);
-    }
+    // Full-text search lives on GET /api/v1/search?types=QUESTION (see GlobalSearchController).
 
     /**
      * Cursor-paginated question feed (preferred for infinite-scroll clients).

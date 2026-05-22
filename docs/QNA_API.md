@@ -470,26 +470,18 @@ screen.
 
 ## 8. Question search
 
-### 8.1 `GET /api/v1/questions/search?q=…&page=…&size=…`
-
-**Auth:** 🟢 Public.
-
-**What it does.** Elasticsearch full-text search over `title` + `body`.
-Returns matching question UUIDs only — hydrate them with §6.2 on the
-client.
-
-**When the frontend uses this.** Top-bar search overlay.
-
-**Response `200`:**
-
-```json
-{
-  "query":   "yasin sunnah",
-  "page":    0,
-  "size":    20,
-  "results": ["Q-uuid-1", "Q-uuid-2", "Q-uuid-3"]
-}
-```
+> **Migrated to the unified search API.** The Q&A-only
+> `GET /api/v1/questions/search` endpoint has been **removed**. Full-text
+> question search now lives on the cross-index endpoint:
+>
+> **`GET /api/v1/search?q=…&types=QUESTION&page=…&size=…`**
+>
+> The response is a list of entity-stamped hits — clients still call
+> §6.2 to hydrate each `QUESTION` UUID. See [`SEARCH_API.md`](./SEARCH_API.md)
+> for the full contract.
+>
+> The `irc-qna` Elasticsearch index is unchanged; only the query-time
+> entry point moved.
 
 ---
 
