@@ -1,5 +1,22 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-#  IRC PLATFORM — APPLICATION CONFIGURATION (UPDATED WITH CASSANDRA)
+#  IRC PLATFORM — APPLICATION CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  CONFIGURATION CONTRACT
+#  ──────────────────────
+#  • Every value uses the form ${ENV_VAR:default}. Defaults are tuned for
+#    **bare-metal local dev** (Postgres / Redis / RabbitMQ / Cassandra / ES
+#    all on localhost, no auth). They are NOT safe for shared environments.
+#  • In Railway / Docker / any deployment, override the env vars listed in
+#    docs/USER_API.md (or your runbook). Every secret-bearing variable has
+#    an EMPTY default — boot will fail loudly if the env var is missing
+#    rather than silently using a committed credential.
+#  • The two destructive schema actions (Postgres ddl-auto, Cassandra
+#    schema-action) default to non-destructive values (`update`,
+#    `CREATE_IF_NOT_EXISTS`). Set `JPA_DDL=create-drop` or
+#    `CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED` explicitly when you
+#    actually want to wipe.
+#
 # ═══════════════════════════════════════════════════════════════════════════════
 
 spring:
@@ -32,8 +49,12 @@ spring:
       enabled: true
 
   # ── Database: PostgreSQL (Primary Relational DB) ───────────────────────────────
+  # URL externalized via DB_URL so containers (Railway, Docker, etc.) can point
+  # at the right Postgres host without rebuilding. The localhost default is for
+  # bare-metal dev only — if it ever leaks into a container the boot will hang
+  # 30 s on Hikari connect-timeout and then crash the entire JPA bean graph.
   datasource:
-    url: jdbc:postgresql://localhost:5432/irc
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/irc}
     username: ${DB_USERNAME:khi}
     password: ${DB_PASSWORD:}
     hikari:
@@ -46,13 +67,17 @@ spring:
   # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      # `update` keeps Postgres data across restarts — research, users, Q&A,
-      # notifications all survive. Boot is dramatically faster because
-      # Hibernate only emits incremental schema changes, not DROP + CREATE
-      # for every entity. To force a wipe, run:
+      # Default is `update` — preserves Postgres data across restarts
+      # (research, users, Q&A, notifications all survive). Boot is
+      # dramatically faster because Hibernate only emits incremental schema
+      # changes, not DROP + CREATE for every entity.
+      #
+      # ⚠️  PROD-SAFETY: previously defaulted to `create-drop`, which wiped
+      # the schema on every redeploy. If you want a wipe locally:
+      #   JPA_DDL=create-drop ./mvnw spring-boot:run
+      # or:
       #   psql -U khi -d irc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-      # Or set the env var: JPA_DDL=create-drop
-      ddl-auto: ${JPA_DDL:create-drop}
+      ddl-auto: ${JPA_DDL:update}
     open-in-view: false
     # show-sql off in dev → meaningful boot-time savings on a chatty schema.
     # Toggle with -Dspring.jpa.show-sql=true when you actually want SQL logs.
@@ -88,13 +113,16 @@ spring:
     password: ${CASSANDRA_PASSWORD:cassandra}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
-    # `create_if_not_exists` = fast path. Spring skips DDL for tables that
-    # already exist (5-10s saved per boot). Cassandra data — posts, comments,
-    # notifications, stories, counters — is preserved across restarts.
-    # When you need a clean slate, drop the keyspace manually:
+    # Default is `CREATE_IF_NOT_EXISTS` — fast path that skips DDL for
+    # tables that already exist and preserves all Cassandra data (posts,
+    # comments, notifications, stories, counters, tag indexes) across boots.
+    #
+    # ⚠️  PROD-SAFETY: previously defaulted to `RECREATE_DROP_UNUSED`, which
+    # nuked the keyspace on every boot. When you actually want to wipe:
+    #   CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED ./mvnw spring-boot:run
+    # or:
     #   cqlsh -e "DROP KEYSPACE irc_keyspace;"
-    # Or set the env var: CASSANDRA_SCHEMA_ACTION=recreate_drop_unused
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
     pool:
@@ -149,13 +177,16 @@ spring:
       cache-null-values: false
 
   # ── OAuth2 Client ──────────────────────────────────────────────────────────────
+  # Real values come from the Google Cloud Console → APIs & Services → Credentials.
+  # Defaults are empty so a missing env var fails loudly at OAuth handshake
+  # rather than silently using a placeholder credential.
   security:
     oauth2:
       client:
         registration:
           google:
-            client-id: ${GOOGLE_CLIENT_ID:your-client-id}
-            client-secret: ${GOOGLE_CLIENT_SECRET:your-client-secret}
+            client-id: ${GOOGLE_CLIENT_ID:}
+            client-secret: ${GOOGLE_CLIENT_SECRET:}
             scope:
               - email
               - profile
@@ -210,8 +241,10 @@ spring:
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME:ika.center26@gmail.com}
-    password: ${MAIL_PASSWORD:dbfrczyhfkxqylwn}
+    # MAIL_USERNAME / MAIL_PASSWORD must be set per environment.
+    # Defaults are empty so a leaked-credential commit can't recur.
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     default-encoding: UTF-8
     properties:
       mail:
@@ -265,7 +298,11 @@ irc:
     throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
 
   verification:
-    secret: ${IRC_VERIFICATION_SECRET:9fK2LmQ7xA4vZpR8sD1cYwN5TgH3UeB6}
+    # HMAC secret for IRC-ID verification hashes. Must be a stable random
+    # string ≥ 32 chars — rotating it invalidates every existing hash.
+    # No default: missing env var fails at first verification attempt
+    # instead of silently using a committed value.
+    secret: ${IRC_VERIFICATION_SECRET:}
 
   # Cassandra configuration (for events, audit logs, notifications)
   cassandra:
@@ -280,7 +317,11 @@ irc:
 app:
 
   jwt:
-    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
+    # Signing key for every JWT issued by the platform. Must be a base64-
+    # encoded random ≥ 64 bytes (use `openssl rand -base64 64`).
+    # No default: missing env var fails JwtTokenProvider startup loud and
+    # immediate — strictly better than running on a leaked / weak key.
+    secret: ${APP_JWT_SECRET:}
     access-token-expiration-ms: 3600000
     refresh-token-expiration-ms: 604800000
     issuer: irc-platform
@@ -297,12 +338,15 @@ app:
     authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback,http://192.168.1.118:3000/oauth2/callback,http://192.168.1.118:5173/oauth2/callback}
 
   storage:
-    endpoint: ${R2_ENDPOINT:https://55dce88e6a5db45662dc27ef50d83c2a.r2.cloudflarestorage.com}
-    access-key: ${R2_ACCESS_KEY:d06b80c862aca3f99a7dc4733ad26411}
-    secret-key: ${R2_SECRET_KEY:4dbb16899e5b4416c5acb94da9c47aed9d6861ec392fdb0745f75f7b3d992314}
-    bucket-name: ${R2_BUCKET_NAME:irc}
-    public-url-base: ${R2_PUBLIC_URL:https://pub-55dce88e6a5db45662dc27ef50d83c2a.r2.dev}
-    region: ${R2_REGION:auto}
+    # Cloudflare R2 — all credentials live in env. The previous defaults
+    # exposed the live R2 access/secret keys in git history; if you're
+    # rotating after that leak, the new keys go ONLY here as env vars.
+    endpoint:        ${R2_ENDPOINT:}
+    access-key:      ${R2_ACCESS_KEY:}
+    secret-key:      ${R2_SECRET_KEY:}
+    bucket-name:     ${R2_BUCKET_NAME:irc}
+    public-url-base: ${R2_PUBLIC_URL:}
+    region:          ${R2_REGION:auto}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

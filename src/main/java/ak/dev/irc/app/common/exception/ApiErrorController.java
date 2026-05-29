@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.web.servlet.error.ErrorController;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -41,6 +42,14 @@ public class ApiErrorController implements ErrorController {
         log.warn("[{}] Container-level error dispatch — status={} path={}",
                 traceId, status.value(), path);
 
+        // SSE-only requests can't accept a JSON body — same rationale as
+        // GlobalExceptionHandler.isSseRequest. Return status-only so the
+        // browser EventSource sees the status code (which fires onerror)
+        // without a HttpMediaTypeNotAcceptableException cascade.
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(status).build();
+        }
+
         ApiErrorResponse body = ApiErrorResponse.builder()
                 .status(status.value())
                 .error(status.getReasonPhrase())
@@ -51,6 +60,18 @@ public class ApiErrorController implements ErrorController {
                 .build();
 
         return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Mirrors {@code GlobalExceptionHandler.isSseRequest}. Inlined rather
+     * than extracted because the surface is two callers; extracting to a
+     * utility class is over-engineering for ten lines of code.
+     */
+    private static boolean isSseRequest(HttpServletRequest request) {
+        String accept = request.getHeader("Accept");
+        if (accept == null || accept.isBlank()) return false;
+        if (!accept.contains(MediaType.TEXT_EVENT_STREAM_VALUE)) return false;
+        return !accept.contains("*/*") && !accept.contains("application/json");
     }
 
     private static HttpStatus resolveStatus(HttpServletRequest request) {

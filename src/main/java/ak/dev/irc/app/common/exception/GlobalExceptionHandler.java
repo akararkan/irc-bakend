@@ -218,6 +218,16 @@ public class GlobalExceptionHandler {
         log.warn("[{}] Access denied on {} {} — {}",
                 traceId, request.getMethod(), request.getRequestURI(), ex.getMessage());
 
+        // SSE-only requests can't accept a JSON error body; return status-only
+        // to avoid the HttpMediaTypeNotAcceptableException cascade. The
+        // previous version of this branch set contentType(APPLICATION_JSON)
+        // on the response builder which DOESN'T help — Spring's negotiation
+        // is driven by the request's Accept header, not the response's
+        // intended content-type. See isSseRequest() for the full rationale.
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
         ApiErrorResponse body = ApiErrorResponse.builder()
                 .status(HttpStatus.FORBIDDEN.value())
                 .error("Forbidden")
@@ -226,16 +236,6 @@ public class GlobalExceptionHandler {
                 .errorCode("ACCESS_DENIED")
                 .traceId(traceId)
                 .build();
-
-        // If the client only accepts text/event-stream (SSE), we can't return
-        // application/json without triggering HttpMediaTypeNotAcceptableException.
-        // Return with explicit content-type to avoid the secondary error.
-        String accept = request.getHeader("Accept");
-        if (accept != null && accept.contains(MediaType.TEXT_EVENT_STREAM_VALUE)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(body);
-        }
 
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
     }
@@ -368,6 +368,14 @@ public class GlobalExceptionHandler {
         String traceId = traceId();
         log.warn("[{}] No handler found for {} {}",
                 traceId, request.getMethod(), request.getRequestURI());
+
+        // SSE-negotiated requests (Accept: text/event-stream) can't accept a
+        // JSON body — trying to serialise ApiErrorResponse triggers
+        // HttpMediaTypeNotAcceptableException which cascades through this
+        // very handler and rains stack traces. Status-only response, no body.
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
 
         ApiErrorResponse body = ApiErrorResponse.builder()
                 .status(HttpStatus.NOT_FOUND.value())
@@ -582,6 +590,13 @@ public class GlobalExceptionHandler {
                 traceId, request.getMethod(), request.getRequestURI(),
                 ex.getClass().getSimpleName(), ex.getMessage(), ex);
 
+        // Same SSE-content-negotiation guard as in handleNotFound — without
+        // it, an unhandled exception on a stream endpoint cascades into a
+        // HttpMediaTypeNotAcceptableException through this very method.
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+
         ApiErrorResponse body = ApiErrorResponse.builder()
                 .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
                 .error("Internal Server Error")
@@ -593,6 +608,34 @@ public class GlobalExceptionHandler {
                 .build();
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+
+    /**
+     * True when the client only accepts {@code text/event-stream} (the SSE
+     * case). In that situation, returning any {@code ResponseEntity} with a
+     * non-null body triggers {@code HttpMediaTypeNotAcceptableException}
+     * because Spring's content negotiation has no JSON↔SSE converter to
+     * fall back to — and that secondary exception cascades through this
+     * very handler, producing the noisy double-stack pattern in the log.
+     *
+     * <p>Callers should branch on this and return a body-less
+     * {@code ResponseEntity.status(...).build()} for SSE requests. The
+     * client gets the right status code (which is all {@code EventSource.onerror}
+     * needs to fire) and Spring writes no body, so content negotiation never
+     * runs.</p>
+     *
+     * <p>{@code application/json} requests fall through to the normal
+     * {@link ApiErrorResponse} body path. Browsers sending
+     * {@code Accept: text/event-stream, * /*} also fall through (the {@code * /*}
+     * lets Spring pick JSON cleanly).</p>
+     */
+    private static boolean isSseRequest(HttpServletRequest request) {
+        String accept = request.getHeader("Accept");
+        if (accept == null || accept.isBlank()) return false;
+        if (!accept.contains(MediaType.TEXT_EVENT_STREAM_VALUE)) return false;
+        // If */* (or any wildcard) is also acceptable, JSON works — only
+        // treat as SSE-only when no wildcard fallback is offered.
+        return !accept.contains("*/*") && !accept.contains("application/json");
     }
 
     // ══════════════════════════════════════════════════════════════════════════

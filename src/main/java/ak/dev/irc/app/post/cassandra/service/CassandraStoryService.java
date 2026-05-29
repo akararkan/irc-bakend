@@ -48,6 +48,8 @@ public class CassandraStoryService {
     private final StoryViewRepository     storyViewRepo;
     private final CloseFriendsService     closeFriendsService;
     private final UserFollowRepository    userFollowRepo;
+    private final CassandraStoryPollService pollService;
+    private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
 
     // ── Create / delete ─────────────────────────────────────────────────────
 
@@ -79,16 +81,111 @@ public class CassandraStoryService {
         return row;
     }
 
-    /** Author-only delete. The TTL would clean up in 24h anyway, but explicit
-     *  delete supports "I changed my mind" before then. */
+    /**
+     * Author-only delete. The TTL would clean up in 24h anyway, but explicit
+     * delete supports "I changed my mind" before then.
+     *
+     * <p>Cleans up:
+     * <ul>
+     *   <li>{@code stories_by_author} + {@code story_lookup} canonical rows.</li>
+     *   <li>Attached poll (all 5 tables) via
+     *       {@link CassandraStoryPollService#deletePollFor(UUID)}.</li>
+     *   <li>Pushes {@code STORY_REMOVED} on the story-tray channel to every
+     *       viewer whose tray ring this story lit (visibility-aware: PUBLIC
+     *       / FOLLOWERS_ONLY → all followers; CLOSE_FRIENDS → close-friends
+     *       list; ONLY_ME → just the author themselves) so the ring greys
+     *       out without a refresh.</li>
+     * </ul>
+     * Story views are intentionally left to TTL (24h) — they're per-storyId
+     * analytics, no cross-table reads, and proactive cleanup adds latency to
+     * the HTTP response with no user-visible benefit.</p>
+     *
+     * <p>The cleanup phases are best-effort and isolated — a failure in one
+     * doesn't block the others. The story-side delete itself is the only
+     * non-negotiable step (and runs first).</p>
+     */
     public void deleteStory(UUID storyId, UUID actorId) {
         StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
         if (meta == null) return;
         if (!meta.getAuthorId().equals(actorId)) {
             throw new SecurityException("Not the author");
         }
-        storyRepo.delete(meta.getAuthorId(), meta.getCreatedAt(), storyId);
+
+        UUID   authorId   = meta.getAuthorId();
+        String visibility = meta.getVisibility();
+
+        // Core delete — must happen first so the HTTP path completes quickly
+        // even if downstream cleanup hiccups.
+        storyRepo.delete(authorId, meta.getCreatedAt(), storyId);
         storyLookupRepo.deleteById(storyId);
+
+        // Poll cleanup (no-op when the story had no poll).
+        try {
+            pollService.deletePollFor(storyId);
+        } catch (Exception e) {
+            log.warn("[STORY] poll cleanup for {} failed: {}", storyId, e.getMessage());
+        }
+
+        // Tray fan-out — STORY_REMOVED to every viewer whose ring was lit.
+        try {
+            broadcastStoryRemoved(authorId, storyId, visibility);
+        } catch (Exception e) {
+            log.warn("[STORY] tray fan-out for {} failed: {}", storyId, e.getMessage());
+        }
+    }
+
+    /** Visibility-aware fan-out — same shape as the publish-time NEW_STORY
+     *  push but with {@link ak.dev.irc.app.post.realtime.StoryTrayEventType#STORY_REMOVED}. */
+    private void broadcastStoryRemoved(UUID authorId, UUID storyId, String visibility) {
+        ak.dev.irc.app.post.realtime.StoryTrayEvent event =
+                ak.dev.irc.app.post.realtime.StoryTrayEvent.builder()
+                        .eventType(ak.dev.irc.app.post.realtime.StoryTrayEventType.STORY_REMOVED)
+                        .authorId(authorId)
+                        .storyId(storyId)
+                        .build();
+
+        // Always notify the author — their own tray reflects own stories.
+        publishSafe(authorId, event);
+
+        if (visibility == null || "ONLY_ME".equals(visibility)) return;
+
+        if ("CLOSE_FRIENDS".equals(visibility)) {
+            for (ak.dev.irc.app.post.cassandra.entity.CloseFriendEntity cf
+                    : closeFriendsService.listFor(authorId)) {
+                publishSafe(cf.getFriendId(), event);
+            }
+            return;
+        }
+
+        // PUBLIC, FOLLOWERS_ONLY → all followers, keyset-paged so a celebrity
+        // delete doesn't OOM. Capped at 50k recipients (same ceiling as the
+        // publish-side fan-out cited in the trending-digest job).
+        final int pageSize = 500;
+        final int totalCap = 50_000;
+        int delivered = 0;
+        UUID after    = null;
+        while (delivered < totalCap) {
+            List<UUID> batch = (after == null)
+                    ? userFollowRepo.findFollowerIds(authorId,
+                            org.springframework.data.domain.PageRequest.of(0, pageSize))
+                    : userFollowRepo.findFollowerIdsAfter(authorId, after,
+                            org.springframework.data.domain.PageRequest.of(0, pageSize));
+            if (batch.isEmpty()) break;
+            for (UUID followerId : batch) {
+                publishSafe(followerId, event);
+                delivered++;
+            }
+            after = batch.get(batch.size() - 1);
+            if (batch.size() < pageSize) break;
+        }
+    }
+
+    private void publishSafe(UUID viewerId,
+                             ak.dev.irc.app.post.realtime.StoryTrayEvent event) {
+        try { trayPublisher.publish(viewerId, event); }
+        catch (Exception e) {
+            log.debug("[STORY] tray publish to {} skipped: {}", viewerId, e.getMessage());
+        }
     }
 
     // ── Read with visibility filter ─────────────────────────────────────────

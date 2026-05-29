@@ -50,6 +50,7 @@ public class CassandraStoryPollService {
     private final CounterService               counterService;
     private final ak.dev.irc.app.post.cassandra.repository.PollByIdRepository pollByIdRepo;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
+    private final org.springframework.data.cassandra.core.cql.CqlOperations cqlOperations;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -92,6 +93,55 @@ public class CassandraStoryPollService {
     /** Look up the (storyId, authorId) tuple a poll belongs to. */
     public Optional<ak.dev.irc.app.post.cassandra.entity.PollByIdEntity> findOwnership(UUID pollId) {
         return pollByIdRepo.findById(pollId);
+    }
+
+    /**
+     * Delete the poll attached to {@code storyId} (if any) and every
+     * derived row across the five poll tables. Called from
+     * {@code CassandraStoryService.deleteStory} so a story delete doesn't
+     * leave orphan votes / counters / voter rows pointing at a story that
+     * no longer exists.
+     *
+     * <p>No-op when the story has no poll. Each table delete is wrapped in
+     * its own try/catch so a single failed wipe doesn't block the others —
+     * the story-side delete has already happened and partial state (orphan
+     * rows in 1 of 5 tables, eventually consistent) is preferable to a
+     * fully-stuck delete.</p>
+     */
+    public void deletePollFor(UUID storyId) {
+        Optional<StoryPollEntity> pollOpt = pollRepo.findById(storyId);
+        if (pollOpt.isEmpty()) return;
+
+        UUID pollId = pollOpt.get().getPollId();
+        if (pollId == null) {
+            // Malformed row (shouldn't happen — pollId is always set on
+            // create). Drop the story-side row anyway so a future createPoll
+            // for this story doesn't trip on a stale residue.
+            try { pollRepo.deleteById(storyId); } catch (Exception ignored) {}
+            return;
+        }
+
+        // Per-poll partition deletes — single tombstone per table since
+        // every poll-derived table is keyed on poll_id at the partition level.
+        tryRun(() -> cqlOperations.execute(
+                "DELETE FROM poll_votes_by_poll_user WHERE poll_id = ?", pollId),
+                "delete poll_votes_by_poll_user", pollId);
+        tryRun(() -> cqlOperations.execute(
+                "DELETE FROM poll_voters_by_choice WHERE poll_id = ?", pollId),
+                "delete poll_voters_by_choice", pollId);
+        tryRun(() -> counterRepo.deleteById(pollId),
+                "delete poll_counters", pollId);
+        tryRun(() -> pollByIdRepo.deleteById(pollId),
+                "delete poll_by_id reverse index", pollId);
+        tryRun(() -> pollRepo.deleteById(storyId),
+                "delete story_polls", pollId);
+    }
+
+    private void tryRun(Runnable r, String what, UUID pollId) {
+        try { r.run(); }
+        catch (Exception e) {
+            log.warn("[POLL] {} for pollId={} failed: {}", what, pollId, e.getMessage());
+        }
     }
 
     public Optional<StoryPollEntity> getPollForStory(UUID storyId) {
