@@ -4,18 +4,15 @@
 #
 #  CONFIGURATION CONTRACT
 #  ──────────────────────
-#  • Every value uses the form ${ENV_VAR:default}. Defaults are tuned for
-#    **bare-metal local dev** (Postgres / Redis / RabbitMQ / Cassandra / ES
-#    all on localhost, no auth). They are NOT safe for shared environments.
-#  • In Railway / Docker / any deployment, override the env vars listed in
-#    docs/USER_API.md (or your runbook). Every secret-bearing variable has
-#    an EMPTY default — boot will fail loudly if the env var is missing
-#    rather than silently using a committed credential.
+#  • Every value uses the form ${ENV_VAR:default}. Secrets and host endpoints
+#    have EMPTY defaults — boot fails loudly when an env var is missing rather
+#    than silently using a committed credential or pointing at a wrong host.
+#  • In Railway, set the env vars documented next to each block below
+#    (RAILWAY-SAFETY notes). In any other deployment, supply equivalent values.
 #  • The two destructive schema actions (Postgres ddl-auto, Cassandra
 #    schema-action) default to non-destructive values (`update`,
 #    `CREATE_IF_NOT_EXISTS`). Set `JPA_DDL=create-drop` or
-#    `CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED` explicitly when you
-#    actually want to wipe.
+#    `CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED` explicitly to wipe.
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -25,23 +22,20 @@ spring:
     name: irc
 
   # ── Boot speed knobs ────────────────────────────────────────────────────────
-  # JMX off: ski MBean registration (~1s).
+  # JMX off: skip MBean registration (~1s).
   # Banner off: cosmetic only.
   # NOTE: lazy-initialization is intentionally OFF — it makes the first request
   # to every controller slow (Spring builds the dependency graph on demand)
   # and can silently break @Scheduled jobs / SSE event publishers that need
-  # to be eagerly instantiated. The bigger wins are ddl-auto=update and
-  # schema-action=create_if_not_exists below.
+  # to be eagerly instantiated.
   main:
     banner-mode: off
   jmx:
     enabled: false
 
-  # DevTools auto-restart kills every open SSE connection on every recompile —
-  # the browser then reconnects during the restart window and gets
-  # NS_ERROR_CONNECTION_REFUSED. Keep DevTools loaded (LiveReload, dev props)
-  # but disable the auto-restart so manual "Rerun" from IntelliJ is the only
-  # thing that bounces the JVM. Set to true if you want hot-reload back.
+  # DevTools auto-restart kills every open SSE connection on every recompile.
+  # Keep DevTools loaded (LiveReload) but disable the auto-restart so manual
+  # "Rerun" is the only thing that bounces the JVM.
   devtools:
     restart:
       enabled: ${DEVTOOLS_RESTART:false}
@@ -49,10 +43,8 @@ spring:
       enabled: true
 
   # ── Database: PostgreSQL (Primary Relational DB) ───────────────────────────────
-  # URL externalized via DB_URL so containers (Railway, Docker, etc.) can point
-  # at the right Postgres host without rebuilding. The localhost default is for
-  # bare-metal dev only — if it ever leaks into a container the boot will hang
-  # 30 s on Hikari connect-timeout and then crash the entire JPA bean graph.
+  # URL externalized via DB_URL so containers can point at the right Postgres
+  # host without rebuilding.
   #
   # ⚠️  RAILWAY-SAFETY: In Railway, set:
   #   DB_URL=jdbc:postgresql://${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}?sslmode=disable
@@ -61,8 +53,8 @@ spring:
   # This uses the internal Railway hostname (postgres.railway.internal) which is
   # fast and always reachable. The public proxy host times out from inside the project.
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/irc}
-    username: ${DB_USERNAME:khi}
+    url: ${DB_URL:}
+    username: ${DB_USERNAME:}
     password: ${DB_PASSWORD:}
     hikari:
       maximum-pool-size: 20
@@ -74,20 +66,12 @@ spring:
   # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      # Default is `update` — preserves Postgres data across restarts
-      # (research, users, Q&A, notifications all survive). Boot is
-      # dramatically faster because Hibernate only emits incremental schema
-      # changes, not DROP + CREATE for every entity.
+      # Default is `update` — preserves Postgres data across restarts.
+      # Hibernate only emits incremental schema changes, not DROP + CREATE.
       #
-      # ⚠️  PROD-SAFETY: previously defaulted to `create-drop`, which wiped
-      # the schema on every redeploy. If you want a wipe locally:
-      #   JPA_DDL=create-drop ./mvnw spring-boot:run
-      # or:
-      #   psql -U khi -d irc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+      # ⚠️  Set JPA_DDL=create-drop explicitly to wipe.
       ddl-auto: ${JPA_DDL:update}
     open-in-view: false
-    # show-sql off in dev → meaningful boot-time savings on a chatty schema.
-    # Toggle with -Dspring.jpa.show-sql=true when you actually want SQL logs.
     show-sql: false
     properties:
       hibernate:
@@ -101,8 +85,6 @@ spring:
         default_batch_fetch_size: 20
         query:
           in_clause_parameter_padding: true
-        # Skip Hibernate's bytecode enhancer scan on entities Hibernate hasn't
-        # explicitly enhanced — cheap dev-time saving.
         bytecode:
           provider: bytebuddy
 
@@ -112,30 +94,24 @@ spring:
       mode: never
 
   # ── Cassandra Configuration (Time-Series & Events) ────────────────────────────
+  # ⚠️  RAILWAY-SAFETY: In Railway, set:
+  #   CASSANDRA_CONTACT_POINTS=${{Cassandra.RAILWAY_PRIVATE_DOMAIN}}:9042
+  #   CASSANDRA_KEYSPACE=irc_keyspace
+  #   CASSANDRA_DATACENTER=datacenter1
+  #   CASSANDRA_USERNAME=cassandra
+  #   CASSANDRA_PASSWORD=cassandra
   cassandra:
     keyspace-name: ${CASSANDRA_KEYSPACE:irc_keyspace}
-    contact-points: ${CASSANDRA_CONTACT_POINTS:localhost:9042}
+    contact-points: ${CASSANDRA_CONTACT_POINTS:}
     local-datacenter: ${CASSANDRA_DATACENTER:datacenter1}
-    username: ${CASSANDRA_USERNAME:cassandra}
-    password: ${CASSANDRA_PASSWORD:cassandra}
+    username: ${CASSANDRA_USERNAME:}
+    password: ${CASSANDRA_PASSWORD:}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
     # Default is `CREATE_IF_NOT_EXISTS` — fast path that skips DDL for
-    # tables that already exist and preserves all Cassandra data (posts,
-    # comments, notifications, stories, counters, tag indexes) across boots.
+    # tables that already exist and preserves all Cassandra data across boots.
     #
-    # ⚠️  PROD-SAFETY: previously defaulted to `RECREATE_DROP_UNUSED`, which
-    # nuked the keyspace on every boot. When you actually want to wipe:
-    #   CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED ./mvnw spring-boot:run
-    # or:
-    #   cqlsh -e "DROP KEYSPACE irc_keyspace;"
-    #
-    # ⚠️  RAILWAY-SAFETY: In Railway, set:
-    #   CASSANDRA_CONTACT_POINTS=${{Cassandra.RAILWAY_PRIVATE_DOMAIN}}:9042
-    #   CASSANDRA_KEYSPACE=irc_keyspace
-    #   CASSANDRA_DATACENTER=datacenter1
-    #   CASSANDRA_USERNAME=cassandra
-    #   CASSANDRA_PASSWORD=cassandra
+    # ⚠️  Set CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED explicitly to wipe.
     schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
@@ -153,10 +129,6 @@ spring:
       consistency: LOCAL_ONE
 
     # Control connection — drives DDL + schema agreement polling.
-    # The defaults wait up to 10s per agreement; on a single-node dev
-    # cluster the cluster IS in agreement immediately so we can poll
-    # faster and bail out sooner. This shaves boot time during
-    # RECREATE_DROP_UNUSED dramatically.
     controlconnection:
       schema-agreement:
         interval: 100ms       # default 200ms — poll twice as fast
@@ -169,7 +141,7 @@ spring:
   #   ELASTICSEARCH_USERNAME=<user if auth required>
   #   ELASTICSEARCH_PASSWORD=<pass if auth required>
   elasticsearch:
-    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    uris: ${ELASTICSEARCH_URIS:}
     username: ${ELASTICSEARCH_USERNAME:}
     password: ${ELASTICSEARCH_PASSWORD:}
     connection-timeout: 2s
@@ -179,10 +151,10 @@ spring:
   # ⚠️  RAILWAY-SAFETY: In Railway, set:
   #   REDIS_HOST=${{Redis.REDISHOST}}
   #   REDIS_PORT=${{Redis.REDISPORT}}
-  #   REDIS_PASSWORD=${{Redis.REDIS_PASSWORD}}
+  #   REDIS_PASSWORD=${{Redis.REDISPASSWORD}}    # or REDIS_PASSWORD — verify the var name on the Redis service
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: 2000ms
@@ -229,10 +201,10 @@ spring:
   #   RABBITMQ_PASSWORD=${{RabbitMQ.RABBITMQ_DEFAULT_PASS}}
   #   RABBITMQ_VHOST=/
   rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
+    host: ${RABBITMQ_HOST:}
     port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USERNAME:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
+    username: ${RABBITMQ_USERNAME:}
+    password: ${RABBITMQ_PASSWORD:}
     virtual-host: ${RABBITMQ_VHOST:/}
     publisher-confirm-type: correlated
     publisher-returns: true
@@ -310,15 +282,12 @@ irc:
   doi:
     prefix: "10.12345"
 
-  base-url: "https://irc.example.com"
+  base-url: ${IRC_BASE_URL:}
 
   # Notification email branding + reply-to.
   email:
-    # Resolves to ${MAIL_FROM} → ${spring.mail.username} (which itself defaults
-    # to MAIL_USERNAME from the spring.mail block) → a no-reply placeholder.
-    # Reading spring.mail.username here (instead of MAIL_USERNAME directly)
-    # means the YAML default chain is honoured even when the env var is unset.
-    from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
+    # Resolves to ${MAIL_FROM} → ${spring.mail.username} → empty.
+    from-address: ${MAIL_FROM:${spring.mail.username:}}
     from-name: ${MAIL_FROM_NAME:IRC Platform}
     enabled: ${MAIL_ENABLED:true}
     # Throttle window — same (recipient, groupKey) won't be emailed twice
@@ -355,15 +324,17 @@ app:
     issuer: irc-platform
 
   cors:
-    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
+    # Comma-separated list of allowed origins. Required: no default.
+    allowed-origins: ${CORS_ORIGINS:}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
     allowed-headers: ${CORS_HEADERS:*}
     allow-credentials: ${CORS_CREDENTIALS:true}
     max-age: ${CORS_MAX_AGE:3600}
 
   oauth2:
-    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:5173/oauth2/callback}
-    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback,http://192.168.1.118:3000/oauth2/callback,http://192.168.1.118:5173/oauth2/callback}
+    # Required: no default. Set to your frontend's OAuth callback URL.
+    redirect-uri: ${OAUTH_REDIRECT_URI:}
+    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:}
 
   storage:
     # Cloudflare R2 — all credentials live in env. The previous defaults
@@ -383,30 +354,28 @@ app:
 logging:
   level:
     root: INFO
-    # App-level logs at INFO by default for fast boot. Override per-package via
+    # App-level logs at INFO by default. Override per-package via
     # -Dlogging.level.ak.dev.irc=DEBUG when actually debugging.
     ak.dev.irc: ${APP_LOG_LEVEL:INFO}
     ak.dev.irc.security: INFO
     ak.dev.irc.irc_security.rabbitmq: INFO
     org.springframework.security: INFO
     org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
-    # Quiet retry-storm noise when RabbitMQ / Cassandra aren't running locally.
-    # Set to INFO/DEBUG when actually debugging broker/driver issues.
+    # Quiet retry-storm noise on broker / driver issues.
+    # Set to INFO/DEBUG when actually debugging.
     org.springframework.amqp.rabbit.listener: OFF
     org.springframework.amqp.rabbit.connection: OFF
     org.springframework.amqp: WARN
     org.springframework.data.cassandra: WARN
     com.datastax.oss.driver: ERROR
-    # Quiet ES retry noise when Elasticsearch isn't running locally.
     org.springframework.data.elasticsearch: WARN
     co.elastic.clients: ERROR
     org.elasticsearch.client: ERROR
     # Silence the "Could not safely identify store assignment" INFO spam.
     # With JPA + Cassandra + Elasticsearch all on the classpath, Spring Data
     # runs strict mode and prints one INFO line for every repo each module
-    # can't classify — ~480 lines on a project this size. The actual wiring
-    # works (look for "Found N <store> repository interfaces"). WARN keeps
-    # real configuration failures visible while killing the false-negative noise.
+    # can't classify. WARN keeps real configuration failures visible while
+    # killing the false-negative noise.
     org.springframework.data.repository.config: WARN
     org.hibernate.SQL: WARN
     org.hibernate: WARN
