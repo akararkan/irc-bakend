@@ -6,6 +6,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.TimeZone;
 
 @SpringBootApplication
@@ -25,8 +28,64 @@ public class IrcApplication {
 		// log alone (no need to read Railway's variable resolver UI).
 		// Passwords are masked.
 		printEnvProbe();
+		probePostgres();
 
 		SpringApplication.run(IrcApplication.class, args);
+	}
+
+	private static void probePostgres() {
+		System.out.println("─── PG NET PROBE ─────────────────────────────────────────");
+		String url = System.getenv("DB_URL");
+		if (url == null || url.isEmpty()) {
+			System.out.println("  DB_URL unset — skipping");
+			System.out.println("──────────────────────────────────────────────────────────");
+			return;
+		}
+		// jdbc:postgresql://HOST:PORT/...
+		String stripped = url.replaceFirst("^jdbc:postgresql://", "");
+		int slash = stripped.indexOf('/');
+		String hostport = slash > 0 ? stripped.substring(0, slash) : stripped;
+		int colon = hostport.lastIndexOf(':');
+		String host = colon > 0 ? hostport.substring(0, colon) : hostport;
+		int port = colon > 0 ? Integer.parseInt(hostport.substring(colon + 1)) : 5432;
+		System.out.println("  host = " + host);
+		System.out.println("  port = " + port);
+
+		// 1. DNS resolution
+		try {
+			InetAddress[] addrs = InetAddress.getAllByName(host);
+			System.out.println("  DNS  ✓ resolved " + addrs.length + " address(es):");
+			for (InetAddress a : addrs) {
+				System.out.println("        " + a.getHostAddress()
+					+ " (" + (a.getAddress().length == 4 ? "IPv4" : "IPv6") + ")");
+			}
+		} catch (Exception e) {
+			System.out.println("  DNS  ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage());
+			System.out.println("  → hostname does not resolve from this container.");
+			System.out.println("    Postgres service is in a different project, was deleted,");
+			System.out.println("    or the variable reference is wrong.");
+			System.out.println("──────────────────────────────────────────────────────────");
+			return;
+		}
+
+		// 2. TCP connect with a short timeout
+		long t0 = System.currentTimeMillis();
+		try (Socket s = new Socket()) {
+			s.connect(new InetSocketAddress(host, port), 5000);
+			long ms = System.currentTimeMillis() - t0;
+			System.out.println("  TCP  ✓ connected in " + ms + " ms");
+			System.out.println("  → Network path is fine. If Hikari still fails, it's auth/SSL.");
+		} catch (java.net.SocketTimeoutException e) {
+			long ms = System.currentTimeMillis() - t0;
+			System.out.println("  TCP  ✗ timed out after " + ms + " ms");
+			System.out.println("  → IP resolved, but nothing is listening on port " + port + ".");
+			System.out.println("    Either Postgres service isn't running, or it's");
+			System.out.println("    unreachable from this service's network (different project /");
+			System.out.println("    region / IPv4-vs-IPv6 mismatch).");
+		} catch (Exception e) {
+			System.out.println("  TCP  ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage());
+		}
+		System.out.println("──────────────────────────────────────────────────────────");
 	}
 
 	private static void printEnvProbe() {
