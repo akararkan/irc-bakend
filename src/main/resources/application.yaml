@@ -53,6 +53,13 @@ spring:
   # at the right Postgres host without rebuilding. The localhost default is for
   # bare-metal dev only — if it ever leaks into a container the boot will hang
   # 30 s on Hikari connect-timeout and then crash the entire JPA bean graph.
+  #
+  # ⚠️  RAILWAY-SAFETY: In Railway, set:
+  #   DB_URL=jdbc:postgresql://${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}?sslmode=disable
+  #   DB_USERNAME=${{Postgres.PGUSER}}
+  #   DB_PASSWORD=${{Postgres.PGPASSWORD}}
+  # This uses the internal Railway hostname (postgres.railway.internal) which is
+  # fast and always reachable. The public proxy host times out from inside the project.
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/irc}
     username: ${DB_USERNAME:khi}
@@ -122,6 +129,13 @@ spring:
     #   CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED ./mvnw spring-boot:run
     # or:
     #   cqlsh -e "DROP KEYSPACE irc_keyspace;"
+    #
+    # ⚠️  RAILWAY-SAFETY: In Railway, set:
+    #   CASSANDRA_CONTACT_POINTS=${{Cassandra.RAILWAY_PRIVATE_DOMAIN}}:9042
+    #   CASSANDRA_KEYSPACE=irc_keyspace
+    #   CASSANDRA_DATACENTER=datacenter1
+    #   CASSANDRA_USERNAME=cassandra
+    #   CASSANDRA_PASSWORD=cassandra
     schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
@@ -150,6 +164,10 @@ spring:
         warn-on-failure: true
 
   # ── Elasticsearch (Search Engine: posts, users, hashtags) ─────────────────────
+  # ⚠️  RAILWAY-SAFETY: In Railway, set:
+  #   ELASTICSEARCH_URIS=http://${{Elasticsearch.RAILWAY_PRIVATE_DOMAIN}}:9200
+  #   ELASTICSEARCH_USERNAME=<user if auth required>
+  #   ELASTICSEARCH_PASSWORD=<pass if auth required>
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
     username: ${ELASTICSEARCH_USERNAME:}
@@ -158,6 +176,10 @@ spring:
     socket-timeout: 10s
 
   # ── Redis ──────────────────────────────────────────────────────────────────────
+  # ⚠️  RAILWAY-SAFETY: In Railway, set:
+  #   REDIS_HOST=${{Redis.REDISHOST}}
+  #   REDIS_PORT=${{Redis.REDISPORT}}
+  #   REDIS_PASSWORD=${{Redis.REDIS_PASSWORD}}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -200,6 +222,12 @@ spring:
             user-name-attribute: sub
 
   # ── RabbitMQ ───────────────────────────────────────────────────────────────────
+  # ⚠️  RAILWAY-SAFETY: In Railway, set:
+  #   RABBITMQ_HOST=${{RabbitMQ.RAILWAY_PRIVATE_DOMAIN}}
+  #   RABBITMQ_PORT=${{RabbitMQ.RABBITMQ_PORT}}
+  #   RABBITMQ_USERNAME=${{RabbitMQ.RABBITMQ_DEFAULT_USER}}
+  #   RABBITMQ_PASSWORD=${{RabbitMQ.RABBITMQ_DEFAULT_PASS}}
+  #   RABBITMQ_VHOST=/
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
