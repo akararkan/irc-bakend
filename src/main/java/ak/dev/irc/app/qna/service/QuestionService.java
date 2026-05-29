@@ -121,16 +121,6 @@ public interface QuestionService {
     /** Remove the caller's own best-answer vote. */
     QuestionAnswerResponse unmarkBestAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
-    // ── Feedback ─────────────────────────────────────────────────────────────
-
-    AnswerFeedbackResponse addFeedback(UUID questionId, UUID answerId, AddFeedbackRequest request, UUID requesterId);
-
-    AnswerFeedbackResponse editFeedback(UUID questionId, UUID answerId, UUID feedbackId, AddFeedbackRequest request, UUID requesterId);
-
-    List<AnswerFeedbackResponse> getFeedback(UUID questionId, UUID answerId);
-
-    void deleteFeedback(UUID questionId, UUID answerId, UUID feedbackId, UUID requesterId);
-
     // ── Attachments (upload files to answer) ─────────────────────────────────
 
     AnswerAttachmentResponse uploadAttachment(UUID questionId, UUID answerId, MultipartFile file,
@@ -143,6 +133,10 @@ public interface QuestionService {
     // ── Sources / references ─────────────────────────────────────────────────
 
     AnswerSourceResponse addSource(UUID questionId, UUID answerId, CreateAnswerSourceRequest request, UUID requesterId);
+
+    /** Attach (or replace) the binary file for a MEDIA_FILE source. Sets sourceType = MEDIA_FILE. */
+    AnswerSourceResponse uploadSourceFile(UUID questionId, UUID answerId, UUID sourceId,
+                                          MultipartFile file, UUID requesterId);
 
     AnswerSourceResponse updateSource(UUID questionId, UUID answerId, UUID sourceId,
                                       UpdateAnswerSourceRequest request, UUID requesterId);

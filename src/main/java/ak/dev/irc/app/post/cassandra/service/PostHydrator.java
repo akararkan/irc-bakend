@@ -132,6 +132,12 @@ public class PostHydrator {
         if (rows == null || rows.isEmpty()) return List.of();
         Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, FeedByUserEntity::getAuthorId);
         Set<UUID> postIds = collectIds(rows, FeedByUserEntity::getPostId);
+        // ONE bulk fetch of the canonical posts so edited text/media reach the
+        // feed without the frontend N+1 — feed_by_user.text_preview is a
+        // create-time snapshot and is never updated on PATCH (intentional —
+        // updating O(followers) rows per edit would crush celebrities). Falls
+        // back to the snapshot when the canonical row is gone (deleted post).
+        Map<UUID, PostByIdEntity> canonical = bulkLoadPosts(postIds);
         Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
@@ -139,14 +145,16 @@ public class PostHydrator {
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (FeedByUserEntity r : rows) {
-            PostCounterEntity c = counters.get(r.getPostId());
+            PostByIdEntity      live = canonical.get(r.getPostId());
+            PostCounterEntity   c    = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
                     r.getAuthorId(),
                     authors.get(r.getAuthorId()),
                     r.getPostType(),
-                    r.getTextPreview(),
-                    r.getMediaUrl(),
+                    livePreview(live, r.getTextPreview()),
+                    liveCoverMedia(live, r.getMediaUrl()),
+                    liveVideoUrl(live, r.getPostType()),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -164,6 +172,10 @@ public class PostHydrator {
         if (rows == null || rows.isEmpty()) return List.of();
         Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, PostByAuthorEntity::getAuthorId);
         Set<UUID> postIds = collectIds(rows, PostByAuthorEntity::getPostId);
+        // Same canonical-hydration as hydrateHomeFeed — posts_by_author IS
+        // best-effort mirrored on edit (§6.4) but only when the edit succeeds
+        // before the async indexer fires, so a fresh read still wins.
+        Map<UUID, PostByIdEntity> canonical = bulkLoadPosts(postIds);
         Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
@@ -171,14 +183,16 @@ public class PostHydrator {
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (PostByAuthorEntity r : rows) {
-            PostCounterEntity c = counters.get(r.getPostId());
+            PostByIdEntity      live = canonical.get(r.getPostId());
+            PostCounterEntity   c    = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
                     r.getAuthorId(),
                     authors.get(r.getAuthorId()),
                     r.getPostType(),
-                    r.getTextPreview(),
-                    r.getMediaUrl(),
+                    livePreview(live, r.getTextPreview()),
+                    liveCoverMedia(live, r.getMediaUrl()),
+                    liveVideoUrl(live, r.getPostType()),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -200,6 +214,7 @@ public class PostHydrator {
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
         Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+        Map<UUID, String> videoUrls = bulkVideoUrls(postIds);  // all rows are REELs
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (ReelsByDayEntity r : rows) {
@@ -211,6 +226,7 @@ public class PostHydrator {
                     "REEL",
                     r.getTextPreview(),
                     r.getMediaUrl(),
+                    videoUrls.get(r.getPostId()),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -413,10 +429,55 @@ public class PostHydrator {
         return out;
     }
 
+    private Map<UUID, String> bulkVideoUrls(Set<UUID> reelPostIds) {
+        if (reelPostIds.isEmpty()) return Map.of();
+        Map<UUID, String> out = new HashMap<>(reelPostIds.size());
+        bulkLoadPosts(reelPostIds).forEach((id, p) ->
+                out.put(id, firstVideoUrl(p.getMediaUrls(), p.getMediaTypes())));
+        return out;
+    }
+
+    // ── Live-row preview helpers (read-time hydration off posts_by_id) ───────
+
+    /**
+     * Truncated preview of the freshest text. Falls back to the snapshot the
+     * row landed with when the canonical row is missing (deleted post still
+     * inside a follower's feed_by_user TTL).
+     */
+    private static String livePreview(PostByIdEntity live, String snapshot) {
+        if (live == null || live.getTextContent() == null) return snapshot;
+        String t = live.getTextContent();
+        return t.length() > 280 ? t.substring(0, 280) : t;
+    }
+
+    /** Freshest cover image (= first non-video media url); falls back to snapshot. */
+    private static String liveCoverMedia(PostByIdEntity live, String snapshot) {
+        if (live == null || live.getMediaUrls() == null || live.getMediaUrls().isEmpty()) return snapshot;
+        return live.getMediaUrls().get(0);
+    }
+
+    /**
+     * Freshest reel video URL (only meaningful for {@code postType == REEL}).
+     * Computed from the same canonical row already loaded for preview / cover,
+     * so no extra round-trip vs. the legacy {@link #bulkVideoUrls} path.
+     */
+    private static String liveVideoUrl(PostByIdEntity live, String postType) {
+        if (!"REEL".equals(postType) || live == null) return null;
+        return firstVideoUrl(live.getMediaUrls(), live.getMediaTypes());
+    }
+
+    private static String firstVideoUrl(List<String> urls, List<String> types) {
+        if (urls == null || types == null) return null;
+        for (int i = 0; i < Math.min(urls.size(), types.size()); i++) {
+            if ("VIDEO".equalsIgnoreCase(types.get(i))) return urls.get(i);
+        }
+        return null;
+    }
+
     private Map<UUID, PostCounterEntity> bulkLoadCounters(Set<UUID> postIds) {
         if (postIds.isEmpty()) return Map.of();
         Map<UUID, PostCounterEntity> out = new HashMap<>(postIds.size());
-        for (PostCounterEntity c : postCounterRepo.findAllByPostIds(postIds)) {
+        for (PostCounterEntity c : postCounterRepo.findAllByPostIdIn(postIds)) {
             out.put(c.getPostId(), c);
         }
         return out;
@@ -425,7 +486,7 @@ public class PostHydrator {
     private Map<UUID, CommentCounterEntity> bulkLoadCommentCounters(Set<UUID> commentIds) {
         if (commentIds.isEmpty()) return Map.of();
         Map<UUID, CommentCounterEntity> out = new HashMap<>(commentIds.size());
-        for (CommentCounterEntity c : commentCounterRepo.findAllByCommentIds(commentIds)) {
+        for (CommentCounterEntity c : commentCounterRepo.findAllByCommentIdIn(commentIds)) {
             out.put(c.getCommentId(), c);
         }
         return out;
@@ -434,7 +495,7 @@ public class PostHydrator {
     private Set<UUID> bulkLikedPosts(UUID viewerId, Set<UUID> postIds) {
         if (viewerId == null || postIds.isEmpty()) return Set.of();
         Set<UUID> liked = new HashSet<>();
-        reactionRepo.findForUserAcrossPosts(postIds, viewerId)
+        reactionRepo.findAllByPostIdInAndUserId(postIds, viewerId)
                 .forEach(r -> liked.add(r.getPostId()));
         return liked;
     }
@@ -442,7 +503,7 @@ public class PostHydrator {
     private Set<UUID> bulkSavedPosts(UUID viewerId, Set<UUID> postIds) {
         if (viewerId == null || postIds.isEmpty()) return Set.of();
         Set<UUID> saved = new HashSet<>();
-        saveRepo.findForUserAcrossPosts(postIds, viewerId)
+        saveRepo.findAllByPostIdInAndUserId(postIds, viewerId)
                 .forEach(r -> saved.add(r.getPostId()));
         return saved;
     }
@@ -450,7 +511,7 @@ public class PostHydrator {
     private Set<UUID> bulkLikedComments(UUID viewerId, Set<UUID> commentIds) {
         if (viewerId == null || commentIds.isEmpty()) return Set.of();
         Set<UUID> liked = new HashSet<>();
-        commentReactionRepo.findForUserAcrossComments(commentIds, viewerId)
+        commentReactionRepo.findAllByCommentIdInAndUserId(commentIds, viewerId)
                 .forEach(r -> liked.add(r.getCommentId()));
         return liked;
     }

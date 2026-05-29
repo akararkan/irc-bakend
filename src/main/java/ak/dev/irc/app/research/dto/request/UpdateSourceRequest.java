@@ -8,7 +8,6 @@ public record UpdateSourceRequest(
         @Size(max = 500) String title,
         @Size(max = 10000) String citationText,
         String url,
-        @Size(max = 255) String doi,
         @Size(max = 20) String isbn,
         Integer displayOrder
 ) {}

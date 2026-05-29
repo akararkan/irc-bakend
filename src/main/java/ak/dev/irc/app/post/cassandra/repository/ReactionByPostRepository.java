@@ -24,10 +24,12 @@ public interface ReactionByPostRepository extends CassandraRepository<ReactionBy
      * round-trip via a multi-partition IN query. Use ONLY for bounded sets
      * (feed pages of 20–50); IN over hundreds of partitions stresses the
      * coordinator and breaks token-aware routing.
+     *
+     * Derived query so Spring Data Cassandra expands each ID to a separate
+     * bind marker instead of binding the collection as a single LIST parameter
+     * (which causes DefaultListType → SetType ClassCastException).
      */
-    @Query("SELECT * FROM reactions_by_post WHERE post_id IN :postIds AND user_id = :userId")
-    List<ReactionByPostEntity> findForUserAcrossPosts(@Param("postIds") Collection<UUID> postIds,
-                                                      @Param("userId") UUID userId);
+    List<ReactionByPostEntity> findAllByPostIdInAndUserId(Collection<UUID> postIds, UUID userId);
 
     @Query("DELETE FROM reactions_by_post WHERE post_id = :postId AND user_id = :userId")
     void delete(@Param("postId") UUID postId,

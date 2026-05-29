@@ -13,8 +13,10 @@ import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import ak.dev.irc.app.common.exception.UnauthorizedException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -49,7 +51,7 @@ public class CassandraStoryController {
     @PostMapping(value = "/stories", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<StoryByAuthorEntity> create(@RequestBody CreateStoryRequest req,
                                                       @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(storyService.createStory(
                 user.getId(), req.storyType(), req.visibility(),
                 req.mediaUrl(), req.thumbnailUrl(), req.textContent()));
@@ -69,7 +71,7 @@ public class CassandraStoryController {
             @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
             @AuthenticationPrincipal User user) {
 
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
 
         String mediaUrl = null;
         if (media != null && !media.isEmpty()) {
@@ -99,7 +101,7 @@ public class CassandraStoryController {
     @DeleteMapping("/stories/{storyId}")
     public ResponseEntity<Void> delete(@PathVariable UUID storyId,
                                        @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         storyService.deleteStory(storyId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -108,7 +110,7 @@ public class CassandraStoryController {
     @PostMapping("/stories/{storyId}/views")
     public ResponseEntity<Void> recordView(@PathVariable UUID storyId,
                                            @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         storyService.recordView(storyId, user.getId());
         return ResponseEntity.accepted().build();
     }
@@ -125,14 +127,14 @@ public class CassandraStoryController {
     /** Owner = the authenticated user. The close-friends list is always "mine". */
     @GetMapping("/close-friends")
     public ResponseEntity<List<CloseFriendEntity>> list(@AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(closeFriendsService.listFor(user.getId()));
     }
 
     @PostMapping("/close-friends")
     public ResponseEntity<Void> add(@RequestParam UUID friendId,
                                     @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         closeFriendsService.add(user.getId(), friendId);
         return ResponseEntity.noContent().build();
     }
@@ -140,7 +142,7 @@ public class CassandraStoryController {
     @DeleteMapping("/close-friends")
     public ResponseEntity<Void> remove(@RequestParam UUID friendId,
                                        @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         closeFriendsService.remove(user.getId(), friendId);
         return ResponseEntity.noContent().build();
     }
@@ -162,7 +164,7 @@ public class CassandraStoryController {
     public ResponseEntity<StoryPollEntity> createPoll(@PathVariable UUID storyId,
                                                       @RequestBody CreatePollRequest req,
                                                       @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(pollService.createPoll(storyId, user.getId(),
                 req.question(), req.optionA(), req.optionB()));
     }
@@ -180,7 +182,7 @@ public class CassandraStoryController {
     public ResponseEntity<CassandraStoryPollService.CastVoteResult> vote(@PathVariable UUID pollId,
                                                                          @RequestParam String choice,
                                                                          @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(pollService.castVote(pollId, user.getId(), choice));
     }
 
@@ -206,10 +208,16 @@ public class CassandraStoryController {
     }
 
     /**
-     * Author-only voter list per side. Caller MUST enforce that the requester
-     * is the story author — this endpoint does not check yet.
+     * Voter list per side. Now requires authentication (was public).
+     *
+     * <p><strong>TODO (author-only):</strong> this should be restricted to the
+     * story author, but the poll row is keyed by {@code storyId} and the path
+     * only carries {@code pollId}, so there is no {@code pollId → authorId}
+     * lookup to verify ownership. Add that index (or pass {@code storyId}) to
+     * complete the restriction; until then this is authenticated-only.</p>
      */
     @GetMapping("/polls/{pollId}/voters/{choice}")
+    @PreAuthorize("isAuthenticated()")
     public List<PollVoterByChoiceEntity> voters(@PathVariable UUID pollId,
                                                 @PathVariable String choice,
                                                 @RequestParam(defaultValue = "50") int pageSize) {

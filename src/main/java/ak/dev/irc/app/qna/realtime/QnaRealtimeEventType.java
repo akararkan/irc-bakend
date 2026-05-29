@@ -26,11 +26,6 @@ public enum QnaRealtimeEventType {
     BEST_ANSWER_VOTED,
     BEST_ANSWER_UNVOTED,
 
-    // ── question-author feedback on answers ────────────────────────────
-    ANSWER_FEEDBACK_ADDED,
-    ANSWER_FEEDBACK_EDITED,
-    ANSWER_FEEDBACK_DELETED,
-
     // ── question lifecycle ─────────────────────────────────────────────
     QUESTION_UPDATED,
     QUESTION_DELETED,

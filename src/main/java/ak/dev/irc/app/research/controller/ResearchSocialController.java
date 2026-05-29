@@ -207,14 +207,16 @@ public class ResearchSocialController {
     // ══════════════════════════════════════════════════════════════════════════
 
     @PostMapping("/download")
-    public ResponseEntity<String> recordDownload(
+    public ResponseEntity<java.util.Map<String, String>> recordDownload(
             @PathVariable UUID researchId,
             @RequestParam(required = false) UUID mediaId,
             @AuthenticationPrincipal User user,
             HttpServletRequest request) {
         UUID uid = user != null ? user.getId() : null;
         String downloadUrl = researchService.recordDownload(researchId, mediaId, uid, extractIp(request));
-        return ResponseEntity.ok(downloadUrl);
+        // JSON envelope (E4) — consistent with every other endpoint; `url` is null
+        // when no mediaId was supplied (download recorded, no file to fetch).
+        return ResponseEntity.ok(java.util.Collections.singletonMap("url", downloadUrl));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -3,6 +3,7 @@ package ak.dev.irc.app.user.controller;
 import ak.dev.irc.app.user.dto.request.*;
 import ak.dev.irc.app.user.dto.response.*;
 import ak.dev.irc.app.user.service.UserService;
+import ak.dev.irc.app.user.service.UserStatsService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -20,6 +21,19 @@ import java.util.UUID;
 public class UserController {
 
     private final UserService userService;
+    private final UserStatsService userStatsService;
+
+    // ── Profile stats ──────────────────────────────────────────────────────────
+
+    /**
+     * Public profile stat counts — posts / research / questions / followers /
+     * following — computed live from each source. Anonymous-safe. Works for the
+     * caller's own profile or anyone else's; pass the user id.
+     */
+    @GetMapping("/{id}/stats")
+    public ResponseEntity<UserStatsResponse> getStats(@PathVariable UUID id) {
+        return ResponseEntity.ok(userStatsService.statsFor(id));
+    }
 
     // ── Identity read ─────────────────────────────────────────────────────────
 
@@ -58,8 +72,12 @@ public class UserController {
     @GetMapping("/search")
     public ResponseEntity<Page<UserResponse>> search(
             @RequestParam(defaultValue = "") String q,
+            @RequestParam(required = false) Boolean eligibleContributor,
             @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(userService.searchUsers(q, pageable));
+        // eligibleContributor=true → only RESEARCHER/SCHOLAR, for the co-author picker (E2)
+        return ResponseEntity.ok(Boolean.TRUE.equals(eligibleContributor)
+                ? userService.searchEligibleContributors(q, pageable)
+                : userService.searchUsers(q, pageable));
     }
 
     // ── Links ─────────────────────────────────────────────────────────────────

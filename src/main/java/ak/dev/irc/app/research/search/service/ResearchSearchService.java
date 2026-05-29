@@ -1,5 +1,7 @@
 package ak.dev.irc.app.research.search.service;
 
+import ak.dev.irc.app.common.search.EsRetry;
+import ak.dev.irc.app.common.text.RichTextService;
 import ak.dev.irc.app.research.entity.Research;
 import ak.dev.irc.app.research.entity.ResearchTag;
 import ak.dev.irc.app.research.enums.ResearchStatus;
@@ -32,6 +34,7 @@ import java.util.UUID;
 public class ResearchSearchService {
 
     private final ResearchSearchRepository searchRepo;
+    private final RichTextService          richText;
 
     /**
      * Index (or re-index) a research record. Drafts/archived/retracted are
@@ -40,52 +43,74 @@ public class ResearchSearchService {
     @Async
     public void indexAsync(Research research) {
         if (research == null) return;
-        try {
-            if (research.getStatus() != ResearchStatus.PUBLISHED
-                    || research.getDeletedAt() != null) {
-                searchRepo.deleteById(ResearchSearchDocument.idOf(research.getId()));
-                return;
-            }
-            ResearchSearchDocument doc = ResearchSearchDocument.builder()
-                    .id(ResearchSearchDocument.idOf(research.getId()))
-                    .title(research.getTitle())
-                    .abstractText(research.getAbstractText())
-                    .description(research.getDescription())
-                    .keywords(research.getKeywords())
-                    .tags(research.getTags() == null ? List.of()
-                            : research.getTags().stream()
-                                .map(ResearchTag::getTagName).toList())
-                    .researcherId(research.getResearcher() == null ? null
-                            : research.getResearcher().getId().toString())
-                    .researcherName(research.getResearcher() == null ? null
-                            : research.getResearcher().getFullName())
-                    .researcherUsername(research.getResearcher() == null ? null
-                            : research.getResearcher().getUsername())
-                    .status(research.getStatus().name())
-                    .doi(research.getDoi())
-                    .ircId(research.getIrcId())
-                    .slug(research.getSlug())
-                    .viewCount(research.getViewCount())
-                    .citationCount(research.getCitationCount())
-                    .reactionCount(research.getReactionCount())
-                    .publishedAt(research.getPublishedAt() == null ? null
-                            : research.getPublishedAt().toInstant(ZoneOffset.UTC))
-                    .createdAt(research.getCreatedAt() == null ? null
-                            : research.getCreatedAt().toInstant(ZoneOffset.UTC))
-                    .build();
-            searchRepo.save(doc);
-        } catch (Exception e) {
-            log.warn("[SEARCH] index research {} failed: {}", research.getId(), e.getMessage());
+        if (research.getStatus() != ResearchStatus.PUBLISHED
+                || research.getDeletedAt() != null) {
+            runWithRetry(
+                    () -> searchRepo.deleteById(ResearchSearchDocument.idOf(research.getId())),
+                    "[SEARCH] delete (lifecycle) research " + research.getId());
+            return;
         }
+        ResearchSearchDocument doc = buildDoc(research);
+        runWithRetry(() -> searchRepo.save(doc),
+                "[SEARCH] index research " + research.getId());
     }
 
     @Async
     public void deleteAsync(UUID researchId) {
         if (researchId == null) return;
+        runWithRetry(() -> searchRepo.deleteById(researchId.toString()),
+                "[SEARCH] delete research " + researchId);
+    }
+
+    // ── Internals ────────────────────────────────────────────────────────────
+
+    private ResearchSearchDocument buildDoc(Research research) {
+        // Strip markup from the rendered HTML so ES relevance scores aren't
+        // polluted by tag names and Markdown punctuation. Falls back to the
+        // raw source for legacy rows that have no rendered HTML yet.
+        String abstractIdx = richText.toPlainText(research.getAbstractHtml());
+        if (abstractIdx == null) abstractIdx = research.getAbstractText();
+        String descriptionIdx = richText.toPlainText(research.getDescriptionHtml());
+        if (descriptionIdx == null) descriptionIdx = research.getDescription();
+
+        return ResearchSearchDocument.builder()
+                .id(ResearchSearchDocument.idOf(research.getId()))
+                .title(research.getTitle())
+                .abstractText(abstractIdx)
+                .description(descriptionIdx)
+                .keywords(research.getKeywords())
+                .tags(research.getTags() == null ? List.of()
+                        : research.getTags().stream()
+                            .map(ResearchTag::getTagName).toList())
+                .researcherId(research.getResearcher() == null ? null
+                        : research.getResearcher().getId().toString())
+                .researcherName(research.getResearcher() == null ? null
+                        : research.getResearcher().getFullName())
+                .researcherUsername(research.getResearcher() == null ? null
+                        : research.getResearcher().getUsername())
+                .status(research.getStatus().name())
+                .ircId(research.getIrcId())
+                .slug(research.getSlug())
+                .viewCount(research.getViewCount())
+                .citationCount(research.getCitationCount())
+                .reactionCount(research.getReactionCount())
+                .publishedAt(research.getPublishedAt() == null ? null
+                        : research.getPublishedAt().toInstant(ZoneOffset.UTC))
+                .createdAt(research.getCreatedAt() == null ? null
+                        : research.getCreatedAt().toInstant(ZoneOffset.UTC))
+                .build();
+    }
+
+    /**
+     * Runs {@code action} via the shared {@link EsRetry} (retries once on a
+     * stale-pooled-connection failure) and swallows any other exception with
+     * a WARN — ES is an async secondary index, never block the write path.
+     */
+    private void runWithRetry(Runnable action, String label) {
         try {
-            searchRepo.deleteById(researchId.toString());
+            EsRetry.run(action, label);
         } catch (Exception e) {
-            log.warn("[SEARCH] delete research {} failed: {}", researchId, e.getMessage());
+            log.warn("{} failed: {}", label, e.getMessage());
         }
     }
 }

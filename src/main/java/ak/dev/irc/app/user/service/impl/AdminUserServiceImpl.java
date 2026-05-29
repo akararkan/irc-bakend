@@ -2,12 +2,11 @@ package ak.dev.irc.app.user.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.BadRequestException;
-import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
-import ak.dev.irc.app.user.dto.request.AdminChangeAccountTypeRequest;
+import ak.dev.irc.app.user.dto.request.AdminChangeRoleRequest;
 import ak.dev.irc.app.user.dto.response.UserResponse;
 import ak.dev.irc.app.user.entity.User;
-import ak.dev.irc.app.user.enums.AccountType;
+import ak.dev.irc.app.user.enums.Role;
 import ak.dev.irc.app.user.mapper.UserMapper;
 import ak.dev.irc.app.user.repository.UserRepository;
 import ak.dev.irc.app.user.service.AdminUserService;
@@ -28,36 +27,30 @@ public class AdminUserServiceImpl implements AdminUserService {
     private final UserMapper     userMapper;
 
     @Override
-    public UserResponse changeAccountType(UUID targetUserId,
-                                          AdminChangeAccountTypeRequest req) {
-        if (req == null || req.accountType() == null)
-            throw new BadRequestException("accountType is required", "INVALID_INPUT");
+    public UserResponse changeRole(UUID targetUserId, AdminChangeRoleRequest req) {
+        if (req == null || req.role() == null)
+            throw new BadRequestException("role is required", "INVALID_INPUT");
 
         User target = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", targetUserId));
 
-        if (target.isSystemAccount() || target.getAccountType() == AccountType.PLATFORM_OFFICIAL)
-            throw new ForbiddenException("The platform system account cannot be modified");
+        Role previous = target.getRole();
+        if (previous == req.role()) {
+            log.info("Admin role change for user [{}] is a no-op (already {})", target.getId(), previous);
+            return userMapper.toResponse(target);
+        }
 
-        AccountType previousType = target.getAccountType();
-        target.setAccountType(req.accountType());
+        target.setRole(req.role());
 
-        if (req.verificationTier() != null)
-            target.setVerificationTier(req.verificationTier());
-
-        if (req.role() != null)
-            target.setRole(req.role());
-
-        String note = "Account type %s → %s%s".formatted(
-                previousType, req.accountType(),
+        String note = "Role %s → %s%s".formatted(
+                previous, req.role(),
                 req.reason() != null && !req.reason().isBlank() ? " (" + req.reason() + ")" : "");
         target.audit(AuditAction.UPDATE, note);
 
         userRepository.save(target);
 
-        log.info("Admin changed account type for user [{}]: {} → {} (tier={}, role={})",
-                target.getId(), previousType, req.accountType(),
-                target.getVerificationTier(), target.getRole());
+        log.info("Admin changed role for user [{}]: {} → {}",
+                target.getId(), previous, req.role());
 
         return userMapper.toResponse(target);
     }

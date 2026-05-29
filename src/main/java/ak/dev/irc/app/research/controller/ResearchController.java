@@ -534,12 +534,15 @@ public class ResearchController {
     }
 
     /**
-     * Record an external citation event — increments {@code citationCount} on
-     * the research. Called by the DOI resolver or third-party citation services.
+     * Record a citation — increments {@code citationCount} on the research.
+     * Requires authentication and is de-duplicated per (research, citer) so the
+     * public counter can't be trivially inflated (E3).
      */
     @PostMapping("/{id}/cite")
-    public ResponseEntity<Void> recordCitation(@PathVariable UUID id) {
-        researchService.incrementCitationCount(id);
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> recordCitation(@PathVariable UUID id,
+                                               @AuthenticationPrincipal User user) {
+        researchService.incrementCitationCount(id, user != null ? user.getId() : null);
         return ResponseEntity.ok().build();
     }
 }

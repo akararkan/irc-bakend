@@ -78,6 +78,17 @@ public class ResearchComment extends BaseAuditEntity {
     @Column(name = "media_thumbnail_s3_key", columnDefinition = "TEXT")
     private String mediaThumbnailS3Key;
 
+    // ── voice comment ──────────────────────────────────────────────────────────
+    @Column(name = "voice_url")
+    private String voiceUrl;
+
+    /** S3/R2 object key for the voice recording. */
+    @Column(name = "voice_s3_key", columnDefinition = "TEXT")
+    private String voiceS3Key;
+
+    @Column(name = "voice_duration_seconds")
+    private Integer voiceDurationSeconds;
+
     /** Number of likes on this comment (denormalised) */
     @Column(name = "like_count", nullable = false)
     @Builder.Default

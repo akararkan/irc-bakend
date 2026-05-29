@@ -21,7 +21,5 @@ public class CreateAnswerSourceRequest {
 
     private String url;
 
-    private String doi;
-
     private String isbn;
 }

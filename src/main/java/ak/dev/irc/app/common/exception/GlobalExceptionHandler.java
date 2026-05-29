@@ -286,6 +286,35 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
     }
 
+    /**
+     * Plain {@link SecurityException} thrown by service-layer author/owner checks
+     * (e.g. "Not the author" on story delete, poll attach, QnA/Research mutations).
+     * Without this it falls through to the catch-all and surfaces as a misleading
+     * {@code 500 INTERNAL_ERROR}; map it to {@code 403 FORBIDDEN} so the client can
+     * distinguish "not allowed" from "server broke".
+     */
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<ApiErrorResponse> handleSecurityException(
+            SecurityException ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Authorization failure on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getMessage());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.FORBIDDEN.value())
+                .error("Forbidden")
+                .message(ex.getMessage() != null && !ex.getMessage().isBlank()
+                        ? ex.getMessage()
+                        : "You do not have permission to perform this action.")
+                .path(request.getRequestURI())
+                .errorCode("FORBIDDEN")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  4. HTTP / ROUTING EXCEPTIONS
     // ══════════════════════════════════════════════════════════════════════════

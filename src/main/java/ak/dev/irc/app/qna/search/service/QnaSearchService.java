@@ -1,5 +1,6 @@
 package ak.dev.irc.app.qna.search.service;
 
+import ak.dev.irc.app.common.search.EsRetry;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.search.document.QnaSearchDocument;
 import ak.dev.irc.app.qna.search.repository.QnaSearchRepository;
@@ -9,6 +10,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.UUID;
 
 /**
@@ -30,30 +32,38 @@ public class QnaSearchService {
     @Async
     public void indexAsync(Question question) {
         if (question == null) return;
-        try {
-            if (question.getDeletedAt() != null) {
-                searchRepo.deleteById(QnaSearchDocument.idOf(question.getId()));
-                return;
+        if (question.getDeletedAt() != null) {
+            try {
+                EsRetry.run(() -> searchRepo.deleteById(QnaSearchDocument.idOf(question.getId())),
+                        "[SEARCH] delete (soft) question " + question.getId());
+            } catch (Exception e) {
+                log.warn("[SEARCH] index question {} failed: {}", question.getId(), e.getMessage());
             }
-            QnaSearchDocument doc = QnaSearchDocument.builder()
-                    .id(QnaSearchDocument.idOf(question.getId()))
-                    .title(question.getTitle())
-                    .body(question.getBody())
-                    .authorId(question.getAuthor() == null ? null
-                            : question.getAuthor().getId().toString())
-                    .authorName(question.getAuthor() == null ? null
-                            : question.getAuthor().getFullName())
-                    .authorUsername(question.getAuthor() == null ? null
-                            : question.getAuthor().getUsername())
-                    .status(question.getStatus() == null ? null
-                            : question.getStatus().name())
-                    .answerCount(question.getAnswerCount())
-                    .viewCount(question.getViewCount())
-                    .saveCount(question.getSaveCount())
-                    .createdAt(question.getCreatedAt() == null ? null
-                            : question.getCreatedAt().toInstant(ZoneOffset.UTC))
-                    .build();
-            searchRepo.save(doc);
+            return;
+        }
+        QnaSearchDocument doc = QnaSearchDocument.builder()
+                .id(QnaSearchDocument.idOf(question.getId()))
+                .title(question.getTitle())
+                .body(question.getBody())
+                .tags(question.getTags() == null ? null : new ArrayList<>(question.getTags()))
+                .keywords(question.getKeywords())
+                .authorId(question.getAuthor() == null ? null
+                        : question.getAuthor().getId().toString())
+                .authorName(question.getAuthor() == null ? null
+                        : question.getAuthor().getFullName())
+                .authorUsername(question.getAuthor() == null ? null
+                        : question.getAuthor().getUsername())
+                .status(question.getStatus() == null ? null
+                        : question.getStatus().name())
+                .answerCount(question.getAnswerCount())
+                .viewCount(question.getViewCount())
+                .saveCount(question.getSaveCount())
+                .createdAt(question.getCreatedAt() == null ? null
+                        : question.getCreatedAt().toInstant(ZoneOffset.UTC))
+                .build();
+        try {
+            EsRetry.run(() -> searchRepo.save(doc),
+                    "[SEARCH] index question " + question.getId());
         } catch (Exception e) {
             log.warn("[SEARCH] index question {} failed: {}", question.getId(), e.getMessage());
         }
@@ -63,7 +73,8 @@ public class QnaSearchService {
     public void deleteAsync(UUID questionId) {
         if (questionId == null) return;
         try {
-            searchRepo.deleteById(questionId.toString());
+            EsRetry.run(() -> searchRepo.deleteById(questionId.toString()),
+                    "[SEARCH] delete question " + questionId);
         } catch (Exception e) {
             log.warn("[SEARCH] delete question {} failed: {}", questionId, e.getMessage());
         }

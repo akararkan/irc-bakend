@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.realtime;
 
+import ak.dev.irc.app.research.dto.response.CommentResponse;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -32,7 +33,18 @@ public class ResearchRealtimeEvent {
 
     /** Comment id for COMMENT_* / REPLY_*. */
     private UUID commentId;
+    /** Root comment id when this is a reply; null for top-level comments. */
     private UUID parentCommentId;
+
+    /**
+     * The full, freshly-mapped comment for COMMENT_CREATED / REPLY_CREATED /
+     * COMMENT_EDITED / COMMENT_REACTION_* — patch the row in place, no refetch (A1).
+     * Viewer-specific {@code myReaction} is neutral (null); resolve per-viewer.
+     */
+    private CommentResponse comment;
+
+    /** Research status for RESEARCH_PUBLISHED / RESEARCH_UPDATED / RESEARCH_DELETED lifecycle events (A4). */
+    private String status;
 
     /** Reaction enum name for REACTION_* events. */
     private String reactionType;

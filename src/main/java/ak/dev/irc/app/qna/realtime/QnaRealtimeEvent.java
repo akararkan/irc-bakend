@@ -1,5 +1,6 @@
 package ak.dev.irc.app.qna.realtime;
 
+import ak.dev.irc.app.qna.dto.response.QuestionAnswerResponse;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -34,13 +35,25 @@ public class QnaRealtimeEvent {
     private String actorUsername;
     private String actorAvatarUrl;
 
-    /** Answer id for ANSWER_* / REANSWER_* / FEEDBACK_*. */
+    /** Answer id for ANSWER_* / REANSWER_*. */
     private UUID answerId;
-    /** Parent answer id for REANSWER_CREATED. */
+    /**
+     * Root answer id when the affected answer is a reply (reanswer); null when
+     * it is a top-level answer. Populated on <strong>every</strong> answer-scoped
+     * event so clients can route the update to the correct thread —
+     * {@code threadId = parentAnswerId ?? answerId}.
+     */
     private UUID parentAnswerId;
 
-    /** Feedback id for FEEDBACK_*. */
-    private UUID feedbackId;
+    /**
+     * The full, freshly-recomputed answer for every answer-scoped event
+     * (created / edited / deleted / reaction / accept / best-vote), so clients
+     * patch the row in place with <strong>no refetch</strong>. Viewer-specific
+     * fields ({@code myReaction}, {@code votedByMe}) are neutral here — resolve
+     * them per-viewer. On {@code ANSWER_DELETED} this carries the tombstone
+     * ({@code deleted:true}, body/attachments/sources nulled).
+     */
+    private QuestionAnswerResponse answer;
 
     /** Reaction enum name for ANSWER_REACTION_*. */
     private String reactionType;
@@ -49,9 +62,6 @@ public class QnaRealtimeEvent {
 
     /** Body snapshot for ANSWER_CREATED / ANSWER_EDITED / REANSWER_CREATED. */
     private String body;
-
-    /** Optional feedback type label for FEEDBACK_* events. */
-    private String feedbackType;
 
     // ── Fresh denormalised counters ────────────────────────────────────
     private Long questionAnswerCount;

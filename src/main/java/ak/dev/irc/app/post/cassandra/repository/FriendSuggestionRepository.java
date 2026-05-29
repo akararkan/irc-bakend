@@ -21,4 +21,9 @@ public interface FriendSuggestionRepository extends CassandraRepository<FriendSu
     /** Wipe a user's prior suggestions before writing a freshly computed set. */
     @Query("DELETE FROM friend_suggestions_by_user WHERE user_id = :userId")
     void clearForUser(@Param("userId") UUID userId);
+
+    /** Remove a single suggestion (dismiss action). */
+    @Query("DELETE FROM friend_suggestions_by_user WHERE user_id = :userId AND candidate_id = :candidateId")
+    void deleteSuggestion(@Param("userId")      UUID userId,
+                          @Param("candidateId") UUID candidateId);
 }

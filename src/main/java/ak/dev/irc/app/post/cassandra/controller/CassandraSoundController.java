@@ -4,13 +4,18 @@ import ak.dev.irc.app.post.cassandra.entity.PostBySoundEntity;
 import ak.dev.irc.app.post.cassandra.entity.SoundByCategoryEntity;
 import ak.dev.irc.app.post.cassandra.entity.SoundEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraSoundService;
+import ak.dev.irc.app.user.entity.User;
+import ak.dev.irc.app.user.enums.Role;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** Sound library (TikTok-style reusable audio). */
@@ -21,17 +26,28 @@ public class CassandraSoundController {
 
     private final CassandraSoundService soundService;
 
+    private static final Set<Role> MODERATION_ROLES = Set.of(Role.ADMIN);
+
+    /** {@code uploaderId} is ignored — the uploader is always the authenticated caller. */
     public record UploadSoundRequest(String title, String artistName, String audioUrl,
                                      String coverArtUrl, Integer durationSeconds,
                                      String category, UUID uploaderId, Boolean autoApprove) {}
 
-    /** Upload a sound. autoApprove=true skips moderation (admin-only in prod). */
+    /**
+     * Upload a sound. The uploader is taken from the JWT (never the body).
+     * {@code autoApprove=true} skips moderation and is honored <strong>only</strong>
+     * for admins/moderators — a regular user's request is created PENDING regardless.
+     */
     @PostMapping
-    public SoundEntity upload(@RequestBody UploadSoundRequest req) {
+    @PreAuthorize("isAuthenticated()")
+    public SoundEntity upload(@RequestBody UploadSoundRequest req,
+                              @AuthenticationPrincipal User user) {
+        boolean privileged  = user.getRole() != null && MODERATION_ROLES.contains(user.getRole());
+        boolean autoApprove = Boolean.TRUE.equals(req.autoApprove()) && privileged;
         return soundService.createSound(
                 req.title(), req.artistName(), req.audioUrl(),
                 req.coverArtUrl(), req.durationSeconds(), req.category(),
-                req.uploaderId(), Boolean.TRUE.equals(req.autoApprove()));
+                user.getId(), autoApprove);
     }
 
     @GetMapping("/{id}")
@@ -40,8 +56,9 @@ public class CassandraSoundController {
         return s == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(s);
     }
 
-    /** Mark a pending sound as APPROVED → publishes to the category browser. */
+    /** Mark a pending sound as APPROVED → publishes to the category browser. Admin/mod only. */
     @PostMapping("/{id}/approve")
+    @PreAuthorize("hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')")
     public ResponseEntity<Void> approve(@PathVariable UUID id) {
         soundService.approve(id);
         return ResponseEntity.noContent().build();

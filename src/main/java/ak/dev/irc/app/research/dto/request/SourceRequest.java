@@ -19,9 +19,6 @@ public record SourceRequest(
 
     String url,
 
-    @Size(max = 255)
-    String doi,
-
     @Size(max = 20)
     String isbn,
 

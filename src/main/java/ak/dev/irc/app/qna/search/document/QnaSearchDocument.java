@@ -8,6 +8,7 @@ import org.springframework.data.elasticsearch.annotations.Field;
 import org.springframework.data.elasticsearch.annotations.FieldType;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Document(indexName = "irc-qna", createIndex = false)
@@ -19,6 +20,11 @@ public class QnaSearchDocument {
 
     @Field(type = FieldType.Text)    private String title;
     @Field(type = FieldType.Text)    private String body;
+
+    /** Normalized topic tags — Keyword so they match exactly and can be filtered/faceted. */
+    @Field(type = FieldType.Keyword) private List<String> tags;
+    /** Free-text author keywords — analyzed Text so they contribute to relevance. */
+    @Field(type = FieldType.Text)    private String keywords;
 
     @Field(type = FieldType.Keyword) private String authorId;
     @Field(type = FieldType.Text)    private String authorName;

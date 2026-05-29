@@ -87,8 +87,10 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
     private final ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
     private final ak.dev.irc.app.research.search.service.ResearchSearchService researchSearch;
+    private final ak.dev.irc.app.common.tag.service.ContentTagService contentTagService;
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
+    private final ak.dev.irc.app.common.text.RichTextService richText;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -138,10 +140,12 @@ public class ResearchServiceImpl implements ResearchService {
             String shareToken = ircIdentifierService.generateShareToken();
             String slug       = generateSlug(req.title());
 
-            // ── Generate DOI if not provided ─────────────────────────────
-            String doi = (req.doi() != null && !req.doi().isBlank())
-                    ? req.doi()
-                    : ircIdentifierService.generateDoi(seqNum);
+            // ── Render Markdown / HTML body + abstract to sanitised HTML ──
+            // Format defaults to MARKDOWN (a safe superset of plain text) when
+            // the caller didn't pick one and the source has no tag soup.
+            ak.dev.irc.app.common.text.BodyFormat fmt =
+                    req.bodyFormat() != null ? req.bodyFormat()
+                            : richText.detectFormat(req.description());
 
             // ── Build & persist the research entity (auto-published) ────
             Research research = Research.builder()
@@ -149,10 +153,12 @@ public class ResearchServiceImpl implements ResearchService {
                     .title(req.title())
                     .slug(slug)
                     .description(req.description())
+                    .descriptionHtml(richText.renderToSafeHtml(req.description(), fmt))
                     .abstractText(req.abstractText())
+                    .abstractHtml(richText.renderToSafeHtml(req.abstractText(), fmt))
+                    .bodyFormat(fmt)
                     .keywords(req.keywords())
                     .citation(req.citation())
-                    .doi(doi)
                     .visibility(req.visibility())
                     .scheduledPublishAt(req.scheduledPublishAt())
                     .commentsEnabled(req.commentsEnabled())
@@ -298,9 +304,13 @@ public class ResearchServiceImpl implements ResearchService {
             updateResearchFields(research, req);
 
             if (req.tags() != null) {
-                tagRepo.deleteAllByResearchId(researchId);
-                research.getTags().clear();
-                if (!req.tags().isEmpty()) saveTags(research, req.tags());
+                // Diff-merge rather than wipe-and-reinsert: re-saving the same
+                // tag list on PATCH was racing the unique constraint
+                // `uq_research_tag (research_id, tag_name)` because Hibernate
+                // flushes INSERTs ahead of the queued DELETEs in the same
+                // transaction, so the new tag row collided with the still-
+                // present old one. The diff path only touches actual changes.
+                syncTags(research, req.tags());
             }
 
             if (req.sources() != null) {
@@ -342,6 +352,12 @@ public class ResearchServiceImpl implements ResearchService {
 
             researchSearch.indexAsync(research);
 
+            // Keep Cassandra trending in sync only while the paper is live.
+            if (req.tags() != null && research.isPublished()) {
+                indexTagsToCassandra(research);
+            }
+            broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_UPDATED, researcherId);
+
             return mapper.toResponse(research, researcherId);
 
         } catch (OptimisticLockingFailureException e) {
@@ -354,17 +370,48 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     private void updateResearchFields(Research research, UpdateResearchRequest req) {
-        if (req.title() != null) {
+        if (req.title() != null && !req.title().equals(research.getTitle())) {
             research.setTitle(req.title());
             String newSlug = generateSlug(req.title());
             if (!newSlug.equals(research.getSlug()) && !researchRepo.existsBySlug(newSlug))
                 research.setSlug(newSlug);
+            // Refresh the denormalised title preview on every content_by_tag
+            // row for this paper so the tag feed doesn't show the old title.
+            // No-op when the tag list is also being replaced (the retag path
+            // rewrites all rows with the fresh title).
+            if (req.tags() == null) {
+                contentTagService.refreshTitlePreview(research.getId(), research.getTitle());
+            }
         }
-        if (req.description() != null)    research.setDescription(req.description());
-        if (req.abstractText() != null)   research.setAbstractText(req.abstractText());
+        // Rich-text re-render — applies when the body, abstract, or explicit
+        // format changes. Default to the row's stored format; auto-detect on
+        // legacy rows that pre-date rich-text support.
+        ak.dev.irc.app.common.text.BodyFormat fmt = req.bodyFormat() != null
+                ? req.bodyFormat()
+                : (research.getBodyFormat() != null
+                        ? research.getBodyFormat()
+                        : richText.detectFormat(req.description() != null
+                                ? req.description() : research.getDescription()));
+        if (req.bodyFormat() != null) {
+            research.setBodyFormat(fmt);
+            // Format flipped → re-render both fields against the new format.
+            research.setDescriptionHtml(richText.renderToSafeHtml(
+                    req.description() != null ? req.description() : research.getDescription(), fmt));
+            research.setAbstractHtml(richText.renderToSafeHtml(
+                    req.abstractText() != null ? req.abstractText() : research.getAbstractText(), fmt));
+        }
+        if (req.description() != null) {
+            research.setDescription(req.description());
+            research.setDescriptionHtml(richText.renderToSafeHtml(req.description(), fmt));
+            if (research.getBodyFormat() == null) research.setBodyFormat(fmt);
+        }
+        if (req.abstractText() != null) {
+            research.setAbstractText(req.abstractText());
+            research.setAbstractHtml(richText.renderToSafeHtml(req.abstractText(), fmt));
+            if (research.getBodyFormat() == null) research.setBodyFormat(fmt);
+        }
         if (req.keywords() != null)       research.setKeywords(req.keywords());
         if (req.citation() != null)       research.setCitation(req.citation());
-        if (req.doi() != null)            research.setDoi(req.doi());
         if (req.visibility() != null)     research.setVisibility(req.visibility());
         if (req.scheduledPublishAt() != null) {
             if (req.scheduledPublishAt().isBefore(LocalDateTime.now()))
@@ -373,6 +420,52 @@ public class ResearchServiceImpl implements ResearchService {
         }
         if (req.commentsEnabled() != null)  research.setCommentsEnabled(req.commentsEnabled());
         if (req.downloadsEnabled() != null) research.setDownloadsEnabled(req.downloadsEnabled());
+    }
+
+    // ── Cassandra trending/tag-feed fan-out ────────────────────────────────────
+
+    /**
+     * (Re)index a research item's tags into the shared Cassandra tag subsystem.
+     * Only PUBLISHED research is counted toward trending, so this is called on
+     * publish and on edit-while-published — never for drafts.
+     */
+    private void indexTagsToCassandra(Research research) {
+        java.util.List<String> tagNames = research.getTags() == null ? java.util.List.of()
+                : research.getTags().stream()
+                        .map(ak.dev.irc.app.research.entity.ResearchTag::getTagName)
+                        .filter(java.util.Objects::nonNull)
+                        .toList();
+        contentTagService.retag(
+                ak.dev.irc.app.common.tag.ContentType.RESEARCH,
+                research.getId(),
+                research.getResearcher() != null ? research.getResearcher().getId() : null,
+                research.getTitle(),
+                researchTagInstant(research),
+                tagNames);
+    }
+
+    /** Publish instant (UTC) used as the Cassandra tag-feed clustering key. */
+    private static java.time.Instant researchTagInstant(Research r) {
+        java.time.LocalDateTime t = r.getPublishedAt() != null ? r.getPublishedAt() : r.getCreatedAt();
+        return t != null ? t.toInstant(java.time.ZoneOffset.UTC) : java.time.Instant.now();
+    }
+
+    /**
+     * Broadcast a lifecycle event (publish / update / delete / status change) on
+     * the research stream carrying the fresh {@code status} (A4), so passive
+     * viewers patch the status pill without a refetch. The actor's own stream is
+     * suppressed by {@code ResearchRealtimeService} — they already have the response.
+     */
+    private void broadcastLifecycle(Research research,
+                                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType type,
+                                    UUID actorId) {
+        researchRealtime.broadcast(
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(type)
+                        .researchId(research.getId())
+                        .actorId(actorId)
+                        .status(research.getStatus() != null ? research.getStatus().name() : null)
+                        .build());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -391,6 +484,8 @@ public class ResearchServiceImpl implements ResearchService {
         research.setDeletedAt(LocalDateTime.now());
         researchRepo.save(research);
         researchSearch.deleteAsync(researchId);
+        contentTagService.untag(researchId);
+        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_DELETED, researcherId);
         log.info("Research soft-deleted: {}", researchId);
     }
 
@@ -425,9 +520,6 @@ public class ResearchServiceImpl implements ResearchService {
         if (research.getAbstractText() == null || research.getAbstractText().isBlank())
             throw new BadRequestException("Cannot publish research without an abstract", "MISSING_ABSTRACT");
 
-        if (research.getDoi() == null || research.getDoi().isBlank())
-            research.setDoi(ircIdentifierService.generateDoi(research.getIrcSequenceNumber()));
-
         research.setStatus(ResearchStatus.PUBLISHED);
         research.setPublishedAt(LocalDateTime.now());
         research = researchRepo.save(research);
@@ -454,8 +546,10 @@ public class ResearchServiceImpl implements ResearchService {
                 /* allowFollowersToken */ true);
 
         researchSearch.indexAsync(research);
+        indexTagsToCassandra(research);
+        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_PUBLISHED, researcherId);
 
-        log.info("Research published: {} [{}] DOI={}", research.getId(), research.getIrcId(), research.getDoi());
+        log.info("Research published: {} [{}]", research.getId(), research.getIrcId());
         return mapper.toResponse(research, researcherId);
     }
 
@@ -472,6 +566,8 @@ public class ResearchServiceImpl implements ResearchService {
         research.setStatus(ResearchStatus.ARCHIVED);
         research = researchRepo.save(research);
         researchSearch.deleteAsync(research.getId());
+        contentTagService.untag(research.getId());
+        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_UPDATED, researcherId);
         log.info("Research archived: {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -489,6 +585,8 @@ public class ResearchServiceImpl implements ResearchService {
         research.setStatus(ResearchStatus.RETRACTED);
         research = researchRepo.save(research);
         researchSearch.deleteAsync(research.getId());
+        contentTagService.untag(research.getId());
+        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_UPDATED, researcherId);
         log.info("Research retracted: {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -507,6 +605,8 @@ public class ResearchServiceImpl implements ResearchService {
         research.setPublishedAt(null);
         research = researchRepo.save(research);
         researchSearch.deleteAsync(research.getId());
+        contentTagService.untag(research.getId());
+        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_UPDATED, researcherId);
         log.info("Research unpublished (reverted to draft): {} by {}", researchId, researcherId);
         return mapper.toResponse(research, researcherId);
     }
@@ -523,8 +623,6 @@ public class ResearchServiceImpl implements ResearchService {
                 .findByStatusAndScheduledPublishAtBeforeAndDeletedAtIsNull(ResearchStatus.DRAFT, now);
         for (Research research : scheduled) {
             try {
-                if (research.getDoi() == null || research.getDoi().isBlank())
-                    research.setDoi(ircIdentifierService.generateDoi(research.getIrcSequenceNumber()));
                 research.setStatus(ResearchStatus.PUBLISHED);
                 research.setPublishedAt(now);
                 researchRepo.save(research);
@@ -731,7 +829,6 @@ public class ResearchServiceImpl implements ResearchService {
         if (req.title() != null)         source.setTitle(req.title());
         if (req.citationText() != null)  source.setCitationText(req.citationText());
         if (req.url() != null)           source.setUrl(req.url());
-        if (req.doi() != null)           source.setDoi(req.doi());
         if (req.isbn() != null)          source.setIsbn(req.isbn());
         if (req.displayOrder() != null)  source.setDisplayOrder(req.displayOrder());
 
@@ -1052,6 +1149,9 @@ public class ResearchServiceImpl implements ResearchService {
                     .mediaType(request.mediaType())
                     .mediaThumbnailUrl(request.mediaThumbnailUrl())
                     .mediaThumbnailS3Key(request.mediaThumbnailS3Key())
+                    .voiceUrl(request.voiceUrl())
+                    .voiceS3Key(request.voiceS3Key())
+                    .voiceDurationSeconds(request.voiceDurationSeconds())
                     .build();
 
             if (request.parentId() != null) {
@@ -1110,6 +1210,7 @@ public class ResearchServiceImpl implements ResearchService {
                .viewCount(research.getViewCount())
                .downloadCount(research.getDownloadCount())
                .citationCount(research.getCitationCount());
+            evt.comment(mapper.toCommentResponse(comment, false, null));   // A1: patch row in place
             researchRealtime.broadcast(evt.build());
 
             // @mentions in research comments — no @followers fan-out from comments.
@@ -1214,6 +1315,7 @@ public class ResearchServiceImpl implements ResearchService {
                         .mediaUrl(saved.getMediaUrl())
                         .mediaType(saved.getMediaType())
                         .mediaThumbnailUrl(saved.getMediaThumbnailUrl())
+                        .comment(mapper.toCommentResponse(saved, false, null))   // A1: patch row in place
                         .build());
 
         // Notify newly @-mentioned users introduced by this comment edit only.
@@ -1812,9 +1914,15 @@ public class ResearchServiceImpl implements ResearchService {
     }
 
     @Override
-    public void incrementCitationCount(UUID researchId) {
+    public void incrementCitationCount(UUID researchId, UUID citerId) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
         findPublishedOrThrow(researchId);
+        // Dedup per (research, citer) within a 30-day window so the public
+        // counter can't be looped by a single caller (E3).
+        if (citerId != null && dedupGuard.isDuplicate(
+                "research_cite", researchId, citerId, "", java.time.Duration.ofDays(30))) {
+            return;
+        }
         researchRepo.incrementCitationCount(researchId);
         broadcastCounters(researchId,
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.CITATION_COUNT_UPDATED,
@@ -1844,8 +1952,7 @@ public class ResearchServiceImpl implements ResearchService {
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.RESEARCHER
-                && user.getRole() != Role.ADMIN
-                && user.getRole() != Role.SUPER_ADMIN)
+                && user.getRole() != Role.ADMIN)
             throw new ForbiddenException("Only researchers can manage researches");
         return user;
     }
@@ -1897,7 +2004,7 @@ public class ResearchServiceImpl implements ResearchService {
 
     private void saveTags(Research research, List<String> tagNames) {
         tagNames.stream()
-                .map(t -> t != null ? t.trim().toLowerCase() : "")
+                .map(ResearchServiceImpl::normaliseTag)
                 .filter(t -> !t.isEmpty() && t.length() <= 100)
                 .distinct()
                 .forEach(name -> {
@@ -1909,6 +2016,45 @@ public class ResearchServiceImpl implements ResearchService {
                         log.warn("Duplicate tag '{}' skipped for research {}", name, research.getId());
                     }
                 });
+    }
+
+    /**
+     * Idempotent tag-set replacement used on PATCH update. Computes the diff
+     * between the row's existing tag rows and the request — only the additions
+     * are INSERTed and only the removals are deleted (via orphanRemoval on
+     * {@code Research.tags}). Re-PATCHing the same tag list is a no-op and
+     * doesn't trip the {@code uq_research_tag (research_id, tag_name)} unique
+     * constraint that wipe-and-reinsert kept colliding with.
+     */
+    private void syncTags(Research research, List<String> requestedTags) {
+        java.util.LinkedHashSet<String> requested = requestedTags.stream()
+                .map(ResearchServiceImpl::normaliseTag)
+                .filter(t -> !t.isEmpty() && t.length() <= 100)
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+
+        // Drop rows whose name the user removed — orphanRemoval cascades the DELETE.
+        research.getTags().removeIf(tag -> !requested.contains(tag.getTagName()));
+
+        java.util.Set<String> existingNames = research.getTags().stream()
+                .map(ResearchTag::getTagName)
+                .collect(Collectors.toSet());
+
+        // INSERT only the genuinely new names.
+        for (String name : requested) {
+            if (existingNames.contains(name)) continue;
+            try {
+                ResearchTag tag = ResearchTag.builder().research(research).tagName(name).build();
+                tagRepo.save(tag);
+                research.getTags().add(tag);
+            } catch (DataIntegrityViolationException e) {
+                log.warn("Duplicate tag '{}' skipped for research {}", name, research.getId());
+            }
+        }
+    }
+
+    /** Trim + lowercase the tag name, treating null as the empty string. */
+    private static String normaliseTag(String raw) {
+        return raw != null ? raw.trim().toLowerCase() : "";
     }
 
     /**
@@ -1957,7 +2103,7 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Contributor account is deactivated", "CONTRIBUTOR_DELETED");
         Role r = u.getRole();
         if (r != Role.RESEARCHER && r != Role.SCHOLAR
-                && r != Role.ADMIN && r != Role.SUPER_ADMIN) {
+                && r != Role.ADMIN) {
             throw new BadRequestException(
                     "Contributors must be a researcher or scholar (user " + userId + ")",
                     "CONTRIBUTOR_NOT_ELIGIBLE");
@@ -2147,7 +2293,6 @@ public class ResearchServiceImpl implements ResearchService {
                         .title(sr.title() != null ? sr.title() : "Untitled")
                         .citationText(sr.citationText())
                         .url(sr.url())
-                        .doi(sr.doi())
                         .isbn(sr.isbn())
                         .displayOrder(sr.displayOrder() != null ? sr.displayOrder() : order.getAndIncrement())
                         .build();

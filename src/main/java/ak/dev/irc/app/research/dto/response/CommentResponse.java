@@ -22,6 +22,10 @@ public record CommentResponse(
     String mediaType,
     String mediaThumbnailUrl,
 
+    // ── voice comment ─────────────────────────────────────────
+    String voiceUrl,
+    Integer voiceDurationSeconds,
+
     /** Denormalised total reactions across all reaction types (kept named likeCount for wire-format compatibility). */
     Long likeCount,
     Long replyCount,

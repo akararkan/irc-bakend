@@ -17,7 +17,12 @@ public interface CommentCounterRepository extends CassandraRepository<CommentCou
     @Query("SELECT * FROM comment_counters WHERE comment_id = :commentId")
     Optional<CommentCounterEntity> findByCommentId(@Param("commentId") UUID commentId);
 
-    /** Bulk counter fetch for a comment-thread page. Bounded callers only. */
-    @Query("SELECT * FROM comment_counters WHERE comment_id IN :commentIds")
-    List<CommentCounterEntity> findAllByCommentIds(@Param("commentIds") Collection<UUID> commentIds);
+    /**
+     * Bulk counter fetch for a comment-thread page. Bounded callers only.
+     *
+     * Derived query so Spring Data Cassandra expands each ID to a separate
+     * bind marker instead of binding the whole collection as a single LIST/SET
+     * parameter (which causes DefaultListType → SetType ClassCastException).
+     */
+    List<CommentCounterEntity> findAllByCommentIdIn(Collection<UUID> commentIds);
 }

@@ -17,9 +17,9 @@ import java.util.UUID;
  * saves, comment likes).
  *
  * <p>{@code ResearchService} (and the controller layer above it) continues to
- * own the Postgres canonical writes for the research entity itself — DOI
- * registry, citation tree, formal publication semantics need transactional
- * integrity that Cassandra doesn't provide. Each engagement-write path
+ * own the Postgres canonical writes for the research entity itself — the
+ * citation tree and formal publication semantics need transactional integrity
+ * that Cassandra doesn't provide. Each engagement-write path
  * should additionally call the matching {@code mirror*} method here so the
  * Cassandra side reaches parity. Fire-and-forget {@code @Async} keeps
  * Postgres-side latency unchanged.</p>

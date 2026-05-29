@@ -223,7 +223,7 @@ public interface ResearchService {
     /** Bumps the share counter and returns full share info. */
     ShareLinkInfo recordShare(UUID researchId, UUID requesterId, String baseUrl);
 
-    void incrementCitationCount(UUID researchId);
+    void incrementCitationCount(UUID researchId, UUID citerId);
 
     // ── Trending tags ────────────────────────────────────────────────────────
 

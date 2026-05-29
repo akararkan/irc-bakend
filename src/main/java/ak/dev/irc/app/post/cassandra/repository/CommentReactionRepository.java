@@ -22,10 +22,12 @@ public interface CommentReactionRepository extends CassandraRepository<CommentRe
     /**
      * Bulk "which of these comments has user U reacted to?" — used by comment
      * page hydration to collapse N point reads into one driver round-trip.
+     *
+     * Derived query so Spring Data Cassandra expands each ID to a separate
+     * bind marker instead of binding the collection as a single LIST parameter
+     * (which causes DefaultListType → SetType ClassCastException).
      */
-    @Query("SELECT * FROM comment_reactions_by_comment WHERE comment_id IN :commentIds AND user_id = :userId")
-    List<CommentReactionEntity> findForUserAcrossComments(@Param("commentIds") Collection<UUID> commentIds,
-                                                          @Param("userId")    UUID userId);
+    List<CommentReactionEntity> findAllByCommentIdInAndUserId(Collection<UUID> commentIds, UUID userId);
 
     @Query("DELETE FROM comment_reactions_by_comment WHERE comment_id = :commentId AND user_id = :userId")
     void delete(@Param("commentId") UUID commentId,

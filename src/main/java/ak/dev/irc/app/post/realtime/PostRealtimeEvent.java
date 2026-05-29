@@ -44,6 +44,13 @@ public class PostRealtimeEvent {
     /** Previous reaction (for REACTION_CHANGED / COMMENT_REACTION_CHANGED). */
     private String previousReactionType;
 
+    /**
+     * Direction for SAVE_COUNT_UPDATED: {@code true} = the actor just saved,
+     * {@code false} = unsaved. Lets clients apply a signed delta without
+     * guessing. Null on every other event type.
+     */
+    private Boolean saved;
+
     /** Comment text snapshot for COMMENT_CREATED / COMMENT_EDITED / REPLY_CREATED. */
     private String textContent;
     private String mediaUrl;

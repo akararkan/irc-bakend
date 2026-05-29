@@ -1,25 +1,21 @@
 package ak.dev.irc.app.user.service;
 
-import ak.dev.irc.app.user.dto.request.AdminChangeAccountTypeRequest;
+import ak.dev.irc.app.user.dto.request.AdminChangeRoleRequest;
 import ak.dev.irc.app.user.dto.response.UserResponse;
 
 import java.util.UUID;
 
 /**
  * Administrative operations on user accounts that are NOT exposed to regular
- * users — most notably setting {@code AccountType} / {@code VerificationTier}.
- *
- * <p>Users can no longer request account-type changes themselves; all
- * promotions, downgrades, and tier adjustments flow through here.</p>
+ * users — currently just role changes (the previous AccountType / VerificationTier
+ * dimensions were retired in favour of a single {@code role} field).
  */
 public interface AdminUserService {
 
     /**
-     * Set the target user's {@code accountType} (and optionally their
-     * {@code verificationTier} and {@code role}). The reason is captured in
-     * the user's audit trail.
-     *
-     * <p>Refuses to mutate the platform's own system account.</p>
+     * Set the target user's {@code role}. The reason (if supplied) is captured
+     * in the user's audit trail. Side-effect: the auto-derived badge updates
+     * with the role on the next read.
      */
-    UserResponse changeAccountType(UUID targetUserId, AdminChangeAccountTypeRequest request);
+    UserResponse changeRole(UUID targetUserId, AdminChangeRoleRequest request);
 }

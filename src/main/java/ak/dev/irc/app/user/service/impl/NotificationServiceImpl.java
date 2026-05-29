@@ -136,6 +136,25 @@ public class NotificationServiceImpl implements NotificationService {
         return getMyNotificationsByTypes(category.types(), pageable);
     }
 
+    /**
+     * Composed listing — {@code unreadOnly} ANDs with the type filter instead of
+     * shadowing it (N3). The type filter resolves from {@code category} first
+     * (its member types), else the explicit {@code types}, else no type filter.
+     * Any combination is valid: e.g. unread + a category, or unread alone, or a
+     * category alone.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Page<NotificationResponse> getMyNotifications(boolean unreadOnly,
+                                                         NotificationCategory category,
+                                                         Collection<NotificationType> types,
+                                                         Pageable pageable) {
+        Collection<NotificationType> typeFilter =
+                category != null ? category.types()
+                        : (types != null && !types.isEmpty() ? types : null);
+        return pageRows(authenticatedUserId(), pageable, unreadOnly, typeFilter);
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  COUNTS (Cassandra counter for the unfiltered case, partition scan otherwise)
     // ══════════════════════════════════════════════════════════════════════════

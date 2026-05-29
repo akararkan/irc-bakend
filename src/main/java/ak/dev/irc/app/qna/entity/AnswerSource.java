@@ -43,13 +43,9 @@ public class AnswerSource extends BaseAuditEntity {
     @Column(name = "citation_text", columnDefinition = "TEXT")
     private String citationText;
 
-    /** URL if source type is URL or DOI */
+    /** External URL of the source (used when {@code sourceType == URL}). */
     @Column(name = "url", columnDefinition = "TEXT")
     private String url;
-
-    /** DOI identifier */
-    @Column(name = "doi", length = 255)
-    private String doi;
 
     /** ISBN for book sources */
     @Column(name = "isbn", length = 20)

@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.search.service;
 
+import ak.dev.irc.app.common.search.EsRetry;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.search.document.PostSearchDocument;
 import ak.dev.irc.app.post.search.repository.PostSearchRepository;
@@ -43,25 +44,26 @@ public class PostSearchService {
     /** Index a freshly created or updated post. Best-effort — never blocks the create path. */
     @Async
     public void indexAsync(PostByIdEntity post) {
+        PostSearchDocument doc = PostSearchDocument.builder()
+                .id(PostSearchDocument.idOf(post.getId()))
+                .authorId(post.getAuthorId() == null ? null : post.getAuthorId().toString())
+                .textContent(post.getTextContent())
+                .postType(post.getPostType())
+                .visibility(post.getVisibility())
+                .status(post.getStatus())
+                .locationName(post.getLocationName())
+                .locationLat(post.getLocationLat())
+                .locationLng(post.getLocationLng())
+                .hashtags(extract(HASHTAG, post.getTextContent()))
+                .mentionedUserIds(List.of())   // resolved later when usernames available
+                .reactionCount(0L)
+                .commentCount(0L)
+                .viewCount(0L)
+                .createdAt(post.getCreatedAt())
+                .build();
         try {
-            PostSearchDocument doc = PostSearchDocument.builder()
-                    .id(PostSearchDocument.idOf(post.getId()))
-                    .authorId(post.getAuthorId() == null ? null : post.getAuthorId().toString())
-                    .textContent(post.getTextContent())
-                    .postType(post.getPostType())
-                    .visibility(post.getVisibility())
-                    .status(post.getStatus())
-                    .locationName(post.getLocationName())
-                    .locationLat(post.getLocationLat())
-                    .locationLng(post.getLocationLng())
-                    .hashtags(extract(HASHTAG, post.getTextContent()))
-                    .mentionedUserIds(List.of())   // resolved later when usernames available
-                    .reactionCount(0L)
-                    .commentCount(0L)
-                    .viewCount(0L)
-                    .createdAt(post.getCreatedAt())
-                    .build();
-            searchRepo.save(doc);
+            EsRetry.run(() -> searchRepo.save(doc),
+                    "[SEARCH] index post " + post.getId());
         } catch (Exception e) {
             log.warn("[SEARCH] index post {} failed: {}", post.getId(), e.getMessage());
         }
@@ -71,7 +73,8 @@ public class PostSearchService {
     @Async
     public void deleteAsync(UUID postId) {
         try {
-            searchRepo.deleteById(postId.toString());
+            EsRetry.run(() -> searchRepo.deleteById(postId.toString()),
+                    "[SEARCH] delete post " + postId);
         } catch (Exception e) {
             log.warn("[SEARCH] delete post {} failed: {}", postId, e.getMessage());
         }

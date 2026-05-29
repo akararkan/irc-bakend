@@ -52,8 +52,11 @@ public class CassandraPostService {
         UUID    id        = UUID.randomUUID();
         Instant now       = Instant.now();
         String  preview   = preview(cmd.textContent());
-        String  coverMedia = cmd.mediaUrls() == null || cmd.mediaUrls().isEmpty()
-                              ? null : cmd.mediaUrls().get(0);
+        // For reels, prefer the VIDEO-typed URL so feed rows always point to playable media.
+        // For other post types, the first URL (typically the cover image) is correct.
+        String  coverMedia = "REEL".equals(cmd.postType())
+                              ? firstVideoUrl(cmd.mediaUrls(), cmd.mediaTypes())
+                              : (cmd.mediaUrls() == null || cmd.mediaUrls().isEmpty() ? null : cmd.mediaUrls().get(0));
 
         // 1. canonical record
         PostByIdEntity canonical = PostByIdEntity.builder()
@@ -116,7 +119,9 @@ public class CassandraPostService {
         // 7. hashtag + mention extraction. Done synchronously so the per-tag
         //    feed sees the post immediately and mentioned users can find it
         //    in their /mentions inbox before realtime delivery completes.
-        hashtagService.indexEntitiesForPost(id, cmd.authorId(),
+        //    The postType is threaded through so the unified content_by_tag
+        //    fan-out picks ContentType.REEL vs POST correctly.
+        hashtagService.indexEntitiesForPost(id, cmd.authorId(), cmd.postType(),
                                             cmd.textContent(), now, coverMedia);
 
         // 8. record on the author's activity feed.
@@ -132,6 +137,14 @@ public class CassandraPostService {
     private static String preview(String text) {
         if (text == null) return null;
         return text.length() > 280 ? text.substring(0, 280) : text;
+    }
+
+    private static String firstVideoUrl(List<String> urls, List<String> types) {
+        if (urls == null || types == null) return urls == null || urls.isEmpty() ? null : urls.get(0);
+        for (int i = 0; i < Math.min(urls.size(), types.size()); i++) {
+            if ("VIDEO".equalsIgnoreCase(types.get(i))) return urls.get(i);
+        }
+        return urls.isEmpty() ? null : urls.get(0);
     }
 
     public PostByIdEntity getById(UUID postId) {
@@ -156,17 +169,38 @@ public class CassandraPostService {
         }
 
         boolean changed = false;
-        if (cmd.textContent() != null) { existing.setTextContent(cmd.textContent()); changed = true; }
-        if (cmd.visibility()  != null) { existing.setVisibility(cmd.visibility());   changed = true; }
-        if (cmd.mediaUrls()   != null) { existing.setMediaUrls(cmd.mediaUrls());     changed = true; }
-        if (cmd.mediaTypes()  != null) { existing.setMediaTypes(cmd.mediaTypes());   changed = true; }
-        if (cmd.audioTrackUrl()  != null) { existing.setAudioTrackUrl(cmd.audioTrackUrl());   changed = true; }
-        if (cmd.audioTrackName() != null) { existing.setAudioTrackName(cmd.audioTrackName()); changed = true; }
-        if (cmd.locationName()   != null) { existing.setLocationName(cmd.locationName());     changed = true; }
-        if (cmd.locationLat()    != null) { existing.setLocationLat(cmd.locationLat());       changed = true; }
-        if (cmd.locationLng()    != null) { existing.setLocationLng(cmd.locationLng());       changed = true; }
+        String previousText = existing.getTextContent();
+        boolean textChanged = false;
+        // Track which fields actually changed so the log line tells us at a glance
+        // whether the client really sent textContent (vs sending the wrong key
+        // and only updating visibility / media — the bug the FE hit).
+        java.util.List<String> changedFields = new java.util.ArrayList<>(4);
+        if (cmd.textContent() != null
+                && !cmd.textContent().equals(existing.getTextContent())) {
+            existing.setTextContent(cmd.textContent());
+            changed = true;
+            textChanged = true;
+            changedFields.add("textContent");
+        }
+        if (cmd.visibility()  != null && !cmd.visibility().equals(existing.getVisibility())) {
+            existing.setVisibility(cmd.visibility());   changed = true; changedFields.add("visibility");
+        }
+        if (cmd.mediaUrls()   != null) {
+            existing.setMediaUrls(cmd.mediaUrls());     changed = true; changedFields.add("mediaUrls");
+        }
+        if (cmd.mediaTypes()  != null) {
+            existing.setMediaTypes(cmd.mediaTypes());   changed = true; changedFields.add("mediaTypes");
+        }
+        if (cmd.audioTrackUrl()  != null) { existing.setAudioTrackUrl(cmd.audioTrackUrl());   changed = true; changedFields.add("audioTrackUrl"); }
+        if (cmd.audioTrackName() != null) { existing.setAudioTrackName(cmd.audioTrackName()); changed = true; changedFields.add("audioTrackName"); }
+        if (cmd.locationName()   != null) { existing.setLocationName(cmd.locationName());     changed = true; changedFields.add("locationName"); }
+        if (cmd.locationLat()    != null) { existing.setLocationLat(cmd.locationLat());       changed = true; changedFields.add("locationLat"); }
+        if (cmd.locationLng()    != null) { existing.setLocationLng(cmd.locationLng());       changed = true; changedFields.add("locationLng"); }
 
-        if (!changed) return existing;
+        if (!changed) {
+            log.info("[POST] edit {} no-op (author={}) — request had no recognised fields", postId, actorId);
+            return existing;
+        }
 
         existing.setUpdatedAt(Instant.now());
         postByIdRepo.save(existing);
@@ -192,7 +226,19 @@ public class CassandraPostService {
         // Best-effort search re-index — async.
         postSearchService.indexAsync(existing);
 
-        log.info("[POST] edited {} (author={})", postId, actorId);
+        // Re-extract hashtags so a #foo→#bar edit doesn't leave the old tag
+        // attached to the post in either the post-side hashtag feed or the
+        // unified content_by_tag feed.
+        if (textChanged) {
+            String mediaUrl = existing.getMediaUrls() == null || existing.getMediaUrls().isEmpty()
+                    ? null : existing.getMediaUrls().get(0);
+            hashtagService.reindexEntitiesForPost(
+                    postId, existing.getAuthorId(), existing.getPostType(),
+                    previousText, existing.getTextContent(),
+                    existing.getCreatedAt(), mediaUrl);
+        }
+
+        log.info("[POST] edited {} (author={}, fields={})", postId, actorId, changedFields);
         return existing;
     }
 
@@ -229,6 +275,20 @@ public class CassandraPostService {
         }
 
         postSearchService.deleteAsync(postId);
+
+        // Tear down the post's hashtag fan-out rows (posts_by_hashtag +
+        // content_by_tag) so deleted posts don't leak into tag feeds.
+        try {
+            String mediaUrl = canonical.getMediaUrls() == null || canonical.getMediaUrls().isEmpty()
+                    ? null : canonical.getMediaUrls().get(0);
+            hashtagService.clearEntitiesForPost(
+                    postId, canonical.getTextContent(), canonical.getCreatedAt());
+            // mediaUrl is captured for symmetry with future re-index paths; not used by clear.
+            if (mediaUrl != null) log.debug("[POST] delete cleanup ran for {}", postId);
+        } catch (Exception e) {
+            log.warn("[POST] hashtag cleanup failed for {}: {}", postId, e.getMessage());
+        }
+
         log.info("[POST] deleted {} (author={})", postId, canonical.getAuthorId());
         return true;
     }
@@ -239,6 +299,15 @@ public class CassandraPostService {
 
     public List<PostByAuthorEntity> profileFeedAfter(UUID authorId, Instant cursor, int pageSize) {
         return postByAuthorRepo.nextPage(authorId, cursor, pageSize);
+    }
+
+    /** A single author's reels, newest first, cursor-paginated (for the profile Reels tab). */
+    public List<PostByAuthorEntity> reelsByAuthor(UUID authorId, int pageSize) {
+        return postByAuthorRepo.reelsByAuthor(authorId, pageSize);
+    }
+
+    public List<PostByAuthorEntity> reelsByAuthorAfter(UUID authorId, Instant cursor, int pageSize) {
+        return postByAuthorRepo.reelsByAuthorAfter(authorId, cursor, pageSize);
     }
 
     public List<ReelsByDayEntity> reelsForDay(String day, int pageSize) {
@@ -267,8 +336,15 @@ public class CassandraPostService {
     /**
      * Partial-update payload for {@link #editPost}. Every field is nullable;
      * a {@code null} field is left untouched on the existing post.
+     *
+     * <p>{@link #textContent} accepts the JSON keys {@code textContent},
+     * {@code text}, {@code content}, or {@code body} — frontends differ on
+     * naming and Jackson would otherwise silently drop a mismatch and leave
+     * the post text unchanged. Same idea for {@link #mediaUrls} accepting
+     * {@code media}/{@code images}.</p>
      */
     public record EditPostCommand(
+            @com.fasterxml.jackson.annotation.JsonAlias({"text", "content", "body"})
             String textContent,
             String visibility,
             String audioTrackUrl,
@@ -276,6 +352,7 @@ public class CassandraPostService {
             String locationName,
             Double locationLat,
             Double locationLng,
+            @com.fasterxml.jackson.annotation.JsonAlias({"media", "images"})
             List<String> mediaUrls,
             List<String> mediaTypes
     ) {}

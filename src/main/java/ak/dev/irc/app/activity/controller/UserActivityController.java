@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
+import ak.dev.irc.app.common.exception.UnauthorizedException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -74,7 +75,7 @@ public class UserActivityController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
 
         // `types` takes precedence over the legacy single `type` param.
         List<UserActivityType> resolved = (types != null && !types.isEmpty())
@@ -89,7 +90,7 @@ public class UserActivityController {
     public ResponseEntity<Void> deleteOne(
             @PathVariable UUID activityId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         activityService.deleteOne(user.getId(), activityId);
         return ResponseEntity.noContent().build();
     }
@@ -98,7 +99,7 @@ public class UserActivityController {
     public ResponseEntity<Map<String, Object>> deleteAll(
             @RequestParam(value = "type", required = false) UserActivityType type,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         int deleted = activityService.deleteAll(user.getId(), type);
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }

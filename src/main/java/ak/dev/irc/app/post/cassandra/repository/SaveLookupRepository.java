@@ -22,10 +22,12 @@ public interface SaveLookupRepository extends CassandraRepository<SaveLookupEnti
     /**
      * Bulk "which of these posts has user U saved?" — single driver round-trip.
      * Bounded use only (feed-page sized sets).
+     *
+     * Derived query so Spring Data Cassandra expands each ID to a separate
+     * bind marker instead of binding the collection as a single LIST parameter
+     * (which causes DefaultListType → SetType ClassCastException).
      */
-    @Query("SELECT * FROM saves_by_post_user WHERE post_id IN :postIds AND user_id = :userId")
-    List<SaveLookupEntity> findForUserAcrossPosts(@Param("postIds") Collection<UUID> postIds,
-                                                  @Param("userId") UUID userId);
+    List<SaveLookupEntity> findAllByPostIdInAndUserId(Collection<UUID> postIds, UUID userId);
 
     @Query("DELETE FROM saves_by_post_user WHERE post_id = :postId AND user_id = :userId")
     void delete(@Param("postId") UUID postId, @Param("userId") UUID userId);

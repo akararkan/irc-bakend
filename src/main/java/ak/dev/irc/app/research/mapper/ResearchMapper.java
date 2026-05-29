@@ -1,6 +1,8 @@
 package ak.dev.irc.app.research.mapper;
 
 import ak.dev.irc.app.common.cache.CounterCache;
+import ak.dev.irc.app.common.text.BodyFormat;
+import ak.dev.irc.app.common.text.RichTextService;
 import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.entity.*;
@@ -22,8 +24,21 @@ public class ResearchMapper {
     private String baseUrl;
 
     private final CounterCache counterCache;
+    private final RichTextService richText;
 
     private static long nz(Long v) { return v == null ? 0L : v; }
+
+    /**
+     * Returns the stored sanitised HTML for a rich-text field; for legacy rows
+     * that pre-date rich-text support ({@code storedHtml == null}), the source
+     * is rendered on the fly as PLAIN (HTML-escape + {@code <br/>}) so the
+     * frontend always has a safe-to-embed string. Source kept as-is for the
+     * editor.
+     */
+    private String htmlOrFallback(String source, String storedHtml) {
+        if (storedHtml != null) return storedHtml;
+        return richText.renderToSafeHtml(source, BodyFormat.PLAIN);
+    }
 
     /** Pulls all seven research counters from Redis with DB fallback in one call. */
     private long[] resolveCounters(Research r) {
@@ -98,10 +113,12 @@ public class ResearchMapper {
                 author.getProfileImage(),
                 r.getTitle(),
                 r.getDescription(),
+                htmlOrFallback(r.getDescription(), r.getDescriptionHtml()),
                 r.getAbstractText(),
+                htmlOrFallback(r.getAbstractText(), r.getAbstractHtml()),
+                r.getBodyFormat() != null ? r.getBodyFormat() : BodyFormat.PLAIN,
                 r.getKeywords(),
                 r.getCitation(),
-                r.getDoi(),
                 r.getVideoPromoUrl(),
                 r.getVideoPromoDurationSeconds(),
                 r.getVideoPromoThumbnailUrl(),
@@ -194,6 +211,7 @@ public class ResearchMapper {
                 r.getIrcId(),
                 r.getTitle(),
                 r.getAbstractText(),
+                htmlOrFallback(r.getAbstractText(), r.getAbstractHtml()),
                 r.getCoverImageUrl(),
                 r.getVideoPromoThumbnailUrl(),
                 author.getId(),
@@ -240,7 +258,6 @@ public class ResearchMapper {
                 u.getUsername(),
                 u.getProfileImage(),
                 u.getRole(),
-                u.getAccountType(),
                 c.getRole(),
                 c.getDisplayOrder(),
                 c.getContributionNote(),
@@ -253,7 +270,7 @@ public class ResearchMapper {
     public SourceResponse toSourceResponse(ResearchSource s) {
         return new SourceResponse(
                 s.getId(), s.getSourceType(), s.getTitle(),
-                s.getCitationText(), s.getUrl(), s.getDoi(), s.getIsbn(),
+                s.getCitationText(), s.getUrl(), s.getIsbn(),
                 s.getFileUrl(), s.getOriginalFileName(), s.getMimeType(),
                 s.getFileSize(), s.getDisplayOrder()
         );
@@ -284,6 +301,7 @@ public class ResearchMapper {
                 u.getId(), u.getFullName(), u.getUsername(), u.getProfileImage(),
                 c.getContent(),
                 c.getMediaUrl(), c.getMediaType(), c.getMediaThumbnailUrl(),
+                c.getVoiceUrl(), c.getVoiceDurationSeconds(),
                 c.getLikeCount(), c.getReplyCount(),
                 myReaction,
                 c.isEdited(), c.getEditedAt(),

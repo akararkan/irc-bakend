@@ -12,7 +12,6 @@ public record AnswerSourceResponse(
         String title,
         String citationText,
         String url,
-        String doi,
         String isbn,
         String fileUrl,
         String originalFileName,

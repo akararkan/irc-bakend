@@ -1,8 +1,10 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.notification.NotificationKind;
+import ak.dev.irc.app.common.tag.ContentType;
+import ak.dev.irc.app.common.tag.service.ContentTagService;
 import ak.dev.irc.app.post.cassandra.entity.MentionByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByHashtagEntity;
-import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.repository.HashtagCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.MentionByUserRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostByHashtagRepository;
@@ -10,6 +12,7 @@ import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.cassandra.core.cql.CqlOperations;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -55,8 +58,16 @@ public class CassandraHashtagService {
     private final UserRepository           userRepo;
     private final CounterService           counterService;
     private final CassandraNotificationService notificationService;
+    private final ContentTagService        contentTagService;
+    private final CqlOperations            cqlOperations;
 
     public record ExtractedEntities(List<String> hashtags, List<UUID> mentionedUserIds) {}
+
+    /** Extract hashtag tokens from post text (lowercased, deduped). Useful when
+     *  the caller needs the set without writing fan-out rows (edit diffing). */
+    public static Set<String> extractHashtags(String text) {
+        return extractLower(HASHTAG, text);
+    }
 
     /**
      * Extract hashtags + mentions from post text, persist the feed rows and
@@ -71,7 +82,7 @@ public class CassandraHashtagService {
      * so neither it nor the mention notifications block the post-create
      * response.</p>
      */
-    public ExtractedEntities indexEntitiesForPost(UUID postId, UUID authorId,
+    public ExtractedEntities indexEntitiesForPost(UUID postId, UUID authorId, String postType,
                                                   String textContent, Instant createdAt,
                                                   String mediaUrl) {
         String preview = preview(textContent);
@@ -88,6 +99,15 @@ public class CassandraHashtagService {
             } catch (Exception e) {
                 log.warn("[HASHTAG] index #{} failed: {}", tag, e.getMessage());
             }
+        }
+
+        // Unified tag fan-out so #hajj on a post shows up in /tags/hajj/content
+        // alongside questions and research (#1 from the FE integration notes).
+        // ContentTagService is itself best-effort — it never throws into our path.
+        if (!tags.isEmpty()) {
+            contentTagService.tag(
+                    "REEL".equalsIgnoreCase(postType) ? ContentType.REEL : ContentType.POST,
+                    postId, authorId, preview, createdAt, tags);
         }
 
         // Mentions — single batched Postgres query for all @usernames.
@@ -168,6 +188,48 @@ public class CassandraHashtagService {
     public Long postCountFor(String tag) {
         return hashtagCounterRepo.findById(tag.toLowerCase())
                 .map(c -> c.getPostCount()).orElse(0L);
+    }
+
+    // ── Edit / delete fan-out (clears denormalised rows) ─────────────────────
+
+    /**
+     * Remove every fan-out row this post wrote on create. Call from the post
+     * delete path. Best-effort: a failure on one tag never blocks the others.
+     *
+     * <p>The old {@code posts_by_hashtag} rows are derived from the post's
+     * current text — there's no reverse-index on that side, so the caller
+     * supplies the text. The unified {@code content_by_tag} side uses its
+     * own {@code tags_by_content} reverse-index and so doesn't need the text.</p>
+     */
+    public void clearEntitiesForPost(UUID postId, String oldTextContent, Instant createdAt) {
+        Set<String> tags = extractLower(HASHTAG, oldTextContent);
+        for (String tag : tags) {
+            try {
+                cqlOperations.execute(
+                        "DELETE FROM posts_by_hashtag WHERE hashtag = ? AND created_at = ? AND post_id = ?",
+                        tag, createdAt, postId);
+                counterService.decrementHashtagPostCount(tag);
+            } catch (Exception e) {
+                log.warn("[HASHTAG] clear #{} for {} failed: {}", tag, postId, e.getMessage());
+            }
+        }
+        // Wipe the unified content_by_tag entries even if the post had no #s
+        // (cheap empty call; covers schema drift where the post side missed an
+        // index).
+        contentTagService.untag(postId);
+    }
+
+    /**
+     * Re-extract hashtags after a post edit. Called from {@code editPost} only
+     * when the text actually changed. The strategy is "clear-all + re-index" —
+     * simpler than a delta and Cassandra DELETE-then-INSERT on different rows
+     * doesn't trip on uniqueness.
+     */
+    public ExtractedEntities reindexEntitiesForPost(UUID postId, UUID authorId, String postType,
+                                                    String oldTextContent, String newTextContent,
+                                                    Instant createdAt, String mediaUrl) {
+        clearEntitiesForPost(postId, oldTextContent, createdAt);
+        return indexEntitiesForPost(postId, authorId, postType, newTextContent, createdAt, mediaUrl);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

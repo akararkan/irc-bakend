@@ -206,9 +206,8 @@ public enum NotificationKind {
     /** Your answer was accepted by the question asker. One-shot, email-eligible. */
     ANSWER_ACCEPTED          (PrefCategory.SOCIAL,  false, true),
 
-    /** Someone left feedback on your answer. Not aggregated; no email
-     *  (feedback is in-app workflow). */
-    ANSWER_FEEDBACK_RECEIVED (PrefCategory.SOCIAL,  false, false),
+    /** A scholar endorsed your answer as a best answer. Aggregated, email-eligible. */
+    ANSWER_BEST_VOTED        (PrefCategory.SOCIAL,  true,  true),
 
     // ────────────────────────────────────────────────────────────────────────
     //  SYSTEM / PLATFORM

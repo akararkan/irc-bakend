@@ -16,6 +16,10 @@ public record QuestionAnswerResponse(
         String body,
         // threading
         UUID parentAnswerId,
+        /** The answer this reply was aimed at, captured pre-hoisting (E2). Null for top-level answers. */
+        UUID replyToAnswerId,
+        /** Author of the reply target — lets the UI render "replying to @X". Null for top-level answers. */
+        UUID replyToUserId,
         long replyCount,
         // media (legacy single media)
         String mediaUrl,
@@ -42,7 +46,6 @@ public record QuestionAnswerResponse(
         LocalDateTime editedAt,
         boolean deleted,
         LocalDateTime deletedAt,
-        long feedbackCount,
         long reactionCount,
         /** Current viewer's reaction — null if not reacted or anonymous. */
         AnswerReactionType myReaction,

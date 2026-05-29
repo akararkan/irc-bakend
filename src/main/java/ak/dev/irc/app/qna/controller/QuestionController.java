@@ -16,6 +16,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
+import ak.dev.irc.app.common.exception.UnauthorizedException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -45,7 +46,7 @@ public class QuestionController {
     public ResponseEntity<QuestionResponse> createQuestion(
             @Valid @RequestBody CreateQuestionRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.createQuestion(request, user.getId()));
     }
@@ -81,7 +82,7 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getFollowingFeed(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.getFollowingFeed(user.getId(), pageable));
     }
 
@@ -90,7 +91,7 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getMyQuestions(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.getMyQuestions(user.getId(), pageable));
     }
 
@@ -100,7 +101,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @Valid @RequestBody EditQuestionRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.editQuestion(questionId, request, user.getId()));
     }
 
@@ -156,7 +157,7 @@ public class QuestionController {
     public ResponseEntity<QuestionResponse> lockAnswers(
             @PathVariable UUID questionId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.lockAnswers(questionId, user.getId()));
     }
 
@@ -165,7 +166,7 @@ public class QuestionController {
     public ResponseEntity<QuestionResponse> unlockAnswers(
             @PathVariable UUID questionId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.unlockAnswers(questionId, user.getId()));
     }
 
@@ -175,7 +176,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @RequestParam(required = false) Integer maxAnswers,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.setAnswerLimit(questionId, maxAnswers, user.getId()));
     }
 
@@ -198,7 +199,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @Valid @RequestBody CreateAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addAnswer(questionId, request, user.getId()));
     }
@@ -218,7 +219,7 @@ public class QuestionController {
             @RequestPart(value = "media", required = false) org.springframework.web.multipart.MultipartFile media,
             @RequestPart(value = "voice", required = false) org.springframework.web.multipart.MultipartFile voice,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addAnswerWithMedia(questionId, request, user.getId(), media, voice));
     }
@@ -236,7 +237,7 @@ public class QuestionController {
             @RequestPart(value = "media", required = false) org.springframework.web.multipart.MultipartFile media,
             @RequestPart(value = "voice", required = false) org.springframework.web.multipart.MultipartFile voice,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         request.setParentAnswerId(answerId);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addAnswerWithMedia(questionId, request, user.getId(), media, voice));
@@ -265,7 +266,7 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @Valid @RequestBody CreateAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         request.setParentAnswerId(answerId);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addAnswer(questionId, request, user.getId()));
@@ -278,7 +279,7 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @Valid @RequestBody EditAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.editAnswer(questionId, answerId, request, user.getId()));
     }
 
@@ -288,7 +289,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         questionService.deleteAnswer(questionId, answerId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -304,7 +305,7 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @RequestBody(required = false) ReactToAnswerRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.reactToAnswer(
                 questionId, answerId,
                 request != null ? request : new ReactToAnswerRequest(),
@@ -317,7 +318,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(
                 questionService.removeAnswerReaction(questionId, answerId, user.getId()));
     }
@@ -332,7 +333,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.acceptAnswer(questionId, answerId, user.getId()));
     }
 
@@ -342,7 +343,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.unacceptAnswer(questionId, answerId, user.getId()));
     }
 
@@ -353,71 +354,25 @@ public class QuestionController {
     // ══════════════════════════════════════════════════════════════════════════
 
     @PostMapping("/{questionId}/answers/{answerId}/best")
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("hasAnyRole('SCHOLAR','ADMIN','SUPER_ADMIN')")
     public ResponseEntity<QuestionAnswerResponse> markBestAnswer(
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.markBestAnswer(questionId, answerId, user.getId()));
     }
 
     @DeleteMapping("/{questionId}/answers/{answerId}/best")
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("hasAnyRole('SCHOLAR','ADMIN','SUPER_ADMIN')")
     public ResponseEntity<QuestionAnswerResponse> unmarkBestAnswer(
             @PathVariable UUID questionId,
             @PathVariable UUID answerId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.unmarkBestAnswer(questionId, answerId, user.getId()));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    //  FEEDBACK
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @PostMapping("/{questionId}/answers/{answerId}/feedback")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<AnswerFeedbackResponse> addFeedback(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId,
-            @Valid @RequestBody AddFeedbackRequest request,
-            @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(questionService.addFeedback(questionId, answerId, request, user.getId()));
-    }
-
-    @PatchMapping("/{questionId}/answers/{answerId}/feedback/{feedbackId}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<AnswerFeedbackResponse> editFeedback(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId,
-            @PathVariable UUID feedbackId,
-            @Valid @RequestBody AddFeedbackRequest request,
-            @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        return ResponseEntity.ok(questionService.editFeedback(questionId, answerId, feedbackId, request, user.getId()));
-    }
-
-    @GetMapping("/{questionId}/answers/{answerId}/feedback")
-    public ResponseEntity<List<AnswerFeedbackResponse>> getFeedback(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId) {
-        return ResponseEntity.ok(questionService.getFeedback(questionId, answerId));
-    }
-
-    @DeleteMapping("/{questionId}/answers/{answerId}/feedback/{feedbackId}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Void> deleteFeedback(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId,
-            @PathVariable UUID feedbackId,
-            @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        questionService.deleteFeedback(questionId, answerId, feedbackId, user.getId());
-        return ResponseEntity.noContent().build();
-    }
 
     // ══════════════════════════════════════════════════════════════════════════
     //  ATTACHMENTS (file uploads per answer)
@@ -433,7 +388,7 @@ public class QuestionController {
             @RequestParam(value = "caption", required = false) String caption,
             @RequestParam(value = "displayOrder", required = false) Integer displayOrder,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.uploadAttachment(questionId, answerId, file, caption, displayOrder, user.getId()));
     }
@@ -453,7 +408,7 @@ public class QuestionController {
             @PathVariable UUID attachmentId,
             @Valid @RequestBody UpdateAnswerAttachmentRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.updateAttachment(questionId, answerId, attachmentId, request, user.getId()));
     }
 
@@ -464,7 +419,7 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @PathVariable UUID attachmentId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         questionService.deleteAttachment(questionId, answerId, attachmentId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -480,9 +435,24 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @Valid @RequestBody CreateAnswerSourceRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.addSource(questionId, answerId, request, user.getId()));
+    }
+
+    /** Attach (or replace) the binary file for a MEDIA_FILE source. Part name: {@code file}. */
+    @PostMapping(value = "/{questionId}/answers/{answerId}/sources/{sourceId}/file",
+                 consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<AnswerSourceResponse> uploadSourceFile(
+            @PathVariable UUID questionId,
+            @PathVariable UUID answerId,
+            @PathVariable UUID sourceId,
+            @RequestPart("file") MultipartFile file,
+            @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        return ResponseEntity.ok(
+                questionService.uploadSourceFile(questionId, answerId, sourceId, file, user.getId()));
     }
 
     @GetMapping("/{questionId}/answers/{answerId}/sources")
@@ -500,7 +470,7 @@ public class QuestionController {
             @PathVariable UUID sourceId,
             @Valid @RequestBody UpdateAnswerSourceRequest request,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.updateSource(questionId, answerId, sourceId, request, user.getId()));
     }
 
@@ -511,7 +481,7 @@ public class QuestionController {
             @PathVariable UUID answerId,
             @PathVariable UUID sourceId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         questionService.deleteSource(questionId, answerId, sourceId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -527,7 +497,7 @@ public class QuestionController {
             @PathVariable UUID questionId,
             @RequestParam(required = false) String collection,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(questionService.saveQuestion(questionId, user.getId(), collection));
     }
@@ -538,7 +508,7 @@ public class QuestionController {
     public ResponseEntity<QuestionResponse> unsaveQuestion(
             @PathVariable UUID questionId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.unsaveQuestion(questionId, user.getId()));
     }
 
@@ -548,7 +518,7 @@ public class QuestionController {
     public ResponseEntity<Page<QuestionResponse>> getSavedQuestions(
             @AuthenticationPrincipal User user,
             @PageableDefault(size = 20) Pageable pageable) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.getSavedQuestions(user.getId(), pageable));
     }
 
@@ -559,7 +529,7 @@ public class QuestionController {
             @RequestParam String name,
             @AuthenticationPrincipal User user,
             @PageableDefault(size = 20) Pageable pageable) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.getSavedQuestionsByCollection(user.getId(), name, pageable));
     }
 
@@ -568,7 +538,7 @@ public class QuestionController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<List<String>> getSavedQuestionCollections(
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         return ResponseEntity.ok(questionService.getSavedQuestionCollections(user.getId()));
     }
 
@@ -579,7 +549,7 @@ public class QuestionController {
             @RequestParam String oldName,
             @RequestParam String newName,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         questionService.renameSavedQuestionCollection(user.getId(), oldName, newName);
         return ResponseEntity.noContent().build();
     }
@@ -623,7 +593,7 @@ public class QuestionController {
     public ResponseEntity<Void> deleteQuestion(
             @PathVariable UUID questionId,
             @AuthenticationPrincipal User user) {
-        if (user == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (user == null) throw new UnauthorizedException("Authentication required");
         questionService.deleteQuestion(questionId, user.getId());
         return ResponseEntity.noContent().build();
     }

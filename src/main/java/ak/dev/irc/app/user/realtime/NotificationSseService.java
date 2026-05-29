@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Multiple emitters per user are supported (one per open browser tab /
  * device) — pushes fan out to every active emitter so the inbox stays in
  * sync everywhere. Stale emitters are pruned silently on send failure or on
- * the 25-second heartbeat.</p>
+ * the 15-second heartbeat.</p>
  */
 @Slf4j
 @Service

@@ -49,6 +49,20 @@ public interface UserRepository extends JpaRepository<User, UUID> {
         """)
     Page<User> searchUsers(@Param("q") String query, Pageable pageable);
 
+    /** Search restricted to specific roles — powers the contributor picker (E2). Blank q matches all. */
+    @Query("""
+        SELECT u FROM User u
+        WHERE u.deletedAt IS NULL
+          AND u.role IN :roles
+          AND (LOWER(u.fname)    LIKE LOWER(CONCAT('%', :q, '%'))
+            OR LOWER(u.lname)    LIKE LOWER(CONCAT('%', :q, '%'))
+            OR LOWER(u.username) LIKE LOWER(CONCAT('%', :q, '%'))
+            OR LOWER(u.email)    LIKE LOWER(CONCAT('%', :q, '%')))
+        """)
+    Page<User> searchUsersByRoles(@Param("q") String query,
+                                  @Param("roles") java.util.Collection<ak.dev.irc.app.user.enums.Role> roles,
+                                  Pageable pageable);
+
     /**
      * Indexed full-text search across username + fname + lname + bio. Uses
      * the GIN function index installed by {@code SearchInfrastructureInitializer}.
@@ -183,4 +197,53 @@ public interface UserRepository extends JpaRepository<User, UUID> {
         WHERE u.id = :id
         """)
     void softDelete(@Param("id") UUID id);
+
+    /**
+     * "Who to follow" — verified and popular accounts the viewer has not yet
+     * followed and hasn't blocked (or been blocked by). Ordered: account type
+     * priority then follower count DESC. Self-excluded. Block-excluded via
+     * subquery so we never receive an empty-list bind parameter.
+     */
+    @Query(value = """
+        SELECT u.* FROM users u
+        LEFT JOIN user_profiles p ON p.user_id = u.id
+        WHERE u.deleted_at IS NULL
+          AND u.id != :viewerId
+          AND u.id NOT IN (
+              SELECT uf.following_id FROM user_follows uf WHERE uf.follower_id = :viewerId
+          )
+          AND u.id NOT IN (
+              SELECT ub.blocked_id  FROM user_blocks ub WHERE ub.blocker_id  = :viewerId
+              UNION
+              SELECT ub.blocker_id  FROM user_blocks ub WHERE ub.blocked_id  = :viewerId
+          )
+        ORDER BY
+            CASE u.role
+                WHEN 'SCHOLAR'    THEN 0
+                WHEN 'RESEARCHER' THEN 1
+                ELSE 2
+            END ASC,
+            COALESCE(p.follower_count, 0) DESC,
+            u.created_at ASC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<User> findWhoToFollow(@Param("viewerId") UUID viewerId,
+                               @Param("limit")    int limit);
+
+    /** Anonymous variant — no viewer exclusions, just the global ranking. */
+    @Query(value = """
+        SELECT u.* FROM users u
+        LEFT JOIN user_profiles p ON p.user_id = u.id
+        WHERE u.deleted_at IS NULL
+        ORDER BY
+            CASE u.role
+                WHEN 'SCHOLAR'    THEN 0
+                WHEN 'RESEARCHER' THEN 1
+                ELSE 2
+            END ASC,
+            COALESCE(p.follower_count, 0) DESC,
+            u.created_at ASC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<User> findWhoToFollowAnon(@Param("limit") int limit);
 }

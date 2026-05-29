@@ -8,7 +8,9 @@ import lombok.*;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Entity
@@ -43,6 +45,26 @@ public class Question extends BaseAuditEntity {
     @Column(name = "body", nullable = false, columnDefinition = "TEXT")
     private String body;
 
+    /**
+     * Free-text keywords the author adds for discoverability (comma-separated,
+     * not normalized). Indexed in Elasticsearch and boosted in global search.
+     */
+    @Column(name = "keywords", columnDefinition = "TEXT")
+    private String keywords;
+
+    /**
+     * Normalized tags (lowercase, trimmed). Stored here for display + ES, and
+     * fanned out to the Cassandra tag subsystem for trending and tag feeds.
+     */
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(
+            name = "question_tags",
+            joinColumns = @JoinColumn(name = "question_id"),
+            indexes = @Index(name = "idx_qtag_name", columnList = "tag_name"))
+    @Column(name = "tag_name", length = 100)
+    @Builder.Default
+    private Set<String> tags = new LinkedHashSet<>();
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
@@ -63,6 +85,15 @@ public class Question extends BaseAuditEntity {
     @Column(name = "share_count", nullable = false)
     @Builder.Default
     private Long shareCount = 0L;
+
+    /**
+     * Number of answers the author has marked accepted. Denormalized so feed
+     * cards can badge "resolved" ({@code hasAcceptedAnswer = acceptedAnswerCount > 0})
+     * without loading answers. Maintained on accept / unaccept / delete.
+     */
+    @Column(name = "accepted_answer_count", nullable = false)
+    @Builder.Default
+    private Long acceptedAnswerCount = 0L;
 
     /** When true, no new answers can be submitted. */
     @Column(name = "answers_locked", nullable = false)

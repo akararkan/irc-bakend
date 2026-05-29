@@ -27,7 +27,11 @@ public interface PostCounterRepository extends CassandraRepository<PostCounterEn
      * Bulk counter fetch for a feed page. Pulls all counters in one driver
      * round-trip via a multi-partition IN. Bounded callers only — feeds size
      * 20–50 are fine; do not pass arbitrarily large sets.
+     *
+     * Uses a derived query (not @Query) so Spring Data Cassandra's QueryBuilder
+     * handles IN-clause binding correctly. A raw @Query prepared statement causes
+     * the driver to infer the bind variable as SET<uuid>, but SDC binds a Java
+     * Collection as LIST (DefaultListType), triggering a ClassCastException.
      */
-    @Query("SELECT * FROM post_counters WHERE post_id IN :postIds")
-    List<PostCounterEntity> findAllByPostIds(@Param("postIds") Collection<UUID> postIds);
+    List<PostCounterEntity> findAllByPostIdIn(Collection<UUID> postIds);
 }

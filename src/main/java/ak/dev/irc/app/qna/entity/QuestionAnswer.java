@@ -53,6 +53,20 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Builder.Default
     private List<QuestionAnswer> replies = new ArrayList<>();
 
+    /**
+     * The answer this reply was actually aimed at — captured BEFORE depth-1
+     * hoisting, so when a reply-to-a-reply is hoisted to a sibling of the root,
+     * we still know who/what it was replying to. Lets the UI render "replying to
+     * @X" natively. Equals {@code parentAnswer} when replying to a top-level
+     * answer; null for top-level answers.
+     */
+    @Column(name = "reply_to_answer_id")
+    private UUID replyToAnswerId;
+
+    /** Author of {@link #replyToAnswerId} — the "@X" the reply addresses. */
+    @Column(name = "reply_to_user_id")
+    private UUID replyToUserId;
+
     @Column(name = "body", nullable = false, columnDefinition = "TEXT")
     private String body;
 
@@ -138,12 +152,6 @@ public class QuestionAnswer extends BaseAuditEntity {
     @OrderBy("displayOrder ASC")
     @Builder.Default
     private List<AnswerSource> sources = new ArrayList<>();
-
-    // ── Feedback from question author ────────────────────────────
-    @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    @OrderBy("createdAt ASC")
-    @Builder.Default
-    private List<AnswerFeedback> feedbacks = new ArrayList<>();
 
     public boolean isDeleted() {
         return deletedAt != null;

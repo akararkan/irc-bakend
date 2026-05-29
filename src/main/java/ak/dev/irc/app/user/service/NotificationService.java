@@ -24,6 +24,15 @@ public interface NotificationService {
     Page<NotificationResponse> getMyNotificationsByTypes(Collection<NotificationType> types, Pageable pageable);
     /** Filter by inbox tab (POSTS, QNA, RESEARCH, MENTIONS, SOCIAL, SYSTEM). */
     Page<NotificationResponse> getMyNotificationsByCategory(NotificationCategory category, Pageable pageable);
+    /**
+     * Composed listing: {@code unreadOnly} ANDs with the type filter (category
+     * preferred over explicit types) rather than shadowing it. Any combination
+     * is valid — unread alone, a category alone, or unread + a category/type.
+     */
+    Page<NotificationResponse> getMyNotifications(boolean unreadOnly,
+                                                  NotificationCategory category,
+                                                  Collection<NotificationType> types,
+                                                  Pageable pageable);
 
     // ── Counts ─────────────────────────────────────────────────────────────
     long countUnread();

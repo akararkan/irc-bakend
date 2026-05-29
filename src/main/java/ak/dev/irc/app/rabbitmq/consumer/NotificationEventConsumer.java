@@ -15,7 +15,6 @@ import ak.dev.irc.app.rabbitmq.event.qna.BestAnswerVotedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
-import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionAnsweredEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionCreatedEvent;
@@ -363,7 +362,7 @@ public class NotificationEventConsumer {
 
         // ── Pass 1: scholars / mods who can actually answer questions ──
         int scholarCount = fanOutToRoles(
-                List.of(Role.SCHOLAR, Role.ADMIN, Role.SUPER_ADMIN),
+                List.of(Role.SCHOLAR, Role.ADMIN),
                 author.getId(),
                 recipient -> {
                     if (!notified.add(recipient.getId())) return null;
@@ -536,54 +535,6 @@ public class NotificationEventConsumer {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  Q&A — Feedback Added (notify the answer author)
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @RabbitHandler
-    @Transactional
-    public void onAnswerFeedbackAdded(AnswerFeedbackAddedEvent event) {
-        log.info("[CONSUMER] AnswerFeedbackAdded — questionId={} answerId={} answerAuthor={}",
-                event.questionId(), event.answerId(), event.answerAuthorId());
-
-        // Don't notify if the question author gave feedback to their own answer
-        if (event.questionAuthorId().equals(event.answerAuthorId())) {
-            log.debug("[CONSUMER] AnswerFeedbackAdded skipped — answer author is the question author");
-            return;
-        }
-
-        if (isSilencedByRestriction(event.answerAuthorId(), event.questionAuthorId(), "AnswerFeedbackAdded")) {
-            return;
-        }
-
-        Optional<User> questionAuthorOpt = userRepo.findActiveById(event.questionAuthorId());
-        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
-
-        if (questionAuthorOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
-            log.warn("[CONSUMER] AnswerFeedbackAdded skipped — user not found");
-            return;
-        }
-
-        User questionAuthor = questionAuthorOpt.get();
-        User answerAuthor = answerAuthorOpt.get();
-
-        String feedbackLabel = toReadableFeedbackType(event.feedbackType());
-
-        Notification notification = Notification.builder()
-                .user(answerAuthor)
-                .actor(questionAuthor)
-                .type(NotificationType.ANSWER_FEEDBACK_RECEIVED)
-                .title("Feedback on your answer")
-                .body(questionAuthor.getFullName() + " (@" + questionAuthor.getUsername()
-                        + ") gave " + feedbackLabel + " feedback on your answer to: \"" + event.questionTitle() + "\"")
-                .resourceId(event.questionId())
-                .resourceType("Question")
-                .build();
-
-        dispatcher.dispatch(notification);
-        log.debug("[CONSUMER] ANSWER_FEEDBACK_RECEIVED dispatched → answerAuthor={}", answerAuthor.getId());
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
     //  Post — Created (fan-out to followers)
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -679,15 +630,56 @@ public class NotificationEventConsumer {
     }
 
     /**
-     * Best-answer vote/un-vote — same record is published for both routing keys
-     * ({@code qna.social.best.voted} and {@code qna.social.best.unvoted}). The
-     * up-vote could become notify-worthy later; for now we just ack so the
-     * message doesn't dead-letter.
+     * Best-answer vote/un-vote — the same record is published for both routing
+     * keys ({@code qna.social.best.voted} and {@code qna.social.best.unvoted}),
+     * distinguished by {@link BestAnswerVotedEvent#voted()}. Only the up-vote
+     * notifies the answer author (N4); the un-vote just acks so the message
+     * doesn't dead-letter. Aggregated per answer so multiple endorsements
+     * coalesce into one inbox line.
      */
     @RabbitHandler
+    @Transactional
     public void onBestAnswerVoted(BestAnswerVotedEvent event) {
-        log.debug("[CONSUMER] BestAnswerVoted/Unvoted — questionId={} answerId={} voter={}",
-                event.questionId(), event.answerId(), event.voterId());
+        log.debug("[CONSUMER] BestAnswerVoted/Unvoted — questionId={} answerId={} voter={} voted={}",
+                event.questionId(), event.answerId(), event.voterId(), event.voted());
+
+        // Un-vote (retraction) is silent — nothing to tell the author.
+        if (!event.voted()) {
+            return;
+        }
+
+        // Endorsing your own answer never notifies.
+        if (event.voterId().equals(event.answerAuthorId())) {
+            log.debug("[CONSUMER] BestAnswerVoted skipped — voter is the answer author");
+            return;
+        }
+
+        if (isSilencedByRestriction(event.answerAuthorId(), event.voterId(), "BestAnswerVoted")) {
+            return;
+        }
+
+        Optional<User> voterOpt = userRepo.findActiveById(event.voterId());
+        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
+
+        if (voterOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
+            log.warn("[CONSUMER] BestAnswerVoted skipped — user not found");
+            return;
+        }
+
+        User voter = voterOpt.get();
+        User answerAuthor = answerAuthorOpt.get();
+
+        dispatcher.dispatchAggregated(
+                answerAuthor,
+                voter,
+                NotificationType.ANSWER_BEST_VOTED,
+                "ANSWER_BEST_VOTED:" + event.answerId(),
+                "Your answer was endorsed as a best answer",
+                voter.getFullName() + " (@" + voter.getUsername()
+                        + ") endorsed your answer as a best answer to: \"" + event.questionTitle() + "\"",
+                event.questionId(),
+                "Question");
+        log.debug("[CONSUMER] ANSWER_BEST_VOTED dispatched → answerAuthor={}", answerAuthor.getId());
     }
 
     @RabbitHandler
@@ -1088,18 +1080,6 @@ public class NotificationEventConsumer {
             case "CARE"       -> "🤗";
             case "INSIGHTFUL" -> "💡";
             default           -> reactionType;
-        };
-    }
-
-    /** Maps FeedbackType enum names to human-readable labels */
-    private String toReadableFeedbackType(String feedbackType) {
-        return switch (feedbackType) {
-            case "EXCELLENT"          -> "excellent";
-            case "HELPFUL"            -> "helpful";
-            case "NEEDS_IMPROVEMENT"  -> "needs improvement";
-            case "INCORRECT"          -> "incorrect";
-            case "OFF_TOPIC"          -> "off-topic";
-            default                   -> feedbackType.toLowerCase();
         };
     }
 

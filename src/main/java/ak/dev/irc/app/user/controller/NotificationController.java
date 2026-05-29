@@ -50,7 +50,7 @@ public class NotificationController {
      *   <li>{@code unread-count} — {@code {count: N}} after every state change.</li>
      *   <li>{@code read}         — {@code {ids:[...], allRead, deleted:false}} so other tabs sync.</li>
      *   <li>{@code deleted}      — {@code {ids:[...], allRead, deleted:true}} after delete actions.</li>
-     *   <li>{@code heartbeat}    — keepalive every ~25 s.</li>
+     *   <li>{@code heartbeat}    — keepalive every 15 s.</li>
      * </ul>
      */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -101,12 +101,16 @@ public class NotificationController {
     // ── REST: listing ─────────────────────────────────────────────────────────
 
     /**
-     * List notifications. Optional filters:
+     * List notifications. All filters compose (AND) — {@code unread} no longer
+     * shadows {@code category}/{@code type} (N3):
      * <ul>
      *   <li>{@code category=POSTS|QNA|RESEARCH|MENTIONS|SOCIAL|SYSTEM}</li>
      *   <li>{@code type=POST_REACTED} (repeatable)</li>
-     *   <li>{@code unread=true} — only unread.</li>
+     *   <li>{@code unread=true} — restrict to unread.</li>
      * </ul>
+     * e.g. {@code ?unread=true&category=QNA} returns only unread Q&A items.
+     * When both {@code category} and {@code type} are supplied, {@code category}
+     * wins (it already names a fixed type set).
      */
     @GetMapping
     public ResponseEntity<Page<NotificationResponse>> getAll(
@@ -115,16 +119,8 @@ public class NotificationController {
             @RequestParam(required = false) Boolean unread,
             @PageableDefault(size = 20) Pageable pageable) {
 
-        if (Boolean.TRUE.equals(unread)) {
-            return ResponseEntity.ok(notificationService.getMyUnread(pageable));
-        }
-        if (category != null) {
-            return ResponseEntity.ok(notificationService.getMyNotificationsByCategory(category, pageable));
-        }
-        if (type != null && !type.isEmpty()) {
-            return ResponseEntity.ok(notificationService.getMyNotificationsByTypes(type, pageable));
-        }
-        return ResponseEntity.ok(notificationService.getMyNotifications(pageable));
+        return ResponseEntity.ok(notificationService.getMyNotifications(
+                Boolean.TRUE.equals(unread), category, type, pageable));
     }
 
     @GetMapping("/unread")

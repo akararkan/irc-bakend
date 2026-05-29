@@ -48,6 +48,24 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     Page<Research> findByResearcherIdAndStatusAndDeletedAtIsNull(
             UUID researcherId, ResearchStatus status, Pageable pageable);
 
+    /** Profile-stat count: a researcher's PUBLISHED, non-deleted research. */
+    long countByResearcherIdAndStatusAndDeletedAtIsNull(UUID researcherId, ResearchStatus status);
+
+    /**
+     * Drafts whose scheduled publish time has arrived — driven by the
+     * scheduled-publish job. {@code JOIN FETCH} the researcher so the job can read
+     * the owner id outside a session without a lazy-init error.
+     */
+    @Query("""
+        SELECT r FROM Research r JOIN FETCH r.researcher
+        WHERE r.status = :status
+          AND r.deletedAt IS NULL
+          AND r.scheduledPublishAt IS NOT NULL
+          AND r.scheduledPublishAt <= :now
+        """)
+    List<Research> findDueForScheduledPublish(@Param("status") ResearchStatus status,
+                                              @Param("now") LocalDateTime now);
+
     // Following feed: published research from followed researchers
     @Query("""
         SELECT r FROM Research r

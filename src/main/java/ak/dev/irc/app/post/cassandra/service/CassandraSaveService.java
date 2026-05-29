@@ -72,7 +72,7 @@ public class CassandraSaveService {
             }
             savesByUserRepo.delete(userId, prior.getCreatedAt(), postId);
             counterService.decrementPostSaves(postId);
-            broadcast(postId, userId);
+            broadcast(postId, userId, false);
             return false;
         }
 
@@ -90,7 +90,7 @@ public class CassandraSaveService {
                 .collectionName(collectionName)
                 .build());
         counterService.incrementPostSaves(postId);
-        broadcast(postId, userId);
+        broadcast(postId, userId, true);
 
         // Activity feed: record the save on the saver's history (only when
         // the toggle goes ON — unsaves are not logged).
@@ -120,12 +120,13 @@ public class CassandraSaveService {
     // Counter columns are eventually consistent — re-reading right after an
     // increment can return a stale value. Clients apply the delta locally
     // from the event type and reconcile via REST on next fetch.
-    private void broadcast(UUID postId, UUID actorId) {
+    private void broadcast(UUID postId, UUID actorId, boolean saved) {
         try {
             realtimePublisher.publish(postId, PostRealtimeEvent.builder()
                     .eventType(PostRealtimeEventType.SAVE_COUNT_UPDATED)
                     .postId(postId)
                     .actorId(actorId)
+                    .saved(saved)              // direction: true=saved, false=unsaved
                     .build());
         } catch (Exception e) {
             log.debug("[SAVE] realtime broadcast skipped: {}", e.getMessage());

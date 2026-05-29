@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.dto.response;
 
+import ak.dev.irc.app.common.text.BodyFormat;
 import ak.dev.irc.app.research.enums.ResearchStatus;
 import ak.dev.irc.app.research.enums.ResearchVisibility;
 
@@ -24,13 +25,18 @@ public record ResearchResponse(
 
     // ── Core ─────────────────────────────────────────────────────────────────
     String title,
+    /** Author-supplied body source (Markdown / HTML / plain — see {@link #bodyFormat}). Use for the editor. */
     String description,
+    /** Pre-rendered, OWASP-sanitised HTML of the body — safe for direct DOM injection. Use for read views. */
+    String descriptionHtml,
+    /** Author-supplied abstract source. Use for the editor. */
     String abstractText,
+    /** Pre-rendered, sanitised HTML of the abstract — safe for direct DOM injection. */
+    String abstractHtml,
+    /** How {@link #description} / {@link #abstractText} should be parsed. Null on legacy rows (treat as PLAIN). */
+    BodyFormat bodyFormat,
     String keywords,
     String citation,
-
-    /** Auto-generated on publish: 10.{prefix}/irc.{year}.{sequence} */
-    String doi,
 
     // ── Video promo ──────────────────────────────────────────────────────────
     String videoPromoUrl,

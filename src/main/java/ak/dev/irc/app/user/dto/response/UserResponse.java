@@ -1,6 +1,5 @@
 package ak.dev.irc.app.user.dto.response;
 
-import ak.dev.irc.app.user.enums.AccountType;
 import ak.dev.irc.app.user.enums.Role;
 
 import java.time.LocalDateTime;
@@ -14,7 +13,6 @@ public record UserResponse(
     String          username,
     String          email,
     Role            role,
-    AccountType     accountType,
     List<BadgeDto>  badges,
     boolean         isEmailVerified,
     ProfileResponse profile,

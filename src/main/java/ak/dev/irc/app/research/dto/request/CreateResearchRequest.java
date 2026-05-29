@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.dto.request;
 
+import ak.dev.irc.app.common.text.BodyFormat;
 import ak.dev.irc.app.research.enums.ResearchVisibility;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
@@ -42,14 +43,21 @@ public record CreateResearchRequest(
         @Size(max = 5000, message = "Abstract must not exceed 5 000 characters")
         String abstractText,
 
+        /**
+         * How {@link #description} and {@link #abstractText} should be parsed
+         * before being rendered to sanitised HTML. Optional — when null, the
+         * server auto-detects ({@code HTML} when the source contains obvious
+         * tag patterns, otherwise {@code MARKDOWN}, which is a safe superset
+         * of plain text). Sanitisation is always applied; scripts, inline
+         * event handlers, and non-{@code http(s)} URL schemes are stripped.
+         */
+        BodyFormat bodyFormat,
+
         @Size(max = 2000, message = "Keywords must not exceed 2 000 characters")
         String keywords,
 
         @Size(max = 5000, message = "Citation must not exceed 5 000 characters")
         String citation,
-
-        @Size(max = 255, message = "DOI must not exceed 255 characters")
-        String doi,
 
         // ── Publication settings ──────────────────────────────────────────────
 

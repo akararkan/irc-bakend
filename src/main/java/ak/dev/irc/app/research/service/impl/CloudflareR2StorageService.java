@@ -119,17 +119,31 @@ public class CloudflareR2StorageService implements S3StorageService {
 
     @Override
     public S3ObjectStream getObject(String s3Key) {
+        return getObject(s3Key, null);
+    }
+
+    @Override
+    public S3ObjectStream getObject(String s3Key, String rangeHeader) {
         try {
-            ResponseInputStream<GetObjectResponse> response = s3Client.getObject(
-                    GetObjectRequest.builder()
-                            .bucket(bucketName)
-                            .key(s3Key)
-                            .build());
+            GetObjectRequest.Builder req = GetObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(s3Key);
+            // Forward the browser's Range header straight to R2/S3 — the store
+            // returns the partial body + a Content-Range, so we stream only the
+            // requested bytes instead of buffering the whole object.
+            if (rangeHeader != null && !rangeHeader.isBlank()) {
+                req.range(rangeHeader);
+            }
+
+            ResponseInputStream<GetObjectResponse> response = s3Client.getObject(req.build());
             GetObjectResponse metadata = response.response();
+            String contentRange = metadata.contentRange();   // null for a full GET
             return new S3ObjectStream(
                     response,
                     metadata.contentType(),
-                    metadata.contentLength()
+                    metadata.contentLength(),
+                    contentRange,
+                    parseTotalLength(contentRange, metadata.contentLength())
             );
         } catch (SdkClientException e) {
             log.error("R2 storage is unreachable — cannot retrieve object '{}': {}",
@@ -142,6 +156,19 @@ public class CloudflareR2StorageService implements S3StorageService {
             throw new AppException("Failed to retrieve media file",
                     HttpStatus.NOT_FOUND, "MEDIA_NOT_FOUND");
         }
+    }
+
+    /** Extract the full object size from a {@code "bytes start-end/total"} Content-Range. */
+    private static Long parseTotalLength(String contentRange, long partialLength) {
+        if (contentRange != null) {
+            int slash = contentRange.indexOf('/');
+            if (slash >= 0 && slash < contentRange.length() - 1) {
+                try {
+                    return Long.parseLong(contentRange.substring(slash + 1).trim());
+                } catch (NumberFormatException ignored) { /* "*" or malformed → fall through */ }
+            }
+        }
+        return partialLength > 0 ? partialLength : null;
     }
 
     // ══════════════════════════════════════════════════════════════════════════

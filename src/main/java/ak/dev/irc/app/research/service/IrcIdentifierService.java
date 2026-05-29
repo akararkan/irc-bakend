@@ -17,10 +17,9 @@ import java.util.UUID;
 /**
  * Generates and verifies all IRC-issued identifiers for research publications.
  *
- * <p>Every published research gets three auto-assigned identifiers:
+ * <p>Every published research gets two auto-assigned identifiers:
  * <ul>
  *   <li><b>IRC ID</b>   — human-readable serial:   {@code IRC-2026-000042}</li>
- *   <li><b>DOI</b>      — registered DOI:           {@code 10.{prefix}/irc.2026.000042}</li>
  *   <li><b>Share URL</b>— full public link:         {@code {baseUrl}/r/{shareToken}}</li>
  * </ul>
  *
@@ -31,10 +30,6 @@ import java.util.UUID;
 @Service
 @Slf4j
 public class IrcIdentifierService {
-
-    /** CrossRef DOI prefix — register at https://www.crossref.org before going live. */
-    @Value("${irc.doi.prefix:10.00000}")
-    private String doiPrefix;
 
     /** Base URL for share links and verification pages, e.g. https://irc.example.com */
     @Value("${irc.base-url:https://irc.example.com}")
@@ -51,18 +46,6 @@ public class IrcIdentifierService {
      */
     public String generateIrcId(long sequenceNumber) {
         return String.format("IRC-%d-%06d", Year.now().getValue(), sequenceNumber);
-    }
-
-    // ── DOI ──────────────────────────────────────────────────────────────────
-
-    /**
-     * Builds a DOI from the IRC sequence number.
-     *
-     * @param sequenceNumber the same number used in the IRC ID
-     * @return e.g. {@code 10.12345/irc.2026.000042}
-     */
-    public String generateDoi(long sequenceNumber) {
-        return String.format("%s/irc.%d.%06d", doiPrefix, Year.now().getValue(), sequenceNumber);
     }
 
     // ── Share URL ─────────────────────────────────────────────────────────────

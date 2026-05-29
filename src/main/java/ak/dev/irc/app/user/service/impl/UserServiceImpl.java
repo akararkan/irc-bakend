@@ -250,6 +250,16 @@ public class UserServiceImpl implements UserService {
         return raw.map(userMapper::toResponse);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Page<UserResponse> searchEligibleContributors(String query, Pageable pageable) {
+        var roles = java.util.List.of(
+                ak.dev.irc.app.user.enums.Role.RESEARCHER,
+                ak.dev.irc.app.user.enums.Role.SCHOLAR);
+        return userRepository.searchUsersByRoles(query == null ? "" : query.trim(), roles, pageable)
+                .map(userMapper::toResponse);
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  ACCOUNT DELETION
     // ══════════════════════════════════════════════════════════════════════════

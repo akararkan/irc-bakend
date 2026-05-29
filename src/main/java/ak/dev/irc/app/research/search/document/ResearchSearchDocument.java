@@ -32,7 +32,6 @@ public class ResearchSearchDocument {
     @Field(type = FieldType.Text)    private String researcherUsername;
 
     @Field(type = FieldType.Keyword) private String status;
-    @Field(type = FieldType.Keyword) private String doi;
     @Field(type = FieldType.Keyword) private String ircId;
     @Field(type = FieldType.Keyword) private String slug;
 

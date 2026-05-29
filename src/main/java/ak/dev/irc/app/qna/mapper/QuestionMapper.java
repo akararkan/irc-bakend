@@ -5,10 +5,12 @@ import ak.dev.irc.app.common.util.TimeDisplayUtil;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
+import ak.dev.irc.app.qna.enums.QuestionStatus;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
@@ -41,7 +43,18 @@ public class QuestionMapper {
      */
     public QuestionResponse toQuestionResponse(Question question, boolean isSaved,
                                                java.time.LocalDateTime savedAt) {
+        return toQuestionResponse(question, isSaved, savedAt, safeTags(question));
+    }
+
+    /** Overload with pre-loaded tags — feed/list batch-load (D1) to avoid the lazy N+1. */
+    public QuestionResponse toQuestionResponse(Question question, boolean isSaved,
+                                               java.time.LocalDateTime savedAt, List<String> tags) {
         User author = question.getAuthor();
+        long answers = counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
+                CounterCache.F_ANSWERS, () -> nz(question.getAnswerCount()));
+        boolean acceptsNewAnswers = question.getStatus() == QuestionStatus.OPEN
+                && !question.isAnswersLocked()
+                && (question.getMaxAnswers() == null || answers < question.getMaxAnswers());
         return new QuestionResponse(
                 question.getId(),
                 author.getId(),
@@ -51,21 +64,38 @@ public class QuestionMapper {
                 question.getTitle(),
                 question.getBody(),
                 question.getStatus(),
-                counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
-                        CounterCache.F_ANSWERS, () -> nz(question.getAnswerCount())),
+                answers,
                 counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
                         CounterCache.F_VIEWS, () -> nz(question.getViewCount())),
                 counterCache.getOr(CounterCache.Kind.QUESTION, question.getId(),
                         CounterCache.F_SAVES, () -> nz(question.getSaveCount())),
                 question.isAnswersLocked(),
                 question.getMaxAnswers(),
+                acceptsNewAnswers,
+                nz(question.getAcceptedAnswerCount()) > 0,
+                nz(question.getAcceptedAnswerCount()),
                 isSaved,
                 question.getCreatedAt(),
                 question.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(question.getCreatedAt()),
                 TimeDisplayUtil.formattedDate(question.getCreatedAt()),
-                savedAt
+                savedAt,
+                tags == null ? List.of() : tags,
+                question.getKeywords()
         );
+    }
+
+    /**
+     * Tags are a LAZY @ElementCollection. On single-question reads (within the
+     * service transaction) this returns the real set; on list/detached paths it
+     * degrades to an empty list rather than throwing LazyInitializationException.
+     */
+    private static List<String> safeTags(Question question) {
+        try {
+            return question.getTags() == null ? List.of() : new ArrayList<>(question.getTags());
+        } catch (RuntimeException lazyOrOther) {
+            return List.of();
+        }
     }
 
     public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer) {
@@ -117,6 +147,8 @@ public class QuestionMapper {
                 author.getProfileImage(),
                 deleted ? null : answer.getBody(),
                 parentAnswerId,
+                answer.getReplyToAnswerId(),
+                answer.getReplyToUserId(),
                 replyCount,
                 deleted ? null : answer.getMediaUrl(),
                 deleted ? null : answer.getMediaType(),
@@ -134,7 +166,6 @@ public class QuestionMapper {
                 answer.getEditedAt(),
                 answer.isDeleted(),
                 answer.getDeletedAt(),
-                answer.getFeedbacks() != null ? answer.getFeedbacks().size() : 0L,
                 counterCache.getOr(CounterCache.Kind.ANSWER, answer.getId(),
                         CounterCache.F_REACTIONS, () -> nz(answer.getReactionCount())),
                 myReaction,
@@ -142,22 +173,6 @@ public class QuestionMapper {
                 answer.getUpdatedAt(),
                 TimeDisplayUtil.timeAgo(answer.getCreatedAt()),
                 TimeDisplayUtil.formattedDate(answer.getCreatedAt())
-        );
-    }
-
-    public AnswerFeedbackResponse toFeedbackResponse(AnswerFeedback feedback) {
-        User author = feedback.getAuthor();
-        return new AnswerFeedbackResponse(
-                feedback.getId(),
-                feedback.getAnswer().getId(),
-                author.getId(),
-                author.getUsername(),
-                author.getFullName(),
-                author.getProfileImage(),
-                feedback.getFeedbackType(),
-                feedback.getBody(),
-                feedback.getCreatedAt(),
-                feedback.getUpdatedAt()
         );
     }
 
@@ -186,7 +201,6 @@ public class QuestionMapper {
                 source.getTitle(),
                 source.getCitationText(),
                 source.getUrl(),
-                source.getDoi(),
                 source.getIsbn(),
                 source.getFileUrl(),
                 source.getOriginalFileName(),

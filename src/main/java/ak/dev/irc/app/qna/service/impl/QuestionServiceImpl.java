@@ -58,7 +58,6 @@ public class QuestionServiceImpl implements QuestionService {
 
     private final QuestionRepository questionRepository;
     private final QuestionAnswerRepository answerRepository;
-    private final AnswerFeedbackRepository feedbackRepository;
     private final AnswerAttachmentRepository attachmentRepository;
     private final AnswerSourceRepository sourceRepository;
     private final AnswerReactionRepository reactionRepository;
@@ -80,6 +79,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.qna.search.service.QnaSearchService qnaSearch;
+    private final ak.dev.irc.app.common.tag.service.ContentTagService contentTagService;
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
 
     @PersistenceContext
@@ -98,10 +98,15 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionResponse createQuestion(CreateQuestionRequest request, UUID authorId) {
         User author = findScholarOrThrow(authorId);
 
+        java.util.Set<String> normTags =
+                ak.dev.irc.app.common.tag.service.ContentTagService.normalize(request.getTags());
+
         Question question = Question.builder()
                 .author(author)
                 .title(request.getTitle().trim())
                 .body(request.getBody().trim())
+                .keywords(request.getKeywords())
+                .tags(normTags)
                 .status(ak.dev.irc.app.qna.enums.QuestionStatus.OPEN)
                 .answerCount(0L)
                 .answersLocked(request.isAnswersLocked())
@@ -110,6 +115,12 @@ public class QuestionServiceImpl implements QuestionService {
 
         question = questionRepository.save(question);
         eventPublisher.publishQuestionCreated(question);
+
+        // Fan out tags to the Cassandra trending/tag-feed subsystem.
+        contentTagService.tag(
+                ak.dev.irc.app.common.tag.ContentType.QUESTION,
+                question.getId(), authorId, question.getTitle(),
+                tagInstant(question), normTags);
 
         userActivityService.recordQnaQuestionCreated(authorId, question.getId());
 
@@ -148,11 +159,14 @@ public class QuestionServiceImpl implements QuestionService {
         // ignores handles that were already in the question.
         String previousMentionText = joinForMention(question.getTitle(), question.getBody());
 
+        boolean titleChanged = false;
         if (request.getTitle() != null) {
             if (request.getTitle().isBlank()) {
                 throw new BadRequestException("Question title cannot be empty", "EMPTY_TITLE");
             }
-            question.setTitle(request.getTitle().trim());
+            String newTitle = request.getTitle().trim();
+            if (!newTitle.equals(question.getTitle())) titleChanged = true;
+            question.setTitle(newTitle);
         }
         if (request.getBody() != null) {
             if (request.getBody().isBlank()) {
@@ -166,9 +180,32 @@ public class QuestionServiceImpl implements QuestionService {
         if (request.getMaxAnswers() != null) {
             question.setMaxAnswers(request.getMaxAnswers() <= 0 ? null : request.getMaxAnswers());
         }
+        if (request.getKeywords() != null) {
+            question.setKeywords(request.getKeywords());
+        }
+        boolean tagsChanged = false;
+        java.util.Set<String> normTags = null;
+        if (request.getTags() != null) {
+            normTags = ak.dev.irc.app.common.tag.service.ContentTagService.normalize(request.getTags());
+            question.getTags().clear();
+            question.getTags().addAll(normTags);
+            tagsChanged = true;
+        }
 
         question.audit(AuditAction.UPDATE, "Edited question");
         question = questionRepository.save(question);
+
+        // Rebuild the Cassandra tag index only when the tag set actually changed.
+        if (tagsChanged) {
+            contentTagService.retag(
+                    ak.dev.irc.app.common.tag.ContentType.QUESTION,
+                    question.getId(), question.getAuthor().getId(), question.getTitle(),
+                    tagInstant(question), normTags);
+        } else if (titleChanged) {
+            // Title changed but tags didn't — refresh only the denormalised
+            // preview on every content_by_tag row for this question.
+            contentTagService.refreshTitlePreview(question.getId(), question.getTitle());
+        }
 
         User author = question.getAuthor();
         realtime.broadcast(QnaRealtimeEvent.builder()
@@ -190,6 +227,9 @@ public class QuestionServiceImpl implements QuestionService {
                 requesterId,
                 author.getUsername());
 
+        // Force-init the lazy tag collection inside the tx so the async indexer
+        // (separate thread, no session) can read it without a lazy-init error.
+        question.getTags().size();
         qnaSearch.indexAsync(question);
 
         return mapper.toQuestionResponse(question);
@@ -352,7 +392,12 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getMyQuestions(UUID authorId, Pageable pageable) {
-        findScholarOrThrow(authorId);
+        // No scholar gate on this READ — a user must always be able to see
+        // their own question list, even if they were de-promoted, never had
+        // SCHOLAR, or simply haven't posted any (returns an empty page). The
+        // SCHOLAR gate stays on the create path (createQuestion), where it
+        // belongs. Previously, non-scholars hit "Only scholars can post
+        // questions" on GET /me, which was misleading and broken UX.
         return mapQuestionsWithSaves(
                 questionRepository.findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(authorId, pageable),
                 authorId);
@@ -364,12 +409,27 @@ public class QuestionServiceImpl implements QuestionService {
      * viewers and empty pages short-circuit to {@code isSaved=false}.
      */
     private Page<QuestionResponse> mapQuestionsWithSaves(Page<Question> page, UUID viewerId) {
-        if (viewerId == null || page.isEmpty()) {
-            return page.map(q -> mapper.toQuestionResponse(q, false));
-        }
+        if (page.isEmpty()) return page.map(q -> mapper.toQuestionResponse(q, false));
         List<UUID> ids = page.getContent().stream().map(Question::getId).toList();
-        java.util.Set<UUID> savedIds = saveRepository.findSavedQuestionIds(viewerId, ids);
-        return page.map(q -> mapper.toQuestionResponse(q, savedIds.contains(q.getId())));
+        // Batch-load tags for the whole page (D1) so feed cards render tags without an N+1.
+        Map<UUID, List<String>> tagsByQuestion = loadTagsByQuestionIds(ids);
+        java.util.Set<UUID> savedIds = viewerId == null
+                ? java.util.Set.of()
+                : saveRepository.findSavedQuestionIds(viewerId, ids);
+        return page.map(q -> mapper.toQuestionResponse(
+                q, savedIds.contains(q.getId()), null,
+                tagsByQuestion.getOrDefault(q.getId(), List.of())));
+    }
+
+    /** Group the (questionId, tagName) rows from one batch query into per-question tag lists. */
+    private Map<UUID, List<String>> loadTagsByQuestionIds(List<UUID> ids) {
+        Map<UUID, List<String>> out = new HashMap<>();
+        if (ids.isEmpty()) return out;
+        for (Object[] row : questionRepository.findTagsByQuestionIds(ids)) {
+            out.computeIfAbsent((UUID) row[0], k -> new java.util.ArrayList<>())
+               .add((String) row[1]);
+        }
+        return out;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -411,11 +471,17 @@ public class QuestionServiceImpl implements QuestionService {
         // Resolve parent if this is a reanswer (reply to another answer) —
         // mirrors the post-comment top-level-vs-reply branching.
         QuestionAnswer parent = null;
+        UUID replyToAnswerId = null;
+        UUID replyToUserId   = null;
         if (request.getParentAnswerId() != null) {
             parent = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(
                             request.getParentAnswerId(), questionId)
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Parent answer", "id", request.getParentAnswerId()));
+            // Capture the ACTUAL reply target before depth-1 hoisting (E2), so the
+            // UI can render "replying to @X" even after the parent is hoisted.
+            replyToAnswerId = parent.getId();
+            replyToUserId   = parent.getAuthor() != null ? parent.getAuthor().getId() : null;
             // Flat-at-1 server-side guard — if the caller passes the id of a
             // depth-1 reanswer, hoist the parent up to the top-level answer so
             // every reanswer is a sibling under the root. Mirrors the UI rule
@@ -446,6 +512,8 @@ public class QuestionServiceImpl implements QuestionService {
                 .voiceUrl(request.getVoiceUrl())
                 .voiceDurationSeconds(request.getVoiceDurationSeconds())
                 .links(request.getLinks())
+                .replyToAnswerId(replyToAnswerId)
+                .replyToUserId(replyToUserId)
                 .build();
 
         answer = answerRepository.save(answer);
@@ -460,7 +528,6 @@ public class QuestionServiceImpl implements QuestionService {
                         .title(srcReq.getTitle().trim())
                         .citationText(srcReq.getCitationText() != null ? srcReq.getCitationText().trim() : null)
                         .url(srcReq.getUrl())
-                        .doi(srcReq.getDoi())
                         .isbn(srcReq.getIsbn())
                         .displayOrder(order++)
                         .build();
@@ -516,6 +583,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(author.getProfileImage())
                 .answerId(answer.getId())
                 .parentAnswerId(isReanswer ? parent.getId() : null)
+                .answer(answerEventDto(answer))
                 .body(answer.getBody())
                 .questionAnswerCount(question.getAnswerCount())
                 .answerReplyCount(replyCount)
@@ -581,6 +649,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .answerId(answer.getId())
                 .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answer(answerEventDto(answer))
                 .body(answer.getBody())
                 .build());
 
@@ -648,6 +717,16 @@ public class QuestionServiceImpl implements QuestionService {
         return page.map(a -> mapper.toAnswerResponse(a, mine.get(a.getId()), 0L));
     }
 
+    /**
+     * The question's creation instant (UTC), used as the Cassandra tag-feed
+     * clustering key. Falls back to now if the audit timestamp isn't populated.
+     */
+    private static java.time.Instant tagInstant(Question question) {
+        return question.getCreatedAt() != null
+                ? question.getCreatedAt().toInstant(java.time.ZoneOffset.UTC)
+                : java.time.Instant.now();
+    }
+
     @Override
     @Transactional
     public void deleteQuestion(UUID questionId, UUID requesterId) {
@@ -661,6 +740,7 @@ public class QuestionServiceImpl implements QuestionService {
         questionRepository.save(question);
 
         qnaSearch.deleteAsync(question.getId());
+        contentTagService.untag(question.getId());
 
         eventPublisher.publishQuestionDeleted(question.getId(), requesterId);
 
@@ -692,7 +772,10 @@ public class QuestionServiceImpl implements QuestionService {
         bestAnswerVoteRepository.deleteAllByAnswerId(answer.getId());
         answer.setReactionCount(0L);
         answer.setBestAnswerVoteCount(0L);
-        answer.setAccepted(false);
+        if (answer.isAccepted()) {
+            answer.setAccepted(false);
+            questionRepository.adjustAcceptedAnswerCount(question.getId(), -1);
+        }
 
         answer.setDeletedAt(LocalDateTime.now());
         answer.audit(AuditAction.DELETE, "Deleted answer");
@@ -737,6 +820,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .answerId(answer.getId())
                 .parentAnswerId(parentId)
+                .answer(answerEventDto(answer))
                 .questionAnswerCount(question.getAnswerCount())
                 .answerReplyCount(parentReplyCount)
                 .build());
@@ -808,7 +892,10 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException("Reanswers cannot be accepted as best answer", "REANSWER_NOT_ACCEPTABLE");
         }
 
-        answer.setAccepted(true);
+        if (!answer.isAccepted()) {
+            answer.setAccepted(true);
+            questionRepository.adjustAcceptedAnswerCount(question.getId(), 1);
+        }
         answer.audit(AuditAction.UPDATE, "Answer accepted as best answer");
         answer = answerRepository.save(answer);
 
@@ -829,7 +916,10 @@ public class QuestionServiceImpl implements QuestionService {
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
-        answer.setAccepted(false);
+        if (answer.isAccepted()) {
+            answer.setAccepted(false);
+            questionRepository.adjustAcceptedAnswerCount(question.getId(), -1);
+        }
         answer.audit(AuditAction.UPDATE, "Answer unaccepted");
         answer = answerRepository.save(answer);
 
@@ -881,6 +971,8 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorUsername(voter.getUsername())
                 .actorAvatarUrl(voter.getProfileImage())
                 .answerId(answer.getId())
+                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answer(answerEventDto(answer))
                 .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
                 .build());
 
@@ -911,124 +1003,12 @@ public class QuestionServiceImpl implements QuestionService {
                     .actorUsername(voter.getUsername())
                     .actorAvatarUrl(voter.getProfileImage())
                     .answerId(answer.getId())
+                    .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                    .answer(answerEventDto(answer))
                     .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
                     .build());
         }
         return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), false);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    //  FEEDBACK
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @Override
-    @Transactional
-    public AnswerFeedbackResponse addFeedback(UUID questionId, UUID answerId,
-                                               AddFeedbackRequest request, UUID requesterId) {
-        Question question = findQuestionOrThrow(questionId);
-        findScholarOrThrow(requesterId);
-
-        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
-
-        // Only the question author or admins can give feedback
-        if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can give feedback on answers");
-        }
-
-        if (feedbackRepository.existsByAnswerIdAndAuthorId(answerId, requesterId)) {
-            throw new DuplicateResourceException("Feedback", "answer+author", "already exists");
-        }
-
-        User feedbackAuthor = userRepository.getReferenceById(requesterId);
-
-        AnswerFeedback feedback = AnswerFeedback.builder()
-                .answer(answer)
-                .author(feedbackAuthor)
-                .feedbackType(request.getFeedbackType())
-                .body(request.getBody() != null ? request.getBody().trim() : null)
-                .build();
-        feedback.audit(AuditAction.CREATE, "Feedback added: " + request.getFeedbackType());
-
-        feedback = feedbackRepository.save(feedback);
-
-        eventPublisher.publishFeedbackAdded(question, answer, feedback);
-
-        userActivityService.recordQnaAnswerFeedback(requesterId, question.getId(), answer.getId());
-
-        broadcastFeedback(question, answer, feedback, requesterId,
-                QnaRealtimeEventType.ANSWER_FEEDBACK_ADDED);
-
-        return mapper.toFeedbackResponse(feedback);
-    }
-
-    @Override
-    @Transactional
-    public AnswerFeedbackResponse editFeedback(UUID questionId, UUID answerId, UUID feedbackId,
-                                                AddFeedbackRequest request, UUID requesterId) {
-        Question question = findQuestionOrThrow(questionId);
-        if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can edit feedback");
-        }
-
-        AnswerFeedback feedback = feedbackRepository.findById(feedbackId)
-                .orElseThrow(() -> new ResourceNotFoundException("Feedback", "id", feedbackId));
-
-        if (!feedback.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Feedback does not belong to this answer", "FEEDBACK_MISMATCH");
-        }
-        if (!feedback.getAuthor().getId().equals(requesterId)) {
-            throw new ForbiddenException("You can only edit your own feedback");
-        }
-
-        if (request.getFeedbackType() != null) feedback.setFeedbackType(request.getFeedbackType());
-        if (request.getBody() != null)         feedback.setBody(request.getBody().trim());
-
-        feedback.audit(AuditAction.UPDATE, "Feedback updated");
-        feedback = feedbackRepository.save(feedback);
-
-        broadcastFeedback(question, feedback.getAnswer(), feedback, requesterId,
-                QnaRealtimeEventType.ANSWER_FEEDBACK_EDITED);
-        return mapper.toFeedbackResponse(feedback);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public List<AnswerFeedbackResponse> getFeedback(UUID questionId, UUID answerId) {
-        findQuestionOrThrow(questionId);
-        return feedbackRepository.findByAnswerIdOrderByCreatedAtAsc(answerId).stream()
-                .map(mapper::toFeedbackResponse)
-                .toList();
-    }
-
-    @Override
-    @Transactional
-    public void deleteFeedback(UUID questionId, UUID answerId, UUID feedbackId, UUID requesterId) {
-        Question question = findQuestionOrThrow(questionId);
-        if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can delete feedback");
-        }
-
-        AnswerFeedback feedback = feedbackRepository.findById(feedbackId)
-                .orElseThrow(() -> new ResourceNotFoundException("Feedback", "id", feedbackId));
-
-        if (!feedback.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Feedback does not belong to this answer", "FEEDBACK_MISMATCH");
-        }
-
-        QuestionAnswer answer = feedback.getAnswer();
-        feedbackRepository.delete(feedback);
-
-        User actor = userRepository.findById(requesterId).orElse(null);
-        realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(QnaRealtimeEventType.ANSWER_FEEDBACK_DELETED)
-                .questionId(question.getId())
-                .actorId(requesterId)
-                .actorUsername(actor != null ? actor.getUsername() : null)
-                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .answerId(answer.getId())
-                .feedbackId(feedbackId)
-                .build());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1156,10 +1136,47 @@ public class QuestionServiceImpl implements QuestionService {
                 .title(request.getTitle().trim())
                 .citationText(request.getCitationText() != null ? request.getCitationText().trim() : null)
                 .url(request.getUrl())
-                .doi(request.getDoi())
                 .isbn(request.getIsbn())
                 .displayOrder(nextOrder)
                 .build();
+
+        source = sourceRepository.save(source);
+        return mapper.toSourceResponse(source);
+    }
+
+    @Override
+    @Transactional
+    public AnswerSourceResponse uploadSourceFile(UUID questionId, UUID answerId, UUID sourceId,
+                                                 MultipartFile file, UUID requesterId) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("File is required", "MISSING_FILE");
+        }
+        Question question = findQuestionOrThrow(questionId);
+        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
+        if (!canManageAnswer(question, answer, requesterId)) {
+            throw new ForbiddenException("You can only attach files to sources on your own answer");
+        }
+        AnswerSource source = sourceRepository.findById(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
+        if (source.getAnswer() == null || !source.getAnswer().getId().equals(answerId)) {
+            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+        }
+
+        // Replace any previously-uploaded file for this source.
+        if (source.getS3Key() != null) {
+            try { storageService.delete(source.getS3Key()); }
+            catch (Exception e) { log.warn("[QNA] old source file delete failed: {}", e.getMessage()); }
+        }
+
+        String prefix = "qna/" + questionId + "/answers/" + answerId + "/sources";
+        String s3Key  = storageService.upload(file, prefix);
+        source.setS3Key(s3Key);
+        source.setFileUrl(storageService.getPublicUrl(s3Key));
+        source.setOriginalFileName(file.getOriginalFilename());
+        source.setMimeType(file.getContentType());
+        source.setFileSize(file.getSize());
+        source.setSourceType(ak.dev.irc.app.research.enums.SourceType.MEDIA_FILE);
 
         source = sourceRepository.save(source);
         return mapper.toSourceResponse(source);
@@ -1195,7 +1212,6 @@ public class QuestionServiceImpl implements QuestionService {
             source.setCitationText(request.getCitationText().isBlank() ? null : request.getCitationText().trim());
         }
         if (request.getUrl() != null) source.setUrl(request.getUrl().isBlank() ? null : request.getUrl().trim());
-        if (request.getDoi() != null) source.setDoi(request.getDoi().isBlank() ? null : request.getDoi().trim());
         if (request.getIsbn() != null) source.setIsbn(request.getIsbn().isBlank() ? null : request.getIsbn().trim());
         if (request.getDisplayOrder() != null) source.setDisplayOrder(request.getDisplayOrder());
 
@@ -1281,6 +1297,7 @@ public class QuestionServiceImpl implements QuestionService {
                     .actorAvatarUrl(user.getProfileImage())
                     .answerId(answer.getId())
                     .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                    .answer(answerEventDto(answer))
                     .reactionType(AnswerReactionType.LIKE.name())
                     .answerReactionCount(current)
                     .build());
@@ -1316,6 +1333,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(user.getProfileImage())
                 .answerId(answer.getId())
                 .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answer(answerEventDto(answer))
                 .reactionType(AnswerReactionType.LIKE.name())
                 .answerReactionCount(answer.getReactionCount())
                 .build());
@@ -1352,6 +1370,7 @@ public class QuestionServiceImpl implements QuestionService {
                     .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                     .answerId(answer.getId())
                     .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                    .answer(answerEventDto(answer))
                     .answerReactionCount(answer.getReactionCount())
                     .build());
             return mapper.toAnswerResponse(answer, null, null);
@@ -1371,6 +1390,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .answerId(answer.getId())
                 .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answer(answerEventDto(answer))
                 .answerReactionCount(current)
                 .build());
         return mapper.toAnswerResponse(answer, null, null);
@@ -1579,15 +1599,14 @@ public class QuestionServiceImpl implements QuestionService {
     /**
      * Gate for question authoring + question-author actions. Researchers are
      * intentionally excluded — only scholars (and admins) may post questions,
-     * lock answers, give feedback, accept answers, etc.
+     * lock answers, accept answers, vote best answers, etc.
      */
     private User findScholarOrThrow(UUID userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
 
         if (user.getRole() != Role.SCHOLAR
-                && user.getRole() != Role.ADMIN
-                && user.getRole() != Role.SUPER_ADMIN) {
+                && user.getRole() != Role.ADMIN) {
             throw new ForbiddenException("Only scholars can post questions");
         }
 
@@ -1605,8 +1624,7 @@ public class QuestionServiceImpl implements QuestionService {
 
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.RESEARCHER
-                && user.getRole() != Role.ADMIN
-                && user.getRole() != Role.SUPER_ADMIN) {
+                && user.getRole() != Role.ADMIN) {
             throw new ForbiddenException("Only scholars and researchers can answer questions");
         }
 
@@ -1622,8 +1640,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
 
         if (user.getRole() != Role.SCHOLAR
-                && user.getRole() != Role.ADMIN
-                && user.getRole() != Role.SUPER_ADMIN) {
+                && user.getRole() != Role.ADMIN) {
             throw new ForbiddenException("Only scholars can mark best answers");
         }
         return user;
@@ -1636,8 +1653,7 @@ public class QuestionServiceImpl implements QuestionService {
         if (requester == null) return false;
 
         return question.getAuthor().getId().equals(requesterId)
-                || requester.getRole() == Role.ADMIN
-                || requester.getRole() == Role.SUPER_ADMIN;
+                || requester.getRole() == Role.ADMIN;
     }
 
     private boolean canManageAnswer(Question question, QuestionAnswer answer, UUID requesterId) {
@@ -1648,8 +1664,7 @@ public class QuestionServiceImpl implements QuestionService {
 
         return answer.getAuthor().getId().equals(requesterId)
                 || question.getAuthor().getId().equals(requesterId)
-                || requester.getRole() == Role.ADMIN
-                || requester.getRole() == Role.SUPER_ADMIN;
+                || requester.getRole() == Role.ADMIN;
     }
 
     private void broadcastQuestionLifecycle(Question question, UUID actorId, QnaRealtimeEventType type) {
@@ -1674,24 +1689,18 @@ public class QuestionServiceImpl implements QuestionService {
                 .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
                 .answerId(answer.getId())
                 .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
+                .answer(answerEventDto(answer))
                 .build());
     }
 
-    private void broadcastFeedback(Question question, QuestionAnswer answer,
-                                    AnswerFeedback feedback, UUID actorId,
-                                    QnaRealtimeEventType type) {
-        User actor = feedback.getAuthor();
-        realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(type)
-                .questionId(question.getId())
-                .actorId(actorId)
-                .actorUsername(actor != null ? actor.getUsername() : null)
-                .actorAvatarUrl(actor != null ? actor.getProfileImage() : null)
-                .answerId(answer.getId())
-                .feedbackId(feedback.getId())
-                .feedbackType(feedback.getFeedbackType() != null ? feedback.getFeedbackType().name() : null)
-                .body(feedback.getBody())
-                .build());
+    /**
+     * Neutral-viewer answer DTO embedded in every answer-scoped realtime event
+     * (A2/A3) so clients patch the row in place instead of refetching. Built
+     * inside the surrounding transaction; {@code myReaction}/{@code votedByMe}
+     * are neutral and {@code replyCount} uses the denormalized counter.
+     */
+    private QuestionAnswerResponse answerEventDto(QuestionAnswer answer) {
+        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), false);
     }
 
     /**

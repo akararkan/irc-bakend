@@ -31,6 +31,9 @@ public interface UserService {
     // ── Search ────────────────────────────────────────────────────────────────
     Page<UserResponse>  searchUsers(String query, Pageable pageable);
 
+    /** Search restricted to contributor-eligible roles (RESEARCHER / SCHOLAR) for the co-author picker. */
+    Page<UserResponse>  searchEligibleContributors(String query, Pageable pageable);
+
     // ── Account ───────────────────────────────────────────────────────────────
     void                deleteMyAccount();
 }

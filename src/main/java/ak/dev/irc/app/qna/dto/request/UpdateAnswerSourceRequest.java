@@ -17,9 +17,6 @@ public class UpdateAnswerSourceRequest {
 
     private String url;
 
-    @Size(max = 255, message = "DOI must not exceed 255 characters")
-    private String doi;
-
     @Size(max = 20, message = "ISBN must not exceed 20 characters")
     private String isbn;
 

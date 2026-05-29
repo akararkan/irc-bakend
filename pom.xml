@@ -278,6 +278,40 @@
 			<artifactId>spring-boot-starter-data-elasticsearch</artifactId>
 		</dependency>
 
+		<!-- ══════════════════════════════════
+             RICH TEXT (Markdown + HTML sanitisation)
+             Used by Research body/abstract — accepts Markdown or HTML input,
+             renders to sanitised HTML, strips to plain text for ES indexing.
+             ══════════════════════════════════ -->
+		<dependency>
+			<groupId>org.commonmark</groupId>
+			<artifactId>commonmark</artifactId>
+			<version>0.22.0</version>
+		</dependency>
+		<dependency>
+			<groupId>org.commonmark</groupId>
+			<artifactId>commonmark-ext-gfm-tables</artifactId>
+			<version>0.22.0</version>
+		</dependency>
+		<dependency>
+			<groupId>org.commonmark</groupId>
+			<artifactId>commonmark-ext-gfm-strikethrough</artifactId>
+			<version>0.22.0</version>
+		</dependency>
+		<dependency>
+			<groupId>org.commonmark</groupId>
+			<artifactId>commonmark-ext-autolink</artifactId>
+			<version>0.22.0</version>
+		</dependency>
+
+		<!-- OWASP HTML sanitiser — whitelist-based XSS defence for the rendered
+		     HTML stored alongside the source body/abstract. -->
+		<dependency>
+			<groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
+			<artifactId>owasp-java-html-sanitizer</artifactId>
+			<version>20240325.1</version>
+		</dependency>
+
 	</dependencies>
 
 	<!-- ═══════════════════════════════════════════════════════════

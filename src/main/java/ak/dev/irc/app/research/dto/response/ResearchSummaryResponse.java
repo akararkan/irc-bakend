@@ -17,7 +17,10 @@ public record ResearchSummaryResponse(
     String ircId,
 
     String title,
+    /** Author-supplied abstract source (Markdown / HTML / plain). */
     String abstractText,
+    /** Pre-rendered, sanitised HTML of the abstract — safe for direct DOM injection on cards. */
+    String abstractHtml,
     String coverImageUrl,
     String videoPromoThumbnailUrl,
 

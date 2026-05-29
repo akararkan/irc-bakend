@@ -1,13 +1,11 @@
 package ak.dev.irc.app.rabbitmq.publisher;
 
-import ak.dev.irc.app.qna.entity.AnswerFeedback;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerDeletedEvent;
-import ak.dev.irc.app.rabbitmq.event.qna.AnswerFeedbackAddedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerUnreactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.BestAnswerVotedEvent;
@@ -94,24 +92,6 @@ public class QuestionEventPublisher {
 
         publish(RabbitMQConstants.QNA_ANSWER_REACTED, event,
                 "ANSWER_REACTED questionId=" + question.getId() + " answerId=" + answer.getId());
-    }
-
-    public void publishFeedbackAdded(Question question, QuestionAnswer answer, AnswerFeedback feedback) {
-        AnswerFeedbackAddedEvent event = AnswerFeedbackAddedEvent.of(
-                question.getId(),
-                question.getTitle(),
-                question.getAuthor().getId(),
-                question.getAuthor().getFullName(),
-                answer.getId(),
-                answer.getAuthor().getId(),
-                answer.getAuthor().getUsername(),
-                answer.getAuthor().getFullName(),
-                feedback.getFeedbackType().name(),
-                preview(feedback.getBody())
-        );
-
-        publish(RabbitMQConstants.QNA_FEEDBACK_ADDED, event,
-                "FEEDBACK_ADDED questionId=" + question.getId() + " answerId=" + answer.getId());
     }
 
     public void publishQuestionDeleted(java.util.UUID questionId, java.util.UUID actorId) {

@@ -16,6 +16,7 @@ public record FeedItemResponse(
         String  postType,
         String  textPreview,
         String  mediaUrl,
+        String  videoUrl,   // REEL only — first VIDEO-type URL from posts_by_id; null for all other types
         // ── Live counters from post_counters ───────────────────────────
         long    reactionCount,
         long    commentCount,

@@ -1,7 +1,6 @@
 package ak.dev.irc.app.research.dto.response;
 
 import ak.dev.irc.app.research.enums.ContributorRole;
-import ak.dev.irc.app.user.enums.AccountType;
 import ak.dev.irc.app.user.enums.Role;
 
 import java.time.LocalDateTime;
@@ -20,7 +19,6 @@ public record ContributorResponse(
         String username,
         String profileImage,
         Role userRole,
-        AccountType accountType,
 
         // ── Contribution metadata ────────────────────────────────────────
         ContributorRole role,

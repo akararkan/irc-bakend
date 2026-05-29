@@ -301,7 +301,7 @@ public class EmailTemplate {
             case ANSWER_REPLIED            -> "replied to your answer";
             case ANSWER_REACTED            -> "reacted to your answer";
             case ANSWER_ACCEPTED           -> "marked your answer as the best answer";
-            case ANSWER_FEEDBACK_RECEIVED  -> "left feedback on your answer";
+            case ANSWER_BEST_VOTED         -> "endorsed your answer as a best answer";
 
             case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT -> "sent you a system message";
             case ACCOUNT_WARNING                     -> "issued an account warning";
@@ -322,7 +322,7 @@ public class EmailTemplate {
                  PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED,
                  RESEARCH_CONTRIBUTOR_ADDED -> "in your research";
             case QUESTION_NEW, QUESTION_ANSWERED, ANSWER_REPLIED,
-                 ANSWER_REACTED, ANSWER_ACCEPTED, ANSWER_FEEDBACK_RECEIVED -> "in Q&A";
+                 ANSWER_REACTED, ANSWER_ACCEPTED, ANSWER_BEST_VOTED -> "in Q&A";
             default -> "";
         };
     }
@@ -339,7 +339,7 @@ public class EmailTemplate {
                  PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED        -> "Open research";
             case QUESTION_NEW, QUESTION_ANSWERED, ANSWER_REPLIED,
                  ANSWER_REACTED, ANSWER_ACCEPTED,
-                 ANSWER_FEEDBACK_RECEIVED                              -> "Open question";
+                 ANSWER_BEST_VOTED                                     -> "Open question";
             case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT, ACCOUNT_WARNING  -> "View details";
             default                                                    -> "Open on IRC";
         };
@@ -353,7 +353,7 @@ public class EmailTemplate {
             case PUBLICATION_LIKED, PUBLICATION_COMMENTED,
                  PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED -> "research activity";
             case QUESTION_NEW, QUESTION_ANSWERED, ANSWER_REPLIED,
-                 ANSWER_REACTED, ANSWER_ACCEPTED, ANSWER_FEEDBACK_RECEIVED -> "Q&A activity";
+                 ANSWER_REACTED, ANSWER_ACCEPTED, ANSWER_BEST_VOTED -> "Q&A activity";
             case NEW_FOLLOWER, UNFOLLOWED, BLOCKED, UNBLOCKED,
                  CONNECTION_REQUEST, CONNECTION_ACCEPTED -> "social activity";
             case POST_MENTIONED, USER_MENTIONED -> "mentions";

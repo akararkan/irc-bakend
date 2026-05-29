@@ -2,13 +2,11 @@ package ak.dev.irc.app.user.mapper;
 
 import ak.dev.irc.app.user.dto.response.*;
 import ak.dev.irc.app.user.entity.*;
-import ak.dev.irc.app.user.enums.AccountType;
 import ak.dev.irc.app.user.enums.BadgeType;
-import ak.dev.irc.app.user.enums.VerificationTier;
+import ak.dev.irc.app.user.enums.Role;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 @Component
@@ -34,7 +32,6 @@ public class UserMapper {
             u.getUsername(),
             u.getEmail(),
             u.getRole(),
-            u.getAccountType(),
             resolveBadges(u),
             u.isEmailVerified(),
             p != null ? toProfileResponse(p, includePrivateFields) : null,
@@ -78,35 +75,20 @@ public class UserMapper {
         );
     }
 
+    /**
+     * Badges follow directly from {@link User#getRole()} — no separate
+     * verification workflow. SCHOLAR carries researcher privileges already, so
+     * a scholar receives only the (higher) Scholar badge rather than both.
+     */
     public List<BadgeDto> resolveBadges(User user) {
-        List<BadgeDto> badges = new ArrayList<>();
-
-        switch (user.getAccountType()) {
-            case PLATFORM_OFFICIAL -> badges.add(new BadgeDto(
-                BadgeType.PLATFORM_OFFICIAL, "Official", "gold", "ti-hexagon", 1));
-            case INSTITUTION -> badges.add(new BadgeDto(
-                BadgeType.INSTITUTION, "Institution", "blue", "ti-building", 2));
-            case MEDIA -> badges.add(new BadgeDto(
-                BadgeType.MEDIA, "Media", "coral", "ti-broadcast", 6));
-            case VERIFIED_RESEARCHER -> badges.add(new BadgeDto(
-                BadgeType.VERIFIED_RESEARCHER, "Researcher", "purple", "ti-flask", 5));
-            default -> {}
-        }
-
-        switch (user.getVerificationTier()) {
-            case SENIOR_SCHOLAR -> badges.add(new BadgeDto(
-                BadgeType.SENIOR_SCHOLAR, "Senior Scholar", "teal", "ti-star", 3));
-            case SCHOLAR -> badges.add(new BadgeDto(
-                BadgeType.VERIFIED_SCHOLAR, "Scholar", "teal", "ti-certificate", 4));
-            default -> {}
-        }
-
-        if (user.isEmailVerified()) {
+        List<BadgeDto> badges = new ArrayList<>(1);
+        if (user.getRole() == Role.SCHOLAR) {
             badges.add(new BadgeDto(
-                BadgeType.EMAIL_VERIFIED, "Verified", "gray", "ti-check", 7));
+                BadgeType.VERIFIED_SCHOLAR, "Scholar", "teal", "ti-certificate", 1));
+        } else if (user.getRole() == Role.RESEARCHER) {
+            badges.add(new BadgeDto(
+                BadgeType.VERIFIED_RESEARCHER, "Researcher", "purple", "ti-flask", 2));
         }
-
-        badges.sort(Comparator.comparingInt(BadgeDto::priority));
         return badges;
     }
 

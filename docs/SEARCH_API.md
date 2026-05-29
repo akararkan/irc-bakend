@@ -24,7 +24,7 @@ Elasticsearch index and field schema:
 | Index           | Owns        | Search fields                                                                                                |
 |-----------------|-------------|--------------------------------------------------------------------------------------------------------------|
 | `irc-posts`     | posts, reels | `textContent`, `hashtags`, `authorName`, `authorUsername`                                                    |
-| `irc-qna`       | questions   | `title`, `body`, `authorName`, `authorUsername`                                                              |
+| `irc-qna`       | questions   | `title`, `body`, `tags`, `keywords`, `authorName`, `authorUsername`                                          |
 | `irc-research`  | research    | `title`, `abstractText`, `description`, `keywords`, `tags`, `researcherName`, `researcherUsername`           |
 
 A top-bar search box on the client needs to query **all three** at
@@ -53,41 +53,69 @@ posts index.
 
 ### Query parameters
 
-| Name    | Type   | Required | Default | Notes                                                                                                                                                      |
-|---------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `q`     | string | yes      | —       | Free-text search query. Blank / missing → `200` with `results: []`.                                                                                        |
-| `types` | CSV    | no       | all     | Subset of `POST`, `REEL`, `QUESTION`, `RESEARCH`. Pass `all` or omit to search every entity. Unknown tokens are silently ignored.                          |
-| `page`  | int    | no       | `0`     | 0-indexed.                                                                                                                                                 |
-| `size`  | int    | no       | `20`    | Per-page result count across **all** indices combined (not per index).                                                                                     |
+| Name     | Type    | Required | Default | Notes                                                                                                                                                                                                       |
+|----------|---------|----------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `q`      | string  | yes      | —       | Free-text search query. Blank / missing → `200` with `results: []`.                                                                                                                                         |
+| `types`  | CSV     | no       | all     | Subset of `POST`, `REEL`, `QUESTION`, `RESEARCH`. Pass `all` or omit to search every entity. Unknown tokens are silently ignored.                                                                            |
+| `cursor` | opaque  | no       | —       | Opaque cursor from a previous response's `nextCursor`. **Preferred over `page`** for typeahead / live feeds — uses ES `search_after` so inserts during a scroll don't shift later pages.                       |
+| `page`   | int     | no       | `0`     | 0-indexed (legacy offset mode; **ignored when `cursor` is set**). Offset paging drifts/dupes as new content lands; use `cursor` if you can.                                                                  |
+| `size`   | int     | no       | `20`    | Per-page result count across **all** indices combined (not per index). Clamped to [1, 100].                                                                                                                  |
+| `expand` | boolean | no       | `true`  | When `true`, each hit is enriched with `titlePreview` / `authorUsername` / `authorName` / `createdAt` from the ES source — eliminates the typeahead N+1. Pass `expand=false` to fall back to the bare shape. |
 
 ### Response `200`
 
 ```json
 {
-  "query":   "tafsir methodology",
-  "types":   ["POST", "REEL", "QUESTION", "RESEARCH"],
-  "page":    0,
-  "size":    20,
+  "query":      "tafsir methodology",
+  "types":      ["POST", "REEL", "QUESTION", "RESEARCH"],
+  "page":       0,
+  "size":       20,
+  "degraded":   false,
   "results": [
-    { "type": "RESEARCH", "id": "1b2c…", "score": 13.42 },
-    { "type": "QUESTION", "id": "a91f…", "score": 11.07 },
-    { "type": "POST",     "id": "f66a…", "score":  9.84 },
-    { "type": "REEL",     "id": "55ee…", "score":  8.16 }
+    {
+      "contentType":    "RESEARCH",
+      "contentId":      "1b2c…",
+      "type":           "RESEARCH",
+      "id":             "1b2c…",
+      "score":          13.42,
+      "titlePreview":   "A maqāṣid reading of contemporary hajj logistics",
+      "authorUsername": "yusuf",
+      "authorName":     "Yusuf al-Qaradawi",
+      "createdAt":      "2026-05-26T12:00:00Z"
+    },
+    { "contentType": "QUESTION", "contentId": "a91f…", "type": "QUESTION", "id": "a91f…", "score": 11.07, "titlePreview": "Is it permitted to delay hajj for debt repayment?" }
   ]
 }
 ```
 
+When called with `?cursor=…`, the response also carries `nextCursor` (empty
+string when no more pages exist).
+
 Field-level notes:
 
-- **`type`** — `POST` / `REEL` / `QUESTION` / `RESEARCH`. The frontend
-  uses this to dispatch the right hydration call:
-  - `POST` → `GET /api/v1/posts/{id}`
-  - `REEL` → `GET /api/v1/posts/{id}` (same endpoint, reels live in the same table)
-  - `QUESTION` → `GET /api/v1/questions/{id}`
-  - `RESEARCH` → `GET /api/v1/researches/{id}`
-- **`id`** — canonical UUID of the underlying entity.
-- **`score`** — raw BM25 score (higher = better match). Use for
-  ordering only; the value is not meaningful in isolation.
+- **`contentType`** — `POST` / `REEL` / `QUESTION` / `RESEARCH`. **Canonical
+  field; matches `TagController.TaggedContent`** so the same client code
+  renders search hits and tag-feed rows.
+- **`contentId`** — canonical UUID of the underlying entity.
+- **`type` / `id`** — **deprecated aliases** carrying the same values. Kept
+  for one release window so existing frontends keep working — migrate to
+  `contentType` / `contentId`.
+- **`score`** — raw BM25 score (higher = better match). Use for ordering
+  only; the value is not meaningful in isolation.
+- **`titlePreview` / `authorUsername` / `authorName` / `createdAt`** — present
+  only when `expand=true` (the default). Pulled from the ES document, so no
+  extra round-trips. **No viewer-specific fields** (no `savedByMe`,
+  `reactedByMe`, etc.) — those still require the hydration call (§3).
+- **`degraded`** — `true` when ES failed and `results` is empty; lets the
+  frontend distinguish a real empty result from a service hiccup. Mirrored on
+  the response header `X-Search-Degraded: true`.
+
+Hydration dispatch by `contentType`:
+
+- `POST` → `GET /api/v1/posts/{id}`
+- `REEL` → `GET /api/v1/posts/{id}` (same endpoint, reels live in the same table)
+- `QUESTION` → `GET /api/v1/questions/{id}`
+- `RESEARCH` → `GET /api/v1/researches/{id}`
 
 If `q` is blank or every supplied `types` token is invalid, the
 endpoint returns `200` with an empty `results` array — never an error.
@@ -183,15 +211,17 @@ boot.
 
 ## 5. Error model
 
-| Condition                       | HTTP  | Body                              |
-|---------------------------------|-------|-----------------------------------|
-| Missing `q` parameter           | `400` | Spring default `MISSING_PARAMETER` |
-| Elasticsearch unreachable       | `200` | `results: []` — failure is logged but never propagated. Search is a non-critical read path; it falls back to empty rather than 5xx-ing the search box. |
+| Condition                       | HTTP  | Body                                                                                                                                                              |
+|---------------------------------|-------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Missing `q` parameter           | `400` | Spring default `MISSING_PARAMETER`                                                                                                                                |
+| Elasticsearch unreachable       | `200` | `{ "results": [], "degraded": true, ... }` + response header `X-Search-Degraded: true`. The frontend can use either signal to render a "Search degraded" banner. |
 
 The "ES-down ⇒ empty results" behaviour is deliberate: a degraded
 search box is much less disruptive than a search box that breaks the
-page. The warning is logged at the service level
-(`GlobalSearchService.search`).
+page. The `degraded` flag (added because empty-vs-broken was previously
+indistinguishable on the client) lets the UI tell the user something
+happened. The warning is also logged at the service level
+(`GlobalSearchService.search` / `GlobalSearchService.searchCursor`).
 
 ---
 
@@ -208,8 +238,389 @@ unified one:
 
 The response shape changed: removed endpoints returned bare UUIDs
 under `results: [...]`. The unified endpoint returns
-`{type, id, score}` objects instead — clients need to read `.id` (and
-optionally branch on `.type` for cross-entity result pages).
+`{contentType, contentId, score, ...}` objects instead — clients need
+to read `.contentId` (and optionally branch on `.contentType` for
+cross-entity result pages).
+
+> **Shape note (May 2026).** `contentType` / `contentId` replaced the
+> earlier `type` / `id` field names so the search hit shape matches
+> `TagController.TaggedContent`. The old `type` / `id` fields are still
+> emitted alongside the new ones for one release window — migrate, then
+> they go away.
 
 Tag-filter endpoints (`GET /api/v1/researches/search/tags`) are
 unrelated to relevance search and remain on their domain controllers.
+The newer **cross-content** tag + trending surfaces live under
+`/api/v1/tags/*` — see §7.
+
+---
+
+## 7. Tags, keywords & trending (Cassandra)
+
+Relevance search (§2) answers *"what matches these words?"*. Two other
+discovery surfaces — **trending tags** and **tag feeds** — are powered by a
+dedicated **Cassandra** tag subsystem, not Elasticsearch.
+
+### 7.1 Why two stores
+
+| Need | Store | Why |
+|---|---|---|
+| Type a few letters, get quality-ranked results | **Elasticsearch** | BM25 relevance ranking. Cassandra can look up rows by key but cannot rank them by textual relevance. |
+| "Most-used tags right now" (`hajj`, `ramadan`) | **Cassandra** | A native `COUNTER` per tag is an O(1) increment on every tag use; the trending leaderboard is a tiny pre-ranked partition. |
+| "Everything tagged `#hajj`, newest first" | **Cassandra** | One partition per tag, clustered by time → a single sequential, cursor-paged read. |
+
+This is the "fastest path" for each job: ES for fuzzy relevance, Cassandra for
+exact-tag counters and feeds.
+
+### 7.2 What carries tags, and when it counts
+
+| Content | Tags supplied | Counted toward trending |
+|---|---|---|
+| **Q&A question** | author `tags` on create / edit | immediately (questions are live on create); removed on delete |
+| **Research** | author `tags` | only while **PUBLISHED** — added on publish, removed on unpublish / archive / retract / delete; re-synced on edit |
+| **Posts** | `#hashtags` extracted from text | immediately, on create / edit. Cleared on delete. |
+| **Reels** | `#hashtags` extracted from caption | same as posts; the {@code REEL} scope splits them out for trending. |
+
+> **Posts ↔ tag feed (May 2026).** Posts and reels now fan out into the unified
+> {@code content_by_tag} table on create/edit/delete, so a {@code #hajj} on a
+> post shows up in {@code GET /tags/hajj/content} alongside questions and
+> research. The legacy {@code POST_ACTIONS_API.md} hashtag endpoints
+> ({@code /api/v1/hashtags/{tag}/posts}) still work and remain the source of
+> truth for the posts-only view, but the unified {@code /tags/...} surface is
+> now the recommended one. Historical posts (predating this change) need a
+> one-off `POST /api/v1/admin/tags/backfill-posts` (admin-gated) to surface in
+> the unified feed; new posts are indexed automatically.
+
+**Tag normalization** (applied everywhere): lowercased, trimmed, a leading `#`
+stripped, de-duplicated, capped at **30 tags** per item and **100 chars** each.
+Case folding uses `Locale.ROOT` so it's language-independent — Turkish or
+Greek-locale servers don't fold `I` differently.
+
+**Unicode is preserved.** Tags are stored in whatever script the user typed
+(`رمضان` and `ramadan` are two distinct tags, not the same one). This is
+intentional — the platform doesn't auto-transliterate. Frontends should not
+either; if you want a "see also" hint, surface it client-side without
+collapsing the tags into one.
+
+**`keywords` vs `tags`** — different things:
+- **`tags`** are short, normalized topic labels that drive trending + tag feeds (Cassandra) *and* are indexed in Elasticsearch.
+- **`keywords`** are a free-text string the author adds purely for search discoverability. Indexed in Elasticsearch and boosted (`keywords^2`) in relevance search — **not** part of trending or tag feeds.
+
+### 7.3 `GET /api/v1/tags/trending`
+
+**Auth:** 🟢 Public.
+
+Pre-ranked most-used tags. Reads a single pre-sorted Cassandra partition — no
+per-request sorting.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `scope` | enum | `ALL` | `ALL` (questions + research), `QUESTION`, or `RESEARCH`. Unknown values fall back to `ALL`. |
+| `limit` | int | `20` | Max tags (clamped to 1–100). |
+
+**Response `200`**
+
+```json
+[
+  { "tag": "hajj",    "usageCount": 1284, "rank": 0 },
+  { "tag": "ramadan", "usageCount": 1102, "rank": 1 },
+  { "tag": "zakat",   "usageCount":  734, "rank": 2 }
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `tag` | Normalized tag label |
+| `usageCount` | How many content items in this scope carry the tag (snapshot value) |
+| `rank` | 0-based position (already sorted; render in order) |
+
+> **Freshness:** the leaderboard is recomputed on a short cycle (default every
+> 10 minutes). The underlying counters are always exact; only the ranked
+> snapshot is periodic. So a brand-new tag may take a few minutes to surface in
+> trending even though its feed (§7.4) is live immediately.
+
+### 7.4 `GET /api/v1/tags/{tag}/content`
+
+**Auth:** 🟢 Public.
+
+All content (posts, reels, questions and research) carrying a tag,
+**newest first**, cursor-paged.
+
+| Param      | Type   | Default | Notes                                                                                                                                                                                                                                                          |
+|------------|--------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pageSize` | int    | `20`    | Rows per page (clamped to 1–100).                                                                                                                                                                                                                              |
+| `cursor`   | opaque | —       | Opaque base64 cursor from the previous response's `nextCursor`. Includes both `createdAt` and `contentId` so two rows landing in the same millisecond don't get skipped or duplicated. Bare-`Instant` legacy cursors (no tiebreaker) are still accepted.       |
+
+**Response `200`**
+
+```json
+{
+  "tag": "hajj",
+  "pageSize": 20,
+  "items": [
+    {
+      "contentId":    "1b2c…",
+      "contentType":  "RESEARCH",
+      "authorId":     "9a2c…",
+      "titlePreview": "A maqāṣid reading of contemporary hajj logistics",
+      "createdAt":    "2026-05-26T12:00:00Z"
+    },
+    {
+      "contentId":    "a91f…",
+      "contentType":  "QUESTION",
+      "authorId":     "41ee…",
+      "titlePreview": "Is it permitted to delay hajj for debt repayment?",
+      "createdAt":    "2026-05-25T22:14:00Z"
+    }
+  ],
+  "nextCursor": "MjAyNi0wNS0yNVQyMjoxNDowMFp8YTkxZjAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAw"
+}
+```
+
+`contentType` tells you which detail endpoint to hydrate:
+- `POST` / `REEL` → `GET /api/v1/posts/{id}`
+- `QUESTION` → `GET /api/v1/questions/{id}`
+- `RESEARCH` → `GET /api/v1/researches/{id}`
+
+`titlePreview` is a denormalized snippet so the feed renders without an extra
+fetch. When the underlying entity's title is edited later, the preview is
+refreshed in place — no stale snippets.
+
+Pagination is **exact** (no skips / no dupes) because the cursor packs
+`createdAt` + `contentId`. Treat `nextCursor` as opaque — pass it back
+verbatim, never decode client-side. Stop paging when `items` is shorter than
+`pageSize` or `nextCursor` is empty.
+
+### 7.5 `GET /api/v1/tags/{tag}/usage`
+
+**Auth:** 🟢 Public. Returns one tag's usage count.
+
+Per-scope mode:
+
+```
+GET /api/v1/tags/hajj/usage?scope=RESEARCH
+→ { "tag": "hajj", "scope": "RESEARCH", "usageCount": 312 }
+```
+
+**Breakdown mode** (`scope=*`) — single round-trip for the tag-page header
+chip. Returns counts for every scope (including zero for empty ones):
+
+```
+GET /api/v1/tags/hajj/usage?scope=*
+→ {
+    "tag":    "hajj",
+    "scopes": {
+      "ALL":      496,
+      "QUESTION": 184,
+      "RESEARCH": 312,
+      "POST":       0,
+      "REEL":       0
+    }
+  }
+```
+
+Use breakdown mode when rendering "312 research · 184 questions · 496 total"
+on the tag page header — saves three calls.
+
+### 7.6 `GET /api/v1/tags/search` — autocomplete
+
+**Auth:** 🟢 Public. Prefix-matches the tag catalogue inside a scope.
+Powers chip-input autocomplete on create/edit forms so users converge on
+existing tags (`rama…` → `ramadan`, `ramadan-2026`) instead of inventing
+near-duplicate variants.
+
+| Param    | Type | Default | Notes                                                                                                          |
+|----------|------|---------|----------------------------------------------------------------------------------------------------------------|
+| `prefix` | str  | —       | Required. Normalised before matching (lowercase, leading `#` stripped).                                        |
+| `scope`  | enum | `ALL`   | `ALL` / `QUESTION` / `RESEARCH` / `POST` / `REEL`. Constrain to the type the user is tagging if relevant.       |
+| `limit`  | int  | `10`    | Max suggestions (clamped to 1–50).                                                                              |
+
+**Response `200`**
+
+```json
+[
+  { "tag": "ramadan",      "usageCount": 1102 },
+  { "tag": "ramadan-2026", "usageCount":   84 },
+  { "tag": "ramadan-iftar","usageCount":   12 }
+]
+```
+
+Backed by a clustering-key range scan on `tag_counters` — no secondary index,
+no extra disk. Ordered by tag name (ascending); the client can re-sort by
+`usageCount` if a "popular first" UI is preferred.
+
+### 7.7 How it's stored (Cassandra)
+
+| Table | Key | Role |
+|---|---|---|
+| `content_by_tag` | part. `tag`, clust. `created_at DESC, content_id` | The tag feed (§7.4). One row per (tag, content). |
+| `tags_by_content` | part. `content_id`, clust. `tag` | Reverse index → clean delete/retag without re-parsing text. |
+| `tag_counters` | part. `scope`, clust. `tag`, `usage_count COUNTER` | Source of truth for usage. Each tag use bumps the `ALL` scope and the type scope. |
+| `trending_tags` | part. `scope`, clust. `tag_rank ASC` | Pre-ranked snapshot (§7.3), rebuilt by `TrendingTagJob`. |
+
+Write fan-out per tagged item is best-effort and isolated — a tag-index failure
+never fails the content create/update.
+
+---
+
+## 8. Frontend integration guide
+
+Everything a frontend needs to wire the **search box**, the **trending strip**,
+**tag feeds**, and **tag input** on forms.
+
+### 8.1 Golden rules
+
+1. Search is **public** — no token needed for `/search` or any `/tags/*` read.
+2. With `expand=true` (the default), a search hit already carries `titlePreview` / `authorUsername` / `authorName` / `createdAt` — enough to render a dropdown or card without a follow-up hydration call. For full detail (counters, viewer-specific flags like `savedByMe`), hydrate via the entity's detail endpoint (§3).
+3. Render results in the returned order (BM25). Don't re-sort by `score`.
+4. Search is **degrade-safe**: if ES is down the endpoint returns `200` with `results: []` **and** `degraded: true` (also as the `X-Search-Degraded` header). Show "Search is degraded — try again shortly", not a generic error.
+5. Field names: prefer **`contentType` / `contentId`** (the canonical names that match `/tags/{tag}/content`). The deprecated aliases `type` / `id` still appear on the response for one release window — migrate then ignore them.
+
+### 8.2 The search box
+
+Dropdown / typeahead (expanded hits, cursor paging):
+
+```ts
+async function searchTypeahead(q, types, cursor) {
+  if (!q.trim()) return { results: [], degraded: false, nextCursor: "" };
+  const p = new URLSearchParams({ q, size: "10" });           // expand=true is default
+  if (types?.length) p.set("types", types.join(","));
+  if (cursor)        p.set("cursor", cursor);
+  return fetch(`/api/v1/search?${p}`).then(r => r.json());
+  // results: [{ contentType, contentId, score, titlePreview, authorUsername, createdAt, ... }]
+}
+```
+
+Full results page (offset paging is also fine here — users rarely deep-scroll search):
+
+```ts
+async function searchPage(q, types, page = 0) {
+  if (!q.trim()) return { results: [], degraded: false };
+  const p = new URLSearchParams({ q, page: String(page), size: "20" });
+  if (types?.length) p.set("types", types.join(","));
+  return fetch(`/api/v1/search?${p}`).then(r => r.json());
+}
+```
+
+👉 **What to do**
+
+- **Debounce** input ~250–300 ms; cancel the in-flight request on a new keystroke.
+- **Use cursor mode for typeahead** (`cursor=…` from the previous response's `nextCursor`). Stable across inserts that land during the scroll.
+- **Render dropdown rows directly** from the expanded hit fields. Only hydrate on tap (full detail page) or when you need counters / viewer flags.
+- **Hydrate** by `contentType` for full pages:
+  - `QUESTION` → `GET /api/v1/questions/{id}`
+  - `RESEARCH` → `GET /api/v1/researches/{id}`
+  - `POST` / `REEL` → `GET /api/v1/posts/{id}`
+- **Scoped tabs** ("Questions" / "Research" / "All") map directly to `types`.
+- **Watch `degraded`** — render the banner when `true`. (Or check the `X-Search-Degraded` response header.)
+
+### 8.3 Trending tag strip
+
+```ts
+const trending = await fetch("/api/v1/tags/trending?scope=ALL&limit=12")
+  .then(r => r.json());   // [{tag, usageCount, rank}, ...] already ranked
+```
+
+👉 **What to do**
+
+- Render chips **in array order** (it's pre-ranked; `rank` is informational).
+- Optionally show `usageCount` as a subtle count badge.
+- Tapping a chip opens that tag's feed (§8.4) — route to `/tags/{tag}`.
+- Use `scope=QUESTION` / `scope=RESEARCH` for section-specific trending strips (e.g. a "Trending in Research" rail).
+- Cache for a couple of minutes client-side — trending only refreshes every ~10 min server-side, so polling faster is wasted.
+
+### 8.4 Tag feed page (`/tags/{tag}`)
+
+```ts
+async function tagFeed(tag, cursor) {
+  const p = new URLSearchParams({ pageSize: "20" });
+  if (cursor) p.set("cursor", cursor);              // opaque token from previous nextCursor
+  const r = await fetch(`/api/v1/tags/${encodeURIComponent(tag)}/content?${p}`).then(r => r.json());
+  return { items: r.items, nextCursor: r.nextCursor };
+}
+
+// Header chip — one call gets all four scope counts.
+async function tagBreakdown(tag) {
+  const r = await fetch(`/api/v1/tags/${encodeURIComponent(tag)}/usage?scope=*`).then(r => r.json());
+  return r.scopes;        // { ALL, QUESTION, RESEARCH, POST, REEL }
+}
+```
+
+👉 **What to do**
+
+- Render each row from `titlePreview` + a type badge (`contentType`). Posts/reels, questions, and research all show up here — your renderer needs four type branches.
+- **Paginate by cursor:** pass the opaque `nextCursor` straight back as `cursor`. Never decode client-side; the format is base64 and may change. Stop when `nextCursor` is empty or the page is short.
+- **Header chip:** `usage?scope=*` returns all four breakdown counts in one round-trip — render "312 research · 184 questions · 184 posts · 0 reels · 496 total" without three separate calls.
+- The feed is **live** (updates the moment content is tagged), unlike the trending strip which lags by the refresh cycle.
+
+### 8.5 Tag + keyword input on create/edit forms (Q&A & Research)
+
+Both `POST/PATCH /api/v1/questions` and the research create/update endpoints
+accept:
+
+- **`tags`** — `string[]`, up to 30. A chip/token input. You don't need to
+  lowercase or de-dupe — the server normalizes — but doing it client-side keeps
+  the UI tidy. Strip a leading `#` if your input adds one.
+- **`keywords`** — a single free-text string (up to 2000 chars) for extra search
+  terms. A plain text field.
+
+```ts
+// Autocomplete the chip input as the user types.
+async function suggestTags(prefix, scope = "ALL") {
+  if (!prefix) return [];
+  const p = new URLSearchParams({ prefix, scope, limit: "10" });
+  return fetch(`/api/v1/tags/search?${p}`).then(r => r.json());
+  // [{ tag, usageCount }, ...]
+}
+```
+
+👉 **What to do**
+
+- **Autocomplete with `/tags/search`** as the user types in the chip input. Filtering trending client-side misses any tag not currently in the top-N; the prefix search covers the whole catalogue. Re-sort suggestions by `usageCount` if you want "popular first".
+- On **Q&A**: tags take effect immediately (the question is live on create).
+- On **Research**: tags only start trending once the paper is **published**; a
+  draft's tags are stored but invisible to trending until publish. Reflect this
+  in the UI ("tags will appear in trending after you publish").
+- On **edit**, send the full replacement `tags` array (the server rebuilds the
+  index). Sending `tags: []` clears them; omitting `tags` leaves them unchanged.
+- **Don't transliterate.** `رمضان` and `ramadan` are intentionally distinct tags. If you want a "you might mean…" UX, offer it client-side without folding them into one.
+
+### 8.6 Checklist
+
+- [ ] Search box debounced; blank query skips the call.
+- [ ] Search hits read **`contentType` / `contentId`** (not `type` / `id`).
+- [ ] Typeahead uses **cursor mode** (`cursor=` from `nextCursor`); offset paging is OK for full results pages.
+- [ ] Dropdown rows render from the **inlined** `titlePreview` / `authorUsername` / `createdAt` — hydration only on tap or for full detail pages.
+- [ ] `degraded: true` (or `X-Search-Degraded`) renders a "Search is degraded" banner, not a generic error toast.
+- [ ] Results kept in BM25 order; infinite scroll by `cursor` (or `page` for offset pages).
+- [ ] Trending strip rendered in array order; cached ~minutes; chips deep-link to tag feeds.
+- [ ] Tag feed paginated by the **opaque** `nextCursor` (passed back verbatim); rows badged by `contentType`. Posts and reels appear here alongside Q&A / research.
+- [ ] Tag header uses `usage?scope=*` for the per-scope breakdown — one call, not three.
+- [ ] Tag input uses `/tags/search?prefix=` for autocomplete (full catalogue), not `/tags/trending` (top-N only).
+- [ ] Tag input capped at 30, `#` stripped; keywords a separate free-text field.
+- [ ] Frontend does not transliterate Arabic ↔ Latin tags (kept distinct on purpose).
+- [ ] Research UI tells authors tags trend only after publish.
+
+---
+
+## 9. Operations
+
+### One-off: backfill historical posts into the unified tag feed
+
+Posts created **before** the unified-tag fan-out shipped won't appear in
+`GET /tags/{tag}/content` until they're indexed. Run this once after deploy
+to migrate them forward:
+
+```
+POST /api/v1/admin/tags/backfill-posts          (🔴 ADMIN role required)
+→ {
+    "postsScanned":      12345,
+    "postsWithHashtags":  4321,
+    "tagRowsWritten":     7890,
+    "startedAt":         "2026-05-29T13:00:00Z"
+  }
+```
+
+Idempotent for the feed rows (UPSERTs by primary key), but the trending
+counter increments are **not** idempotent — don't re-run unless you know
+the counters need a refresh.

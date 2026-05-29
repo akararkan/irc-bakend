@@ -10,7 +10,6 @@ public record SourceResponse(
     String title,
     String citationText,
     String url,
-    String doi,
     String isbn,
     String fileUrl,
     String originalFileName,

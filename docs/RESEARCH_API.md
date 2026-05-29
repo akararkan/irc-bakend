@@ -45,7 +45,7 @@ Compared to posts, every research has:
 Research (owned by one "corresponding researcher")
   ├── Contributors    (co-authors, advisors, translators, …)
   ├── MediaFiles      (figures, datasets, supplementary files)
-  ├── Sources         (BOOK / DOI / URL / ISBN / FILE …)
+  ├── Sources         (URL / ISBN / MEDIA_FILE / MANUAL)
   ├── VideoPromo      (optional short promo + thumbnail)
   ├── CoverImage      (optional, shown on cards)
   ├── Tags            (1 – 30 strings)
@@ -57,8 +57,8 @@ Research (owned by one "corresponding researcher")
 ```
 
 Lifecycle: **DRAFT → PUBLISHED → ARCHIVED / RETRACTED**. On publish,
-the server mints an `ircId` (e.g. `IRC-2026-000042`) and a `doi`
-(`10.{prefix}/irc.{year}.{sequence}`).
+the server mints an `ircId` (e.g. `IRC-2026-000042`) — the official
+paper identifier used everywhere the paper is cited or shared.
 
 Real-time deltas fan out via SSE on
 `/api/v1/researches/{researchId}/stream`.
@@ -157,7 +157,7 @@ DRAFT | PUBLISHED | ARCHIVED | RETRACTED
 | Status | Meaning |
 |---|---|
 | `DRAFT` | Default after create. Not visible in public feeds. |
-| `PUBLISHED` | Visible in public feeds. `publishedAt`, `ircId`, and `doi` are populated. |
+| `PUBLISHED` | Visible in public feeds. `publishedAt` and `ircId` are populated. |
 | `ARCHIVED` | Hidden from public feeds but still readable by URL. |
 | `RETRACTED` | Marked as retracted. Stays readable with a retraction banner. |
 
@@ -186,17 +186,59 @@ LIKE
 
 Single reaction — same constraint as Posts and QnA.
 
-### `SourceType`
+### `SourceType` (shared with QnA)
 
 ```
-BOOK | JOURNAL | WEBSITE | URL | DOI | ISBN | FILE | HADITH | QURAN | …
+URL | ISBN | MEDIA_FILE | MANUAL
 ```
+
+These are the **only** valid values (`ak.dev.irc.app.research.enums.SourceType`).
+`MEDIA_FILE` = an uploaded file is the source (attach it via §10); `MANUAL` =
+a free-text citation with no link. There is no `BOOK` / `JOURNAL` / `WEBSITE` /
+`FILE` / `HADITH` / `QURAN` value.
 
 ### `MediaType`
 
 ```
 IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
 ```
+
+### `BodyFormat`
+
+How the server should interpret `description` and `abstractText` on write.
+Stored on the row; echoed back on every read.
+
+```
+PLAIN     -- text only: angle brackets are HTML-escaped, newlines → <br/>
+MARKDOWN  -- CommonMark + GFM (tables, strikethrough, autolinks) → safe HTML
+HTML      -- caller-supplied HTML passed through the OWASP sanitiser
+```
+
+**On write.** Send `bodyFormat` next to `description`/`abstractText`. If
+omitted, the server **auto-detects**: sources containing tag patterns
+(`<p>`, `<h1>`, `<table>`, …) → `HTML`, everything else → `MARKDOWN`
+(a safe superset of plain text).
+
+**Sanitisation is non-negotiable.** Whether the source is Markdown or
+HTML, the rendered output passes through an OWASP whitelist allowing
+formatting (bold, italic, lists, blockquote, code/pre), headings (h1–h6),
+links (rewritten with `rel="nofollow noopener"`), images (http/https
+only), and tables. Stripped: `<script>`, inline event handlers
+(`onclick=`, `onerror=`, …), `style="…"` attributes, `<iframe>`,
+`<object>`, `<embed>`, and any URL with a non-`http(s)` scheme
+(`javascript:`, `data:`, etc.). What you get back in `descriptionHtml` /
+`abstractHtml` is **safe to embed directly** (`v-html`,
+`dangerouslySetInnerHTML`, etc.).
+
+**On read.** Every response exposes both:
+
+- `description` / `abstractText` — the **source** as the author typed it. Use this in the editor so they can round-trip.
+- `descriptionHtml` / `abstractHtml` — the **rendered, sanitised HTML**. Use this in read views (paper detail, cards).
+- `bodyFormat` — which format was used.
+
+Legacy rows (created before rich-text support) carry `bodyFormat: "PLAIN"`
+and their HTML fields are filled in on the fly with HTML-escape +
+newline-to-`<br/>` so the frontend never has to special-case them.
 
 ---
 
@@ -220,7 +262,6 @@ IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
   "abstractText": "Three-paragraph abstract …",
   "keywords":     "X, Y, methodology",
   "citation":     "Al-Qaradawi, Y. (2026). The effects of X on Y…",
-  "doi":          "10.51234/irc.2026.000042",
 
   "videoPromoUrl":      "https://cdn…/promos/r-uuid.mp4",
   "videoPromoDurationSeconds": 47,
@@ -272,6 +313,7 @@ IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
   "ircId":         "IRC-2026-000042",
   "title":         "The effects of X on Y",
   "abstractText":  "Three-paragraph abstract …",
+  "abstractHtml":  "<p>Three-paragraph abstract …</p>",
   "coverImageUrl": "https://cdn…/covers/r-uuid.jpg",
   "videoPromoThumbnailUrl": "https://cdn…/promos/r-uuid-thumb.jpg",
 
@@ -329,11 +371,10 @@ IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
 ```json
 {
   "id":               "S-uuid",
-  "sourceType":       "BOOK",
+  "sourceType":       "ISBN",
   "title":            "Tafsir Ibn Kathir, vol. 6",
   "citationText":     "Ibn Kathir, Tafsir al-Qur'an al-Adheem…",
   "url":              null,
-  "doi":              null,
   "isbn":             "978-9960-892-77-7",
   "fileUrl":          null,
   "originalFileName": null,
@@ -353,7 +394,7 @@ IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
   "username":     "scholar_omar",
   "profileImage": "https://cdn…/omar.jpg",
   "userRole":     "SCHOLAR",
-  "accountType":  "INDIVIDUAL",
+  "accountType":  "VERIFIED_SCHOLAR",
   "role":         "CO_AUTHOR",
   "displayOrder": 1,
   "contributionNote": "Wrote section 3 — methodology",
@@ -375,6 +416,8 @@ IMAGE | VIDEO | AUDIO | DOCUMENT | OTHER
   "mediaUrl":          null,
   "mediaType":         null,
   "mediaThumbnailUrl": null,
+  "voiceUrl":             null,
+  "voiceDurationSeconds": null,
   "likeCount":  12,
   "replyCount": 2,
   "myReaction": "LIKE",
@@ -418,11 +461,11 @@ the multi-step researcher composer.
 ```json
 {
   "title":        "The effects of X on Y",
-  "description":  "Long markdown body …",
+  "description":  "## Background\nLong **markdown** body with [a link](https://…) and a table…",
   "abstractText": "Three-paragraph abstract …",
+  "bodyFormat":   "MARKDOWN",
   "keywords":     "X, Y, methodology",
   "citation":     "Al-Qaradawi, Y. (2026)…",
-  "doi":          null,
   "visibility":   "PUBLIC",
   "scheduledPublishAt": null,
   "commentsEnabled":   true,
@@ -430,7 +473,7 @@ the multi-step researcher composer.
   "tags": ["x", "methodology", "review"],
   "sources": [
     {
-      "sourceType": "BOOK",
+      "sourceType": "ISBN",
       "title":      "Tafsir Ibn Kathir, vol. 6",
       "citationText": "Ibn Kathir …",
       "isbn":       "978-9960-892-77-7",
@@ -471,9 +514,14 @@ curl -X POST https://api.irc.example.com/api/v1/researches \
 **Auth:** 🔴 Scholar / Researcher / Admin, plus 🟡 author-only.
 
 **What it does.** Partial update of any subset of fields in
-`UpdateResearchRequest` (title, description, abstract, keywords,
-citation, doi, visibility, comments/downloads toggles, tags, sources,
-contributors). Omitted fields are left untouched.
+`UpdateResearchRequest` (title, description, abstract, `bodyFormat`,
+keywords, citation, visibility, comments/downloads toggles, tags,
+sources, contributors). Omitted fields are left untouched.
+
+> Updating `description` and/or `abstractText` re-renders the stored
+> sanitised HTML under the row's current `bodyFormat`. Sending an explicit
+> `bodyFormat` re-renders both fields under the new format — useful when
+> migrating an old plain-text paper to Markdown.
 
 **When the frontend uses this.** Edit research → save (works on
 DRAFT and PUBLISHED).
@@ -487,9 +535,9 @@ DRAFT and PUBLISHED).
 **Auth:** 🔴 Scholar / Researcher / Admin, 🟡 author-only.
 
 **What it does.** Transitions `DRAFT → PUBLISHED`, mints the `ircId`
-and `doi` (if not already set), stamps `publishedAt`, and indexes the
-research in Elasticsearch. Following feeds for the researcher's
-followers fan out from this moment.
+(if not already set), stamps `publishedAt`, and indexes the research in
+Elasticsearch. Following feeds for the researcher's followers fan out
+from this moment.
 
 **When the frontend uses this.** "Publish" button on the draft view.
 
@@ -503,8 +551,7 @@ followers fan out from this moment.
 **Auth:** 🔴 / 🟡.
 
 **What it does.** Transitions `PUBLISHED → DRAFT`. Hides from public
-feeds. `ircId` and `doi` are preserved (re-publishing keeps the same
-identifier).
+feeds. `ircId` is preserved (re-publishing keeps the same identifier).
 
 **Response `200`** — updated `ResearchResponse`.
 
@@ -675,7 +722,6 @@ attaching a binary citation file.
   "title":        "Tafsir Ibn Kathir, vol. 6 (revised ed.)",
   "citationText": "Updated citation text…",
   "url":          null,
-  "doi":          null,
   "isbn":         "978-9960-892-77-7",
   "displayOrder": 2
 }
@@ -713,6 +759,11 @@ Contributors are everyone else (co-authors, advisors, …).
 **What it does.** Adds a single contributor. The target user must
 already exist and hold role `RESEARCHER` or `SCHOLAR`. Adding a user
 already on the list returns `409 CONTRIBUTOR_DUPLICATE`.
+
+> **Pre-filter the picker** so the user only sees valid co-authors and never
+> hits the role rejection: use
+> `GET /api/v1/users/search?eligibleContributor=true&q=…` (USER_API §9.6),
+> which returns only `RESEARCHER` / `SCHOLAR` accounts.
 
 **Request body** (`ContributorRequest`):
 
@@ -932,6 +983,38 @@ screen.
 
 **Response `200`** — `List<String>`.
 
+> This is the **research-only** trending list (a Postgres `GROUP BY` over
+> `research_tags`). For a **cross-content** trending strip that blends research
+> with Q&A — and for tag feeds — prefer the unified Cassandra endpoints in
+> §14.4, which are faster (pre-ranked) and scope-filterable.
+
+---
+
+### 14.4 Unified cross-content tags & trending (Cassandra)
+
+Published research participates in the **shared tag subsystem** (research + Q&A)
+backed by Cassandra. The fan-out follows the **publish lifecycle**, so trending
+reflects live scholarship only:
+
+| Lifecycle event | Effect on Cassandra tags |
+|---|---|
+| **publish** | research's tags indexed (counters + tag feed) |
+| **edit while published** (`tags` changed) | tag index rebuilt |
+| **unpublish / archive / retract / delete** | research's tags removed |
+| create as draft | **no** trending effect until published |
+
+Endpoints (all 🟢 public — full contract + frontend guide in
+[`SEARCH_API.md` §7–§8](./SEARCH_API.md#7-tags-keywords--trending-cassandra)):
+
+| Surface | Endpoint |
+|---|---|
+| Trending tags | `GET /api/v1/tags/trending?scope=RESEARCH` (or `ALL`) |
+| Everything tagged `X`, newest first | `GET /api/v1/tags/{tag}/content` |
+| A tag's usage count | `GET /api/v1/tags/{tag}/usage?scope=RESEARCH` |
+
+`keywords` (the free-text field on the research) is indexed in Elasticsearch and
+boosted in relevance search (§14.1), but is **not** part of tags/trending.
+
 ---
 
 ## 15. Save / bookmark
@@ -1056,8 +1139,13 @@ top-level comment.
 **Auth:** 🟢 Public.
 
 **What it does.** Page of top-level comments. Each `CommentResponse`
-includes its replies inline in the `replies` array (already capped at
-depth-1).
+carries its replies inline in the `replies` array — **complete, not
+truncated** (the depth-1 cap keeps a thread bounded, so there is no
+"load more replies" endpoint; the whole reply set is always present).
+`replyCount` and the `replies` array length therefore agree.
+
+Comments may carry voice (`voiceUrl` / `voiceDurationSeconds`) as well as
+`mediaUrl` — render whichever is set.
 
 **Response `200`** — `Page<CommentResponse>`.
 
@@ -1203,10 +1291,12 @@ media-file download; omit it for the "main paper PDF" (the first
 DOCUMENT media). Emits `DOWNLOAD_COUNT_UPDATED` on the SSE stream.
 Blocked if `downloadsEnabled: false` → `409 DOWNLOADS_DISABLED`.
 
-**Response `200`** — the signed download URL as a plain string:
+**Response `200`** — a JSON envelope with the signed URL. `url` is `null` when
+no `mediaId` was supplied (the download is recorded but there's no single file
+to fetch):
 
-```text
-https://r2.example.com/research/r-uuid/main.pdf?X-Amz-Signature=…
+```json
+{ "url": "https://r2.example.com/research/r-uuid/main.pdf?X-Amz-Signature=…" }
 ```
 
 ---
@@ -1245,17 +1335,18 @@ link.
 
 ---
 
-### 19.3 `POST /api/v1/researches/{id}/cite` — record an external citation
+### 19.3 `POST /api/v1/researches/{id}/cite` — record a citation
 
-**Auth:** 🟢 Public.
+**Auth:** 🔵 Authenticated. **De-duplicated** per `(research, citer)` within a
+30-day window, so the public counter can't be looped by a single caller (a
+repeat cite in the window is a silent no-op).
 
-**What it does.** Increments `citationCount` on the research. Called
-by external citation services (DOI resolver webhooks, third-party
-citation tools). Emits `CITATION_COUNT_UPDATED` on the SSE stream.
+**What it does.** Increments `citationCount` on the research (once per citer per
+window) and emits `CITATION_COUNT_UPDATED` on the SSE stream.
 
-**When the frontend uses this.** Generally not — this is meant to be
-called by server-to-server integrations. The frontend may call it
-when the user clicks "I cited this in my paper" if such a UI exists.
+**When the frontend uses this.** When the signed-in user marks "I cited this in
+my paper." (Server-to-server citation integrations must authenticate with a
+valid token — the endpoint is no longer anonymous.)
 
 **Response:** `200 OK`.
 
@@ -1276,17 +1367,44 @@ download-count, share-count, save-count, citation-count, and
 lifecycle events all push here. A `connected` handshake fires on
 subscribe, and a `heartbeat` every 25 s.
 
-**Event payload schema** — `ResearchRealtimeEvent`:
+**Event payload schema** — `ResearchRealtimeEvent` (flat; `null` fields omitted from the wire):
 
 ```json
 {
-  "eventType":  "REACTION_ADDED",
-  "researchId": "R-uuid",
-  "actorId":    "U-uuid",
-  "timestamp":  "2026-05-21T10:15:00.012Z",
-  "data": { /* event-specific payload */ }
+  "eventType":      "COMMENT_CREATED",
+  "researchId":     "R-uuid",
+  "actorId":        "U-uuid",
+  "actorUsername":  "ali",
+  "actorAvatarUrl": "https://cdn…/ali.jpg",
+
+  "commentId":       "C-uuid",
+  "parentCommentId": null,
+  "comment":         { "…": "full CommentResponse — see §5" },
+
+  "reactionCount": 9, "commentCount": 13, "shareCount": 2, "saveCount": 18,
+  "viewCount": 1247, "downloadCount": 44, "citationCount": 3,
+  "timestamp":  "2026-05-21T10:15:00.012Z"
 }
 ```
+
+There is **no `data` wrapper** — read the fields directly off the event.
+
+- **Comment events** (`COMMENT_CREATED`, `REPLY_CREATED`, `COMMENT_EDITED`) embed
+  the full **`comment`** (`CommentResponse`) + **`parentCommentId`** (root comment
+  id for replies) → patch that row in place, **no refetch**. The embedded
+  comment's `myReaction` is neutral; resolve it per-viewer. Comment **reaction**
+  events (`COMMENT_REACTION_ADDED/REMOVED`) carry `commentId` + the absolute
+  `commentReactionCount` — patch the like count on the known row.
+- **`*_COUNT_UPDATED` events carry the post-action ABSOLUTE value** in the named
+  field (`viewCount`, `saveCount`, `downloadCount`, `shareCount`, `citationCount`,
+  `reactionCount`, `commentCount`) — **set** the counter, don't `+1`. So
+  `SAVE_COUNT_UPDATED` has no save/unsave ambiguity: read `saveCount`.
+- **Lifecycle events** (`RESEARCH_PUBLISHED` / `RESEARCH_UPDATED` / `RESEARCH_DELETED`)
+  carry the fresh **`status`** — patch the status pill in place (§21).
+- **Actor suppression:** when the stream is authenticated (`?token=`), the server
+  does **not** echo your own action back to you (it skips the subscriber whose
+  viewer id equals the event's `actorId`), so optimistic UIs don't double-count.
+  Per-user, so a second tab of yours won't get the echo either.
 
 See §21 for the full event-type list.
 
@@ -1296,6 +1414,10 @@ See §21 for the full event-type list.
 
 Defined in
 `ak.dev.irc.app.research.realtime.ResearchRealtimeEventType`.
+
+> Comment events embed the full `comment` (`CommentResponse`) + `parentCommentId`,
+> and every `*_COUNT_UPDATED` carries the named **absolute** counter value — see
+> §20.1 for the payload contract.
 
 ### Reaction events
 
@@ -1337,6 +1459,13 @@ Defined in
 | `RESEARCH_DELETED` | Research deleted. |
 | `RESEARCH_PUBLISHED` | DRAFT → PUBLISHED. |
 
+> **Emitted with `status`.** Each lifecycle event carries the fresh **`status`**
+> (`"PUBLISHED"`, `"ARCHIVED"`, `"RETRACTED"`, `"DRAFT"` on unpublish) so passive
+> viewers patch the status pill in place — no refetch. `RESEARCH_PUBLISHED` fires
+> on publish (including scheduled auto-publish); `RESEARCH_UPDATED` on edit **and**
+> on archive / retract / unpublish (status transitions); `RESEARCH_DELETED` on
+> delete. The actor's own stream is suppressed (§20.1).
+
 ---
 
 ## 22. Cassandra denormalized tables
@@ -1364,17 +1493,23 @@ state for fast viewer-side reads.
 - **Single reaction type.** LIKE only — "academic not entertainment."
 - **Self-engagement allowed.** Users may save / share / react to
   their own researches; self-notifications are skipped server-side.
-- **Counter accuracy.** All counters (views, downloads, reactions,
-  comments, saves, shares, citations) are atomic CQL counters and
-  read-through cached in Redis. Treat SSE counter events as the
-  authoritative push delta.
-- **DOI / IRC ID immutability.** Once minted (on first publish), the
-  `doi` and `ircId` are stable — unpublish + re-publish keeps the same
-  identifiers so citations don't break.
-- **Author check.** Most mutating endpoints throw `SecurityException`
-  if the caller is not the corresponding researcher. Until a refactor
-  lands, this falls to the catch-all `500` envelope — semantically a
-  `403`.
+- **Counter accuracy.** SSE `*_COUNT_UPDATED` events carry the post-action
+  **absolute** value in the named field (§20.1) — set the counter from it
+  rather than applying a local `+1`/`-1`.
+- **Actor-event suppression (SSE).** The per-research stream does **not** echo an
+  action back to the user who performed it (when the stream is authenticated via
+  `?token=`) — optimistic UIs won't double-count. See §20.1.
+- **Scheduled publish is active.** `scheduledPublishAt` (set on create/update,
+  must be in the future) **auto-publishes** a DRAFT when its time arrives — a job
+  runs ~every 60 s and takes the normal publish path (ES index, @mentions,
+  trending tags, `RESEARCH_PUBLISHED` broadcast). A draft still missing a
+  title/abstract is skipped until valid. Manual `POST /{id}/publish` works any time.
+- **IRC ID immutability.** Once minted (on first publish), the `ircId`
+  is stable — unpublish + re-publish keeps the same identifier so citations
+  don't break.
+- **Author check.** Mutating endpoints throw `SecurityException` if the caller
+  is not the corresponding researcher; the global handler maps this to a
+  `403 FORBIDDEN` (errorCode `FORBIDDEN`) JSON envelope.
 - **Role gating.** A user without role `SCHOLAR` / `RESEARCHER` /
   `ADMIN` / `SUPER_ADMIN` cannot author or mutate researches. The
   frontend should hide the "Publish research" entrypoint for plain

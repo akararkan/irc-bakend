@@ -52,7 +52,37 @@ public interface S3StorageService {
     S3ObjectStream getObject(String s3Key);
 
     /**
-     * Wrapper holding a streamed S3 object and its metadata.
+     * Ranged fetch for HTTP {@code 206 Partial Content} (video/audio seeking).
+     *
+     * @param s3Key       the object key
+     * @param rangeHeader the raw HTTP {@code Range} value (e.g. {@code "bytes=0-1023"});
+     *                    {@code null}/blank → full object
+     * @return the stream wrapper; {@link S3ObjectStream#contentRange()} is non-null
+     *         when the store returned a partial body
+     *
+     * <p>Default impl ignores the range and returns the whole object (so storage
+     * backends that can't range still work); the R2/S3 impl forwards it to the
+     * store for a true partial read.</p>
      */
-    record S3ObjectStream(InputStream inputStream, String contentType, long contentLength) {}
+    default S3ObjectStream getObject(String s3Key, String rangeHeader) {
+        return getObject(s3Key);
+    }
+
+    /**
+     * Wrapper holding a streamed S3 object and its metadata.
+     *
+     * @param contentRange the {@code Content-Range} header value when this is a
+     *                     partial (206) response (e.g. {@code "bytes 0-1023/713494"});
+     *                     {@code null} for a full (200) response
+     * @param totalLength  the full object size in bytes (even for a partial read);
+     *                     {@code null} if unknown
+     */
+    record S3ObjectStream(InputStream inputStream, String contentType, long contentLength,
+                          String contentRange, Long totalLength) {
+
+        /** Full-object convenience: no partial-content metadata. */
+        public S3ObjectStream(InputStream inputStream, String contentType, long contentLength) {
+            this(inputStream, contentType, contentLength, null, null);
+        }
+    }
 }

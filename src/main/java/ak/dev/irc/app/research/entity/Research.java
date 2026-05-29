@@ -1,6 +1,7 @@
 package ak.dev.irc.app.research.entity;
 
 import ak.dev.irc.app.common.BaseAuditEntity;
+import ak.dev.irc.app.common.text.BodyFormat;
 import ak.dev.irc.app.research.enums.ResearchStatus;
 import ak.dev.irc.app.research.enums.ResearchVisibility;
 import ak.dev.irc.app.user.entity.User;
@@ -50,17 +51,43 @@ public class Research extends BaseAuditEntity {
     @Column(name = "slug", nullable = false, unique = true, length = 600)
     private String slug;
 
+    /**
+     * Body source as the author typed it (Markdown, HTML, or plain text — see
+     * {@link #bodyFormat}). This is the canonical, round-trippable copy used
+     * when the author opens the edit screen.
+     */
     @Column(name = "description", nullable = false, columnDefinition = "TEXT")
     private String description;
 
+    /**
+     * Pre-rendered, OWASP-sanitised HTML of {@link #description}. Generated on
+     * write by {@code RichTextService}; safe to inject directly into the DOM.
+     * Null for legacy rows; the mapper falls back to escaping the source on read.
+     */
+    @Column(name = "description_html", columnDefinition = "TEXT")
+    private String descriptionHtml;
+
+    /** Abstract source — see {@link #description} for the format contract. */
     @Column(name = "abstract_text", nullable = false, columnDefinition = "TEXT")
     private String abstractText;
+
+    /** Pre-rendered, sanitised HTML of {@link #abstractText}. */
+    @Column(name = "abstract_html", columnDefinition = "TEXT")
+    private String abstractHtml;
+
+    /**
+     * How {@link #description} and {@link #abstractText} should be interpreted.
+     * Null = legacy plain-text row written before rich-text support landed.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "body_format", length = 16)
+    private BodyFormat bodyFormat;
 
     // ── IRC Official Identifier ───────────────────────────────────────────────
 
     /**
      * Sequential number pulled from the DB sequence {@code research_irc_seq}.
-     * Assigned on creation. Used to build the IRC ID and DOI.
+     * Assigned on creation. Used to build the IRC ID.
      * Never null after the first save.
      */
     @Column(name = "irc_sequence_number", unique = true)
@@ -97,14 +124,6 @@ public class Research extends BaseAuditEntity {
     /** Formatted citation text (APA, MLA, etc.) auto-generated or entered */
     @Column(name = "citation", columnDefinition = "TEXT")
     private String citation;
-
-    /**
-     * Digital Object Identifier.
-     * Auto-generated on publish as {@code 10.{prefix}/irc.{year}.{sequence}}
-     * unless the researcher manually provided one in the create/update request.
-     */
-    @Column(name = "doi", length = 255)
-    private String doi;
 
     // ── Counters (denormalised for read performance) ──────────────────────────
 

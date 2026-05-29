@@ -2,9 +2,7 @@ package ak.dev.irc.app.user.entity;
 
 import ak.dev.irc.app.common.BaseAuditEntity;
 import ak.dev.irc.app.common.enums.Language;
-import ak.dev.irc.app.user.enums.AccountType;
 import ak.dev.irc.app.user.enums.Role;
-import ak.dev.irc.app.user.enums.VerificationTier;
 import jakarta.persistence.*;
 import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
@@ -14,6 +12,24 @@ import org.springframework.security.core.userdetails.UserDetails;
 import java.time.LocalDateTime;
 import java.util.*;
 
+/**
+ * Auth-side user. Public/social fields live on {@link UserProfile} (1:1).
+ *
+ * <p>Authorisation surface is intentionally tiny: {@link Role} is the only
+ * dimension — {@code USER}, {@code SCHOLAR}, {@code RESEARCHER}, {@code ADMIN}.
+ * No separate account-type or verification-tier complexity; the badge a user
+ * displays follows directly from their role (see
+ * {@code UserMapper.resolveBadges}).</p>
+ *
+ * <h3>Spring Security note</h3>
+ * <p>We do <strong>not</strong> override {@link UserDetails#getUsername()} —
+ * Lombok's generated getter on the {@code username} field satisfies the
+ * interface and returns the actual handle. The auth flow looks up users by
+ * email-or-username via {@code CustomUserDetailsService.loadUserByUsername},
+ * which accepts either form, so the principal name is irrelevant to login.
+ * This used to be overridden to return {@code email}, which silently broke
+ * every business call site that asked for a user's display handle.</p>
+ */
 @Entity
 @Table(
     name = "users",
@@ -21,7 +37,7 @@ import java.util.*;
         @Index(name = "idx_user_email",        columnList = "email"),
         @Index(name = "idx_user_username",     columnList = "username"),
         @Index(name = "idx_user_deleted",      columnList = "deleted_at"),
-        @Index(name = "idx_user_account_type", columnList = "account_type")
+        @Index(name = "idx_user_role",         columnList = "role")
     }
 )
 @Getter
@@ -44,6 +60,7 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "lname", nullable = false, length = 80)
     private String lname;
 
+    /** User-chosen handle, e.g. {@code mala}. Never derived from email. */
     @Column(name = "username", nullable = false, unique = true, length = 50)
     private String username;
 
@@ -59,31 +76,6 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "role", nullable = false, length = 20)
     @Builder.Default
     private Role role = Role.USER;
-
-    // ── Account classification ────────────────────────────────────────────────
-
-    /** What kind of account — drives badge rendering and UI behaviour. */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "account_type", nullable = false, length = 30)
-    @Builder.Default
-    private AccountType accountType = AccountType.REGULAR;
-
-    /**
-     * Scholar sub-level — gates fatwa issuing and research review.
-     * Set only by admin on approval of a ScholarVerification application.
-     */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "verification_tier", nullable = false, length = 30)
-    @Builder.Default
-    private VerificationTier verificationTier = VerificationTier.NONE;
-
-    /**
-     * True ONLY for the IRC platform account (accountType = PLATFORM_OFFICIAL).
-     * Blocks normal login — this account acts only through the system.
-     */
-    @Column(name = "is_system_account", nullable = false)
-    @Builder.Default
-    private boolean isSystemAccount = false;
 
     /** ORCID researcher identifier, e.g. 0000-0002-1825-0097. */
     @Column(name = "orcid_id", length = 20)
@@ -177,6 +169,8 @@ public class User extends BaseAuditEntity implements UserDetails {
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
+        // SCHOLAR carries RESEARCHER privileges (a scholar IS a researcher);
+        // every other role just maps to its own authority.
         if (role == Role.SCHOLAR) {
             return List.of(
                 new SimpleGrantedAuthority("ROLE_SCHOLAR"),
@@ -187,24 +181,27 @@ public class User extends BaseAuditEntity implements UserDetails {
     }
 
     @Override public String getPassword()              { return password; }
-    @Override public String getUsername()              { return email; }
+    // getUsername() is provided by Lombok's @Getter — returns the username field.
     @Override public boolean isAccountNonExpired()     { return isAccountNonExpired; }
     @Override public boolean isAccountNonLocked()      { return isAccountNonLocked; }
     @Override public boolean isCredentialsNonExpired() { return isCredentialsNonExpired; }
 
-    /** System accounts cannot log in — blocked at the security layer. */
-    @Override public boolean isEnabled()               { return isEnabled && deletedAt == null && !isSystemAccount; }
+    @Override public boolean isEnabled()               { return isEnabled && deletedAt == null; }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     public String  getFullName()       { return fname + " " + lname; }
     public boolean isDeleted()         { return deletedAt != null; }
     public boolean isEmailVerified()   { return emailVerifiedAt != null; }
-    public boolean isPlatformAccount() { return isSystemAccount; }
 
+    /** Convenience: a scholar account (the role implies verification). */
     public boolean isVerifiedScholar() {
-        return verificationTier == VerificationTier.SCHOLAR
-            || verificationTier == VerificationTier.SENIOR_SCHOLAR;
+        return role == Role.SCHOLAR;
+    }
+
+    /** Convenience: any account allowed to publish research (scholars + researchers). */
+    public boolean isResearcher() {
+        return role == Role.SCHOLAR || role == Role.RESEARCHER;
     }
 
     // ── Profile convenience accessors (delegate to UserProfile) ──────────────

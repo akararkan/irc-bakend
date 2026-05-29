@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -70,7 +71,11 @@ public class MediaController {
 
         log.debug("Proxying media request for key: {}", s3Key);
 
-        S3ObjectStream obj = storageService.getObject(s3Key);
+        // Forward any HTTP Range so <video>/<audio> can seek. R2 returns the
+        // partial body + a Content-Range; absent a Range we serve the full object
+        // but still advertise Accept-Ranges so the browser knows it may seek.
+        String rangeHeader = request.getHeader(HttpHeaders.RANGE);
+        S3ObjectStream obj = storageService.getObject(s3Key, rangeHeader);
 
         // Determine content type from S3 metadata or file extension
         String contentType = obj.contentType();
@@ -78,15 +83,22 @@ public class MediaController {
             contentType = guessContentType(s3Key);
         }
 
+        boolean partial = obj.contentRange() != null && !obj.contentRange().isBlank();
+
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType(contentType));
+        headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
         if (obj.contentLength() > 0) {
-            headers.setContentLength(obj.contentLength());
+            headers.setContentLength(obj.contentLength());   // length of THIS body (partial or full)
         }
-        // Allow cross-origin access for any embedded usage
-        headers.set("Access-Control-Allow-Origin", "*");
+        if (partial) {
+            headers.set(HttpHeaders.CONTENT_RANGE, obj.contentRange());
+        }
+        // NOTE: CORS headers are emitted by the Spring Security CORS filter — do
+        // NOT set Access-Control-Allow-Origin here (it produced a duplicate ACAO).
 
-        return ResponseEntity.ok()
+        return ResponseEntity
+                .status(partial ? HttpStatus.PARTIAL_CONTENT : HttpStatus.OK)
                 .headers(headers)
                 .cacheControl(CacheControl.maxAge(Duration.ofDays(7)).cachePublic())
                 .body(new InputStreamResource(obj.inputStream()));

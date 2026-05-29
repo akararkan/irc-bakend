@@ -79,6 +79,9 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     Page<Question> findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(UUID authorId, Pageable pageable);
 
+    /** Profile-stat count: a user's non-deleted questions. */
+    long countByAuthorIdAndDeletedAtIsNull(UUID authorId);
+
     Optional<Question> findByIdAndDeletedAtIsNull(UUID id);
 
     /** Atomic view-count bump — runs in its own write tx so the read path can stay readOnly. */
@@ -100,6 +103,15 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Modifying
     @Query("UPDATE Question q SET q.answerCount = CASE WHEN q.answerCount + :delta < 0 THEN 0 ELSE q.answerCount + :delta END WHERE q.id = :id")
     void adjustAnswerCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    /** Atomic clamp-at-zero adjust of the denormalised {@code acceptedAnswerCount} (D2). */
+    @Modifying
+    @Query("UPDATE Question q SET q.acceptedAnswerCount = CASE WHEN q.acceptedAnswerCount + :delta < 0 THEN 0 ELSE q.acceptedAnswerCount + :delta END WHERE q.id = :id")
+    void adjustAcceptedAnswerCount(@Param("id") UUID id, @Param("delta") long delta);
+
+    /** Batch-load (questionId, tagName) rows for a page of questions (D1) — avoids the per-row lazy N+1. */
+    @Query(value = "SELECT question_id, tag_name FROM question_tags WHERE question_id IN (:ids)", nativeQuery = true)
+    List<Object[]> findTagsByQuestionIds(@Param("ids") List<UUID> ids);
 
     /**
      * Atomic clamp-at-zero increment/decrement of {@code saveCount}. Mirrors
