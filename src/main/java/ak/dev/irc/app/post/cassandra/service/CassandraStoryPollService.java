@@ -48,6 +48,8 @@ public class CassandraStoryPollService {
     private final PollCounterRepository        counterRepo;
     private final StoryLookupRepository        storyLookupRepo;
     private final CounterService               counterService;
+    private final ak.dev.irc.app.post.cassandra.repository.PollByIdRepository pollByIdRepo;
+    private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -69,7 +71,27 @@ public class CassandraStoryPollService {
                 .authorId(authorId).createdAt(now)
                 .build();
         pollRepo.save(poll);
+
+        // Reverse index so pollId → (storyId, authorId) is a single-row lookup.
+        // Required for the realtime push to the author on every vote, and for
+        // the author-only check on the voter-list endpoint.
+        try {
+            pollByIdRepo.save(ak.dev.irc.app.post.cassandra.entity.PollByIdEntity.builder()
+                    .pollId(pollId).storyId(storyId).authorId(authorId)
+                    .build());
+        } catch (Exception e) {
+            // Best-effort — the poll still works without the index; we just
+            // lose the realtime push and fall back to authenticated-only on
+            // the voter list. Logged at WARN so the gap is visible in ops.
+            log.warn("[POLL] reverse-index write for pollId={} failed: {}",
+                    pollId, e.getMessage());
+        }
         return poll;
+    }
+
+    /** Look up the (storyId, authorId) tuple a poll belongs to. */
+    public Optional<ak.dev.irc.app.post.cassandra.entity.PollByIdEntity> findOwnership(UUID pollId) {
+        return pollByIdRepo.findById(pollId);
     }
 
     public Optional<StoryPollEntity> getPollForStory(UUID storyId) {
@@ -114,7 +136,41 @@ public class CassandraStoryPollService {
                 .votedAt(now).voterId(voterId)
                 .build());
         counterService.incrementPollVote(pollId, choice);
-        return readCounts(pollId, choice);
+
+        CastVoteResult result = readCounts(pollId, choice);
+        pushLiveTally(pollId, result);
+        return result;
+    }
+
+    /**
+     * Push a {@code POLL_VOTE_CAST} tray event to the poll's author so the
+     * StoryEditor / story viewer pane updates without polling. Best-effort —
+     * the vote is already persisted; if the author can't be resolved (old
+     * poll without a reverse-index row, or the row was deleted) we just skip
+     * the push.
+     */
+    private void pushLiveTally(UUID pollId, CastVoteResult result) {
+        try {
+            Optional<ak.dev.irc.app.post.cassandra.entity.PollByIdEntity> owner =
+                    pollByIdRepo.findById(pollId);
+            if (owner.isEmpty() || owner.get().getAuthorId() == null) return;
+            UUID authorId = owner.get().getAuthorId();
+            UUID storyId  = owner.get().getStoryId();
+
+            ak.dev.irc.app.post.realtime.StoryTrayEvent event =
+                    ak.dev.irc.app.post.realtime.StoryTrayEvent.builder()
+                    .eventType(ak.dev.irc.app.post.realtime.StoryTrayEventType.POLL_VOTE_CAST)
+                    .storyId(storyId)
+                    .pollId(pollId)
+                    .voteA(result.voteA())
+                    .voteB(result.voteB())
+                    .voteTotal(result.voteA() + result.voteB())
+                    .build();
+            trayPublisher.publish(authorId, event);
+        } catch (Exception e) {
+            log.debug("[POLL] live-tally push for pollId={} skipped: {}",
+                    pollId, e.getMessage());
+        }
     }
 
     public Optional<PollVoteEntity> userVote(UUID pollId, UUID voterId) {

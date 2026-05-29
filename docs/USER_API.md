@@ -201,7 +201,11 @@ Fine-grained event types delivered as notifications.
 `USER_MENTIONED` — cross-source; always lands in the MENTIONS inbox tab
 
 **System**
-`SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`
+`SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`, `TRENDING_DIGEST`
+
+> `TRENDING_DIGEST` is the once-a-day server-pushed "trending in scholarship"
+> notification (X-style). It lives in the SYSTEM inbox tab but is gated by its
+> own `trending` email toggle. Full details in `NOTIFICATIONS_API.md` §11.6.
 
 ### 5.7 NotificationCategory
 
@@ -214,7 +218,7 @@ Coarse inbox tab grouping. Derived from `NotificationType` at response time — 
 | `RESEARCH` | `PUBLICATION_*`, `RESEARCH_CONTRIBUTOR_ADDED` |
 | `MENTIONS` | `USER_MENTIONED` |
 | `SOCIAL` | `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`, `CONNECTION_*` |
-| `SYSTEM` | `SYSTEM_*`, `ACCOUNT_WARNING` |
+| `SYSTEM` | `SYSTEM_*`, `ACCOUNT_WARNING`, `TRENDING_DIGEST` |
 
 ---
 
@@ -1789,7 +1793,8 @@ GET /api/v1/users/me/email-preferences
   "master":   true,
   "social":   true,
   "mentions": true,
-  "system":   true
+  "system":   true,
+  "trending": true
 }
 ```
 
@@ -1798,7 +1803,8 @@ GET /api/v1/users/me/email-preferences
 | `master` | Global email kill switch — `false` suppresses all outbound emails |
 | `social` | Follow / block / social interaction emails |
 | `mentions` | `@mention` notification emails |
-| `system` | System announcements and account warnings |
+| `system` | System messages, announcements, **and account warnings** (security-critical — keep on unless you have a reason) |
+| `trending` | Daily "trending in scholarship" digest emails (the `TRENDING_DIGEST` notification — see `NOTIFICATIONS_API.md` §11.6). Independent from `system` so muting the digest never silences account warnings. |
 
 ---
 
@@ -1817,7 +1823,8 @@ PATCH /api/v1/users/me/email-preferences
   "master":   true,
   "social":   false,
   "mentions": true,
-  "system":   true
+  "system":   true,
+  "trending": false
 }
 ```
 

@@ -18,6 +18,7 @@ public record UserEmailContext(
         boolean emailNotificationsEnabled,
         boolean emailSocialEnabled,
         boolean emailMentionsEnabled,
-        boolean emailSystemEnabled
+        boolean emailSystemEnabled,
+        boolean emailTrendingEnabled
 ) implements Serializable {
 }

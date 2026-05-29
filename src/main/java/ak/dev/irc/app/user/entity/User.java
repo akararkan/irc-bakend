@@ -135,6 +135,16 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Builder.Default
     private boolean emailSystemEnabled = true;
 
+    /**
+     * Opt-out for the daily {@code TRENDING_DIGEST} notification (X-style
+     * "what scholars and researchers are talking about today"). Separate from
+     * {@code emailSystemEnabled} so a user can keep account-warning emails
+     * while muting the digest. Default {@code true}.
+     */
+    @Column(name = "email_trending_enabled", nullable = false)
+    @Builder.Default
+    private boolean emailTrendingEnabled = true;
+
     // ── Session ───────────────────────────────────────────────────────────────
 
     @Column(name = "last_login_at")

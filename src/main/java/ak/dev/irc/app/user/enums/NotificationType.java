@@ -43,5 +43,8 @@ public enum NotificationType {
 
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,
-    ACCOUNT_WARNING
+    ACCOUNT_WARNING,
+
+    // ── Trending digest (X-style daily push) ─────────────────
+    TRENDING_DIGEST
 }

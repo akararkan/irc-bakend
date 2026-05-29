@@ -1,10 +1,14 @@
 package ak.dev.irc.app.post.cassandra.controller;
 
+import ak.dev.irc.app.common.exception.ForbiddenException;
+import ak.dev.irc.app.common.exception.UnauthorizedException;
 import ak.dev.irc.app.post.cassandra.entity.HighlightByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryInHighlightEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraHighlightService;
+import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -52,5 +56,25 @@ public class CassandraHighlightController {
                                             @RequestParam Instant createdAt) {
         highlightService.removeStoryFromHighlight(highlightId, createdAt, storyId);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Re-order the authenticated user's highlights to match the supplied
+     * sequence. Pass the full list of highlight ids in the desired
+     * left-to-right order; foreign or unknown ids are silently skipped.
+     * Re-running with the same list is a no-op.
+     *
+     * <p>Example body: {@code { "order": ["h1-uuid", "h2-uuid", ...] }}.</p>
+     */
+    public record ReorderRequest(List<UUID> order) {}
+
+    @PatchMapping("/order")
+    public List<HighlightByAuthorEntity> reorder(@RequestBody ReorderRequest req,
+                                                 @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (req == null || req.order() == null) {
+            throw new ForbiddenException("order list is required");
+        }
+        return highlightService.reorderHighlights(user.getId(), req.order());
     }
 }

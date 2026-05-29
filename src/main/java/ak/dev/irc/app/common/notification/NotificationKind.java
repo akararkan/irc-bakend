@@ -223,10 +223,23 @@ public enum NotificationKind {
     SYSTEM_ANNOUNCEMENT (PrefCategory.SYSTEM, false, true),
 
     /** Moderation warning issued on your account. Always email-eligible. */
-    ACCOUNT_WARNING     (PrefCategory.SYSTEM, false, true);
+    ACCOUNT_WARNING     (PrefCategory.SYSTEM, false, true),
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  TRENDING — periodic server-pushed "what scholars/researchers
+    //  are talking about" digest. Gated by its own preference category so
+    //  a user can mute the daily digest without losing account warnings.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Once-a-day digest of tags trending in scholarly content (questions +
+     * research). Fired by {@code TrendingNotificationJob}; one notification
+     * per user per day max via the {@code TRENDING_DIGEST:{date}} group key.
+     */
+    TRENDING_DIGEST     (PrefCategory.TRENDING, false, true);
 
     /** Maps to the corresponding {@code user.email*Enabled} toggle. */
-    public enum PrefCategory { SOCIAL, MENTIONS, SYSTEM }
+    public enum PrefCategory { SOCIAL, MENTIONS, SYSTEM, TRENDING }
 
     private final PrefCategory prefCategory;
     private final boolean      aggregable;

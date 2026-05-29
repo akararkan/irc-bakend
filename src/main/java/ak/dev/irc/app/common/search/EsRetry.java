@@ -88,4 +88,27 @@ public final class EsRetry {
         }
         return false;
     }
+
+    /**
+     * True when the failure is "the target index doesn't exist yet" — a
+     * benign condition on a fresh ES cluster where no document of that type
+     * has been indexed. Callers should return an empty result, NOT flag
+     * {@code degraded: true}, since the service is actually working.
+     *
+     * <p>Matches both the Spring Data ES typed
+     * {@code NoSuchIndexException} and the raw ES error string the low-level
+     * client sometimes surfaces ({@code "index_not_found_exception"}).</p>
+     */
+    public static boolean isIndexNotFound(Throwable t) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            String cls = cur.getClass().getSimpleName();
+            if ("NoSuchIndexException".equals(cls)) return true;
+            String msg = cur.getMessage();
+            if (msg != null && (msg.contains("index_not_found_exception")
+                    || msg.contains("no such index"))) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

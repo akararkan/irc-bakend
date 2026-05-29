@@ -208,19 +208,25 @@ public class CassandraStoryController {
     }
 
     /**
-     * Voter list per side. Now requires authentication (was public).
-     *
-     * <p><strong>TODO (author-only):</strong> this should be restricted to the
-     * story author, but the poll row is keyed by {@code storyId} and the path
-     * only carries {@code pollId}, so there is no {@code pollId → authorId}
-     * lookup to verify ownership. Add that index (or pass {@code storyId}) to
-     * complete the restriction; until then this is authenticated-only.</p>
+     * Voter list per side — <strong>author-only</strong>. Resolved via the
+     * {@code poll_by_id} reverse index so the path only needs {@code pollId}.
+     * Polls created before the reverse index existed return {@code 403} via
+     * the {@link java.util.Optional#empty()} fallback (treat as not-owner);
+     * they remain accessible by re-creating the poll if needed.
      */
     @GetMapping("/polls/{pollId}/voters/{choice}")
     @PreAuthorize("isAuthenticated()")
     public List<PollVoterByChoiceEntity> voters(@PathVariable UUID pollId,
                                                 @PathVariable String choice,
-                                                @RequestParam(defaultValue = "50") int pageSize) {
+                                                @RequestParam(defaultValue = "50") int pageSize,
+                                                @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        UUID expectedAuthor = pollService.findOwnership(pollId)
+                .map(p -> p.getAuthorId()).orElse(null);
+        if (expectedAuthor == null || !expectedAuthor.equals(user.getId())) {
+            throw new ak.dev.irc.app.common.exception.ForbiddenException(
+                    "Only the poll's author can list voters");
+        }
         return pollService.votersFor(pollId, choice, pageSize);
     }
 }

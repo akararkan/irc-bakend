@@ -8,7 +8,7 @@ spring:
     name: irc
 
   # ── Boot speed knobs ────────────────────────────────────────────────────────
-  # JMX off: skip MBean registration (~1s).
+  # JMX off: ski MBean registration (~1s).
   # Banner off: cosmetic only.
   # NOTE: lazy-initialization is intentionally OFF — it makes the first request
   # to every controller slow (Spring builds the dependency graph on demand)
@@ -52,7 +52,7 @@ spring:
       # for every entity. To force a wipe, run:
       #   psql -U khi -d irc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
       # Or set the env var: JPA_DDL=create-drop
-      ddl-auto: ${JPA_DDL:update}
+      ddl-auto: ${JPA_DDL:create-drop}
     open-in-view: false
     # show-sql off in dev → meaningful boot-time savings on a chatty schema.
     # Toggle with -Dspring.jpa.show-sql=true when you actually want SQL logs.

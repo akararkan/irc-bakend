@@ -310,6 +310,8 @@ public class EmailTemplate {
             case STORY_REACTED    -> "reacted to your story";
             case STORY_REPLIED    -> "replied to your story";
             case SOUND_APPROVED   -> "approved your uploaded sound";
+
+            case TRENDING_DIGEST  -> "shared today's trending in scholarship";
         };
     }
 
@@ -341,6 +343,7 @@ public class EmailTemplate {
                  ANSWER_REACTED, ANSWER_ACCEPTED,
                  ANSWER_BEST_VOTED                                     -> "Open question";
             case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT, ACCOUNT_WARNING  -> "View details";
+            case TRENDING_DIGEST                                       -> "Explore trending tags";
             default                                                    -> "Open on IRC";
         };
     }
@@ -357,6 +360,7 @@ public class EmailTemplate {
             case NEW_FOLLOWER, UNFOLLOWED, BLOCKED, UNBLOCKED,
                  CONNECTION_REQUEST, CONNECTION_ACCEPTED -> "social activity";
             case POST_MENTIONED, USER_MENTIONED -> "mentions";
+            case TRENDING_DIGEST                -> "trending digest";
             default -> "system messages";
         };
     }

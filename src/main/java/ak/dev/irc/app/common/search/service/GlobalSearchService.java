@@ -94,6 +94,14 @@ public class GlobalSearchService {
                             IndexCoordinates.of(indices.toArray(String[]::new))),
                     "[SEARCH] global");
         } catch (Exception e) {
+            // ES is reachable but one of the target indexes doesn't exist
+            // yet (fresh cluster with no documents of that type). That's a
+            // legitimately empty result — don't flag degraded.
+            if (EsRetry.isIndexNotFound(e)) {
+                log.debug("[SEARCH] global: empty (missing index, ES is reachable): {}",
+                        e.getMessage());
+                return new Result(List.of(), null, false);
+            }
             log.warn("[SEARCH] global search failed: {}", e.getMessage());
             return new Result(List.of(), null, true);
         }
@@ -137,6 +145,10 @@ public class GlobalSearchService {
                             IndexCoordinates.of(indices.toArray(String[]::new))),
                     "[SEARCH] global cursor");
         } catch (Exception e) {
+            if (EsRetry.isIndexNotFound(e)) {
+                log.debug("[SEARCH] global cursor: empty (missing index): {}", e.getMessage());
+                return new Result(List.of(), null, false);
+            }
             log.warn("[SEARCH] cursor search failed: {}", e.getMessage());
             return new Result(List.of(), null, true);
         }

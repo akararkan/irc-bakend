@@ -375,6 +375,7 @@ public class CassandraNotificationService {
             case SOCIAL   -> recipient.isEmailSocialEnabled();
             case MENTIONS -> recipient.isEmailMentionsEnabled();
             case SYSTEM   -> recipient.isEmailSystemEnabled();
+            case TRENDING -> recipient.isEmailTrendingEnabled();
         };
         if (!categoryOn) return;
 

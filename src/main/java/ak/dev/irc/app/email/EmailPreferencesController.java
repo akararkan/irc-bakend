@@ -49,6 +49,7 @@ public class EmailPreferencesController {
         if (req.social() != null)   user.setEmailSocialEnabled(req.social());
         if (req.mentions() != null) user.setEmailMentionsEnabled(req.mentions());
         if (req.system() != null)   user.setEmailSystemEnabled(req.system());
+        if (req.trending() != null) user.setEmailTrendingEnabled(req.trending());
 
         userRepository.save(user);
         // The 60-second email-context cache must be invalidated so the new
@@ -121,14 +122,17 @@ public class EmailPreferencesController {
             Boolean master,
             Boolean social,
             Boolean mentions,
-            Boolean system
+            Boolean system,
+            /** Daily "trending in scholarship" digest (X-style). Default: on. */
+            Boolean trending
     ) {
         static EmailPreferences from(User u) {
             return new EmailPreferences(
                     u.isEmailNotificationsEnabled(),
                     u.isEmailSocialEnabled(),
                     u.isEmailMentionsEnabled(),
-                    u.isEmailSystemEnabled()
+                    u.isEmailSystemEnabled(),
+                    u.isEmailTrendingEnabled()
             );
         }
     }

@@ -39,6 +39,13 @@ public class StoryTrayEvent {
 
     private LocalDateTime expiresAt;
 
+    // ── Poll-vote payload (POLL_VOTE_CAST only) ──────────────────────────────
+    // Null for every other event type so older clients ignore them cleanly.
+    private UUID pollId;
+    private Long voteA;
+    private Long voteB;
+    private Long voteTotal;
+
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();
 }

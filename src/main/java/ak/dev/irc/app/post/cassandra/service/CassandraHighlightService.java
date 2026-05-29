@@ -64,6 +64,62 @@ public class CassandraHighlightService {
         }
     }
 
+    /**
+     * Re-order an author's highlights to match the supplied id sequence.
+     *
+     * <p>{@code display_order} is part of the {@code highlights_by_author}
+     * clustering key, so Cassandra can't UPDATE it in place — we DELETE
+     * each row at its current key and re-INSERT under the new order. The
+     * authorId check defends against a hostile caller passing somebody
+     * else's highlight ids in the list.</p>
+     *
+     * <p>Idempotent: re-running with the same order is a no-op net effect
+     * (every row ends up at the same position it was already at).</p>
+     *
+     * @param authorId           highlight owner (must match every row's authorId)
+     * @param orderedHighlightIds the desired left-to-right order on the profile rail
+     * @return the rewritten rows, newest order first
+     */
+    public List<HighlightByAuthorEntity> reorderHighlights(UUID authorId,
+                                                           List<UUID> orderedHighlightIds) {
+        if (orderedHighlightIds == null || orderedHighlightIds.isEmpty()) {
+            return List.of();
+        }
+        // Snapshot the author's current rows (we need title + coverUrl + createdAt
+        // to re-insert, since they live on the same row as the clustering key).
+        List<HighlightByAuthorEntity> current = highlightRepo.listFor(authorId);
+        java.util.Map<UUID, HighlightByAuthorEntity> byId = new java.util.HashMap<>(current.size());
+        for (HighlightByAuthorEntity h : current) {
+            if (!authorId.equals(h.getAuthorId())) continue; // belt-and-braces
+            byId.put(h.getHighlightId(), h);
+        }
+
+        List<HighlightByAuthorEntity> rewritten = new java.util.ArrayList<>(orderedHighlightIds.size());
+        int newOrder = 0;
+        for (UUID id : orderedHighlightIds) {
+            HighlightByAuthorEntity row = byId.get(id);
+            if (row == null) continue; // foreign id — silently skip
+            if (row.getDisplayOrder() != null && row.getDisplayOrder() == newOrder) {
+                rewritten.add(row); // already in the right slot, nothing to do
+                newOrder++;
+                continue;
+            }
+            // DELETE old clustering-key row.
+            highlightRepo.delete(authorId, row.getDisplayOrder(), row.getHighlightId());
+            // INSERT new row with same payload + new order. Other fields
+            // (title / coverUrl / createdAt) survive untouched.
+            HighlightByAuthorEntity moved = HighlightByAuthorEntity.builder()
+                    .authorId(authorId).displayOrder(newOrder).highlightId(id)
+                    .title(row.getTitle()).coverUrl(row.getCoverUrl())
+                    .createdAt(row.getCreatedAt())
+                    .build();
+            highlightRepo.save(moved);
+            rewritten.add(moved);
+            newOrder++;
+        }
+        return rewritten;
+    }
+
     // ── Stories in highlight ────────────────────────────────────────────────
 
     /**

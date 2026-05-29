@@ -134,6 +134,24 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     @Query("SELECT u FROM User u WHERE u.deletedAt IS NULL")
     Page<User> findAllActive(Pageable pageable);
 
+    /**
+     * Keyset-paginated ID-only scan of active, enabled users. Used by
+     * fan-out jobs (trending digest, broadcasts) that need to reach every
+     * user without materialising full {@code User} rows or paying the
+     * offset-paging cost on a multi-million-row table.
+     *
+     * <p>Pass {@code null} for the first page; pass the last id of the
+     * previous page for subsequent pages. Stop when the result is short.</p>
+     */
+    @Query("""
+        SELECT u.id FROM User u
+        WHERE u.deletedAt IS NULL
+          AND u.isEnabled = true
+          AND (:after IS NULL OR u.id > :after)
+        ORDER BY u.id ASC
+        """)
+    List<UUID> findActiveUserIdsAfter(@Param("after") UUID after, Pageable pageable);
+
         @Query("""
                 SELECT u FROM User u
                 WHERE u.deletedAt IS NULL
@@ -180,7 +198,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
             u.emailNotificationsEnabled,
             u.emailSocialEnabled,
             u.emailMentionsEnabled,
-            u.emailSystemEnabled)
+            u.emailSystemEnabled,
+            u.emailTrendingEnabled)
         FROM User u
         WHERE u.id = :id AND u.deletedAt IS NULL
         """)

@@ -142,6 +142,7 @@ and whether it's **email-eligible**. Source of truth: `NotificationKind`.
 | `SYSTEM_MESSAGE` | SYSTEM | no | ✅ | — | Direct system message |
 | `SYSTEM_ANNOUNCEMENT` | SYSTEM | no | ✅ | — | Broadcast announcement |
 | `ACCOUNT_WARNING` | SYSTEM | no | ✅ | — | Moderation warning |
+| `TRENDING_DIGEST` | TRENDING ⟶ SYSTEM tab | no | ✅ | `TRENDING_DIGEST:{yyyy-MM-dd}` | Daily "what scholars and researchers are talking about" digest. Inbox category is `SYSTEM`; **email opt-out is its own toggle** (`emailTrendingEnabled`) so muting the digest doesn't silence account warnings. |
 
 > The catalog is the full set of kinds the platform can emit. Which ones are
 > wired to a live trigger today is the table in §5. "Aggregates ✅ / no" matters
@@ -162,11 +163,14 @@ inboxes and category-scoped reads:
 | `RESEARCH` | `PUBLICATION_LIKED`, `PUBLICATION_COMMENTED`, `PUBLICATION_COMMENT_REACTED`, `PUBLICATION_CITED` |
 | `MENTIONS` | `USER_MENTIONED` (always — regardless of where the mention happened) |
 | `SOCIAL` | `NEW_FOLLOWER` and other relationship events |
-| `SYSTEM` | `SOUND_APPROVED`, `SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING` |
+| `SYSTEM` | `SOUND_APPROVED`, `SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`, `TRENDING_DIGEST` |
 
 > **Category** (inbox grouping, 6 buckets) is distinct from a kind's **preference
-> category** (email gate, 3 buckets: SOCIAL / MENTIONS / SYSTEM). They overlap by
-> name but serve different purposes.
+> category** (email gate, 4 buckets: SOCIAL / MENTIONS / SYSTEM / TRENDING). They
+> overlap by name but serve different purposes. The trending digest lives in the
+> `SYSTEM` inbox tab so it shows up alongside platform announcements, but its
+> email gate is **separate** (`emailTrendingEnabled`) so opting out of digests
+> doesn't accidentally mute account warnings.
 
 ---
 
@@ -194,6 +198,21 @@ Domain events arrive on the `irc.queue.notifications` queue and are handled by
 | React to an answer | `ANSWER_REACTED` | answer author | "@ahmad reacted 👍 on your answer." |
 | Accept an answer | `ANSWER_ACCEPTED` | answer author | "@ahmad accepted your answer on: \"…\"" |
 | Endorse a best answer (scholar vote) | `ANSWER_BEST_VOTED` | answer author | "@ahmad endorsed your answer as a best answer to: \"…\"" |
+| Daily trending digest (server-pushed, no actor) | `TRENDING_DIGEST` | every active user | "Hot tags from scholars and researchers: #hajj, #ramadan, #tafsir-quran." |
+
+**Trending digest schedule.** Server-pushed by `TrendingNotificationJob` at
+`09:00 UTC` daily (override with `irc.trending.notifications.cron`). The job:
+- Pulls the top 5 trending tags from each of the `QUESTION` and `RESEARCH`
+  scopes (these scopes are inherently scholar/researcher because only those
+  roles can publish there).
+- Deduplicates by tag name, keeps the higher usage count, drops anything below
+  `MIN_USAGE_FLOOR` (3 uses) and trims to the top 5 overall.
+- **Skips entirely if the resulting list is empty** — users are never woken
+  for nothing.
+- Fans out to every active+enabled user (`u.deletedAt IS NULL AND u.isEnabled`).
+  groupKey is `TRENDING_DIGEST:{yyyy-MM-dd}` → a user receives at most one
+  digest per UTC day even if the job is re-fired manually.
+- Disable the whole pipeline with `irc.trending.notifications.enabled=false`.
 
 **No notification fired** for: un-like / un-save / un-share, deletes (post,
 comment, question, answer), unfollow (the prior `NEW_FOLLOWER` row is *removed*),
@@ -357,6 +376,7 @@ An email is sent for a notification only when **all** hold:
 2. the recipient's **master** email toggle is on, **and**
 3. the recipient's **category** toggle for the kind's preference category is on:
    - `SOCIAL` → social toggle, `MENTIONS` → mentions toggle, `SYSTEM` → system toggle,
+     **`TRENDING` → trending toggle (separate from `system`)**.
 4. it isn't **throttled**: a Redis key `notif:email:throttle:{userId}:{groupKey}`
    with a **1-hour** TTL means only the **first** event per group emails within an
    hour (aggregated bursts don't spam the inbox). Sending is async, fail-silent.
@@ -364,14 +384,15 @@ An email is sent for a notification only when **all** hold:
 ### Email preference endpoints
 
 ```
-GET   /api/v1/users/me/email-preferences      → { master, social, mentions, system }
-PATCH /api/v1/users/me/email-preferences       Body: any subset of { master, social, mentions, system }
+GET   /api/v1/users/me/email-preferences      → { master, social, mentions, system, trending }
+PATCH /api/v1/users/me/email-preferences       Body: any subset of { master, social, mentions, system, trending }
 POST  /api/v1/users/me/email-preferences/test            → sends a test email; { queued, to }
 POST  /api/v1/users/me/email-preferences/unsubscribe-all → master off; { emailNotificationsEnabled: false }
 ```
 
-`master` is the kill-switch — off means no email of any kind. The three category
-toggles map to the kind preference categories above.
+`master` is the kill-switch — off means no email of any kind. The four category
+toggles map to the kind preference categories above. Defaults are all `true`,
+including `trending` (the daily digest).
 
 ---
 
@@ -423,12 +444,50 @@ es.addEventListener('deleted', e => removeLocally(JSON.parse(e.data).ids));
 - But an expired token makes the stream return `401` and close — detect via `onerror` with `readyState === CLOSED`, refresh the access token, then open a **new** `EventSource`.
 - `es.close()` on logout and teardown.
 
-### 11.6 Checklist
+### 11.6 Trending digest (`TRENDING_DIGEST`)
+
+The daily **"trending in scholarship"** digest arrives once per UTC day per
+user — same shape as every other notification, but worth special UI:
+
+- **Inbox category:** `SYSTEM` (the System tab). The row looks like any other
+  `NotificationResponse`. The backend deliberately leaves `deepLink: null`
+  because the trending landing route is a frontend concern — the FE app
+  resolves it client-side. Current FE convention: route to **`/explore`**
+  (the existing trending-strip page); if a dedicated `/explore/trending`
+  route is added later, only the FE `notifFrom()` resolver changes — the
+  backend payload stays the same.
+- **No actor.** `actorId`, `actorUsername`, `actorFullName`, `actorProfileImage`
+  are all null. Render as a system row (your logo / a "Trending" icon) rather
+  than a user avatar.
+- **Body shape.** `body` is a comma-joined hashtag list:
+  `"Hot tags from scholars and researchers: #hajj, #ramadan, #tafsir-quran."`
+  You can render it verbatim, OR parse for chips client-side:
+  ```ts
+  const tags = row.body.match(/#[\p{L}\p{N}_-]+/gu) ?? [];
+  // → ["#hajj", "#ramadan", "#tafsir-quran"]
+  ```
+  Render each tag as a chip that routes to `/tags/{tag}`.
+- **One per day, hard.** Server enforces this via `groupKey =
+  TRENDING_DIGEST:{date}`. You don't need to dedupe client-side, but be
+  prepared for the row to arrive once at ~09:00 UTC (or whatever
+  `irc.trending.notifications.cron` is set to).
+- **Email opt-out.** Settings page should expose the dedicated `trending`
+  toggle alongside `social` / `mentions` / `system`. PATCH
+  `/users/me/email-preferences { "trending": false }` mutes the email side
+  only — users still see the in-app row (which is the right default; the
+  in-app inbox isn't intrusive). To silence both surfaces, the user just
+  filters their inbox or you can offer a "no trending at all" preset (call
+  PATCH with `trending: false` and ignore `TRENDING_DIGEST` types in the
+  inbox renderer).
+
+### 11.7 Checklist
 - [ ] Badge seeded from `/unread/count`, then **set** from `unread-count` events.
 - [ ] Stream opened with `?token=`; named events via `addEventListener`.
 - [ ] `notification` upserts by id (handles aggregation); navigate via `deepLink`.
 - [ ] Mark-read/delete optimistic + idempotent against the echoed SSE event.
 - [ ] Stream reopened after token refresh; closed on logout.
+- [ ] Settings page exposes **four** email toggles: master, social, mentions, system, **trending**.
+- [ ] `TRENDING_DIGEST` rows render with a system/logo glyph (no avatar), and the body's `#tag` tokens link to the tag feed.
 
 ---
 

@@ -62,7 +62,8 @@ public enum NotificationCategory {
     private static final Set<NotificationType> SYSTEM_TYPES = EnumSet.of(
             NotificationType.SYSTEM_MESSAGE,
             NotificationType.SYSTEM_ANNOUNCEMENT,
-            NotificationType.ACCOUNT_WARNING
+            NotificationType.ACCOUNT_WARNING,
+            NotificationType.TRENDING_DIGEST
     );
 
     /**

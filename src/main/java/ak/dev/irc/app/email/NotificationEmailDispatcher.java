@@ -81,9 +81,9 @@ public class NotificationEmailDispatcher {
             return;
         }
 
-        if (!isEnabledForUser(ctx, n.category())) {
-            log.debug("[EMAIL-DISPATCH] muted by user prefs — userId={} category={}",
-                    recipientId, n.category());
+        if (!isEnabledForUser(ctx, n.type(), n.category())) {
+            log.debug("[EMAIL-DISPATCH] muted by user prefs — userId={} category={} type={}",
+                    recipientId, n.category(), n.type());
             return;
         }
 
@@ -101,13 +101,23 @@ public class NotificationEmailDispatcher {
     }
 
     /**
-     * Master toggle plus the three coarse buckets. POST / QNA / RESEARCH
+     * Master toggle plus the four coarse buckets. POST / QNA / RESEARCH
      * activity rides the {@code social} flag; mentions and system messages
      * have their own toggles so users can keep security mail on while
      * muting interaction noise.
+     *
+     * <p>{@code TRENDING_DIGEST} is the one type that lives in the
+     * {@code SYSTEM} inbox category but is gated by its own
+     * {@code emailTrendingEnabled} toggle — so a user can mute the daily
+     * digest without losing account warnings or system messages.</p>
      */
-    private boolean isEnabledForUser(UserEmailContext ctx, NotificationCategory category) {
+    private boolean isEnabledForUser(UserEmailContext ctx,
+                                     ak.dev.irc.app.user.enums.NotificationType type,
+                                     NotificationCategory category) {
         if (!ctx.emailNotificationsEnabled()) return false;
+        if (type == ak.dev.irc.app.user.enums.NotificationType.TRENDING_DIGEST) {
+            return ctx.emailTrendingEnabled();
+        }
         if (category == null) return true;
         return switch (category) {
             case SOCIAL              -> ctx.emailSocialEnabled();
