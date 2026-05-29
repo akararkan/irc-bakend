@@ -41,13 +41,39 @@ public class IrcApplication {
 			System.out.println("──────────────────────────────────────────────────────────");
 			return;
 		}
-		// jdbc:postgresql://HOST:PORT/...
-		String stripped = url.replaceFirst("^jdbc:postgresql://", "");
-		int slash = stripped.indexOf('/');
-		String hostport = slash > 0 ? stripped.substring(0, slash) : stripped;
-		int colon = hostport.lastIndexOf(':');
-		String host = colon > 0 ? hostport.substring(0, colon) : hostport;
-		int port = colon > 0 ? Integer.parseInt(hostport.substring(colon + 1)) : 5432;
+
+		// Accept either form so a wrong env var shape doesn't blow up the probe
+		// itself (and mask the real fault). The app still needs the jdbc: form
+		// for Hikari, but the probe is only checking network reachability.
+		//   jdbc:postgresql://HOST:PORT/db?params
+		//   postgresql://user:pass@HOST:PORT/db?params
+		String host;
+		int port;
+		try {
+			String s = url.replaceFirst("^jdbc:", "");          // drop jdbc: if present
+			s = s.replaceFirst("^postgres(ql)?://", "");        // drop scheme
+			int at = s.indexOf('@');                            // drop user:pass@ if present
+			if (at >= 0) s = s.substring(at + 1);
+			int slash = s.indexOf('/');
+			String hostport = slash > 0 ? s.substring(0, slash) : s;
+			int qmark = hostport.indexOf('?');
+			if (qmark >= 0) hostport = hostport.substring(0, qmark);
+			int colon = hostport.lastIndexOf(':');
+			if (colon > 0 && colon < hostport.length() - 1) {
+				host = hostport.substring(0, colon);
+				port = Integer.parseInt(hostport.substring(colon + 1));
+			} else {
+				host = hostport;
+				port = 5432;
+			}
+		} catch (Exception e) {
+			System.out.println("  could not parse DB_URL: " + e.getClass().getSimpleName()
+				+ ": " + e.getMessage());
+			System.out.println("  raw DB_URL = " + url.replaceAll(":[^:@/]+@", ":***@"));
+			System.out.println("  → DB_URL must be jdbc:postgresql://HOST:PORT/DB form for Hikari.");
+			System.out.println("──────────────────────────────────────────────────────────");
+			return;
+		}
 		System.out.println("  host = " + host);
 		System.out.println("  port = " + port);
 
