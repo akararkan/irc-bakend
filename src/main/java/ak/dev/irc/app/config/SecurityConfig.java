@@ -44,10 +44,10 @@ public class SecurityConfig {
     private final UserDetailsService userDetailsService;
 
     /**
-     * Extra origins from {@code CORS_ORIGINS} env var (comma-separated).
-     * Combined with the always-on baseline below (localhost, LAN, Vercel,
-     * Netlify, Railway). Set in Railway → Variables → CORS_ORIGINS to your
-     * production frontend domain(s).
+     * Extra origins from {@code CORS_ORIGINS} env var (comma-separated, exact).
+     * Combined with the always-on baseline below (localhost + Vercel
+     * production domain). Set in Railway → Variables → CORS_ORIGINS to add
+     * additional production frontend domain(s) without a redeploy.
      */
     @Value("${app.cors.allowed-origins:}")
     private String corsAllowedOrigins;
@@ -102,27 +102,26 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // ── Always-on baseline: dev hosts + common production platforms ─────
-        // Localhost + every RFC-1918 LAN range so the dev server is reachable
-        // from phones on the same Wi-Fi. Vercel / Netlify / Railway wildcards
-        // so any preview / production URL on those platforms works without
-        // touching env vars. Add a custom domain through CORS_ORIGINS.
+        // ── Exact origins only ──────────────────────────────────────────────
+        // The CORS spec forbids `Access-Control-Allow-Origin: *` together with
+        // credentials, and exact origins are the simplest, most predictable
+        // shape for `allowCredentials=true`. Each entry is matched on
+        // scheme+host+port — never path, never trailing slash.
         //
-        // The production frontend is also pinned explicitly so the allowlist
-        // survives any future tightening of the wildcard rules — CORS origins
-        // are matched on scheme+host+port, never path, so do NOT include the
-        // trailing slash from the browser URL.
-        List<String> patterns = new ArrayList<>(List.of(
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-                "http://192.168.*.*:*",
-                "http://10.*.*.*:*",
-                "http://172.*.*.*:*",
-                "https://ika-frontend-six.vercel.app",  // production frontend
-                "https://*.vercel.app",                 // Vercel preview deploys
-                "https://*.netlify.app",
-                "https://*.up.railway.app",
-                "https://*.irc-research.org"
+        // Add a new production domain here (then redeploy), OR add it without
+        // a redeploy via the CORS_ORIGINS env var on Railway (comma-separated
+        // exact origins, same format).
+        List<String> origins = new ArrayList<>(List.of(
+                // production
+                "https://ika-frontend-six.vercel.app",
+                // local Vite dev server (default + common alt port)
+                "http://localhost:5173",
+                "http://localhost:5174",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:5174",
+                // local Next.js / generic dev server
+                "http://localhost:3000",
+                "http://127.0.0.1:3000"
         ));
 
         // Merge in anything the operator set via CORS_ORIGINS env var.
@@ -130,14 +129,17 @@ public class SecurityConfig {
             Arrays.stream(corsAllowedOrigins.split(","))
                     .map(String::trim)
                     .filter(s -> !s.isBlank())
-                    .forEach(patterns::add);
+                    .forEach(origins::add);
         }
-        log.info("CORS allowed origin patterns: {}", patterns);
+        log.info("CORS allowed origins: {}", origins);
 
-        config.setAllowedOriginPatterns(patterns);
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
+        config.setAllowedOrigins(origins);
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Authorization", "Set-Cookie", "Content-Disposition"));
+        // Required for cookie-based auth + the IRC_TOKEN refresh flow.
+        // Note: with credentials=true the CORS spec FORBIDS "*" for origin,
+        // which is exactly why we use the exact allowlist above.
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 
