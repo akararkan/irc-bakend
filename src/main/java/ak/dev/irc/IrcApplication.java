@@ -68,6 +68,13 @@ public class IrcApplication {
 			return;
 		}
 
+		// Railway resolves *.railway.internal to an IPv6 ULA + an IPv4 — and on
+		// some service pairings the IPv6 leg is blackholed (TCP SYN sent, RST or
+		// silent timeout). Hikari/PG falls back to IPv4 transparently; the
+		// DataStax Netty driver doesn't — it tries the first resolved address
+		// and closes the channel. Resolve each contact point to IPv4 ourselves
+		// and feed RESOLVED InetSocketAddresses so the driver can't re-resolve
+		// to IPv6 behind our back.
 		List<InetSocketAddress> addrs = new ArrayList<>();
 		for (String hp : contactPoints.split(",")) {
 			hp = hp.trim();
@@ -75,7 +82,24 @@ public class IrcApplication {
 			int colon = hp.lastIndexOf(':');
 			String h = colon > 0 ? hp.substring(0, colon) : hp;
 			int p    = colon > 0 ? Integer.parseInt(hp.substring(colon + 1)) : 9042;
-			addrs.add(new InetSocketAddress(h, p));
+			try {
+				InetAddress chosen = null;
+				for (InetAddress a : InetAddress.getAllByName(h)) {
+					if (a.getAddress().length == 4) { chosen = a; break; }
+				}
+				if (chosen == null) {
+					System.out.println("  ✗ no IPv4 address for " + h + " — skipping bootstrap");
+					System.out.println("──────────────────────────────────────────────────────────");
+					return;
+				}
+				// Resolved address bypasses re-resolution inside the driver.
+				addrs.add(new InetSocketAddress(chosen, p));
+			} catch (Exception e) {
+				System.out.println("  ✗ DNS lookup for " + h + " failed: "
+					+ e.getClass().getSimpleName() + ": " + e.getMessage());
+				System.out.println("──────────────────────────────────────────────────────────");
+				return;
+			}
 		}
 		System.out.println("  contact points = " + contactPoints);
 		System.out.println("  datacenter     = " + dc);

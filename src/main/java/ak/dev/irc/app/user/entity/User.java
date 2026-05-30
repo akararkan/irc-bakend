@@ -141,7 +141,11 @@ public class User extends BaseAuditEntity implements UserDetails {
      * {@code emailSystemEnabled} so a user can keep account-warning emails
      * while muting the digest. Default {@code true}.
      */
-    @Column(name = "email_trending_enabled", nullable = false)
+    // columnDefinition carries the DEFAULT so Hibernate's auto-DDL can ADD the
+    // column on an existing table — without a DEFAULT, ALTER TABLE ADD COLUMN
+    // … NOT NULL fails on any row already in the table.
+    @Column(name = "email_trending_enabled", nullable = false,
+            columnDefinition = "boolean not null default true")
     @Builder.Default
     private boolean emailTrendingEnabled = true;
 
