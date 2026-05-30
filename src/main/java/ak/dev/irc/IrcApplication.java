@@ -1,5 +1,6 @@
 package ak.dev.irc;
 
+import com.datastax.oss.driver.api.core.CqlSession;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -9,6 +10,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.TimeZone;
 
 @SpringBootApplication
@@ -29,8 +32,70 @@ public class IrcApplication {
 		// Passwords are masked.
 		printEnvProbe();
 		probePostgres();
+		bootstrapCassandraKeyspace();
 
 		SpringApplication.run(IrcApplication.class, args);
+	}
+
+	/**
+	 * Spring Boot's CassandraAutoConfiguration builds the CqlSession with
+	 * `keyspace-name` baked in — so on a fresh cluster the very first connect
+	 * fails with InvalidKeyspaceException because the keyspace doesn't exist
+	 * yet (schema-action=CREATE_IF_NOT_EXISTS only creates tables, not the
+	 * keyspace itself). We sidestep that by opening a short-lived session
+	 * WITHOUT a keyspace, running CREATE KEYSPACE IF NOT EXISTS, and closing.
+	 * Idempotent — silently does nothing on every subsequent boot.
+	 */
+	private static void bootstrapCassandraKeyspace() {
+		System.out.println("─── CQL KEYSPACE BOOTSTRAP ───────────────────────────────");
+		String contactPoints = System.getenv("CASSANDRA_CONTACT_POINTS");
+		String dc            = System.getenv().getOrDefault("CASSANDRA_DATACENTER", "datacenter1");
+		String keyspace      = System.getenv().getOrDefault("CASSANDRA_KEYSPACE",   "irc_keyspace");
+		String user          = System.getenv().getOrDefault("CASSANDRA_USERNAME",   "cassandra");
+		String pass          = System.getenv().getOrDefault("CASSANDRA_PASSWORD",   "cassandra");
+
+		if (contactPoints == null || contactPoints.isEmpty()) {
+			System.out.println("  CASSANDRA_CONTACT_POINTS unset — skipping");
+			System.out.println("──────────────────────────────────────────────────────────");
+			return;
+		}
+		// Refuse anything that isn't a plain CQL identifier — the keyspace name
+		// is interpolated into the DDL string, so don't let env-var content turn
+		// into a CQL injection vector even though it's our own value.
+		if (!keyspace.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
+			System.out.println("  ✗ invalid keyspace name: " + keyspace);
+			System.out.println("──────────────────────────────────────────────────────────");
+			return;
+		}
+
+		List<InetSocketAddress> addrs = new ArrayList<>();
+		for (String hp : contactPoints.split(",")) {
+			hp = hp.trim();
+			if (hp.isEmpty()) continue;
+			int colon = hp.lastIndexOf(':');
+			String h = colon > 0 ? hp.substring(0, colon) : hp;
+			int p    = colon > 0 ? Integer.parseInt(hp.substring(colon + 1)) : 9042;
+			addrs.add(new InetSocketAddress(h, p));
+		}
+		System.out.println("  contact points = " + contactPoints);
+		System.out.println("  datacenter     = " + dc);
+		System.out.println("  keyspace       = " + keyspace);
+
+		try (CqlSession session = CqlSession.builder()
+				.addContactPoints(addrs)
+				.withLocalDatacenter(dc)
+				.withAuthCredentials(user, pass)
+				.build()) {
+			session.execute(
+				"CREATE KEYSPACE IF NOT EXISTS " + keyspace +
+				" WITH replication = {'class':'SimpleStrategy','replication_factor':1}"
+			);
+			System.out.println("  ✓ keyspace ready");
+		} catch (Exception e) {
+			System.out.println("  ✗ " + e.getClass().getSimpleName() + ": " + e.getMessage());
+			System.out.println("  → Cassandra bootstrap failed; Spring will fail next with a clearer error.");
+		}
+		System.out.println("──────────────────────────────────────────────────────────");
 	}
 
 	private static void probePostgres() {
