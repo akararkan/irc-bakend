@@ -107,13 +107,19 @@ public class SecurityConfig {
         // from phones on the same Wi-Fi. Vercel / Netlify / Railway wildcards
         // so any preview / production URL on those platforms works without
         // touching env vars. Add a custom domain through CORS_ORIGINS.
+        //
+        // The production frontend is also pinned explicitly so the allowlist
+        // survives any future tightening of the wildcard rules — CORS origins
+        // are matched on scheme+host+port, never path, so do NOT include the
+        // trailing slash from the browser URL.
         List<String> patterns = new ArrayList<>(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
                 "http://192.168.*.*:*",
                 "http://10.*.*.*:*",
                 "http://172.*.*.*:*",
-                "https://*.vercel.app",
+                "https://ika-frontend-six.vercel.app",  // production frontend
+                "https://*.vercel.app",                 // Vercel preview deploys
                 "https://*.netlify.app",
                 "https://*.up.railway.app",
                 "https://*.irc-research.org"
