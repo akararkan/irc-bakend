@@ -70,7 +70,7 @@ spring:
       # Hibernate only emits incremental schema changes, not DROP + CREATE.
       #
       # ⚠️  Set JPA_DDL=create-drop explicitly to wipe.
-      ddl-auto: ${JPA_DDL:update}
+      ddl-auto: ${JPA_DDL:create-drop}
     open-in-view: false
     show-sql: false
     properties:
