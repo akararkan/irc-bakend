@@ -70,7 +70,7 @@ spring:
       # Hibernate only emits incremental schema changes, not DROP + CREATE.
       #
       # ⚠️  Set JPA_DDL=create-drop explicitly to wipe.
-      ddl-auto: ${JPA_DDL:create-drop}
+      ddl-auto: ${JPA_DDL:update}
     open-in-view: false
     show-sql: false
     properties:
@@ -108,12 +108,13 @@ spring:
     password: ${CASSANDRA_PASSWORD:}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
-    # Default is `RECREATE_DROP_UNUSED` — on every boot, every table in the
-    # keyspace is DROPPED and the @Table-annotated entities are recreated from
-    # scratch. ALL CASSANDRA DATA IS WIPED on boot. Set
-    # CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS in any environment where
-    # data must survive restarts.
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
+    # Default is `CREATE_IF_NOT_EXISTS` — the Cassandra equivalent of JPA
+    # `ddl-auto: update`. Missing tables are created from @Table entities on
+    # boot, existing tables (and their data) are left untouched. Spring Data
+    # Cassandra does NOT issue ALTER TABLE — added/removed columns on an
+    # entity require a manual `ALTER TABLE` migration. Set
+    # CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED explicitly to wipe.
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
     pool:
