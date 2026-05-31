@@ -112,7 +112,7 @@ spring:
     # tables that already exist and preserves all Cassandra data across boots.
     #
     # ⚠️  Set CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED explicitly to wipe.
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSE}
 
     # Connection pool settings
     pool:
