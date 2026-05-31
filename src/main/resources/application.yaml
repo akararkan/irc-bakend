@@ -108,11 +108,12 @@ spring:
     password: ${CASSANDRA_PASSWORD:}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
-    # Default is `CREATE_IF_NOT_EXISTS` — fast path that skips DDL for
-    # tables that already exist and preserves all Cassandra data across boots.
-    #
-    # ⚠️  Set CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED explicitly to wipe.
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSE}
+    # Default is `RECREATE_DROP_UNUSED` — on every boot, every table in the
+    # keyspace is DROPPED and the @Table-annotated entities are recreated from
+    # scratch. ALL CASSANDRA DATA IS WIPED on boot. Set
+    # CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS in any environment where
+    # data must survive restarts.
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
 
     # Connection pool settings
     pool:
