@@ -866,6 +866,22 @@ public class ResearchServiceImpl implements ResearchService {
         }
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<SourceResponse> listSources(UUID researchId, UUID currentUserId) {
+        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        Research research = researchRepo.findByIdAndDeletedAtIsNull(researchId)
+                .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
+        if (currentUserId != null
+                && research.getResearcher() != null
+                && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
+            throw new ResourceNotFoundException("Research", "id", researchId);
+        }
+        return sourceRepo.findByResearchIdOrderByDisplayOrderAsc(researchId).stream()
+                .map(mapper::toSourceResponse)
+                .toList();
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  READ
     // ══════════════════════════════════════════════════════════════════════════

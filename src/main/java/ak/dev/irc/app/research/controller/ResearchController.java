@@ -276,6 +276,15 @@ public class ResearchController {
         return ResponseEntity.ok(researchService.uploadSourceFile(id, sourceId, file, user.getId()));
     }
 
+    /** Public — list every source attached to a research, ordered by displayOrder asc. */
+    @GetMapping("/{id}/sources")
+    public ResponseEntity<List<SourceResponse>> listSources(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(
+                researchService.listSources(id, user != null ? user.getId() : null));
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  CONTRIBUTORS — managed by the corresponding researcher only
     // ══════════════════════════════════════════════════════════════════════════

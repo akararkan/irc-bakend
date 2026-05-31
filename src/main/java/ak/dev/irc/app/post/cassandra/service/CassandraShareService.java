@@ -9,8 +9,11 @@ import ak.dev.irc.app.post.cassandra.repository.ShareByPostRepository;
 import ak.dev.irc.app.post.realtime.PostRealtimeEvent;
 import ak.dev.irc.app.post.realtime.PostRealtimeEventType;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
+import ak.dev.irc.app.share.FrontendUrlResolver;
+import ak.dev.irc.app.share.ShareLinkInfo;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
+import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -45,6 +48,7 @@ public class CassandraShareService {
     private final PostByIdRepository    postRepo;
     private final UserRepository        userRepo;
     private final CassandraNotificationService notificationService;
+    private final FrontendUrlResolver   frontendUrlResolver;
 
     public ShareByPostEntity recordShare(UUID postId, UUID sharerId, String caption) {
         UUID    shareId = UUID.randomUUID();
@@ -84,6 +88,51 @@ public class CassandraShareService {
 
     public List<ShareByPostEntity> recentShares(UUID postId, int pageSize) {
         return shareRepo.recent(postId, pageSize);
+    }
+
+    // ── Unified share-link API (parity with research / Q&A) ──────────────────
+
+    /**
+     * Returns the unified {@link ShareLinkInfo} without bumping the counter —
+     * for the inline share UI before the user actually copies the link.
+     */
+    public ShareLinkInfo previewShareLink(UUID postId, String baseUrl) {
+        PostByIdEntity post = postRepo.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+        long count = currentShareCount(postId);
+        return buildShareInfo(post, baseUrl, count);
+    }
+
+    /**
+     * Append-only share record + counter bump + realtime broadcast + author
+     * notification, returning the unified {@link ShareLinkInfo} so the caller
+     * gets a fresh count alongside the link.
+     */
+    public ShareLinkInfo recordShareLink(UUID postId, UUID sharerId, String caption, String baseUrl) {
+        PostByIdEntity post = postRepo.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+        recordShare(postId, sharerId, caption);
+        long fresh = currentShareCount(postId);
+        return buildShareInfo(post, baseUrl, fresh);
+    }
+
+    private long currentShareCount(UUID postId) {
+        return postCounterRepo.findByPostId(postId)
+                .map(c -> c.getShareCount() == null ? 0L : c.getShareCount())
+                .orElse(0L);
+    }
+
+    private ShareLinkInfo buildShareInfo(PostByIdEntity post, String baseUrl, long count) {
+        String backendBase = (baseUrl == null || baseUrl.isBlank())
+                ? "" : (baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
+        String frontBase = frontendUrlResolver.resolve();
+        if (frontBase == null || frontBase.isBlank()) frontBase = backendBase;
+        String token = post.getId().toString();
+        return new ShareLinkInfo(
+                backendBase + "/p/" + token,
+                frontBase + "/posts/" + token,
+                token,
+                count);
     }
 
     // ── realtime ─────────────────────────────────────────────────────────────

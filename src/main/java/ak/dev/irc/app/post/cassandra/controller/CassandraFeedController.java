@@ -627,4 +627,31 @@ public class CassandraFeedController {
                                           @RequestParam(defaultValue = "20") int pageSize) {
         return shareService.recentShares(postId, pageSize);
     }
+
+    // ── Unified share-link API (parity with research / Q&A) ──────────────────
+
+    /** Preview the unified share-link payload without bumping the counter. */
+    @GetMapping("/{postId}/share-link")
+    public ResponseEntity<ak.dev.irc.app.share.ShareLinkInfo> previewShareLink(
+            @PathVariable UUID postId,
+            jakarta.servlet.http.HttpServletRequest request) {
+        return ResponseEntity.ok(
+                shareService.previewShareLink(postId, ak.dev.irc.app.share.OriginUtil.origin(request)));
+    }
+
+    /** Atomically bumps {@code shareCount}, records a share ledger row, and
+     *  returns the unified share-link info. Called when the user actually
+     *  copies / sends the link. */
+    @PostMapping("/{postId}/share")
+    public ResponseEntity<ak.dev.irc.app.share.ShareLinkInfo> share(
+            @PathVariable UUID postId,
+            @RequestBody(required = false) RecordShareRequest body,
+            @AuthenticationPrincipal User user,
+            jakarta.servlet.http.HttpServletRequest request) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        String caption = body != null ? body.caption() : null;
+        return ResponseEntity.ok(shareService.recordShareLink(
+                postId, user.getId(), caption,
+                ak.dev.irc.app.share.OriginUtil.origin(request)));
+    }
 }

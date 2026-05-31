@@ -71,6 +71,9 @@ public interface ResearchService {
     SourceResponse uploadSourceFile(UUID researchId, UUID sourceId,
                                     MultipartFile file, UUID researcherId);
 
+    /** List every source attached to a research, ordered by displayOrder asc. */
+    List<SourceResponse> listSources(UUID researchId, UUID currentUserId);
+
     // ── Read (everyone) ──────────────────────────────────────────────────────
 
     ResearchResponse getById(UUID researchId, UUID currentUserId);

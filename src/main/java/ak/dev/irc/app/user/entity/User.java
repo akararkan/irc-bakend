@@ -75,7 +75,7 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
     @Builder.Default
-    private Role role = Role.USER;
+    private Role role = Role.SCHOLAR;
 
     /** ORCID researcher identifier, e.g. 0000-0002-1825-0097. */
     @Column(name = "orcid_id", length = 20)
