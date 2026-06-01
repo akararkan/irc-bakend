@@ -149,4 +149,16 @@ public interface NotificationRepository extends JpaRepository<Notification, UUID
           AND n.readAt < :cutoff
         """)
     int deleteReadOlderThan(@Param("cutoff") LocalDateTime cutoff);
+
+    /**
+     * Bulk-delete every notification that points at a given resource — used by
+     * cascade-delete on the underlying entity (post, research, question) so we
+     * don't leave dangling inbox rows referencing a row that no longer exists.
+     */
+    @Modifying
+    @Query("""
+        DELETE FROM Notification n
+        WHERE n.resourceId = :resourceId
+        """)
+    int deleteAllByResourceId(@Param("resourceId") UUID resourceId);
 }

@@ -11,7 +11,6 @@ import ak.dev.irc.app.rabbitmq.event.post.PostReactedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostUnreactedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerUnreactedEvent;
-import ak.dev.irc.app.rabbitmq.event.qna.BestAnswerVotedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.QuestionDeletedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.PostSharedEvent;
 import ak.dev.irc.app.rabbitmq.event.qna.AnswerAcceptedEvent;
@@ -627,59 +626,6 @@ public class NotificationEventConsumer {
     public void onAnswerUnreacted(AnswerUnreactedEvent event) {
         log.debug("[CONSUMER] AnswerUnreacted — questionId={} answerId={} actor={} (no notification)",
                 event.questionId(), event.answerId(), event.actorId());
-    }
-
-    /**
-     * Best-answer vote/un-vote — the same record is published for both routing
-     * keys ({@code qna.social.best.voted} and {@code qna.social.best.unvoted}),
-     * distinguished by {@link BestAnswerVotedEvent#voted()}. Only the up-vote
-     * notifies the answer author (N4); the un-vote just acks so the message
-     * doesn't dead-letter. Aggregated per answer so multiple endorsements
-     * coalesce into one inbox line.
-     */
-    @RabbitHandler
-    @Transactional
-    public void onBestAnswerVoted(BestAnswerVotedEvent event) {
-        log.debug("[CONSUMER] BestAnswerVoted/Unvoted — questionId={} answerId={} voter={} voted={}",
-                event.questionId(), event.answerId(), event.voterId(), event.voted());
-
-        // Un-vote (retraction) is silent — nothing to tell the author.
-        if (!event.voted()) {
-            return;
-        }
-
-        // Endorsing your own answer never notifies.
-        if (event.voterId().equals(event.answerAuthorId())) {
-            log.debug("[CONSUMER] BestAnswerVoted skipped — voter is the answer author");
-            return;
-        }
-
-        if (isSilencedByRestriction(event.answerAuthorId(), event.voterId(), "BestAnswerVoted")) {
-            return;
-        }
-
-        Optional<User> voterOpt = userRepo.findActiveById(event.voterId());
-        Optional<User> answerAuthorOpt = userRepo.findActiveById(event.answerAuthorId());
-
-        if (voterOpt.isEmpty() || answerAuthorOpt.isEmpty()) {
-            log.warn("[CONSUMER] BestAnswerVoted skipped — user not found");
-            return;
-        }
-
-        User voter = voterOpt.get();
-        User answerAuthor = answerAuthorOpt.get();
-
-        dispatcher.dispatchAggregated(
-                answerAuthor,
-                voter,
-                NotificationType.ANSWER_BEST_VOTED,
-                "ANSWER_BEST_VOTED:" + event.answerId(),
-                "Your answer was endorsed as a best answer",
-                voter.getFullName() + " (@" + voter.getUsername()
-                        + ") endorsed your answer as a best answer to: \"" + event.questionTitle() + "\"",
-                event.questionId(),
-                "Question");
-        log.debug("[CONSUMER] ANSWER_BEST_VOTED dispatched → answerAuthor={}", answerAuthor.getId());
     }
 
     @RabbitHandler

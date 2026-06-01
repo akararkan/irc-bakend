@@ -36,12 +36,6 @@ public record QuestionAnswerResponse(
         List<AnswerSourceResponse> sources,
         // status
         boolean accepted,
-        /** True if at least one scholar (or the question author) has marked this as best. */
-        boolean isBestAnswer,
-        /** Number of distinct scholars that have voted this answer as best. */
-        long bestAnswerVoteCount,
-        /** True if the current viewer (if a scholar) has voted this answer as best. */
-        boolean votedByMe,
         boolean edited,
         LocalDateTime editedAt,
         boolean deleted,

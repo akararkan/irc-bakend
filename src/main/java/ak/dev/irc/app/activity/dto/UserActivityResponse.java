@@ -100,7 +100,6 @@ public class UserActivityResponse {
         private UUID parentAnswerId;
         private String bodyPreview;
         private boolean accepted;
-        private long bestAnswerVoteCount;
         private AuthorSummary author;
     }
 

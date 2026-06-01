@@ -53,4 +53,13 @@ public interface ResearchSaveRepository extends JpaRepository<ResearchSave, Rese
     int renameCollection(@Param("userId") UUID userId,
                          @Param("oldName") String oldName,
                          @Param("newName") String newName);
+
+    /** Cascade purge — used when the parent research is hard-deleted. */
+    @Modifying
+    @Query("DELETE FROM ResearchSave s WHERE s.id.researchId = :researchId")
+    int deleteAllByResearchId(@Param("researchId") UUID researchId);
+
+    /** All user IDs that have saved this research — needed to clean their Cassandra save lists. */
+    @Query("SELECT s.user.id FROM ResearchSave s WHERE s.id.researchId = :researchId")
+    List<UUID> findUserIdsByResearchId(@Param("researchId") UUID researchId);
 }

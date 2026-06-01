@@ -34,4 +34,8 @@ public interface ReactionByPostRepository extends CassandraRepository<ReactionBy
     @Query("DELETE FROM reactions_by_post WHERE post_id = :postId AND user_id = :userId")
     void delete(@Param("postId") UUID postId,
                 @Param("userId") UUID userId);
+
+    /** Partition-level delete — wipes every reactor for a post. */
+    @Query("DELETE FROM reactions_by_post WHERE post_id = :postId")
+    void deleteAllForPost(@Param("postId") UUID postId);
 }

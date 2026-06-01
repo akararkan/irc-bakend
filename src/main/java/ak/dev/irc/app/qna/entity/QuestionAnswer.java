@@ -121,16 +121,6 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Builder.Default
     private boolean accepted = false;
 
-    /**
-     * Denormalised count of distinct scholars that have marked this answer as
-     * a best answer. Mirrors the row-count of {@link BestAnswerVote} so
-     * listing endpoints can render the badge without a per-row aggregate
-     * query. Reanswers are not eligible — the count stays 0.
-     */
-    @Column(name = "best_answer_vote_count", nullable = false)
-    @Builder.Default
-    private Long bestAnswerVoteCount = 0L;
-
     @Column(name = "is_edited", nullable = false)
     @Builder.Default
     private boolean edited = false;
@@ -177,13 +167,4 @@ public class QuestionAnswer extends BaseAuditEntity {
         }
     }
 
-    public void incrementBestAnswerVotes() {
-        this.bestAnswerVoteCount = (this.bestAnswerVoteCount == null ? 0L : this.bestAnswerVoteCount) + 1L;
-    }
-
-    public void decrementBestAnswerVotes() {
-        if (this.bestAnswerVoteCount != null && this.bestAnswerVoteCount > 0) {
-            this.bestAnswerVoteCount--;
-        }
-    }
 }

@@ -18,4 +18,8 @@ public interface ResearchDownloadRepository
     @Query("SELECT * FROM research_downloads_by_research WHERE research_id = :rid LIMIT :pageSize")
     List<ResearchDownloadEntity> recent(@Param("rid") UUID researchId,
                                         @Param("pageSize") int pageSize);
+
+    /** Partition-level delete — wipes every download row for a research. */
+    @Query("DELETE FROM research_downloads_by_research WHERE research_id = :rid")
+    void deleteAllForResearch(@Param("rid") UUID researchId);
 }

@@ -16,4 +16,8 @@ public interface ShareByPostRepository extends CassandraRepository<ShareByPostEn
     @Query("SELECT * FROM shares_by_post WHERE post_id = :postId LIMIT :pageSize")
     List<ShareByPostEntity> recent(@Param("postId") UUID postId,
                                    @Param("pageSize") int pageSize);
+
+    /** Partition-level delete — wipes every share row for a post. */
+    @Query("DELETE FROM shares_by_post WHERE post_id = :postId")
+    void deleteAllForPost(@Param("postId") UUID postId);
 }

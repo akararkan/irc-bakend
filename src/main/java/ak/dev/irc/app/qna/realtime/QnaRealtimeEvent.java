@@ -73,8 +73,6 @@ public class QnaRealtimeEvent {
     private Long shareCount;
     private Long answerReactionCount;
     private Long answerReplyCount;
-    /** Number of distinct scholars that have voted this answer as best. */
-    private Long bestAnswerVoteCount;
 
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();

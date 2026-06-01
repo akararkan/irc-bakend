@@ -81,6 +81,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final MentionService         mentionService;
     private final ak.dev.irc.app.research.realtime.ResearchRealtimeBroadcaster researchRealtime;
     private final ak.dev.irc.app.user.service.NotificationDispatcher notificationDispatcher;
+    private final ak.dev.irc.app.user.repository.NotificationRepository notificationRepository;
     private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
@@ -91,6 +92,13 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
     private final ak.dev.irc.app.common.text.RichTextService richText;
+
+    // Cassandra cleanup — partition-level deletes invoked during cascade.
+    private final ak.dev.irc.app.research.cassandra.repository.ResearchReactionByResearchRepository cassReactionByResearchRepo;
+    private final ak.dev.irc.app.research.cassandra.repository.ResearchSaveLookupRepository cassSaveLookupRepo;
+    private final ak.dev.irc.app.research.cassandra.repository.ResearchSaveByUserRepository cassSaveByUserRepo;
+    private final ak.dev.irc.app.research.cassandra.repository.ResearchViewRepository cassViewRepo;
+    private final ak.dev.irc.app.research.cassandra.repository.ResearchDownloadRepository cassDownloadRepo;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -472,6 +480,26 @@ public class ResearchServiceImpl implements ResearchService {
     //  DELETE / LIFECYCLE
     // ══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Hard-delete a research and everything attached to it. Runs inside the
+     * class-level {@code @Transactional}: if any Postgres step fails the entire
+     * delete rolls back, so we never end up with the parent row gone but its
+     * children orphaned.
+     *
+     * <p>Cleanup order:
+     * <ol>
+     *   <li>S3 binaries first — these are the only side-effect we can't undo,
+     *       but we don't want to leave them behind if the delete succeeds</li>
+     *   <li>Postgres children — comment reactions (ON DELETE CASCADE from
+     *       {@code research_comment_likes}), comments, contributors, sources,
+     *       media, tags, reactions, saves, downloads — done explicitly to
+     *       avoid relying on {@code orphanRemoval} ordering quirks</li>
+     *   <li>The research row itself</li>
+     *   <li>Best-effort external cleanup (Cassandra, Elasticsearch, content
+     *       tags, notifications) — failures are logged so a broken downstream
+     *       can't roll back a successful Postgres delete</li>
+     * </ol>
+     */
     @Override
     @Caching(evict = {
             @CacheEvict(value = "research-by-id",   key = "#researchId"),
@@ -480,13 +508,68 @@ public class ResearchServiceImpl implements ResearchService {
     })
     public void delete(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+
+        // Capture user-IDs that saved this research BEFORE we wipe the join
+        // table — we need them to clear the per-user Cassandra save list.
+        java.util.List<UUID> savedByUserIds = saveRepo.findUserIdsByResearchId(researchId);
+        java.time.Instant savedClusterKey = researchTagInstant(research);
+
         cleanupS3Files(research);
-        research.setDeletedAt(LocalDateTime.now());
-        researchRepo.save(research);
-        researchSearch.deleteAsync(researchId);
-        contentTagService.untag(researchId);
+
+        // ── Postgres cascade ──────────────────────────────────────────────
+        downloadRepo.deleteAllByResearchId(researchId);
+        reactionRepo.deleteAllByResearchId(researchId);
+        saveRepo.deleteAllByResearchId(researchId);
+        // Comments first — research_comment_likes have ON DELETE CASCADE FK
+        // pointing at research_comments, so they go with them.
+        commentRepo.deleteAllByResearchId(researchId);
+        contributorRepo.deleteAllByResearchId(researchId);
+        sourceRepo.deleteAllByResearchId(researchId);
+        mediaRepo.deleteAllByResearchId(researchId);
+        tagRepo.deleteAllByResearchId(researchId);
+
+        // Detach managed collections so the row delete doesn't try to re-cascade.
+        research.getMediaFiles().clear();
+        research.getSources().clear();
+        research.getContributors().clear();
+        research.getTags().clear();
+        research.getComments().clear();
+        research.getReactions().clear();
+        research.getSaves().clear();
+        research.getDownloads().clear();
+
+        researchRepo.delete(research);
+        entityManager.flush();
+
+        // ── Best-effort external cleanup (post-Postgres) ─────────────────
+        try { researchSearch.deleteAsync(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] ES delete failed for {}: {}", researchId, e.getMessage()); }
+
+        try { contentTagService.untag(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] tag untag failed for {}: {}", researchId, e.getMessage()); }
+
+        try { notificationRepository.deleteAllByResourceId(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] notification cleanup failed for {}: {}", researchId, e.getMessage()); }
+
+        // Cassandra cleanup — partition-level deletes (cheap) plus per-user
+        // save fan-out cleanup for the users who actually saved the paper.
+        try { cassReactionByResearchRepo.deleteAllForResearch(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] cassandra reactions cleanup failed for {}: {}", researchId, e.getMessage()); }
+        try { cassSaveLookupRepo.deleteAllForResearch(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] cassandra save-lookup cleanup failed for {}: {}", researchId, e.getMessage()); }
+        try { cassViewRepo.deleteAllForResearch(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] cassandra views cleanup failed for {}: {}", researchId, e.getMessage()); }
+        try { cassDownloadRepo.deleteAllForResearch(researchId); }
+        catch (Exception e) { log.warn("[RESEARCH] cassandra downloads cleanup failed for {}: {}", researchId, e.getMessage()); }
+        if (savedByUserIds != null) {
+            for (UUID uid : savedByUserIds) {
+                try { cassSaveByUserRepo.delete(uid, savedClusterKey, researchId); }
+                catch (Exception e) { log.warn("[RESEARCH] cassandra user-save cleanup failed user={} research={}: {}", uid, researchId, e.getMessage()); }
+            }
+        }
+
         broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_DELETED, researcherId);
-        log.info("Research soft-deleted: {}", researchId);
+        log.info("Research hard-deleted with cascade: {}", researchId);
     }
 
     private void cleanupS3Files(Research research) {
@@ -504,6 +587,17 @@ public class ResearchServiceImpl implements ResearchService {
         catch (Exception e) { log.warn("S3 delete failed for cover image: {}", e.getMessage()); }
     }
 
+    /**
+     * Flip a draft research to PUBLISHED.
+     *
+     * <p>Atomicity contract: the Postgres status flip happens inside the
+     * class-level {@code @Transactional}. Steps that materially affect the
+     * publication (mention scan, Cassandra tag indexing) stay inline — if they
+     * throw, the status flip rolls back and the paper stays a DRAFT. Steps
+     * that are pure post-commit notifications (search index, lifecycle
+     * broadcast, RabbitMQ event, activity log) are wrapped in try/catch so a
+     * flaky downstream can't undo a clean publish.
+     */
     @Override
     @Caching(evict = {
             @CacheEvict(value = "research-by-id",   key = "#researchId"),
@@ -523,18 +617,15 @@ public class ResearchServiceImpl implements ResearchService {
         research.setStatus(ResearchStatus.PUBLISHED);
         research.setPublishedAt(LocalDateTime.now());
         research = researchRepo.save(research);
+        // Flush so we surface any DB-level constraint failure now, while the
+        // transaction can still roll back cleanly — rather than at commit time
+        // when half the fan-out below would already have run.
+        entityManager.flush();
 
-        researchEventPublisher.publishResearchPublished(research);
-
-        // Activity feed: log the publication on the researcher's history.
-        try {
-            userActivityService.recordResearchPublished(researcherId, research.getId());
-        } catch (Exception e) {
-            log.debug("[RESEARCH] activity record skipped: {}", e.getMessage());
-        }
-
-        // Scan title + abstract + description for @mentions / @followers.
-        // Concatenate so a single event covers all three text fields.
+        // ── Critical side effects: if these throw, roll the publish back ──
+        // Mention scan + Cassandra tag indexing are part of the publication
+        // contract — a paper that doesn't fan out to its tag/mention surface
+        // isn't really "published".
         String mentionSource = joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription());
         mentionService.scanAndPublish(
                 mentionSource,
@@ -545,9 +636,20 @@ public class ResearchServiceImpl implements ResearchService {
                 research.getResearcher().getUsername(),
                 /* allowFollowersToken */ true);
 
-        researchSearch.indexAsync(research);
         indexTagsToCassandra(research);
-        broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_PUBLISHED, researcherId);
+
+        // ── Best-effort post-commit notifications ─────────────────────────
+        try { researchEventPublisher.publishResearchPublished(research); }
+        catch (Exception e) { log.warn("[RESEARCH] event publish failed for {}: {}", research.getId(), e.getMessage()); }
+
+        try { userActivityService.recordResearchPublished(researcherId, research.getId()); }
+        catch (Exception e) { log.debug("[RESEARCH] activity record skipped: {}", e.getMessage()); }
+
+        try { researchSearch.indexAsync(research); }
+        catch (Exception e) { log.warn("[RESEARCH] ES index failed for {}: {}", research.getId(), e.getMessage()); }
+
+        try { broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_PUBLISHED, researcherId); }
+        catch (Exception e) { log.warn("[RESEARCH] lifecycle broadcast failed for {}: {}", research.getId(), e.getMessage()); }
 
         log.info("Research published: {} [{}]", research.getId(), research.getIrcId());
         return mapper.toResponse(research, researcherId);

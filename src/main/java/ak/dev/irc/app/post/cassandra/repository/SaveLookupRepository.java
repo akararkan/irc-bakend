@@ -31,4 +31,12 @@ public interface SaveLookupRepository extends CassandraRepository<SaveLookupEnti
 
     @Query("DELETE FROM saves_by_post_user WHERE post_id = :postId AND user_id = :userId")
     void delete(@Param("postId") UUID postId, @Param("userId") UUID userId);
+
+    /** Partition-level delete — wipes every save lookup row for a post. */
+    @Query("DELETE FROM saves_by_post_user WHERE post_id = :postId")
+    void deleteAllForPost(@Param("postId") UUID postId);
+
+    /** Used to identify which user partitions need their saves_by_user cleared. */
+    @Query("SELECT * FROM saves_by_post_user WHERE post_id = :postId")
+    List<SaveLookupEntity> findAllByPostId(@Param("postId") UUID postId);
 }

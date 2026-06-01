@@ -19,4 +19,8 @@ public interface ResearchSaveLookupRepository
 
     @Query("DELETE FROM research_saves_lookup WHERE research_id = :rid AND user_id = :uid")
     void delete(@Param("rid") UUID researchId, @Param("uid") UUID userId);
+
+    /** Partition-level delete — wipes every save-lookup row for a research. */
+    @Query("DELETE FROM research_saves_lookup WHERE research_id = :rid")
+    void deleteAllForResearch(@Param("rid") UUID researchId);
 }

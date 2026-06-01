@@ -34,4 +34,8 @@ public interface PostCounterRepository extends CassandraRepository<PostCounterEn
      * Collection as LIST (DefaultListType), triggering a ClassCastException.
      */
     List<PostCounterEntity> findAllByPostIdIn(Collection<UUID> postIds);
+
+    /** Cascade-cleanup — drop a post's counter row when the post itself is deleted. */
+    @Query("DELETE FROM post_counters WHERE post_id = :postId")
+    void deleteByPostId(@Param("postId") UUID postId);
 }

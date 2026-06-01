@@ -108,19 +108,6 @@ public interface QuestionService {
 
     QuestionAnswerResponse unacceptAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
-    // ── Multi-scholar best-answer voting ────────────────────────────────────
-
-    /**
-     * Mark an answer as a best answer. Any account with the SCHOLAR role
-     * (plus admins) may vote. Multiple scholars may independently vote for
-     * the same answer; multiple answers per question may all be marked best.
-     * Reanswers (replies) are not eligible.
-     */
-    QuestionAnswerResponse markBestAnswer(UUID questionId, UUID answerId, UUID requesterId);
-
-    /** Remove the caller's own best-answer vote. */
-    QuestionAnswerResponse unmarkBestAnswer(UUID questionId, UUID answerId, UUID requesterId);
-
     // ── Attachments (upload files to answer) ─────────────────────────────────
 
     AnswerAttachmentResponse uploadAttachment(UUID questionId, UUID answerId, MultipartFile file,

@@ -39,8 +39,7 @@ public enum NotificationCategory {
             NotificationType.QUESTION_ANSWERED,
             NotificationType.ANSWER_REPLIED,
             NotificationType.ANSWER_REACTED,
-            NotificationType.ANSWER_ACCEPTED,
-            NotificationType.ANSWER_BEST_VOTED
+            NotificationType.ANSWER_ACCEPTED
     );
 
     private static final Set<NotificationType> RESEARCH_TYPES = EnumSet.of(

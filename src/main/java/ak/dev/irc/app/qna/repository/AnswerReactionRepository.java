@@ -28,4 +28,13 @@ public interface AnswerReactionRepository extends JpaRepository<AnswerReaction, 
     @Modifying
     @Query("DELETE FROM AnswerReaction r WHERE r.id.answerId = :answerId")
     int deleteAllByAnswerId(@Param("answerId") UUID answerId);
+
+    /** Cascade purge — every reaction on every answer under a question. */
+    @Modifying
+    @Query("""
+        DELETE FROM AnswerReaction r WHERE r.id.answerId IN (
+            SELECT a.id FROM QuestionAnswer a WHERE a.question.id = :questionId
+        )
+        """)
+    int deleteAllByQuestionId(@Param("questionId") UUID questionId);
 }

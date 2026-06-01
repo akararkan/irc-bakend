@@ -51,4 +51,9 @@ public interface QuestionSaveRepository extends JpaRepository<QuestionSave, Ques
     /** Source-of-truth count for the reconciler to rebuild {@code question.saveCount}. */
     @Query("SELECT COUNT(s) FROM QuestionSave s WHERE s.id.questionId = :questionId")
     long countByQuestionId(@Param("questionId") UUID questionId);
+
+    /** Cascade purge — used when the parent question is hard-deleted. */
+    @Modifying
+    @Query("DELETE FROM QuestionSave s WHERE s.id.questionId = :questionId")
+    int deleteAllByQuestionId(@Param("questionId") UUID questionId);
 }

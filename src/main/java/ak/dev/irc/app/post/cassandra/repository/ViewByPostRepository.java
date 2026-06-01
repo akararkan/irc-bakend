@@ -16,4 +16,8 @@ public interface ViewByPostRepository extends CassandraRepository<ViewByPostEnti
     @Query("SELECT * FROM views_by_post WHERE post_id = :postId AND user_id = :userId")
     Optional<ViewByPostEntity> find(@Param("postId") UUID postId,
                                     @Param("userId") UUID userId);
+
+    /** Partition-level delete — wipes every viewer row for a post. */
+    @Query("DELETE FROM views_by_post WHERE post_id = :postId")
+    void deleteAllForPost(@Param("postId") UUID postId);
 }

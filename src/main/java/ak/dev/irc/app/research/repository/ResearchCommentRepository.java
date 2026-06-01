@@ -129,4 +129,17 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
         )
         """, nativeQuery = true)
     int bulkReconcileReplyCount();
+
+    /**
+     * Cascade purge — used when the parent research is hard-deleted. Comments
+     * include nested replies under the same {@code research_id}, so a single
+     * statement clears the whole thread tree. The companion
+     * {@code research_comment_likes} rows are removed by ON DELETE CASCADE.
+     */
+    @Modifying
+    @Query("DELETE FROM ResearchComment c WHERE c.research.id = :researchId")
+    int deleteAllByResearchId(@Param("researchId") UUID researchId);
+
+    @Query("SELECT c.id FROM ResearchComment c WHERE c.research.id = :researchId")
+    List<UUID> findIdsByResearchId(@Param("researchId") UUID researchId);
 }

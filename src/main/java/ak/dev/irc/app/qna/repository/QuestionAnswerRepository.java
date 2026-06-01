@@ -177,13 +177,25 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         """, nativeQuery = true)
     int bulkReconcileReplyCount();
 
+    /**
+     * Pre-cascade lookup — every answer ID under a question, used to drive the
+     * S3 cleanup pass before the rows themselves are deleted.
+     */
+    @Query("SELECT a.id FROM QuestionAnswer a WHERE a.question.id = :questionId")
+    List<UUID> findIdsByQuestionId(@Param("questionId") UUID questionId);
+
+    /** S3 keys we need to delete from object storage before the row is dropped. */
+    @Query("""
+        SELECT a.mediaS3Key, a.mediaThumbnailS3Key, a.voiceS3Key
+        FROM QuestionAnswer a
+        WHERE a.question.id = :questionId
+        """)
+    List<Object[]> findMediaKeysByQuestionId(@Param("questionId") UUID questionId);
+
+    /** Cascade purge — used when the parent question is hard-deleted. */
     @Modifying
-    @Query(value = """
-        UPDATE question_answers SET best_answer_vote_count = (
-            SELECT COUNT(*) FROM best_answer_votes v WHERE v.answer_id = question_answers.id
-        )
-        """, nativeQuery = true)
-    int bulkReconcileBestAnswerVoteCount();
+    @Query("DELETE FROM QuestionAnswer a WHERE a.question.id = :questionId")
+    int deleteAllByQuestionId(@Param("questionId") UUID questionId);
 
     /**
      * Bulk fetch of {@code (answerId, reactionType)} for a viewer over a page

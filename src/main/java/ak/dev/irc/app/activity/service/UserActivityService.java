@@ -79,9 +79,6 @@ public interface UserActivityService {
 
     void recordQnaAnswerReaction(UUID userId, UUID questionId, UUID answerId, AnswerReactionType reactionType);
 
-    /** Record a scholar marking / unmarking an answer as a best answer. */
-    void recordQnaBestAnswerVote(UUID voterId, UUID questionId, UUID answerId, boolean voted);
-
     void recordQnaAnswerFeedback(UUID userId, UUID questionId, UUID answerId);
 
     // ── Research ─────────────────────────────────────────────────────────

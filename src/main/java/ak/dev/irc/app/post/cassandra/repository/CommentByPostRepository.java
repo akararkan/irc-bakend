@@ -44,4 +44,12 @@ public interface CommentByPostRepository extends CassandraRepository<CommentByPo
     void hardDelete(@Param("postId") UUID postId,
                     @Param("createdAt") Instant createdAt,
                     @Param("commentId") UUID commentId);
+
+    /** Partition-level delete — wipes every comment for a post. */
+    @Query("DELETE FROM comments_by_post WHERE post_id = :postId")
+    void deleteAllForPost(@Param("postId") UUID postId);
+
+    /** Used to drive comment_reactions cleanup before the comments themselves are dropped. */
+    @Query("SELECT * FROM comments_by_post WHERE post_id = :postId")
+    List<CommentByPostEntity> findAllForPost(@Param("postId") UUID postId);
 }

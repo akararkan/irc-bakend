@@ -319,13 +319,6 @@ public class UserActivityServiceImpl implements UserActivityService {
     }
 
     @Override @Async
-    public void recordQnaBestAnswerVote(UUID voterId, UUID questionId, UUID answerId, boolean voted) {
-        if (voterId == null || answerId == null) return;
-        write(voterId, UserActivityType.QNA_BEST_ANSWER_VOTE,
-              b -> { b.questionId(questionId); b.answerId(answerId); });
-    }
-
-    @Override @Async
     public void recordQnaAnswerFeedback(UUID userId, UUID questionId, UUID answerId) {
         if (userId == null || answerId == null) return;
         write(userId, UserActivityType.QNA_ANSWER_FEEDBACK,

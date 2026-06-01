@@ -1,13 +1,27 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.activity.service.UserActivityService;
+import ak.dev.irc.app.post.cassandra.entity.CommentByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReelsByDayEntity;
+import ak.dev.irc.app.post.cassandra.entity.SaveLookupEntity;
+import ak.dev.irc.app.post.cassandra.repository.CommentByPostRepository;
+import ak.dev.irc.app.post.cassandra.repository.CommentCounterRepository;
+import ak.dev.irc.app.post.cassandra.repository.CommentReactionRepository;
+import ak.dev.irc.app.post.cassandra.repository.MediaByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostByAuthorRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostByIdRepository;
+import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
+import ak.dev.irc.app.post.cassandra.repository.ReactionByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.ReelsByDayRepository;
+import ak.dev.irc.app.post.cassandra.repository.ReplyByCommentRepository;
+import ak.dev.irc.app.post.cassandra.repository.SaveByUserRepository;
+import ak.dev.irc.app.post.cassandra.repository.SaveLookupRepository;
+import ak.dev.irc.app.post.cassandra.repository.ShareByPostRepository;
+import ak.dev.irc.app.post.cassandra.repository.ViewByPostRepository;
 import ak.dev.irc.app.post.search.service.PostSearchService;
+import ak.dev.irc.app.user.repository.NotificationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -43,6 +57,24 @@ public class CassandraPostService {
     private final CassandraSoundService    soundService;
     private final CassandraHashtagService  hashtagService;
     private final UserActivityService      userActivityService;
+
+    // Cascade-delete dependencies. Optional via @Autowired(required=false)
+    // semantics is not used here — Spring will fail fast if any of these isn't
+    // wired, which is exactly what we want: a post delete that silently skips
+    // half its cleanup because a bean is missing would be worse than a startup
+    // error.
+    private final CommentByPostRepository    commentByPostRepo;
+    private final CommentReactionRepository  commentReactionRepo;
+    private final CommentCounterRepository   commentCounterRepo;
+    private final ReplyByCommentRepository   replyByCommentRepo;
+    private final ReactionByPostRepository   reactionByPostRepo;
+    private final SaveLookupRepository       saveLookupRepo;
+    private final SaveByUserRepository       saveByUserRepo;
+    private final ViewByPostRepository       viewByPostRepo;
+    private final ShareByPostRepository      shareByPostRepo;
+    private final MediaByPostRepository      mediaByPostRepo;
+    private final PostCounterRepository      postCounterRepo;
+    private final NotificationRepository     notificationRepo;
 
     /**
      * Create a post and persist it across every denormalized table that needs
@@ -248,22 +280,81 @@ public class CassandraPostService {
      * enforces this via the JWT principal). Returns {@code true} if the
      * post existed and was removed.
      *
-     * <p>Cleans:
-     * <ul>
-     *   <li>{@code posts_by_id} — canonical row</li>
-     *   <li>{@code posts_by_author} — profile feed entry</li>
-     *   <li>{@code post_search} (Elasticsearch) — async best-effort</li>
-     * </ul>
-     * {@code feed_by_user} rows for followers and {@code reels_by_day} entries
-     * expire naturally via TTL; we don't sweep them because Cassandra wide-row
-     * deletions across N partitions would be expensive.</p>
+     * <p>Cascade order — each step is best-effort and logged on failure so a
+     * single misbehaving table can't strand the rest of the cleanup:
+     * <ol>
+     *   <li>Per-comment fan-out: comment_reactions + comment_counters + replies
+     *       (driven by a partition scan of comments_by_post)</li>
+     *   <li>comments_by_post partition delete</li>
+     *   <li>Per-save user-fan-out cleanup: drain saves_by_post_user to find
+     *       the (user_id, created_at) tuples and wipe saves_by_user</li>
+     *   <li>saves_by_post_user partition delete</li>
+     *   <li>reactions_by_post / views_by_post / shares_by_post / media_by_post
+     *       partition deletes</li>
+     *   <li>post_counters row delete</li>
+     *   <li>posts_by_author profile-feed row + posts_by_id canonical row</li>
+     *   <li>Elasticsearch index entry, hashtag fan-out, Postgres notifications</li>
+     * </ol>
+     * The user-partitioned tables {@code reactions_by_user} and the per-author
+     * feed_by_user rows aren't swept here — they're partitioned by user, so a
+     * server-side cleanup would need to walk every user. They expire naturally
+     * (feed via TTL; reactions_by_user is fine to leave a dangling row because
+     * read paths join through posts_by_id and skip the missing parent).</p>
      */
     public boolean deletePost(UUID postId) {
         PostByIdEntity canonical = postByIdRepo.findById(postId).orElse(null);
         if (canonical == null) return false;
 
-        postByIdRepo.deleteById(postId);
+        // 1. Comments — walk the partition once so we can fan out to each
+        //    comment's child tables before wiping the parent partition.
+        try {
+            List<CommentByPostEntity> comments = commentByPostRepo.findAllForPost(postId);
+            for (CommentByPostEntity c : comments) {
+                UUID commentId = c.getCommentId();
+                if (commentId == null) continue;
+                try { commentReactionRepo.deleteAllForComment(commentId); }
+                catch (Exception e) { log.warn("[POST] comment reactions cleanup failed comment={}: {}", commentId, e.getMessage()); }
+                try { replyByCommentRepo.deleteAllUnder(commentId); }
+                catch (Exception e) { log.warn("[POST] replies cleanup failed comment={}: {}", commentId, e.getMessage()); }
+                try { commentCounterRepo.deleteByCommentId(commentId); }
+                catch (Exception e) { log.warn("[POST] comment counter cleanup failed comment={}: {}", commentId, e.getMessage()); }
+            }
+        } catch (Exception e) {
+            log.warn("[POST] comment scan failed for {}: {}", postId, e.getMessage());
+        }
+        try { commentByPostRepo.deleteAllForPost(postId); }
+        catch (Exception e) { log.warn("[POST] comments partition delete failed for {}: {}", postId, e.getMessage()); }
 
+        // 2. Save fan-out — drain the per-post save list so we can clean the
+        //    matching saves_by_user rows for everyone who saved this post.
+        try {
+            List<SaveLookupEntity> saves = saveLookupRepo.findAllByPostId(postId);
+            for (SaveLookupEntity s : saves) {
+                if (s.getUserId() == null || s.getCreatedAt() == null) continue;
+                try { saveByUserRepo.delete(s.getUserId(), s.getCreatedAt(), postId); }
+                catch (Exception e) { log.warn("[POST] saves_by_user cleanup failed user={}: {}", s.getUserId(), e.getMessage()); }
+            }
+        } catch (Exception e) {
+            log.warn("[POST] save fan-out scan failed for {}: {}", postId, e.getMessage());
+        }
+        try { saveLookupRepo.deleteAllForPost(postId); }
+        catch (Exception e) { log.warn("[POST] save-lookup partition delete failed for {}: {}", postId, e.getMessage()); }
+
+        // 3. Reactions / views / shares / media — partition-level deletes.
+        try { reactionByPostRepo.deleteAllForPost(postId); }
+        catch (Exception e) { log.warn("[POST] reactions partition delete failed for {}: {}", postId, e.getMessage()); }
+        try { viewByPostRepo.deleteAllForPost(postId); }
+        catch (Exception e) { log.warn("[POST] views partition delete failed for {}: {}", postId, e.getMessage()); }
+        try { shareByPostRepo.deleteAllForPost(postId); }
+        catch (Exception e) { log.warn("[POST] shares partition delete failed for {}: {}", postId, e.getMessage()); }
+        try { mediaByPostRepo.deleteAllFor(postId); }
+        catch (Exception e) { log.warn("[POST] media partition delete failed for {}: {}", postId, e.getMessage()); }
+
+        // 4. post_counters row.
+        try { postCounterRepo.deleteByPostId(postId); }
+        catch (Exception e) { log.warn("[POST] post counter delete failed for {}: {}", postId, e.getMessage()); }
+
+        // 5. The canonical row + profile-feed entry.
         if (canonical.getAuthorId() != null && canonical.getCreatedAt() != null) {
             try {
                 postByAuthorRepo.deleteRow(canonical.getAuthorId(),
@@ -273,23 +364,23 @@ public class CassandraPostService {
                 log.warn("[POST] profile-feed cleanup failed for {}: {}", postId, e.getMessage());
             }
         }
+        postByIdRepo.deleteById(postId);
 
-        postSearchService.deleteAsync(postId);
+        // 6. Search + hashtag fan-out + notifications.
+        try { postSearchService.deleteAsync(postId); }
+        catch (Exception e) { log.warn("[POST] ES delete failed for {}: {}", postId, e.getMessage()); }
 
-        // Tear down the post's hashtag fan-out rows (posts_by_hashtag +
-        // content_by_tag) so deleted posts don't leak into tag feeds.
         try {
-            String mediaUrl = canonical.getMediaUrls() == null || canonical.getMediaUrls().isEmpty()
-                    ? null : canonical.getMediaUrls().get(0);
             hashtagService.clearEntitiesForPost(
                     postId, canonical.getTextContent(), canonical.getCreatedAt());
-            // mediaUrl is captured for symmetry with future re-index paths; not used by clear.
-            if (mediaUrl != null) log.debug("[POST] delete cleanup ran for {}", postId);
         } catch (Exception e) {
             log.warn("[POST] hashtag cleanup failed for {}: {}", postId, e.getMessage());
         }
 
-        log.info("[POST] deleted {} (author={})", postId, canonical.getAuthorId());
+        try { notificationRepo.deleteAllByResourceId(postId); }
+        catch (Exception e) { log.warn("[POST] notification cleanup failed for {}: {}", postId, e.getMessage()); }
+
+        log.info("[POST] hard-deleted with cascade {} (author={})", postId, canonical.getAuthorId());
         return true;
     }
 

@@ -3,6 +3,7 @@ package ak.dev.irc.app.research.repository;
 import ak.dev.irc.app.research.entity.ResearchReaction;
 import ak.dev.irc.app.research.entity.ResearchReactionId;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -15,6 +16,11 @@ import java.util.UUID;
 public interface ResearchReactionRepository extends JpaRepository<ResearchReaction, ResearchReactionId> {
 
     boolean existsById(ResearchReactionId id);
+
+    /** Cascade purge — used when the parent research is hard-deleted. */
+    @Modifying
+    @Query("DELETE FROM ResearchReaction r WHERE r.research.id = :researchId")
+    int deleteAllByResearchId(@Param("researchId") UUID researchId);
 
     /** Reaction breakdown for a research: [ReactionType, count] */
     @Query("""

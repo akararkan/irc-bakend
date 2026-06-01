@@ -18,13 +18,9 @@ public enum QnaRealtimeEventType {
     ANSWER_REACTION_CHANGED,
     ANSWER_REACTION_REMOVED,
 
-    // ── accept / unaccept best answer (question-author legacy path) ────
+    // ── accept / unaccept (question author only) ───────────────────────
     ANSWER_ACCEPTED,
     ANSWER_UNACCEPTED,
-
-    // ── multi-scholar best-answer voting ───────────────────────────────
-    BEST_ANSWER_VOTED,
-    BEST_ANSWER_UNVOTED,
 
     // ── question lifecycle ─────────────────────────────────────────────
     QUESTION_UPDATED,

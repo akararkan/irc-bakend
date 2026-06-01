@@ -348,33 +348,6 @@ public class QuestionController {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    //  MULTI-SCHOLAR BEST-ANSWER VOTING
-    //  Any scholar may vote any top-level answer as a best answer; multiple
-    //  answers per question may be marked best by multiple voters.
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @PostMapping("/{questionId}/answers/{answerId}/best")
-    @PreAuthorize("hasAnyRole('SCHOLAR','ADMIN','SUPER_ADMIN')")
-    public ResponseEntity<QuestionAnswerResponse> markBestAnswer(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId,
-            @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
-        return ResponseEntity.ok(questionService.markBestAnswer(questionId, answerId, user.getId()));
-    }
-
-    @DeleteMapping("/{questionId}/answers/{answerId}/best")
-    @PreAuthorize("hasAnyRole('SCHOLAR','ADMIN','SUPER_ADMIN')")
-    public ResponseEntity<QuestionAnswerResponse> unmarkBestAnswer(
-            @PathVariable UUID questionId,
-            @PathVariable UUID answerId,
-            @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
-        return ResponseEntity.ok(questionService.unmarkBestAnswer(questionId, answerId, user.getId()));
-    }
-
-
-    // ══════════════════════════════════════════════════════════════════════════
     //  ATTACHMENTS (file uploads per answer)
     // ══════════════════════════════════════════════════════════════════════════
 

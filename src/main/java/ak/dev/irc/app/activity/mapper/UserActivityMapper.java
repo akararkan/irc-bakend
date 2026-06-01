@@ -121,7 +121,6 @@ public class UserActivityMapper {
             case QNA_ANSWER_CREATED    -> "Answered a question";
             case QNA_REANSWER_CREATED  -> "Replied to an answer";
             case QNA_ANSWER_REACTION   -> "Liked an answer";
-            case QNA_BEST_ANSWER_VOTE  -> "Marked a best answer";
             case QNA_ANSWER_FEEDBACK   -> "Gave answer feedback";
 
             case RESEARCH_PUBLISHED        -> "Published a research paper";

@@ -25,4 +25,8 @@ public interface CommentCounterRepository extends CassandraRepository<CommentCou
      * parameter (which causes DefaultListType → SetType ClassCastException).
      */
     List<CommentCounterEntity> findAllByCommentIdIn(Collection<UUID> commentIds);
+
+    /** Cascade-cleanup — drop a comment's counter row when the comment itself is deleted. */
+    @Query("DELETE FROM comment_counters WHERE comment_id = :commentId")
+    void deleteByCommentId(@Param("commentId") UUID commentId);
 }

@@ -20,4 +20,8 @@ public interface ResearchReactionByResearchRepository
 
     @Query("DELETE FROM research_reactions_by_research WHERE research_id = :rid AND user_id = :uid")
     void delete(@Param("rid") UUID researchId, @Param("uid") UUID userId);
+
+    /** Partition-level delete — wipes every reactor row for a research. */
+    @Query("DELETE FROM research_reactions_by_research WHERE research_id = :rid")
+    void deleteAllForResearch(@Param("rid") UUID researchId);
 }

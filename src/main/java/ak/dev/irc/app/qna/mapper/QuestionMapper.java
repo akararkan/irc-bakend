@@ -99,24 +99,17 @@ public class QuestionMapper {
     }
 
     public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer) {
-        return toAnswerResponse(answer, null, null, false);
-    }
-
-    public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer,
-                                                   AnswerReactionType myReaction,
-                                                   Long replyCountOverride) {
-        return toAnswerResponse(answer, myReaction, replyCountOverride, false);
+        return toAnswerResponse(answer, null, null);
     }
 
     /**
-     * Block-aware overload that accepts pre-resolved {@code myReaction},
-     * {@code replyCount}, and {@code votedByMe} so listing endpoints can
-     * avoid touching lazy collections (which would each trigger a SELECT).
+     * Block-aware overload that accepts pre-resolved {@code myReaction} and
+     * {@code replyCount} so listing endpoints can avoid touching lazy
+     * collections (which would each trigger a SELECT).
      */
     public QuestionAnswerResponse toAnswerResponse(QuestionAnswer answer,
                                                    AnswerReactionType myReaction,
-                                                   Long replyCountOverride,
-                                                   boolean votedByMe) {
+                                                   Long replyCountOverride) {
         User author = answer.getAuthor();
         boolean deleted = answer.isDeleted();
 
@@ -159,9 +152,6 @@ public class QuestionMapper {
                 attachments,
                 sources,
                 answer.isAccepted(),
-                answer.isAccepted() || (answer.getBestAnswerVoteCount() != null && answer.getBestAnswerVoteCount() > 0),
-                answer.getBestAnswerVoteCount() != null ? answer.getBestAnswerVoteCount() : 0L,
-                votedByMe,
                 answer.isEdited(),
                 answer.getEditedAt(),
                 answer.isDeleted(),

@@ -61,7 +61,6 @@ public class QuestionServiceImpl implements QuestionService {
     private final AnswerAttachmentRepository attachmentRepository;
     private final AnswerSourceRepository sourceRepository;
     private final AnswerReactionRepository reactionRepository;
-    private final BestAnswerVoteRepository bestAnswerVoteRepository;
     private final QuestionSaveRepository saveRepository;
     private final UserRepository userRepository;
     private final UserFollowRepository followRepository;
@@ -81,6 +80,8 @@ public class QuestionServiceImpl implements QuestionService {
     private final ak.dev.irc.app.qna.search.service.QnaSearchService qnaSearch;
     private final ak.dev.irc.app.common.tag.service.ContentTagService contentTagService;
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
+    private final ak.dev.irc.app.qna.repository.QuestionViewRepository questionViewRepository;
+    private final ak.dev.irc.app.user.repository.NotificationRepository notificationRepository;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -691,9 +692,8 @@ public class QuestionServiceImpl implements QuestionService {
         // replyCount comes from the denormalised column on the entity now —
         // no extra GROUP-BY query per page.
         Map<UUID, AnswerReactionType> mine = batchMyReactions(page.getContent(), requesterId);
-        java.util.Set<UUID> myVotes = batchMyBestAnswerVotes(page.getContent(), requesterId);
         return page.map(a -> mapper.toAnswerResponse(
-                a, mine.get(a.getId()), a.getReplyCount(), myVotes.contains(a.getId())));
+                a, mine.get(a.getId()), a.getReplyCount()));
     }
 
     @Override
@@ -727,6 +727,22 @@ public class QuestionServiceImpl implements QuestionService {
                 : java.time.Instant.now();
     }
 
+    /**
+     * Hard-delete a question and every dependent row. Runs in a single
+     * transaction so a partial cascade can never leave the question gone but
+     * its answers / reactions / saves orphaned.
+     *
+     * <p>Cleanup order:
+     * <ol>
+     *   <li>S3 objects (answer attachments, answer media/voice, source files)
+     *       — collected before the rows are dropped</li>
+     *   <li>Postgres children — answer reactions, best-answer votes, saves,
+     *       views, then answer attachments / sources, then answers, then the
+     *       question itself (FK ordering)</li>
+     *   <li>Best-effort external cleanup — Elasticsearch, content tags,
+     *       notifications, RabbitMQ event, realtime broadcast</li>
+     * </ol>
+     */
     @Override
     @Transactional
     public void deleteQuestion(UUID questionId, UUID requesterId) {
@@ -735,23 +751,78 @@ public class QuestionServiceImpl implements QuestionService {
             throw new ForbiddenException("You can only delete your own question");
         }
 
-        question.setDeletedAt(LocalDateTime.now());
-        question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED);
-        questionRepository.save(question);
+        // ── S3 cleanup (best-effort, before the rows go) ──────────────────
+        try {
+            List<String> attachmentKeys = attachmentRepository.findS3KeysByQuestionId(questionId);
+            attachmentKeys.stream().filter(java.util.Objects::nonNull).forEach(this::safeS3Delete);
+            List<String> sourceKeys = sourceRepository.findS3KeysByQuestionId(questionId);
+            sourceKeys.stream().filter(java.util.Objects::nonNull).forEach(this::safeS3Delete);
+            for (Object[] row : answerRepository.findMediaKeysByQuestionId(questionId)) {
+                for (Object key : row) {
+                    if (key instanceof String s && !s.isBlank()) safeS3Delete(s);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[QNA] pre-delete S3 sweep partially failed for question {}: {}", questionId, e.getMessage());
+        }
 
-        qnaSearch.deleteAsync(question.getId());
-        contentTagService.untag(question.getId());
+        // ── Postgres cascade ──────────────────────────────────────────────
+        // FK-safe order: reactions reference answers; attachments and sources
+        // also reference answers; saves and views reference the question itself.
+        reactionRepository.deleteAllByQuestionId(questionId);
+        attachmentRepository.deleteAllByQuestionId(questionId);
+        sourceRepository.deleteAllByQuestionId(questionId);
+        saveRepository.deleteAllByQuestionId(questionId);
+        questionViewRepository.deleteAllByQuestionId(questionId);
+        // Answers next — parent-self FK (parent_answer_id) means we have to
+        // null those out or delete in reverse insert order; simpler: clear
+        // the parent ref in bulk before dropping the rows.
+        entityManager.createQuery(
+                "UPDATE QuestionAnswer a SET a.parentAnswer = NULL WHERE a.question.id = :qid")
+                .setParameter("qid", questionId)
+                .executeUpdate();
+        answerRepository.deleteAllByQuestionId(questionId);
 
-        eventPublisher.publishQuestionDeleted(question.getId(), requesterId);
+        // Detach the JPA-managed children so the row delete doesn't try to
+        // re-cascade across already-purged collections.
+        question.getAnswers().clear();
+        question.getTags().clear();
+        questionRepository.delete(question);
+        entityManager.flush();
 
-        User author = question.getAuthor();
-        realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(QnaRealtimeEventType.QUESTION_DELETED)
-                .questionId(question.getId())
-                .actorId(requesterId)
-                .actorUsername(author.getUsername())
-                .actorAvatarUrl(author.getProfileImage())
-                .build());
+        // ── Best-effort external cleanup (post-Postgres) ─────────────────
+        try { qnaSearch.deleteAsync(question.getId()); }
+        catch (Exception e) { log.warn("[QNA] ES delete failed for {}: {}", questionId, e.getMessage()); }
+
+        try { contentTagService.untag(question.getId()); }
+        catch (Exception e) { log.warn("[QNA] tag untag failed for {}: {}", questionId, e.getMessage()); }
+
+        try { notificationRepository.deleteAllByResourceId(questionId); }
+        catch (Exception e) { log.warn("[QNA] notification cleanup failed for {}: {}", questionId, e.getMessage()); }
+
+        try { eventPublisher.publishQuestionDeleted(question.getId(), requesterId); }
+        catch (Exception e) { log.warn("[QNA] event publish failed for {}: {}", questionId, e.getMessage()); }
+
+        try {
+            User author = question.getAuthor();
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.QUESTION_DELETED)
+                    .questionId(question.getId())
+                    .actorId(requesterId)
+                    .actorUsername(author.getUsername())
+                    .actorAvatarUrl(author.getProfileImage())
+                    .build());
+        } catch (Exception e) {
+            log.warn("[QNA] realtime broadcast failed for {}: {}", questionId, e.getMessage());
+        }
+
+        log.info("Question hard-deleted with cascade: {}", questionId);
+    }
+
+    private void safeS3Delete(String key) {
+        if (key == null || key.isBlank()) return;
+        try { storageService.delete(key); }
+        catch (Exception e) { log.warn("[QNA] S3 delete failed for {}: {}", key, e.getMessage()); }
     }
 
     @Override
@@ -769,9 +840,7 @@ public class QuestionServiceImpl implements QuestionService {
         // visibility, so denormalised counts on the answer (and aggregate
         // counts on the question) settle back to clean baselines.
         reactionRepository.deleteAllByAnswerId(answer.getId());
-        bestAnswerVoteRepository.deleteAllByAnswerId(answer.getId());
         answer.setReactionCount(0L);
-        answer.setBestAnswerVoteCount(0L);
         if (answer.isAccepted()) {
             answer.setAccepted(false);
             questionRepository.adjustAcceptedAnswerCount(question.getId(), -1);
@@ -925,90 +994,6 @@ public class QuestionServiceImpl implements QuestionService {
 
         broadcastAnswerStatus(question, answer, requesterId, QnaRealtimeEventType.ANSWER_UNACCEPTED);
         return mapper.toAnswerResponse(answer);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    //  MULTI-SCHOLAR BEST-ANSWER VOTING
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @Override
-    @Transactional
-    public QuestionAnswerResponse markBestAnswer(UUID questionId, UUID answerId, UUID requesterId) {
-        Question question = findQuestionOrThrow(questionId);
-        User voter = findBestAnswerVoterOrThrow(requesterId);
-
-        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
-
-        if (answer.getParentAnswer() != null) {
-            throw new BadRequestException("Reanswers cannot be marked as a best answer",
-                    "REANSWER_NOT_ELIGIBLE");
-        }
-
-        // Block guards — refuse votes across any block edge with the answer
-        // author or the question author so a blocked viewer can't game ranking.
-        socialGuard.requireNotBlockedBetween(
-                requesterId, answer.getAuthor().getId(), "BEST_ANSWER_BLOCKED_RELATIONSHIP");
-        socialGuard.requireNotBlockedBetween(
-                requesterId, question.getAuthor().getId(), "BEST_ANSWER_BLOCKED_RELATIONSHIP");
-
-        if (bestAnswerVoteRepository.existsByAnswerIdAndVoterId(answerId, requesterId)) {
-            // Idempotent — already voted, return the current state.
-            return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), true);
-        }
-
-        bestAnswerVoteRepository.save(BestAnswerVote.of(answer, voter));
-        answer.incrementBestAnswerVotes();
-        answer = answerRepository.save(answer);
-
-        eventPublisher.publishBestAnswerVoted(question, answer, voter, answer.getBestAnswerVoteCount(), true);
-        userActivityService.recordQnaBestAnswerVote(requesterId, question.getId(), answer.getId(), true);
-
-        realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(QnaRealtimeEventType.BEST_ANSWER_VOTED)
-                .questionId(question.getId())
-                .actorId(requesterId)
-                .actorUsername(voter.getUsername())
-                .actorAvatarUrl(voter.getProfileImage())
-                .answerId(answer.getId())
-                .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
-                .answer(answerEventDto(answer))
-                .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
-                .build());
-
-        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), true);
-    }
-
-    @Override
-    @Transactional
-    public QuestionAnswerResponse unmarkBestAnswer(UUID questionId, UUID answerId, UUID requesterId) {
-        Question question = findQuestionOrThrow(questionId);
-        User voter = findBestAnswerVoterOrThrow(requesterId);
-
-        QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
-
-        int removed = bestAnswerVoteRepository.deleteByAnswerIdAndVoterId(answerId, requesterId);
-        if (removed > 0) {
-            answer.decrementBestAnswerVotes();
-            answer = answerRepository.save(answer);
-
-            eventPublisher.publishBestAnswerVoted(question, answer, voter, answer.getBestAnswerVoteCount(), false);
-            userActivityService.recordQnaBestAnswerVote(requesterId, question.getId(), answer.getId(), false);
-
-            realtime.broadcast(QnaRealtimeEvent.builder()
-                    .eventType(QnaRealtimeEventType.BEST_ANSWER_UNVOTED)
-                    .questionId(question.getId())
-                    .actorId(requesterId)
-                    .actorUsername(voter.getUsername())
-                    .actorAvatarUrl(voter.getProfileImage())
-                    .answerId(answer.getId())
-                    .parentAnswerId(answer.getParentAnswer() != null ? answer.getParentAnswer().getId() : null)
-                    .answer(answerEventDto(answer))
-                    .bestAnswerVoteCount(answer.getBestAnswerVoteCount())
-                    .build());
-        }
-        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), false);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1631,21 +1616,6 @@ public class QuestionServiceImpl implements QuestionService {
         return user;
     }
 
-    /**
-     * Gate for best-answer voting — only scholars (and admins). Researchers
-     * may answer but are not authoritative on which answer is "best".
-     */
-    private User findBestAnswerVoterOrThrow(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
-
-        if (user.getRole() != Role.SCHOLAR
-                && user.getRole() != Role.ADMIN) {
-            throw new ForbiddenException("Only scholars can mark best answers");
-        }
-        return user;
-    }
-
     private boolean canManageQuestion(Question question, UUID requesterId) {
         if (requesterId == null) return false;
 
@@ -1696,11 +1666,11 @@ public class QuestionServiceImpl implements QuestionService {
     /**
      * Neutral-viewer answer DTO embedded in every answer-scoped realtime event
      * (A2/A3) so clients patch the row in place instead of refetching. Built
-     * inside the surrounding transaction; {@code myReaction}/{@code votedByMe}
-     * are neutral and {@code replyCount} uses the denormalized counter.
+     * inside the surrounding transaction; {@code myReaction} is neutral and
+     * {@code replyCount} uses the denormalized counter.
      */
     private QuestionAnswerResponse answerEventDto(QuestionAnswer answer) {
-        return mapper.toAnswerResponse(answer, null, answer.getReplyCount(), false);
+        return mapper.toAnswerResponse(answer, null, answer.getReplyCount());
     }
 
     /**
@@ -1715,13 +1685,6 @@ public class QuestionServiceImpl implements QuestionService {
             map.put((UUID) row[0], (AnswerReactionType) row[1]);
         }
         return map;
-    }
-
-    /** Single-query lookup of the answers in {@code answers} the viewer has voted as best. */
-    private java.util.Set<UUID> batchMyBestAnswerVotes(List<QuestionAnswer> answers, UUID requesterId) {
-        if (requesterId == null || answers == null || answers.isEmpty()) return java.util.Set.of();
-        List<UUID> ids = answers.stream().map(QuestionAnswer::getId).toList();
-        return java.util.Set.copyOf(bestAnswerVoteRepository.findVotedAnswerIds(requesterId, ids));
     }
 
     private static String joinForMention(String... parts) {

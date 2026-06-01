@@ -33,7 +33,6 @@ public enum NotificationType {
     ANSWER_REPLIED,
     ANSWER_REACTED,
     ANSWER_ACCEPTED,
-    ANSWER_BEST_VOTED,
 
     // ── Story ────────────────────────────────────────────────
     STORY_PUBLISHED,      // someone you follow posted a new story

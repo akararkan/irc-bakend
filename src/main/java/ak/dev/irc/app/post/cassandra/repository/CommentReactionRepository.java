@@ -32,4 +32,8 @@ public interface CommentReactionRepository extends CassandraRepository<CommentRe
     @Query("DELETE FROM comment_reactions_by_comment WHERE comment_id = :commentId AND user_id = :userId")
     void delete(@Param("commentId") UUID commentId,
                 @Param("userId")    UUID userId);
+
+    /** Partition-level delete — wipes every reactor row for a comment. */
+    @Query("DELETE FROM comment_reactions_by_comment WHERE comment_id = :commentId")
+    void deleteAllForComment(@Param("commentId") UUID commentId);
 }

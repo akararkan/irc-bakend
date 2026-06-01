@@ -24,7 +24,6 @@ public enum UserActivityType {
     QNA_ANSWER_CREATED,
     QNA_REANSWER_CREATED,
     QNA_ANSWER_REACTION,
-    QNA_BEST_ANSWER_VOTE,
     QNA_ANSWER_FEEDBACK,
 
     // ── Research social actions (parity with POST_*) ─────────────────────

@@ -58,9 +58,6 @@ public final class RabbitMQConstants {
     public static final String QNA_ANSWER_REACTED     = "qna.social.answer.reacted";
     public static final String QNA_ANSWER_UNREACTED   = "qna.social.answer.unreacted";
     public static final String QNA_ANSWER_ACCEPTED    = "qna.social.accepted";
-    public static final String QNA_FEEDBACK_ADDED     = "qna.social.feedback";
-    public static final String QNA_BEST_ANSWER_VOTED   = "qna.social.best.voted";
-    public static final String QNA_BEST_ANSWER_UNVOTED = "qna.social.best.unvoted";
 
     // ════════════════════════════════════════════════════════════
     //  Post / Social-media events  (NEW)
