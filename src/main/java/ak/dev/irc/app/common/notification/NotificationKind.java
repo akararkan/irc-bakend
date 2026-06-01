@@ -120,16 +120,22 @@ public enum NotificationKind {
      *  new follower deserves their own inbox row. Receiver: the followee. */
     NEW_FOLLOWER         (PrefCategory.SOCIAL,   false, true),
 
+    /** A user who had blocked you removed the block. Surfaced so the user
+     *  knows they can now interact with that account again. */
+    UNBLOCKED            (PrefCategory.SOCIAL,   false, true),
+
     // ────────────────────────────────────────────────────────────────────────
     //  POSTS — full details in the class Javadoc table above.
+    //  All post kinds are email-eligible; per-recipient prefs + the 1h
+    //  per-group email throttle keep volume sane.
     // ────────────────────────────────────────────────────────────────────────
 
     /** Home-feed fanout row landed; published by FeedTimelineService for
-     *  every follower of the author. In-app only. */
-    POST_NEW             (PrefCategory.SOCIAL,   false, false),
+     *  every follower of the author. Email per follower per post. */
+    POST_NEW             (PrefCategory.SOCIAL,   false, true),
 
-    /** Someone liked your post. Aggregated. No email (too noisy). */
-    POST_REACTED         (PrefCategory.SOCIAL,   true,  false),
+    /** Someone liked your post. Aggregated; first like per post per hour emails. */
+    POST_REACTED         (PrefCategory.SOCIAL,   true,  true),
 
     /** Someone commented on your post. Aggregated, email-eligible. */
     POST_COMMENTED       (PrefCategory.SOCIAL,   true,  true),
@@ -138,11 +144,15 @@ public enum NotificationKind {
      *  notify the top-level comment author). Aggregated, email-eligible. */
     POST_COMMENT_REPLIED (PrefCategory.SOCIAL,   true,  true),
 
-    /** Someone liked your comment. Aggregated, no email. */
-    POST_COMMENT_REACTED (PrefCategory.SOCIAL,   true,  false),
+    /** Someone liked your comment. Aggregated; first like per comment per hour emails. */
+    POST_COMMENT_REACTED (PrefCategory.SOCIAL,   true,  true),
 
     /** Someone shared your post. Aggregated, email-eligible. */
     POST_SHARED          (PrefCategory.SOCIAL,   true,  true),
+
+    /** Legacy post-mention type, retained for backward-compat with old
+     *  notification rows. New code uses {@link #USER_MENTIONED}. */
+    POST_MENTIONED       (PrefCategory.MENTIONS, false, true),
 
     // ────────────────────────────────────────────────────────────────────────
     //  MENTIONS
@@ -157,11 +167,11 @@ public enum NotificationKind {
     //  STORIES
     // ────────────────────────────────────────────────────────────────────────
 
-    /** A user you follow published a new story (fanout, in-app only). */
-    STORY_PUBLISHED      (PrefCategory.SOCIAL,   false, false),
+    /** A user you follow published a new story. Email per follower. */
+    STORY_PUBLISHED      (PrefCategory.SOCIAL,   false, true),
 
-    /** Someone reacted to your story. Aggregated, no email. */
-    STORY_REACTED        (PrefCategory.SOCIAL,   true,  false),
+    /** Someone reacted to your story. Aggregated, email-eligible. */
+    STORY_REACTED        (PrefCategory.SOCIAL,   true,  true),
 
     /** Someone replied to your story. Aggregated, email-eligible. */
     STORY_REPLIED        (PrefCategory.SOCIAL,   true,  true),
@@ -170,14 +180,14 @@ public enum NotificationKind {
     //  RESEARCH
     // ────────────────────────────────────────────────────────────────────────
 
-    /** Someone liked your published research. Aggregated, no email. */
-    PUBLICATION_LIKED          (PrefCategory.SOCIAL, true,  false),
+    /** Someone liked your published research. Aggregated, email-eligible. */
+    PUBLICATION_LIKED          (PrefCategory.SOCIAL, true,  true),
 
     /** Someone commented on your research. Aggregated, email-eligible. */
     PUBLICATION_COMMENTED      (PrefCategory.SOCIAL, true,  true),
 
-    /** Someone liked your comment on a research publication. Aggregated, no email. */
-    PUBLICATION_COMMENT_REACTED(PrefCategory.SOCIAL, true,  false),
+    /** Someone liked your comment on a research publication. Aggregated, email-eligible. */
+    PUBLICATION_COMMENT_REACTED(PrefCategory.SOCIAL, true,  true),
 
     /** Someone cited your publication. Not aggregated — citations are
      *  individually significant. Email-eligible. */
@@ -190,8 +200,8 @@ public enum NotificationKind {
     //  QUESTIONS & ANSWERS
     // ────────────────────────────────────────────────────────────────────────
 
-    /** A new question landed in an area you follow. In-app only. */
-    QUESTION_NEW             (PrefCategory.SOCIAL,  false, false),
+    /** A new question landed in an area you follow. Email-eligible. */
+    QUESTION_NEW             (PrefCategory.SOCIAL,  false, true),
 
     /** Someone answered your question. Not aggregated — every answer
      *  deserves its own inbox row. Email-eligible. */
@@ -200,8 +210,8 @@ public enum NotificationKind {
     /** Someone replied to your answer. Aggregated, email-eligible. */
     ANSWER_REPLIED           (PrefCategory.SOCIAL,  true,  true),
 
-    /** Someone reacted to your answer. Aggregated, no email. */
-    ANSWER_REACTED           (PrefCategory.SOCIAL,  true,  false),
+    /** Someone reacted to your answer. Aggregated, email-eligible. */
+    ANSWER_REACTED           (PrefCategory.SOCIAL,  true,  true),
 
     /** Your answer was accepted by the question asker. One-shot, email-eligible. */
     ANSWER_ACCEPTED          (PrefCategory.SOCIAL,  false, true),
