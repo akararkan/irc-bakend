@@ -37,6 +37,15 @@ public class NotificationSseService {
     /** Heartbeat interval — must beat any intermediary's idle-timeout (~30s on most proxies). */
     private static final long HEARTBEAT_MS = 15_000L;
 
+    /**
+     * Per-user concurrent-emitter cap. Stops a single account (rogue script,
+     * runaway browser, malicious actor) from opening thousands of SSE
+     * connections and exhausting server memory + the underlying servlet
+     * thread pool. When the cap is hit the OLDEST emitter is completed and
+     * removed before the new one is added (LRU-style replacement).
+     */
+    private static final int MAX_EMITTERS_PER_USER = 5;
+
     private final Map<UUID, CopyOnWriteArrayList<Subscription>> emittersByUser = new ConcurrentHashMap<>();
     private final AtomicLong subscriptionSeq = new AtomicLong();
 
@@ -52,6 +61,20 @@ public class NotificationSseService {
 
         CopyOnWriteArrayList<Subscription> bucket =
                 emittersByUser.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>());
+
+        // Evict oldest tabs until we're under the cap. Each Subscription's
+        // own onCompletion cleanup removes the entry from the bucket so we
+        // don't double-remove here; complete() triggers that callback.
+        while (bucket.size() >= MAX_EMITTERS_PER_USER) {
+            Subscription oldest = bucket.get(0);
+            log.info("[SSE] User {} exceeded {} concurrent SSE connections — closing oldest (id={})",
+                    userId, MAX_EMITTERS_PER_USER, oldest.id());
+            try { oldest.emitter().complete(); } catch (Exception ignore) { /* best-effort */ }
+            // Defensive removal in case onCompletion didn't fire (e.g. emitter
+            // already completed). compareAndSet would be racier than just remove().
+            bucket.remove(oldest);
+        }
+
         bucket.add(sub);
 
         Runnable cleanup = () -> {

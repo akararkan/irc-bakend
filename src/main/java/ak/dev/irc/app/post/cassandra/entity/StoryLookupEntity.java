@@ -14,7 +14,18 @@ import java.util.UUID;
  * visibility-check / view-record paths that only have the story_id from
  * the URL.
  *
- * Inherits the same 24h TTL as the underlying story.
+ * <p>Inherits the parent story's per-row TTL (8h / 16h / 24h) — both rows
+ * are written with the same {@code USING TTL} so the lookup never outlives
+ * the story it points to.</p>
+ *
+ * <p>{@code expiresAt} is the absolute death time of the parent story.
+ * Carried here so derived writes (story views, polls) can compute the
+ * remaining TTL with one point-read instead of joining back to
+ * {@code stories_by_author}. Null on rows created before this column was
+ * added — callers must treat null as "default 24h lifetime".</p>
+ *
+ * <p>Schema migration required for existing keyspaces:
+ * <pre>ALTER TABLE story_lookup ADD expires_at timestamp;</pre></p>
  */
 @Table("story_lookup")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -27,4 +38,5 @@ public class StoryLookupEntity {
     @Column("author_id")  private UUID    authorId;
     @Column("created_at") private Instant createdAt;
     @Column("visibility") private String  visibility;
+    @Column("expires_at") private Instant expiresAt;
 }

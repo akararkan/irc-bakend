@@ -57,8 +57,11 @@ spring:
     username: ${DB_USERNAME:}
     password: ${DB_PASSWORD:}
     hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
+      # Sized for ~thousands of concurrent users on a single instance.
+      # Override with DB_POOL_MAX_SIZE / DB_POOL_MIN_IDLE per environment;
+      # tune off HikariCP.pending / activeConnections metrics under load.
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:50}
+      minimum-idle:      ${DB_POOL_MIN_IDLE:10}
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
@@ -117,10 +120,14 @@ spring:
     schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
+    # max-queue-size bumped from 256 → 4096 so a viral-post fanout batch
+    # (FANOUT_BATCH=500 × multiple concurrent posts) doesn't saturate the
+    # driver queue and start rejecting writes. Override with
+    # CASSANDRA_POOL_MAX_QUEUE_SIZE per environment.
     pool:
       heartbeat-interval: 30s
       idle-timeout: 5m
-      max-queue-size: 256
+      max-queue-size: ${CASSANDRA_POOL_MAX_QUEUE_SIZE:4096}
 
     # Request settings
     request:
@@ -161,10 +168,14 @@ spring:
       password: ${REDIS_PASSWORD:}
       timeout: 2000ms
       lettuce:
+        # Bumped from 8 → 32 active. The pool is shared by fanout pushes,
+        # the rate-limiter, feed-cache hits, SSE pubsub, and per-group
+        # email-throttle checks; 8 connections serialize all of those under
+        # load. Override with REDIS_POOL_MAX_ACTIVE / REDIS_POOL_MAX_IDLE.
         pool:
-          max-active: 8
-          max-idle: 8
-          min-idle: 0
+          max-active: ${REDIS_POOL_MAX_ACTIVE:32}
+          max-idle:   ${REDIS_POOL_MAX_IDLE:32}
+          min-idle:   ${REDIS_POOL_MIN_IDLE:4}
 
   cache:
     type: redis

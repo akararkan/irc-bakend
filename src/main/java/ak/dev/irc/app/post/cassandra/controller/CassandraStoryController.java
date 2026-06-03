@@ -6,9 +6,11 @@ import ak.dev.irc.app.post.cassandra.entity.PollVoterByChoiceEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryPollEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryViewEntity;
+import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.post.cassandra.service.CassandraStoryPollService;
 import ak.dev.irc.app.post.cassandra.service.CassandraStoryService;
 import ak.dev.irc.app.post.cassandra.service.CloseFriendsService;
+import ak.dev.irc.app.post.enums.StoryLifetime;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
@@ -41,20 +43,30 @@ public class CassandraStoryController {
     private final CloseFriendsService       closeFriendsService;
     private final CassandraStoryPollService pollService;
     private final S3StorageService          storageService;
+    /** Per-user write throttling; fail-open if Redis is down. */
+    private final RateLimiter               rateLimiter;
 
     // ── Stories ──────────────────────────────────────────────────────────────
 
+    /**
+     * @param lifetimeHours optional — 8, 16, or 24. Anything else (or null)
+     *                      falls back to 24h. Determines when the story
+     *                      auto-deletes; same TTL applied to the lookup row.
+     */
     public record CreateStoryRequest(String storyType, String visibility,
-                                     String mediaUrl, String thumbnailUrl, String textContent) {}
+                                     String mediaUrl, String thumbnailUrl,
+                                     String textContent, Integer lifetimeHours) {}
 
     /** Create a story (JSON). authorId is derived from the JWT — body must not pass it. */
     @PostMapping(value = "/stories", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<StoryByAuthorEntity> create(@RequestBody CreateStoryRequest req,
                                                       @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkSocial(user.getId());
         return ResponseEntity.ok(storyService.createStory(
                 user.getId(), req.storyType(), req.visibility(),
-                req.mediaUrl(), req.thumbnailUrl(), req.textContent()));
+                req.mediaUrl(), req.thumbnailUrl(), req.textContent(),
+                StoryLifetime.fromHours(req.lifetimeHours())));
     }
 
     /**
@@ -67,11 +79,14 @@ public class CassandraStoryController {
             @RequestParam(defaultValue = "PHOTO") String storyType,
             @RequestParam(defaultValue = "PUBLIC") String visibility,
             @RequestParam(required = false) String textContent,
+            @RequestParam(required = false) Integer lifetimeHours,
             @RequestPart(value = "media", required = false) MultipartFile media,
             @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
             @AuthenticationPrincipal User user) {
 
         if (user == null) throw new UnauthorizedException("Authentication required");
+        // Throttle BEFORE uploading to R2 so a banned user can't burn storage bandwidth.
+        rateLimiter.checkSocial(user.getId());
 
         String mediaUrl = null;
         if (media != null && !media.isEmpty()) {
@@ -84,7 +99,8 @@ public class CassandraStoryController {
 
         return ResponseEntity.ok(storyService.createStory(
                 user.getId(), storyType, visibility,
-                mediaUrl, thumbnailUrl, textContent));
+                mediaUrl, thumbnailUrl, textContent,
+                StoryLifetime.fromHours(lifetimeHours)));
     }
 
     /**

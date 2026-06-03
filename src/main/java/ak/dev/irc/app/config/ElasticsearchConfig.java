@@ -79,6 +79,15 @@ public class ElasticsearchConfig {
      */
     private static final long DEFAULT_KEEP_ALIVE_SECONDS = 15;
 
+    /**
+     * Apache HTTP async client defaults are tiny (2 per route, 20 total) and
+     * lethal under burst — every search / index request beyond that queues
+     * waiting for a connection. Cap the pool at a level that comfortably
+     * absorbs concurrent traffic without opening sockets without bound.
+     */
+    private static final int MAX_CONN_TOTAL    = 200;
+    private static final int MAX_CONN_PER_ROUTE = 50;
+
     @Bean
     public RestClientBuilderCustomizer elasticsearchPoolHygieneCustomizer() {
         return new RestClientBuilderCustomizer() {
@@ -100,10 +109,12 @@ public class ElasticsearchConfig {
              */
             @Override
             public void customize(HttpAsyncClientBuilder http) {
-                http.setKeepAliveStrategy(keepAliveStrategy())
+                http.setMaxConnTotal(MAX_CONN_TOTAL)
+                    .setMaxConnPerRoute(MAX_CONN_PER_ROUTE)
+                    .setKeepAliveStrategy(keepAliveStrategy())
                     .setConnectionTimeToLive(CONNECTION_TTL_MINUTES, TimeUnit.MINUTES);
-                log.info("[ES] pool tuning applied — connectionTTL={}min, fallbackKeepAlive={}s",
-                        CONNECTION_TTL_MINUTES, DEFAULT_KEEP_ALIVE_SECONDS);
+                log.info("[ES] pool tuning applied — maxConnTotal={}, maxConnPerRoute={}, connectionTTL={}min, fallbackKeepAlive={}s",
+                        MAX_CONN_TOTAL, MAX_CONN_PER_ROUTE, CONNECTION_TTL_MINUTES, DEFAULT_KEEP_ALIVE_SECONDS);
             }
         };
     }

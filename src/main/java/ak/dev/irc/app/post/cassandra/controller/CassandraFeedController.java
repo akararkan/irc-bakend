@@ -10,6 +10,7 @@ import ak.dev.irc.app.post.cassandra.entity.ReelsByDayEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReplyByCommentEntity;
 import ak.dev.irc.app.post.cassandra.entity.SaveByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.ShareByPostEntity;
+import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.post.cassandra.service.CassandraCommentService;
 import ak.dev.irc.app.post.cassandra.service.CassandraPostService;
 import ak.dev.irc.app.post.cassandra.service.CassandraReactionService;
@@ -75,11 +76,14 @@ public class CassandraFeedController {
     private final PostRealtimeService      postRealtimeService;
     private final S3StorageService         storageService;
     private final JwtTokenProvider         jwtTokenProvider;
+    /** Per-user write throttling; fail-open if Redis is down. */
+    private final RateLimiter              rateLimiter;
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<PostResponse> create(@RequestBody CassandraPostService.CreatePostCommand cmd,
                                                @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkSocial(user.getId());
         // authorId is server-derived from the JWT — body-supplied authorId is ignored.
         CassandraPostService.CreatePostCommand authed = new CassandraPostService.CreatePostCommand(
                 user.getId(),
@@ -127,6 +131,9 @@ public class CassandraFeedController {
                                              @AuthenticationPrincipal User user) {
 
         if (user == null) throw new UnauthorizedException("Authentication required");
+        // Throttle BEFORE the R2 upload — a banned user shouldn't waste
+        // bandwidth + storage round-trips just to be rejected at the end.
+        rateLimiter.checkSocial(user.getId());
 
         // 1) Read form fields straight from the request — robust against
         //    @RequestParam quirks with mixed multipart binding.
@@ -494,6 +501,7 @@ public class CassandraFeedController {
             @RequestBody CreateCommentRequest body,
             @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkComment(user.getId());
         return ResponseEntity.ok(hydrator.hydrate(
                 commentService.createComment(postId, user.getId(),
                         body.text(), body.mediaUrl(), body.mediaType())));
@@ -520,6 +528,7 @@ public class CassandraFeedController {
             @RequestBody CreateReplyRequest body,
             @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkComment(user.getId());
         return ResponseEntity.ok(hydrator.hydrate(
                 commentService.replyTo(commentId, user.getId(), body.text(), body.mediaUrl())));
     }
@@ -560,6 +569,7 @@ public class CassandraFeedController {
                                                           @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
         UUID userId = user.getId();
+        rateLimiter.checkSocial(userId);
         boolean saved = saveService.toggleSave(postId, userId, collection);
         return ResponseEntity.ok(Map.of("postId", postId, "userId", userId, "saved", saved));
     }
@@ -617,6 +627,7 @@ public class CassandraFeedController {
                                                          @RequestBody(required = false) RecordShareRequest body,
                                                          @AuthenticationPrincipal User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkSocial(user.getId());
         String caption = body != null ? body.caption() : null;
         return ResponseEntity.ok(shareService.recordShare(postId, user.getId(), caption));
     }
@@ -649,6 +660,7 @@ public class CassandraFeedController {
             @AuthenticationPrincipal User user,
             jakarta.servlet.http.HttpServletRequest request) {
         if (user == null) throw new UnauthorizedException("Authentication required");
+        rateLimiter.checkSocial(user.getId());
         String caption = body != null ? body.caption() : null;
         return ResponseEntity.ok(shareService.recordShareLink(
                 postId, user.getId(), caption,

@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.realtime;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -11,8 +12,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -20,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 public class StoryRealtimeService {
 
     private static final long SSE_TIMEOUT_MS   = 5 * 60 * 1_000L;
-    private static final long HEARTBEAT_DELAY_S = 25L;
+    private static final long HEARTBEAT_MS     = 25_000L;
 
     private final Map<UUID, CopyOnWriteArrayList<SseEmitter>> topics = new ConcurrentHashMap<>();
     private final StoryRealtimePublisher   publisher;
@@ -45,7 +44,6 @@ public class StoryRealtimeService {
             emitter.completeWithError(e);
         }
 
-        scheduleHeartbeat(emitter, storyId);
         return emitter;
     }
 
@@ -68,13 +66,24 @@ public class StoryRealtimeService {
         broadcaster.broadcast(storyId, event);
     }
 
-    private void scheduleHeartbeat(SseEmitter emitter, UUID storyId) {
-        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
-            try {
-                emitter.send(SseEmitter.event().name("heartbeat").data("ping"));
-            } catch (Exception e) {
-                emitter.completeWithError(e);
+    /**
+     * One shared heartbeat tick for every open story-subscription emitter.
+     * Replaces the previous per-connection {@code newSingleThreadScheduledExecutor}
+     * which leaked a JVM thread per SSE client (10k connections → 10k threads → OOM).
+     * Dead emitters are removed inline so a single bad connection can't accumulate.
+     */
+    @Scheduled(fixedDelay = HEARTBEAT_MS)
+    public void heartbeat() {
+        if (topics.isEmpty()) return;
+        topics.forEach((storyId, bucket) -> {
+            for (SseEmitter emitter : bucket) {
+                try {
+                    emitter.send(SseEmitter.event().name("heartbeat").data("ping"));
+                } catch (Exception e) {
+                    bucket.remove(emitter);
+                    if (bucket.isEmpty()) topics.remove(storyId, bucket);
+                }
             }
-        }, HEARTBEAT_DELAY_S, HEARTBEAT_DELAY_S, TimeUnit.SECONDS);
+        });
     }
 }

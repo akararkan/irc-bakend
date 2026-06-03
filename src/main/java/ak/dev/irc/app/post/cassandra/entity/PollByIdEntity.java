@@ -5,6 +5,7 @@ import org.springframework.data.cassandra.core.mapping.Column;
 import org.springframework.data.cassandra.core.mapping.PrimaryKey;
 import org.springframework.data.cassandra.core.mapping.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -37,6 +38,14 @@ public class PollByIdEntity {
     @Column("poll_id")
     private UUID pollId;
 
-    @Column("story_id")  private UUID storyId;
-    @Column("author_id") private UUID authorId;
+    @Column("story_id")  private UUID    storyId;
+    @Column("author_id") private UUID    authorId;
+    /**
+     * Mirror of the parent story's {@code expires_at}. Lets {@code castVote}
+     * compute the remaining TTL for the vote / voter rows with the single
+     * point-read it already does for the realtime push — no extra lookup.
+     * Null on rows created before this column existed; treat null as 24h
+     * fallback. Schema migration: {@code ALTER TABLE poll_by_id ADD expires_at timestamp;}
+     */
+    @Column("expires_at") private Instant expiresAt;
 }

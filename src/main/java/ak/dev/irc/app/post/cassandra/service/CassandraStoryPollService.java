@@ -8,8 +8,11 @@ import ak.dev.irc.app.post.cassandra.repository.PollVoteRepository;
 import ak.dev.irc.app.post.cassandra.repository.PollVoterByChoiceRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryPollRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryLookupRepository;
+import ak.dev.irc.app.post.enums.StoryLifetime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.cassandra.core.CassandraOperations;
+import org.springframework.data.cassandra.core.InsertOptions;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -51,35 +54,44 @@ public class CassandraStoryPollService {
     private final ak.dev.irc.app.post.cassandra.repository.PollByIdRepository pollByIdRepo;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
     private final org.springframework.data.cassandra.core.cql.CqlOperations cqlOperations;
+    /** Used for explicit per-row {@code USING TTL} on poll / vote writes so they
+     *  die with the parent story (8h / 16h / 24h) instead of lingering for the
+     *  table-default 24h. Counter tables (poll_counters) can't be TTL'd at write
+     *  time — they keep the table default and are wiped by the explicit
+     *  {@link #deletePollFor} when the story is hard-deleted. */
+    private final CassandraOperations          cassandraOps;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
     public StoryPollEntity createPoll(UUID storyId, UUID authorId,
                                       String question, String optionA, String optionB) {
         // Author check — only the story owner can attach a poll.
-        UUID actualAuthor = storyLookupRepo.findById(storyId)
-                .map(s -> s.getAuthorId()).orElse(null);
-        if (actualAuthor == null || !actualAuthor.equals(authorId)) {
+        var lookup = storyLookupRepo.findById(storyId).orElse(null);
+        if (lookup == null || !authorId.equals(lookup.getAuthorId())) {
             throw new SecurityException("Not the story author");
         }
+        Instant storyExpiresAt = lookup.getExpiresAt();   // null on legacy rows
 
         UUID    pollId = UUID.randomUUID();
         Instant now    = Instant.now();
+        int     ttl    = remainingTtlSeconds(storyExpiresAt, now);
+        InsertOptions ttlOpts = InsertOptions.builder().ttl(ttl).build();
 
         StoryPollEntity poll = StoryPollEntity.builder()
                 .storyId(storyId).pollId(pollId)
                 .question(question).optionA(optionA).optionB(optionB)
                 .authorId(authorId).createdAt(now)
                 .build();
-        pollRepo.save(poll);
+        cassandraOps.insert(poll, ttlOpts);
 
-        // Reverse index so pollId → (storyId, authorId) is a single-row lookup.
-        // Required for the realtime push to the author on every vote, and for
-        // the author-only check on the voter-list endpoint.
+        // Reverse index so pollId → (storyId, authorId, expiresAt) is a single-row
+        // lookup. {@code expiresAt} mirrors the parent story so castVote can TTL
+        // vote rows without re-reading story_lookup.
         try {
-            pollByIdRepo.save(ak.dev.irc.app.post.cassandra.entity.PollByIdEntity.builder()
+            cassandraOps.insert(ak.dev.irc.app.post.cassandra.entity.PollByIdEntity.builder()
                     .pollId(pollId).storyId(storyId).authorId(authorId)
-                    .build());
+                    .expiresAt(storyExpiresAt)
+                    .build(), ttlOpts);
         } catch (Exception e) {
             // Best-effort — the poll still works without the index; we just
             // lose the realtime push and fall back to authenticated-only on
@@ -177,50 +189,71 @@ public class CassandraStoryPollService {
             counterService.decrementPollVote(pollId, prior.getChoice());
         }
 
-        voteRepo.save(PollVoteEntity.builder()
+        // Single point-read serves two purposes: derives the per-row TTL for
+        // the vote/voter writes so they die with the parent story, AND feeds
+        // the post-write realtime push (no second lookup needed).
+        Optional<ak.dev.irc.app.post.cassandra.entity.PollByIdEntity> owner =
+                pollByIdRepo.findById(pollId);
+        int ttl = remainingTtlSeconds(
+                owner.map(o -> o.getExpiresAt()).orElse(null), now);
+        InsertOptions ttlOpts = InsertOptions.builder().ttl(ttl).build();
+
+        cassandraOps.insert(PollVoteEntity.builder()
                 .pollId(pollId).voterId(voterId)
                 .choice(choice).votedAt(now)
-                .build());
-        voterByChoiceRepo.save(PollVoterByChoiceEntity.builder()
+                .build(), ttlOpts);
+        cassandraOps.insert(PollVoterByChoiceEntity.builder()
                 .pollId(pollId).choice(choice)
                 .votedAt(now).voterId(voterId)
-                .build());
+                .build(), ttlOpts);
+        // Counters are a Cassandra COUNTER table — TTL can't be set on
+        // UPDATE statements, so the counter row keeps the table-default TTL.
+        // A 16h-orphan counter row is unreachable (poll_by_id is gone) and
+        // tombstones with the table TTL — acceptable cost vs. a Paxos round.
         counterService.incrementPollVote(pollId, choice);
 
         CastVoteResult result = readCounts(pollId, choice);
-        pushLiveTally(pollId, result);
+        if (owner.isPresent()) pushLiveTally(owner.get(), result);
         return result;
     }
 
     /**
      * Push a {@code POLL_VOTE_CAST} tray event to the poll's author so the
-     * StoryEditor / story viewer pane updates without polling. Best-effort —
-     * the vote is already persisted; if the author can't be resolved (old
-     * poll without a reverse-index row, or the row was deleted) we just skip
-     * the push.
+     * StoryEditor / story viewer pane updates without polling. Owner is
+     * already resolved in {@link #castVote} (one lookup serves both the TTL
+     * derivation and this push). Best-effort — the vote is already persisted.
      */
-    private void pushLiveTally(UUID pollId, CastVoteResult result) {
+    private void pushLiveTally(ak.dev.irc.app.post.cassandra.entity.PollByIdEntity owner,
+                               CastVoteResult result) {
+        if (owner.getAuthorId() == null) return;
         try {
-            Optional<ak.dev.irc.app.post.cassandra.entity.PollByIdEntity> owner =
-                    pollByIdRepo.findById(pollId);
-            if (owner.isEmpty() || owner.get().getAuthorId() == null) return;
-            UUID authorId = owner.get().getAuthorId();
-            UUID storyId  = owner.get().getStoryId();
-
             ak.dev.irc.app.post.realtime.StoryTrayEvent event =
                     ak.dev.irc.app.post.realtime.StoryTrayEvent.builder()
                     .eventType(ak.dev.irc.app.post.realtime.StoryTrayEventType.POLL_VOTE_CAST)
-                    .storyId(storyId)
-                    .pollId(pollId)
+                    .storyId(owner.getStoryId())
+                    .pollId(owner.getPollId())
                     .voteA(result.voteA())
                     .voteB(result.voteB())
                     .voteTotal(result.voteA() + result.voteB())
                     .build();
-            trayPublisher.publish(authorId, event);
+            trayPublisher.publish(owner.getAuthorId(), event);
         } catch (Exception e) {
             log.debug("[POLL] live-tally push for pollId={} skipped: {}",
-                    pollId, e.getMessage());
+                    owner.getPollId(), e.getMessage());
         }
+    }
+
+    /**
+     * Seconds left until {@code expiresAt}, clamped to ≥1 (Cassandra rejects
+     * TTL=0). Returns {@link StoryLifetime#DEFAULT} when {@code expiresAt} is
+     * null — old PollByIdEntity rows pre-date the {@code expires_at} column.
+     */
+    private static int remainingTtlSeconds(Instant expiresAt, Instant now) {
+        if (expiresAt == null) return StoryLifetime.DEFAULT.ttlSeconds();
+        long secs = expiresAt.getEpochSecond() - now.getEpochSecond();
+        if (secs <= 0L) return 1;
+        if (secs > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) secs;
     }
 
     public Optional<PollVoteEntity> userVote(UUID pollId, UUID voterId) {

@@ -6,12 +6,14 @@ import ak.dev.irc.app.post.cassandra.entity.StoryViewEntity;
 import ak.dev.irc.app.post.cassandra.repository.StoryByAuthorRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryLookupRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryViewRepository;
+import ak.dev.irc.app.post.enums.StoryLifetime;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.cassandra.core.CassandraOperations;
+import org.springframework.data.cassandra.core.InsertOptions;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,8 +43,6 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class CassandraStoryService {
 
-    private static final Duration STORY_LIFETIME = Duration.ofHours(24);
-
     private final StoryByAuthorRepository storyRepo;
     private final StoryLookupRepository   storyLookupRepo;
     private final StoryViewRepository     storyViewRepo;
@@ -50,15 +50,48 @@ public class CassandraStoryService {
     private final UserFollowRepository    userFollowRepo;
     private final CassandraStoryPollService pollService;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
+    /**
+     * Used to write with explicit per-row {@code USING TTL <seconds>}, so the
+     * 8 / 16 / 24-hour story windows actually expire at the row level — the
+     * Spring-Data repository {@code save()} writes use the table's
+     * {@code default_time_to_live} (24h), which can't be varied per-row.
+     */
+    private final CassandraOperations     cassandraOps;
 
     // ── Create / delete ─────────────────────────────────────────────────────
 
+    /**
+     * Legacy entry point — no lifetime supplied, defaults to {@link StoryLifetime#DEFAULT}
+     * (24h). Kept so existing callers don't have to change at once.
+     */
     public StoryByAuthorEntity createStory(UUID authorId, String storyType,
                                            String visibility, String mediaUrl,
                                            String thumbnailUrl, String textContent) {
+        return createStory(authorId, storyType, visibility, mediaUrl, thumbnailUrl,
+                textContent, StoryLifetime.DEFAULT);
+    }
+
+    /**
+     * Create a story that auto-deletes after {@code lifetime} (8h / 16h / 24h).
+     *
+     * <p>The TTL is applied per-row via {@code INSERT … USING TTL} on both
+     * {@code stories_by_author} (the author-partition row the tray reads) and
+     * {@code story_lookup} (the point-read lookup). After {@code lifetime}
+     * Cassandra tombstones both rows and they disappear from every read
+     * surface — no expiry job, no orphan rows, no read-time filter.</p>
+     *
+     * <p>{@code expiresAt} on the row is kept in sync with the chosen TTL so
+     * the UI (story tray ring, "expires in N hours" badge) renders correctly
+     * without re-deriving from the table TTL.</p>
+     */
+    public StoryByAuthorEntity createStory(UUID authorId, String storyType,
+                                           String visibility, String mediaUrl,
+                                           String thumbnailUrl, String textContent,
+                                           StoryLifetime lifetime) {
+        if (lifetime == null) lifetime = StoryLifetime.DEFAULT;
         UUID    storyId = UUID.randomUUID();
         Instant now     = Instant.now();
-        Instant expires = now.plus(STORY_LIFETIME);
+        Instant expires = now.plus(lifetime.duration());
 
         StoryByAuthorEntity row = StoryByAuthorEntity.builder()
                 .authorId(authorId)
@@ -71,12 +104,20 @@ public class CassandraStoryService {
                 .textContent(textContent)
                 .expiresAt(expires)
                 .build();
-        storyRepo.save(row);
 
-        storyLookupRepo.save(StoryLookupEntity.builder()
+        // Per-row TTL: overrides the table's default_time_to_live for this
+        // insert only, so 8h / 16h stories actually disappear at their
+        // chosen window. The same TTL is applied to the lookup row so the
+        // point-read view dies with the author-partition row.
+        InsertOptions ttlOpts = InsertOptions.builder()
+                .ttl(lifetime.ttlSeconds())
+                .build();
+        cassandraOps.insert(row, ttlOpts);
+        cassandraOps.insert(StoryLookupEntity.builder()
                 .storyId(storyId).authorId(authorId)
                 .createdAt(now).visibility(visibility)
-                .build());
+                .expiresAt(expires)
+                .build(), ttlOpts);
 
         return row;
     }
@@ -226,7 +267,13 @@ public class CassandraStoryService {
     // ── Viewer log ──────────────────────────────────────────────────────────
 
     /** Record that {@code viewerId} watched a story. Visibility is enforced
-     *  before recording — silent reject if not allowed. */
+     *  before recording — silent reject if not allowed.
+     *
+     *  <p>The view row is TTL'd to the parent story's remaining lifetime,
+     *  so an 8h story's view log dies with the story instead of lingering
+     *  for the table-default 24h. Old lookup rows (no {@code expiresAt})
+     *  fall back to {@link StoryLifetime#DEFAULT}.</p>
+     */
     public void recordView(UUID storyId, UUID viewerId) {
         StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
         if (meta == null) return;
@@ -237,11 +284,32 @@ public class CassandraStoryService {
         story.setVisibility(meta.getVisibility());
         if (!canView(story, viewerId)) return;
 
-        storyViewRepo.save(StoryViewEntity.builder()
+        Instant now = Instant.now();
+        int ttl = remainingTtlSeconds(meta.getExpiresAt(), now);
+        cassandraOps.insert(StoryViewEntity.builder()
                 .storyId(storyId)
-                .viewedAt(Instant.now())
+                .viewedAt(now)
                 .viewerId(viewerId)
-                .build());
+                .build(), InsertOptions.builder().ttl(ttl).build());
+    }
+
+    /**
+     * Seconds left until {@code expiresAt}, clamped to at least 1 (Cassandra
+     * rejects TTL=0 with "TTL must be greater than 0"). Returns the default
+     * 24h lifetime when {@code expiresAt} is null — old story_lookup rows
+     * pre-date the {@code expires_at} column.
+     */
+    private static int remainingTtlSeconds(Instant expiresAt, Instant now) {
+        if (expiresAt == null) return StoryLifetime.DEFAULT.ttlSeconds();
+        long secs = expiresAt.getEpochSecond() - now.getEpochSecond();
+        if (secs <= 0L) return 1;
+        if (secs > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) secs;
+    }
+
+    /** Exposed for callers in the same package (e.g. {@link CassandraStoryPollService}). */
+    int remainingTtlForStory(Instant expiresAt) {
+        return remainingTtlSeconds(expiresAt, Instant.now());
     }
 
     public List<StoryViewEntity> viewersFor(UUID storyId, int pageSize) {
