@@ -126,7 +126,7 @@ spring:
     # `CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS` for any environment
     # where you need data to persist (incl. production — set this back
     # before deploying).
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:create_if_not_exists}
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
 
     # Connection pool settings
     # max-queue-size bumped from 256 → 4096 so a viral-post fanout batch
