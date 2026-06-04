@@ -120,26 +120,259 @@ Hydration dispatch by `contentType`:
 If `q` is blank or every supplied `types` token is invalid, the
 endpoint returns `200` with an empty `results` array — never an error.
 
-### Field boosts
+### Ranking powers
 
-The unified query uses one `multi_match` with index-spanning field
-weights:
+The unified query is **not** a plain `multi_match`. It's a layered
+Elasticsearch query that combines six independent ranking signals,
+all assembled inside a single `bool` and then wrapped in a
+`function_score` so BM25 mixes with recency + engagement. None of
+these are exposed as query parameters — they apply automatically to
+every search.
+
+#### Power 1 — Per-field weighting (BM25)
+
+Different fields carry different signal. The primary `multi_match`
+runs against this weighted set; the boost number is the field's
+weight in the final BM25 score:
 
 ```
-title^4
-textContent^3
-abstractText^2
-keywords^2
-body^2
-tags^2
-hashtags^2
-description
-authorName, authorUsername
-researcherName, researcherUsername
+title^4              textContent^3
+abstractText^2       keywords^2
+body^2               tags^2
+hashtags^2           description
+authorName           authorUsername
+researcherName       researcherUsername
+locationName
 ```
 
 Elasticsearch silently ignores fields that don't exist on a given
-index, so the same query is safe across all three.
+index, so the same query is safe across all three. Adding
+`locationName` to the field set means geo-tagged posts surface for
+place-name searches ("Erbil", "Cairo") even when the post text
+doesn't mention the place.
+
+#### Power 2 — Typo tolerance (`fuzziness=AUTO`)
+
+The primary `multi_match` runs with `fuzziness=AUTO`, which is
+shorthand for Damerau–Levenshtein edit distance scaled by query
+length:
+
+| Token length | Allowed edits |
+|---|---|
+| 1–2 chars | 0 (exact) |
+| 3–5 chars | 1 |
+| 6+ chars | 2 |
+
+Real effect — these all return the same canonical doc:
+
+```
+ramadan   →  ramadan ✓
+ramadhan  →  ramadan ✓ (1 edit)
+ramadann  →  ramadan ✓ (1 edit)
+rmd       →  no match (too short for fuzz)
+```
+
+You don't pass anything to enable this — it's always on. Side effect:
+single-character queries fall back to exact only (the analyzer's
+behavior, not a bug), so the typeahead in [Power 4](#power-4--typeahead-prefix-match) below is what catches "in-flight"
+1–2-char queries.
+
+#### Power 3 — Phrase relevance boost
+
+A parallel `match_phrase` runs in a `should` clause with **boost
+2.0**. Exact phrases beat scattered tokens — so a doc containing
+"ramadan zakat" outranks a doc that has "ramadan" in one paragraph
+and "zakat" in another.
+
+```
+query:  "ramadan zakat"
+
+doc A — "...ramadan zakat rules..."           → score boosted ×2
+doc B — "...ramadan... ...later, zakat..."    → BM25 only
+```
+
+#### Power 4 — Typeahead (`match_phrase_prefix`)
+
+A second `should` clause uses `match_phrase_prefix` (boost 1.5). It
+matches the last word as a prefix:
+
+```
+query:  "ramad"
+
+→ matches docs containing "ramadan", "ramadhan", "ramada", "ramadi"
+```
+
+This is what makes the search-as-you-type dropdown feel snappy
+without needing dedicated edge-ngram fields on every index.
+
+#### Power 5 — Required overlap (`minimum_should_match=75%`)
+
+Multi-word queries require at least **75%** of the tokens to match,
+rounded down. Without this, a single common token (e.g. "the") would
+match every document and dilute the result list.
+
+| Token count | Tokens required |
+|---|---|
+| 1 | 1 |
+| 2 | 1 |
+| 3 | 2 |
+| 4 | 3 |
+| 5 | 3 |
+| 8 | 6 |
+
+`BestFields` + `tieBreaker=0.3` is used so the dominant field decides
+rank, but secondary field hits still contribute 30% of their score
+— a query that hits both `title` and `body` ranks higher than one
+that hits `title` alone.
+
+#### Power 6 — Lifecycle filter (no dead content)
+
+Five statuses are blocked at query time via `mustNot`, defending
+against indexer regressions that might leak unpublished content:
+
+```
+DELETED · DRAFT · ARCHIVED · RETRACTED · REMOVED_BY_MODERATOR
+```
+
+`mustNot term` on a missing field is a silent no-op, so the same
+filter applies safely across all three indices. Research drafts,
+soft-deleted posts, and moderator-removed Q&A never appear in
+results even if a bug leaks them into the index.
+
+#### Power 7 — Recency decay (Gaussian)
+
+The entire `bool` is wrapped in a `function_score`. The first scoring
+function is a **gauss decay** on `createdAt`:
+
+```
+origin = now
+offset = 1d         (no decay within the last day)
+scale  = 30d        (score × 0.5 at 30 days old)
+decay  = 0.5
+```
+
+Visualized:
+
+```
+relevance multiplier
+  1.0 ┤■■■■■■■■■■■■■■■
+  0.8 ┤              ╲
+  0.6 ┤               ╲
+  0.4 ┤                 ╲___
+  0.2 ┤                     ╲____
+  0.0 ┤_______________________________
+       0d   30d   90d   180d   365d
+                age of doc
+```
+
+Equal-relevance hits prefer the newer document — important for a
+social timeline where 2-year-old posts shouldn't outrank fresh ones
+just because the old one has more BM25 token matches.
+
+#### Power 8 — Per-index engagement boost (`field_value_factor`)
+
+Six parallel scoring functions, mapping each domain's strongest
+engagement signals onto the score. Each function uses `missing=0`
+so a doc only earns the boost for the metric it actually carries —
+Q&A docs aren't penalized for lacking `reactionCount`, posts aren't
+penalized for lacking `citationCount`. The three **secondary**
+functions (Q&A `viewCount`, posts `commentCount`, research
+`downloadCount`) are **scoped via `_index` filters** so each fires
+only on its own domain — keeping noisier signals out of cross-domain
+ranking.
+
+| # | Field | Factor | Modifier | Applies to | Role | Why |
+|---|---|---|---|---|---|---|
+| 1 | `reactionCount` | 1.0 | `log1p` | posts, research | **primary** (posts) / secondary (research) | Social signal — likes/reactions |
+| 2 | `answerCount`   | 2.0 | `log1p` | Q&A | **primary** | "More answers = better question." Smaller absolute values (typically 0–20), so larger factor brings the contribution in line with the others |
+| 3 | `citationCount` | 1.5 | `log1p` | research | **primary** | Academic gold standard — a much-cited paper ranks above an obscure one of equal text relevance |
+| 4 | `viewCount`     | 0.5 | `log1p` | **Q&A only** (filtered by `_index=irc-qna`) | secondary | Tiebreaker between two answer-equivalent questions. Excluded from posts / research because views are noisier than reactions/citations as a quality signal |
+| 5 | `commentCount`  | 0.5 | `log1p` | **posts only** (filtered by `_index=irc-posts`) | secondary | Tiebreaker between two like-equivalent posts — a heavily-discussed post sits above a same-reaction-count post with no conversation. Excluded from research / Q&A because they already carry stronger primary signals |
+| 6 | `downloadCount` | 0.5 | `log1p` | **research only** (filtered by `_index=irc-research`) | secondary | Tiebreaker between two similarly-cited papers — a paper that's been downloaded for study (PDF / dataset) ranks above one of equal citation count with no downloads. Excluded from posts / Q&A because raw download counts have no analogue there |
+
+Calibration logic — typical max value, then `log1p`, then × factor:
+
+```
+posts:    reactionCount ~1000 → log1p(1000) ≈ 6.9 → × 1.0 = 6.9    (primary)
+          commentCount  ~500  → log1p(500)  ≈ 6.2 → × 0.5 = 3.1    (secondary)
+qna:      answerCount   ~20   → log1p(20)   ≈ 3.0 → × 2.0 = 6.0    (primary)
+          viewCount     ~1000 → log1p(1000) ≈ 6.9 → × 0.5 = 3.5    (secondary)
+research: citationCount ~50   → log1p(50)   ≈ 3.9 → × 1.5 = 5.9    (primary)
+          downloadCount ~500  → log1p(500)  ≈ 6.2 → × 0.5 = 3.1    (secondary)
+                        plus reactionCount tap-in (smaller)
+```
+
+Domain-by-domain tie-breaking behavior:
+
+- **Posts** — primary signal is reactions, secondary is comments.
+  A post with 10 likes and 50 comments still ranks below one with
+  100 likes and no comments at equal text relevance; the secondary
+  only matters when the primaries are close.
+- **Q&A** — primary is answers, secondary is views. A
+  heavily-viewed-but-unanswered question sits below a much-answered
+  question of equal relevance; the more-viewed wins only when the
+  answer counts tie.
+- **Research** — primary is citations (with a smaller
+  `reactionCount` tap-in), secondary is downloads. Two papers with
+  the same citation count are tie-broken by download activity —
+  rewarding papers that are being actively read / used, not just
+  cited. Citations always dominate downloads, so a heavily-downloaded
+  but uncited paper sits below a much-cited one of equal relevance.
+
+So a viral post, a much-answered question, and a much-cited paper
+all reach comparable boost magnitudes — none of the three domains
+gets crushed by the others when results are mixed in a single
+`/api/v1/search` response.
+
+`log1p` (`log(1+x)`) is what keeps any single domain from running
+away with the ranking: a 100 000-reaction post gets `log1p ≈ 11.5`,
+not 100 000 — so a 100-reaction post (`log1p ≈ 4.6`) with a much
+better text match isn't drowned out.
+
+The seven scoring functions (recency + six engagement ones) combine
+with `score_mode=sum` (they add), and the sum multiplies the BM25
+query score (`boost_mode=multiply`). Net effect for any single doc:
+
+```
+final = bm25 × (gauss(createdAt)
+              + log1p(reactionCount)×1.0    -- if field present
+              + log1p(answerCount)×2.0      -- if field present
+              + log1p(citationCount)×1.5    -- if field present
+              + log1p(viewCount)×0.5        -- if doc is irc-qna
+              + log1p(commentCount)×0.5     -- if doc is irc-posts
+              + log1p(downloadCount)×0.5    -- if doc is irc-research)
+```
+
+A document only earns contributions from the metrics its index
+actually populates — every other term collapses to zero through the
+`missing=0` clause, and the per-function `_index` filters (functions
+4, 5, 6) collapse for any doc outside their target index.
+
+#### What this means for the client
+
+You don't pass anything to opt into any of these powers — they're
+always on. The only knob the client controls is the `types` filter
+and the cursor/page. Predictable consequences:
+
+- Typos are forgiven on tokens of 3+ chars.
+- Multi-word queries respect token overlap — fewer noisy single-token hits.
+- Exact phrases rank above scattered matches.
+- Partial last-word matches catch in-flight typeahead queries.
+- Fresh content surfaces above old content of equal text relevance.
+- Popular content surfaces above ignored content of equal text relevance.
+- Deleted / drafts / retracted content never appears.
+
+### Index-side fields that feed the powers
+
+Each domain owns its own index. Below is the set of fields each
+indexer populates — every search power above runs against
+whichever of these exist on a given index.
+
+| Index | Text fields | Filter fields | Score fields |
+|---|---|---|---|
+| `irc-posts` | `textContent`, `hashtags`, `authorName`, `authorUsername`, `locationName` | `postType`, `visibility`, `status` | `reactionCount`, `commentCount`, `viewCount`, `createdAt` |
+| `irc-qna` | `title`, `body`, `tags`, `keywords`, `authorName`, `authorUsername` | `status` | `answerCount`, `viewCount`, `saveCount`, `createdAt` |
+| `irc-research` | `title`, `abstractText`, `description`, `keywords`, `tags`, `researcherName`, `researcherUsername` | `status` | `reactionCount`, `viewCount`, `citationCount`, `downloadCount`, `publishedAt`, `createdAt` |
 
 ### Examples
 

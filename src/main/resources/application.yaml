@@ -69,11 +69,14 @@ spring:
   # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      # Default is `update` — preserves Postgres data across restarts.
-      # Hibernate only emits incremental schema changes, not DROP + CREATE.
-      #
-      # ⚠️  Set JPA_DDL=create-drop explicitly to wipe.
-      ddl-auto: ${JPA_DDL:update}
+      # ⚠️  TEMPORARILY set to `create-drop` — the schema is dropped at
+      # startup AND on graceful shutdown so every boot starts from a clean
+      # Postgres state. Every restart WIPES ALL POSTGRES DATA: users,
+      # research, questions, answers, follows, audit logs, notifications,
+      # everything. Override via `JPA_DDL=update` for any environment
+      # where you need data to persist (incl. production — set this back
+      # to `update` before deploying).
+      ddl-auto: ${JPA_DDL:create-drop}
     open-in-view: false
     show-sql: false
     properties:
@@ -111,13 +114,19 @@ spring:
     password: ${CASSANDRA_PASSWORD:}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
-    # Default is `CREATE_IF_NOT_EXISTS` — the Cassandra equivalent of JPA
-    # `ddl-auto: update`. Missing tables are created from @Table entities on
-    # boot, existing tables (and their data) are left untouched. Spring Data
-    # Cassandra does NOT issue ALTER TABLE — added/removed columns on an
-    # entity require a manual `ALTER TABLE` migration. Set
-    # CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED explicitly to wipe.
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
+    # ⚠️  TEMPORARILY set to `RECREATE_DROP_UNUSED` — the Cassandra
+    # equivalent of JPA `create-drop`. On every boot Spring Data Cassandra
+    # drops every @Table entity (and any unused leftover tables) and
+    # recreates them from the entity mapping. ALL CASSANDRA DATA IS
+    # WIPED: posts, comments, reactions, saves, stories (incl. polls +
+    # votes + views), feed_by_user, notifications, friend suggestions,
+    # tags, reels — everything. The expensive cluster-wide schema
+    # agreement round runs once per DROP/CREATE so boot takes longer than
+    # CREATE_IF_NOT_EXISTS. Override via
+    # `CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS` for any environment
+    # where you need data to persist (incl. production — set this back
+    # before deploying).
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
 
     # Connection pool settings
     # max-queue-size bumped from 256 → 4096 so a viral-post fanout batch

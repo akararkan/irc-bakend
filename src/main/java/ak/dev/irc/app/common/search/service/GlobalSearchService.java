@@ -5,7 +5,12 @@ import ak.dev.irc.app.common.search.dto.GlobalSearchHit;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.query_dsl.FieldValueFactorModifier;
+import co.elastic.clients.elasticsearch._types.query_dsl.FunctionBoostMode;
+import co.elastic.clients.elasticsearch._types.query_dsl.FunctionScoreMode;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
+import co.elastic.clients.json.JsonData;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -170,25 +175,200 @@ public class GlobalSearchService {
         return indices;
     }
 
+    /**
+     * Statuses that mean "should not surface in search results" across
+     * every index. {@code mustNot term} on a field that doesn't exist on
+     * a given index is a silent no-op, so the same filter applies safely
+     * to posts, questions, and research alike.
+     */
+    private static final List<String> DEAD_STATUSES = List.of(
+            "DELETED", "DRAFT", "ARCHIVED",
+            "RETRACTED", "REMOVED_BY_MODERATOR"
+    );
+
+    /**
+     * Multi-power query: combines text relevance, typo tolerance, phrase
+     * boost, prefix typeahead and lifecycle filtering inside a
+     * {@code bool}, then wraps the whole bool in a {@code function_score}
+     * that mixes BM25 with recency decay and engagement signals.
+     *
+     * <p>Layers:</p>
+     * <ol>
+     *   <li><b>Primary recall</b> — {@code multi_match} (BestFields)
+     *       with {@code fuzziness=AUTO} (typo tolerance) and
+     *       {@code minimum_should_match=75%} so a 4-word query needs at
+     *       least 3 tokens to match instead of any-one.</li>
+     *   <li><b>Phrase boost</b> — parallel {@code match_phrase} in
+     *       {@code should}; exact phrases dominate scattered tokens.</li>
+     *   <li><b>Typeahead</b> — {@code match_phrase_prefix} catches the
+     *       last token while it's still being typed
+     *       ("ramad" → "ramadan").</li>
+     *   <li><b>Lifecycle filter</b> — {@code mustNot} on dead statuses
+     *       defends against indexer regressions that might leak drafts /
+     *       deleted content into the index.</li>
+     *   <li><b>Recency decay</b> — Gaussian decay on {@code createdAt}
+     *       (half-strength at 30d, near-zero at 180d). Equal-relevance
+     *       hits prefer the newer document.</li>
+     *   <li><b>Engagement boost</b> — log1p of {@code reactionCount}
+     *       added to the score so widely-loved content outranks
+     *       equally-relevant but ignored content.</li>
+     * </ol>
+     */
     private static Query buildQuery(String query, Set<EntityType> types) {
         Set<EntityType> active = (types == null || types.isEmpty())
                 ? EnumSet.allOf(EntityType.class) : types;
-        return Query.of(q -> q.bool(b -> {
+
+        Query coreBool = Query.of(q -> q.bool(b -> {
+            // 1) Primary recall — fuzzy, multi-field, weighted.
             b.must(m -> m.multiMatch(mm -> mm
                     .query(query)
                     .fields(
-                            "title^4", "abstractText^2", "keywords^2",
-                            "body^2", "tags^2",
-                            "textContent^3", "hashtags^2", "description",
+                            // Strong-signal fields (titles + body text)
+                            "title^4", "textContent^3",
+                            "abstractText^2", "keywords^2", "body^2",
+                            // Tags / hashtags — useful but partial
+                            "tags^2", "hashtags^2",
+                            "description",
+                            // People + place
                             "authorName", "authorUsername",
-                            "researcherName", "researcherUsername"
-                    )));
-            // Reels-only requests narrow the posts index by postType.
+                            "researcherName", "researcherUsername",
+                            "locationName"
+                    )
+                    .type(TextQueryType.BestFields)
+                    .fuzziness("AUTO")
+                    .tieBreaker(0.3)
+                    .minimumShouldMatch("75%")));
+
+            // 2) Exact-phrase relevance — rewards "ramadan zakat" beating
+            //    one doc with "ramadan" and another with "zakat" scattered.
+            b.should(m -> m.multiMatch(mm -> mm
+                    .query(query)
+                    .fields("title^4", "textContent^3", "body^2",
+                            "abstractText^2", "description")
+                    .type(TextQueryType.Phrase)
+                    .boost(2.0f)));
+
+            // 3) Typeahead — partial last word catches in-flight queries
+            //    without a dedicated ngram field on every doc.
+            b.should(m -> m.multiMatch(mm -> mm
+                    .query(query)
+                    .fields("title^3", "textContent^2", "body",
+                            "abstractText", "authorName", "authorUsername",
+                            "researcherName", "researcherUsername")
+                    .type(TextQueryType.PhrasePrefix)
+                    .boost(1.5f)));
+
+            // 4) Reels-only requests narrow the posts index by postType.
             if (active.contains(EntityType.REEL) && !active.contains(EntityType.POST)) {
                 b.filter(f -> f.term(t -> t.field("postType").value("REEL")));
             }
+
+            // 5) Lifecycle filter — dead statuses never surface.
+            for (String dead : DEAD_STATUSES) {
+                b.mustNot(mn -> mn.term(t -> t.field("status").value(dead)));
+            }
             return b;
         }));
+
+        // 6) function_score wrapper — adds recency + engagement on top of
+        //    BM25 without changing the recall set.
+        return Query.of(q -> q.functionScore(fs -> fs
+                .query(coreBool)
+                // Recency: half-weight at 30 days, near-zero by 180 days.
+                // Uses the "untyped" decay variant — origin/scale are raw
+                // JsonData strings so the same call covers Date / Number /
+                // any other indexed type.
+                .functions(fn -> fn
+                        .gauss(g -> g.untyped(u -> u
+                                .field("createdAt")
+                                .placement(p -> p
+                                        .origin(JsonData.of("now"))
+                                        .scale(JsonData.of("30d"))
+                                        .offset(JsonData.of("1d"))
+                                        .decay(0.5)))))
+                // Engagement — per-index, additive. Each function references
+                // a field that only exists on one or two indices; the
+                // `missing(0.0)` clause turns absence into zero contribution
+                // so a doc only earns the boost for signals it actually
+                // carries. Factors are calibrated to the typical max of each
+                // metric so a viral post and a much-cited paper end up
+                // contributing comparable score magnitudes after log1p.
+                //
+                //   posts:    reactionCount   — social signal, typical max ~1000
+                //   research: citationCount   — academic gold, typical max ~50
+                //                 + smaller reactionCount tap-in (research is
+                //                   also reactable, but citations dominate)
+                //   qna:      answerCount     — "more answers = better question";
+                //                 small absolute values (0–20), so larger factor
+                // Scores combine via score_mode=SUM, then multiply BM25
+                // (boost_mode=MULTIPLY).
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("reactionCount")
+                                .factor(1.0)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("answerCount")
+                                .factor(2.0)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("citationCount")
+                                .factor(1.5)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                // Q&A secondary — viewCount, scoped via `_index` filter so
+                // it only fires on irc-qna docs. Smaller factor (0.5) than
+                // the primary answerCount boost so it acts as a tiebreaker
+                // between two answer-equivalent questions, never overriding
+                // the "more answers = better question" signal. Posts and
+                // research also carry viewCount but are excluded — viewCount
+                // is noisier than reactions/citations as a quality signal,
+                // and adding it everywhere would inflate older posts that
+                // accumulated views without earning real engagement.
+                .functions(fn -> fn
+                        .filter(f -> f.term(t -> t.field("_index").value("irc-qna")))
+                        .fieldValueFactor(fv -> fv
+                                .field("viewCount")
+                                .factor(0.5)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                // Posts secondary — commentCount, scoped via `_index` filter
+                // so it only fires on irc-posts docs. Acts as a tiebreaker
+                // between two like-equivalent posts: a heavily-discussed
+                // post sits above a same-reaction-count post with no
+                // conversation. Half the factor of the primary
+                // reactionCount boost so the "discussion" signal never
+                // overrides the "approval" signal — a post with 10 likes
+                // and 50 comments still ranks below one with 100 likes and
+                // no comments at equal relevance.
+                .functions(fn -> fn
+                        .filter(f -> f.term(t -> t.field("_index").value("irc-posts")))
+                        .fieldValueFactor(fv -> fv
+                                .field("commentCount")
+                                .factor(0.5)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                // Research secondary — downloadCount, scoped via `_index`
+                // filter so it only fires on irc-research docs. Tiebreaker
+                // between two similarly-cited papers: a paper that's been
+                // downloaded for study (PDF / dataset) ranks above a
+                // paper of equal citation count with no downloads. Half
+                // the factor of the primary citationCount boost so peer
+                // recognition (citations) always dominates raw access
+                // (downloads).
+                .functions(fn -> fn
+                        .filter(f -> f.term(t -> t.field("_index").value("irc-research")))
+                        .fieldValueFactor(fv -> fv
+                                .field("downloadCount")
+                                .factor(0.5)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                .scoreMode(FunctionScoreMode.Sum)
+                .boostMode(FunctionBoostMode.Multiply)));
     }
 
     // ── Hit → DTO ────────────────────────────────────────────────────────────

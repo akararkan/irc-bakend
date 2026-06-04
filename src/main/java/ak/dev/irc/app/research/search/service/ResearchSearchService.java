@@ -5,14 +5,22 @@ import ak.dev.irc.app.common.text.RichTextService;
 import ak.dev.irc.app.research.entity.Research;
 import ak.dev.irc.app.research.entity.ResearchTag;
 import ak.dev.irc.app.research.enums.ResearchStatus;
+import ak.dev.irc.app.research.repository.ResearchRepository;
 import ak.dev.irc.app.research.search.document.ResearchSearchDocument;
 import ak.dev.irc.app.research.search.repository.ResearchSearchRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,6 +43,8 @@ public class ResearchSearchService {
 
     private final ResearchSearchRepository searchRepo;
     private final RichTextService          richText;
+    private final ResearchRepository       researchRepo;
+    private final ElasticsearchOperations  esOps;
 
     /**
      * Index (or re-index) a research record. Drafts/archived/retracted are
@@ -60,6 +70,90 @@ public class ResearchSearchService {
         if (researchId == null) return;
         runWithRetry(() -> searchRepo.deleteById(researchId.toString()),
                 "[SEARCH] delete research " + researchId);
+    }
+
+    /**
+     * Result envelope for {@link #reindexAllPublished(boolean)}: drop status,
+     * total records reindexed, page count, and wall-clock duration so the
+     * caller knows the operation completed and how long it took.
+     */
+    public record ReindexResult(boolean indexDropped,
+                                long    documentsIndexed,
+                                int     pages,
+                                long    durationMs,
+                                String  note) {}
+
+    /**
+     * One-shot reindex of every PUBLISHED research record from Postgres
+     * into the {@code irc-research} ES index. Used after schema changes
+     * (new {@code @Field}s like {@code downloadCount}) so existing rows
+     * pick up the new mapping rather than being left at 0 / missing.
+     *
+     * <p>If {@code dropFirst=true}, the existing index is deleted first
+     * so the next {@code save()} recreates it from the up-to-date entity
+     * mapping — the cleanest way to land new {@code @Field} additions.
+     * Set {@code dropFirst=false} when the mapping is already current and
+     * you only want to refresh the score fields (counters drifted, etc.).</p>
+     *
+     * <p>Runs synchronously on the caller thread — the admin endpoint
+     * waits for completion so the response carries the final counts.
+     * Index writes go through the same {@link EsRetry} the per-row
+     * indexer uses, so a transient pooled-connection failure self-heals
+     * without losing the whole job.</p>
+     */
+    @Transactional(readOnly = true)
+    public ReindexResult reindexAllPublished(boolean dropFirst) {
+        Instant start = Instant.now();
+
+        boolean dropped = false;
+        if (dropFirst) {
+            try {
+                EsRetry.run(() -> esOps.indexOps(ResearchSearchDocument.class).delete(),
+                        "[SEARCH] drop irc-research");
+                dropped = true;
+                log.info("[SEARCH] irc-research index dropped — will be recreated from entity mapping on first save");
+            } catch (Exception e) {
+                // 404 (index didn't exist) is fine; anything else is logged
+                // and we proceed — save() will still create the index lazily.
+                log.warn("[SEARCH] irc-research drop best-effort failed (often harmless): {}",
+                        e.getMessage());
+            }
+        }
+
+        final int PAGE_SIZE = 100;
+        long indexed = 0;
+        int pages = 0;
+        int page = 0;
+        while (true) {
+            Page<Research> slice = researchRepo.findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(
+                    ResearchStatus.PUBLISHED, PageRequest.of(page, PAGE_SIZE));
+            if (slice.isEmpty()) break;
+
+            List<ResearchSearchDocument> docs = new ArrayList<>(slice.getNumberOfElements());
+            for (Research r : slice.getContent()) {
+                docs.add(buildDoc(r));
+            }
+            try {
+                EsRetry.run(() -> searchRepo.saveAll(docs),
+                        "[SEARCH] reindex page " + page + " (" + docs.size() + " docs)");
+                indexed += docs.size();
+                pages++;
+            } catch (Exception e) {
+                // Per-page failure: log and continue — partial reindex is
+                // better than zero, and the next page may write fine.
+                log.warn("[SEARCH] reindex page {} failed ({} docs skipped): {}",
+                        page, docs.size(), e.getMessage());
+            }
+
+            if (!slice.hasNext()) break;
+            page++;
+        }
+
+        long ms = Duration.between(start, Instant.now()).toMillis();
+        String note = String.format("Reindexed %d published research record(s) across %d page(s)%s.",
+                indexed, pages, dropped ? " (index was dropped first)" : "");
+        log.info("[SEARCH] {} ({}ms)", note, ms);
+        return new ReindexResult(dropped, indexed, pages, ms, note);
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
@@ -94,6 +188,7 @@ public class ResearchSearchService {
                 .viewCount(research.getViewCount())
                 .citationCount(research.getCitationCount())
                 .reactionCount(research.getReactionCount())
+                .downloadCount(research.getDownloadCount())
                 .publishedAt(research.getPublishedAt() == null ? null
                         : research.getPublishedAt().toInstant(ZoneOffset.UTC))
                 .createdAt(research.getCreatedAt() == null ? null

@@ -38,6 +38,10 @@ public class ResearchSearchDocument {
     @Field(type = FieldType.Long) private Long viewCount;
     @Field(type = FieldType.Long) private Long citationCount;
     @Field(type = FieldType.Long) private Long reactionCount;
+    /** Indexed so GlobalSearchService can use it as a secondary engagement
+     *  signal (PDF/dataset downloads as a tie-breaker between two
+     *  similarly-cited papers). Scoped to {@code irc-research} at query time. */
+    @Field(type = FieldType.Long) private Long downloadCount;
 
     @Field(type = FieldType.Date, format = DateFormat.date_time)
     private Instant publishedAt;
