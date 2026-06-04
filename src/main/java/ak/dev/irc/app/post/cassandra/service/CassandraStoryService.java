@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.post.cassandra.entity.StoryByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryLookupEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryViewEntity;
@@ -146,10 +147,29 @@ public class CassandraStoryService {
      * non-negotiable step (and runs first).</p>
      */
     public void deleteStory(UUID storyId, UUID actorId) {
+        log.info("[STORY] delete requested storyId={} actor={}", storyId, actorId);
+
         StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
-        if (meta == null) return;
+        if (meta == null) {
+            // PREVIOUS bug: this branch returned silently → controller wrapped
+            // the silent return in 204 NO_CONTENT → frontend interpreted it
+            // as "delete succeeded" even though nothing was tombstoned.
+            // Now we surface a 404 so the client can distinguish "already
+            // gone / never existed" from "deleted just now". This is hit in
+            // three real situations:
+            //   1. The story_lookup row's TTL has fired but stories_by_author
+            //      hasn't been tombstoned yet (per-row TTL, not atomic across tables).
+            //   2. Re-issued delete on a story that was already removed.
+            //   3. The story_lookup row was never written (e.g. an existing
+            //      keyspace missing the `expires_at` column rejects the insert).
+            log.warn("[STORY] delete miss — no story_lookup row for storyId={} actor={}",
+                    storyId, actorId);
+            throw new ResourceNotFoundException("Story", "id", storyId);
+        }
         if (!meta.getAuthorId().equals(actorId)) {
-            throw new SecurityException("Not the author");
+            log.warn("[STORY] delete forbidden — storyId={} owned by {} but actor is {}",
+                    storyId, meta.getAuthorId(), actorId);
+            throw new SecurityException("Only the author can delete this story");
         }
 
         UUID   authorId   = meta.getAuthorId();
@@ -159,6 +179,7 @@ public class CassandraStoryService {
         // even if downstream cleanup hiccups.
         storyRepo.delete(authorId, meta.getCreatedAt(), storyId);
         storyLookupRepo.deleteById(storyId);
+        log.info("[STORY] tombstoned stories_by_author + story_lookup for storyId={}", storyId);
 
         // Poll cleanup (no-op when the story had no poll).
         try {
