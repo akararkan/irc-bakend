@@ -107,7 +107,7 @@ public class FeedTimelineService {
         if ("ONLY_ME".equals(visibility)) {
             // Even private posts go into the author's OWN feed so they see
             // their own timeline when they hit /api/v1/posts/feed.
-            writeFanoutRow(postId, authorId, authorId, createdAt, postType, textPreview, mediaUrl);
+            writeFanoutRow(postId, authorId, authorId, createdAt, "POST", postType, textPreview, mediaUrl);
             log.debug("[FEED] ONLY_ME post {} — self-fanout only", postId);
             return;
         }
@@ -119,7 +119,7 @@ public class FeedTimelineService {
         // Without this row, /api/v1/posts/feed for the author returns an empty
         // list until someone they follow also posts something. Twitter / IG /
         // Facebook all do this; users expect it.
-        writeFanoutRow(postId, authorId, authorId, createdAt, postType, textPreview, mediaUrl);
+        writeFanoutRow(postId, authorId, authorId, createdAt, "POST", postType, textPreview, mediaUrl);
         pushRealtime(authorId, postId, authorId);
 
         // Keyset-paginated follower scan: each page is constant-time on the
@@ -148,7 +148,7 @@ public class FeedTimelineService {
                 taskExecutor.execute(() -> {
                     try {
                         writeFanoutRow(postId, authorId, followerId, createdAt,
-                                      postType, textPreview, mediaUrl);
+                                      "POST", postType, textPreview, mediaUrl);
                         pushRealtime(followerId, postId, authorId);
                         deliverPostNewNotification(followerId, authorId, authorLabel,
                                                    postId, textPreview);
@@ -184,7 +184,7 @@ public class FeedTimelineService {
             int written = 0;
             for (PostByAuthorEntity p : recent) {
                 writeFanoutRow(p.getPostId(), p.getAuthorId(), newFollowerId,
-                               p.getCreatedAt(), p.getPostType(),
+                               p.getCreatedAt(), "POST", p.getPostType(),
                                p.getTextPreview(), p.getMediaUrl());
                 written++;
             }
@@ -196,8 +196,106 @@ public class FeedTimelineService {
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    //  Mixed-entity fanout — RESEARCH + QUESTION ride the same feed_by_user
+    //  table as posts, discriminated by `entity_type`. The frontend uses
+    //  entityType to dispatch the click-through to the correct detail page.
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Fan a freshly-published research record into the home feeds of every
+     * follower (and the author's own feed). Visibility-aware:
+     * {@code PRIVATE} skips the follower fanout and stays self-only;
+     * {@code FOLLOWERS_ONLY} and {@code PUBLIC} both fan to followers
+     * (visibility gating on click-through is enforced by the research
+     * detail endpoint, not at feed time).
+     *
+     * <p>Re-uses the existing follower-walk + circuit breaker + bounded
+     * task executor from the post path. No realtime FEED_NEW_POST push
+     * yet — that event is post-shaped; clients can re-fetch on the next
+     * tab focus if a research card needs to appear instantly.</p>
+     */
+    @Async
+    public void fanoutResearchPublished(UUID researchId,
+                                        UUID researcherId,
+                                        Instant publishedAt,
+                                        String title,
+                                        String coverUrl,
+                                        String visibility) {
+        String preview = title == null ? "Published a research" : title;
+        // Self-fanout always — author sees their own research in their feed.
+        writeFanoutRow(researchId, researcherId, researcherId, publishedAt,
+                       "RESEARCH", "PUBLICATION", preview, coverUrl);
+        if ("PRIVATE".equals(visibility)) {
+            log.debug("[FEED] PRIVATE research {} — self-fanout only", researchId);
+            return;
+        }
+        fanoutToFollowers(researchId, researcherId, publishedAt,
+                          "RESEARCH", "PUBLICATION", preview, coverUrl);
+    }
+
+    /**
+     * Fan a newly-created question into the home feeds of every follower
+     * (and the asker's own feed). Q&A questions have no per-row visibility
+     * field — all created questions are public.
+     */
+    @Async
+    public void fanoutQuestionCreated(UUID questionId,
+                                      UUID askerId,
+                                      Instant createdAt,
+                                      String title) {
+        String preview = title == null ? "Asked a question" : title;
+        writeFanoutRow(questionId, askerId, askerId, createdAt,
+                       "QUESTION", "QUESTION", preview, null);
+        fanoutToFollowers(questionId, askerId, createdAt,
+                          "QUESTION", "QUESTION", preview, null);
+    }
+
+    /**
+     * Shared follower-walk for non-POST entities. Keyset-paged scan with
+     * per-row writes submitted to the bounded {@code taskExecutor} —
+     * identical to the post path, minus the {@code POST_NEW} notification
+     * delivery (research/qna already publish their own notification events
+     * via {@code NotificationEventConsumer}; we don't double-notify).
+     */
+    private void fanoutToFollowers(UUID entityId, UUID authorId, Instant createdAt,
+                                   String entityType, String postType,
+                                   String preview, String mediaUrl) {
+        UUID cursor = null;
+        int totalDelivered = 0;
+        while (totalDelivered < MAX_FANOUT_FOLLOWERS) {
+            List<UUID> batch;
+            try {
+                batch = userFollowRepo.findFollowerIdsAfter(
+                        authorId, cursor, PageRequest.of(0, FANOUT_BATCH));
+            } catch (Exception e) {
+                log.warn("[FEED] follower lookup failed for {} ({}): {}",
+                        authorId, entityType, e.getMessage());
+                return;
+            }
+            if (batch.isEmpty()) break;
+            for (UUID followerId : batch) {
+                taskExecutor.execute(() -> {
+                    try {
+                        writeFanoutRow(entityId, authorId, followerId, createdAt,
+                                       entityType, postType, preview, mediaUrl);
+                        pushRealtime(followerId, entityId, authorId);
+                    } catch (Exception e) {
+                        log.debug("[FEED] per-follower {} fanout {} failed: {}",
+                                entityType, followerId, e.getMessage());
+                    }
+                });
+            }
+            totalDelivered += batch.size();
+            cursor = batch.get(batch.size() - 1);
+            if (batch.size() < FANOUT_BATCH) break;
+        }
+        log.info("[FEED] {} fanout complete for entity {}: {} followers delivered",
+                entityType, entityId, totalDelivered);
+    }
+
     private void writeFanoutRow(UUID postId, UUID authorId, UUID viewerId,
-                                Instant createdAt, String postType,
+                                Instant createdAt, String entityType, String postType,
                                 String preview, String mediaUrl) {
         // Half-open after the cooldown elapses: clear the "opened-at" marker
         // so the next attempt actually hits Cassandra. If it fails again, the
@@ -221,6 +319,7 @@ public class FeedTimelineService {
                     .postType(postType)
                     .textPreview(preview)
                     .mediaUrl(mediaUrl)
+                    .entityType(entityType == null ? "POST" : entityType)
                     .build());
             consecutiveFailures.set(0);
         } catch (RuntimeException e) {

@@ -130,41 +130,71 @@ public class PostHydrator {
     @Transactional(readOnly = true)
     public List<FeedItemResponse> hydrateHomeFeed(List<FeedByUserEntity> rows) {
         if (rows == null || rows.isEmpty()) return List.of();
+        // Authors are users regardless of entity type — researcher / Q&A asker
+        // both resolve through the same bulk user lookup. Single round-trip.
         Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, FeedByUserEntity::getAuthorId);
-        Set<UUID> postIds = collectIds(rows, FeedByUserEntity::getPostId);
-        // ONE bulk fetch of the canonical posts so edited text/media reach the
-        // feed without the frontend N+1 — feed_by_user.text_preview is a
-        // create-time snapshot and is never updated on PATCH (intentional —
-        // updating O(followers) rows per edit would crush celebrities). Falls
-        // back to the snapshot when the canonical row is gone (deleted post).
-        Map<UUID, PostByIdEntity> canonical = bulkLoadPosts(postIds);
-        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
+
+        // Only POST entries need post_counters / posts_by_id hydration. Bulk
+        // ops are scoped to POST ids to avoid pointless Cassandra reads for
+        // RESEARCH / QUESTION rows that don't live in those tables.
+        Set<UUID> postIds = new HashSet<>();
+        for (FeedByUserEntity r : rows) {
+            if (isPostRow(r)) postIds.add(r.getPostId());
+        }
+        Map<UUID, PostByIdEntity>    canonical = postIds.isEmpty() ? Map.of() : bulkLoadPosts(postIds);
+        Map<UUID, PostCounterEntity> counters  = postIds.isEmpty() ? Map.of() : bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
-        Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
-        Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+        Set<UUID> likedSet = postIds.isEmpty() ? Set.of() : bulkLikedPosts(viewerId, postIds);
+        Set<UUID> savedSet = postIds.isEmpty() ? Set.of() : bulkSavedPosts(viewerId, postIds);
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (FeedByUserEntity r : rows) {
-            PostByIdEntity      live = canonical.get(r.getPostId());
-            PostCounterEntity   c    = counters.get(r.getPostId());
-            out.add(new FeedItemResponse(
-                    r.getPostId(),
-                    r.getAuthorId(),
-                    authors.get(r.getAuthorId()),
-                    r.getPostType(),
-                    livePreview(live, r.getTextPreview()),
-                    liveCoverMedia(live, r.getMediaUrl()),
-                    liveVideoUrl(live, r.getPostType()),
-                    nullSafe(c == null ? null : c.getReactionCount()),
-                    nullSafe(c == null ? null : c.getCommentCount()),
-                    nullSafe(c == null ? null : c.getViewCount()),
-                    nullSafe(c == null ? null : c.getSaveCount()),
-                    nullSafe(c == null ? null : c.getShareCount()),
-                    likedSet.contains(r.getPostId()),
-                    savedSet.contains(r.getPostId()),
-                    r.getCreatedAt()));
+            if (isPostRow(r)) {
+                PostByIdEntity      live = canonical.get(r.getPostId());
+                PostCounterEntity   c    = counters.get(r.getPostId());
+                out.add(new FeedItemResponse(
+                        r.getPostId(),
+                        r.getAuthorId(),
+                        authors.get(r.getAuthorId()),
+                        "POST",
+                        r.getPostType(),
+                        livePreview(live, r.getTextPreview()),
+                        liveCoverMedia(live, r.getMediaUrl()),
+                        liveVideoUrl(live, r.getPostType()),
+                        nullSafe(c == null ? null : c.getReactionCount()),
+                        nullSafe(c == null ? null : c.getCommentCount()),
+                        nullSafe(c == null ? null : c.getViewCount()),
+                        nullSafe(c == null ? null : c.getSaveCount()),
+                        nullSafe(c == null ? null : c.getShareCount()),
+                        likedSet.contains(r.getPostId()),
+                        savedSet.contains(r.getPostId()),
+                        r.getCreatedAt()));
+            } else {
+                // RESEARCH / QUESTION row — use the snapshot preview/media,
+                // zero the post counters (real counters live on the entity's
+                // own detail endpoint, fetched on click-through), entityType
+                // tells the frontend which detail page to navigate to.
+                out.add(new FeedItemResponse(
+                        r.getPostId(),
+                        r.getAuthorId(),
+                        authors.get(r.getAuthorId()),
+                        r.getEntityType(),
+                        r.getPostType(),
+                        r.getTextPreview(),
+                        r.getMediaUrl(),
+                        null,
+                        0L, 0L, 0L, 0L, 0L,
+                        false, false,
+                        r.getCreatedAt()));
+            }
         }
         return out;
+    }
+
+    /** A row is a POST when entity_type is null (legacy) or explicitly "POST". */
+    private static boolean isPostRow(FeedByUserEntity r) {
+        String t = r.getEntityType();
+        return t == null || t.isBlank() || "POST".equalsIgnoreCase(t);
     }
 
     @Transactional(readOnly = true)
@@ -189,6 +219,7 @@ public class PostHydrator {
                     r.getPostId(),
                     r.getAuthorId(),
                     authors.get(r.getAuthorId()),
+                    "POST",
                     r.getPostType(),
                     livePreview(live, r.getTextPreview()),
                     liveCoverMedia(live, r.getMediaUrl()),
@@ -223,6 +254,7 @@ public class PostHydrator {
                     r.getPostId(),
                     r.getAuthorId(),
                     authors.get(r.getAuthorId()),
+                    "POST",
                     "REEL",
                     r.getTextPreview(),
                     r.getMediaUrl(),

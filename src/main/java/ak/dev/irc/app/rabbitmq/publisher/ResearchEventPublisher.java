@@ -36,11 +36,13 @@ public class ResearchEventPublisher {
                 research.getSlug(),
                 researcher.getId(),
                 researcher.getUsername(),
-                researcher.getFullName()
+                researcher.getFullName(),
+                research.getVisibility() == null ? "PUBLIC" : research.getVisibility().name(),
+                research.getCoverImageUrl()
         );
         send(RESEARCH_PUBLISHED, event);
-        log.debug("[EVENT] ResearchPublished published — researchId={} by researcher={}",
-                research.getId(), researcher.getId());
+        log.debug("[EVENT] ResearchPublished published — researchId={} by researcher={} visibility={}",
+                research.getId(), researcher.getId(), event.visibility());
     }
 
     // ── Social ────────────────────────────────────────────────────────────────

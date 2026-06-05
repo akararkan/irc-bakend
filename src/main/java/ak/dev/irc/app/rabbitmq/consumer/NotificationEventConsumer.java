@@ -112,6 +112,8 @@ public class NotificationEventConsumer {
         private final ApplicationEventPublisher eventPublisher;
         private final UserActivityService    userActivityService;
         private final ak.dev.irc.app.user.service.NotificationDispatcher dispatcher;
+        /** Mixed-feed fanout target — research/qna ride the same feed_by_user table as posts. */
+        private final ak.dev.irc.app.post.cassandra.service.FeedTimelineService feedTimelineService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  User — Follow / Unfollow
@@ -221,6 +223,25 @@ public class NotificationEventConsumer {
                 .resourceId(event.researchId())
                 .resourceType("Research")
                 .build());
+
+        // Mixed-feed fanout — write a feed_by_user row per follower so the
+        // research card appears in the home timeline alongside posts. The
+        // FeedTimelineService respects ResearchVisibility (PRIVATE → self-only).
+        // Best-effort; never let a feed fanout failure unwind notification writes.
+        try {
+            feedTimelineService.fanoutResearchPublished(
+                    event.researchId(),
+                    event.researcherId(),
+                    event.occurredAt() == null
+                            ? java.time.Instant.now()
+                            : event.occurredAt().toInstant(java.time.ZoneOffset.UTC),
+                    event.researchTitle(),
+                    event.coverImageUrl(),
+                    event.visibility() == null ? "PUBLIC" : event.visibility());
+        } catch (Exception e) {
+            log.warn("[CONSUMER] ResearchPublished feed fanout skipped for {}: {}",
+                    event.researchId(), e.getMessage());
+        }
 
         log.info("[CONSUMER] ResearchPublished — {} notification(s) saved & queued for SSE", savedNotifications);
     }
@@ -395,6 +416,22 @@ public class NotificationEventConsumer {
 
         log.info("[CONSUMER] QuestionCreated — {} scholar + {} follower notification(s) saved",
                 scholarCount, followerCount);
+
+        // Mixed-feed fanout — write a feed_by_user row per follower so the
+        // question appears in the home timeline alongside posts + research.
+        // Q&A has no per-row visibility model — all created questions are public.
+        try {
+            feedTimelineService.fanoutQuestionCreated(
+                    event.questionId(),
+                    event.authorId(),
+                    event.occurredAt() == null
+                            ? java.time.Instant.now()
+                            : event.occurredAt().toInstant(java.time.ZoneOffset.UTC),
+                    event.questionTitle());
+        } catch (Exception e) {
+            log.warn("[CONSUMER] QuestionCreated feed fanout skipped for {}: {}",
+                    event.questionId(), e.getMessage());
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════════
