@@ -40,6 +40,20 @@ public class CloudflareR2StorageService implements S3StorageService {
     @Value("${app.storage.bucket-name}")
     private String bucketName;
 
+    /**
+     * Optional absolute base for media URLs returned by {@link #getPublicUrl}.
+     * When set (e.g. {@code https://irc-bakend-production.up.railway.app}),
+     * the proxy URL becomes absolute — required so a cross-origin frontend's
+     * {@code <video src="...">} / {@code <img src="...">} elements resolve
+     * to the backend instead of the frontend's own origin. Blank in dev so
+     * same-origin (localhost) calls keep working with relative URLs.
+     *
+     * <p>Set via the {@code MEDIA_PUBLIC_URL} env var on the deployment
+     * (Railway / k8s / etc.). Trailing slashes are stripped.</p>
+     */
+    @Value("${app.media.public-url-prefix:}")
+    private String mediaPublicUrlPrefix;
+
     // ══════════════════════════════════════════════════════════════════════════
     //  UPLOAD
     // ══════════════════════════════════════════════════════════════════════════
@@ -110,7 +124,18 @@ public class CloudflareR2StorageService implements S3StorageService {
     @Override
     public String getPublicUrl(String s3Key) {
         if (s3Key == null) return null;
-        return "/api/v1/media/" + s3Key;
+        String path = "/api/v1/media/" + s3Key;
+        if (mediaPublicUrlPrefix == null || mediaPublicUrlPrefix.isBlank()) {
+            // No prefix configured (typical for dev): return the relative
+            // path so same-origin (localhost) calls still work as before.
+            return path;
+        }
+        // Absolute URL — needed by cross-origin frontends (the React app on
+        // Vercel) so <video src> / <img src> resolves to the backend host,
+        // not the frontend's own origin.
+        String base = mediaPublicUrlPrefix;
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        return base + path;
     }
 
     // ══════════════════════════════════════════════════════════════════════════

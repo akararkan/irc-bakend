@@ -369,6 +369,20 @@ app:
     public-url-base: ${R2_PUBLIC_URL:}
     region:          ${R2_REGION:auto}
 
+  # ── Media URL prefix (CRITICAL for cross-origin frontends) ─────────────────
+  # When the frontend and backend run on different hosts (e.g. React on
+  # Vercel + API on Railway), media URLs returned by the API must be
+  # ABSOLUTE so the browser's <video src> / <img src> resolves to the
+  # backend, not the frontend's own origin.
+  #
+  # Set MEDIA_PUBLIC_URL to the public backend URL on each deployment:
+  #   MEDIA_PUBLIC_URL=https://irc-bakend-production.up.railway.app
+  #
+  # Leave empty in local dev — relative paths still resolve correctly
+  # when the frontend is same-origin (localhost) with the backend.
+  media:
+    public-url-prefix: ${MEDIA_PUBLIC_URL:}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LOGGING
