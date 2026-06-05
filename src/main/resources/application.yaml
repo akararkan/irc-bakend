@@ -76,7 +76,7 @@ spring:
       # everything. Override via `JPA_DDL=update` for any environment
       # where you need data to persist (incl. production — set this back
       # to `update` before deploying).
-      ddl-auto: ${JPA_DDL:update}
+      ddl-auto: ${JPA_DDL:create-drop}
     open-in-view: false
     show-sql: false
     properties:
@@ -126,7 +126,7 @@ spring:
     # `CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS` for any environment
     # where you need data to persist (incl. production — set this back
     # before deploying).
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
+    schema-action: ${CASSANDRA_SCHEMA_ACTION:RECREATE_DROP_UNUSED}
 
     # Connection pool settings
     # max-queue-size bumped from 256 → 4096 so a viral-post fanout batch
