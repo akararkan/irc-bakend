@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.controller;
 
+import ak.dev.irc.app.common.persistence.OptimisticLockRetry;
 import ak.dev.irc.app.research.dto.request.*;
 import ak.dev.irc.app.research.dto.response.*;
 import ak.dev.irc.app.research.enums.ReactionType;
@@ -181,7 +182,12 @@ public class ResearchController {
             @RequestPart("video") MultipartFile video,
             @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.uploadVideoPromo(id, video, thumbnail, user.getId()));
+        // Retry on optimistic-lock conflict (publish + media uploads racing
+        // on the same research row). The retry runs OUTSIDE the service's
+        // @Transactional so each attempt opens a fresh tx + fresh entity read.
+        return ResponseEntity.ok(OptimisticLockRetry.run(
+                "research/video-promo/" + id,
+                () -> researchService.uploadVideoPromo(id, video, thumbnail, user.getId())));
     }
 
     @DeleteMapping("/{id}/video-promo")
@@ -201,7 +207,13 @@ public class ResearchController {
             @PathVariable UUID id,
             @RequestPart("image") MultipartFile image,
             @AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(researchService.uploadCoverImage(id, image, user.getId()));
+        // Retry on optimistic-lock conflict — typical race is the frontend
+        // firing /cover-image in parallel with publish() / a metadata edit.
+        // See log incident at 2026-06-04 23:55:35 where publish bumped the
+        // version while the cover-image upload was mid-flight.
+        return ResponseEntity.ok(OptimisticLockRetry.run(
+                "research/cover-image/" + id,
+                () -> researchService.uploadCoverImage(id, image, user.getId())));
     }
 
     @DeleteMapping("/{id}/cover-image")

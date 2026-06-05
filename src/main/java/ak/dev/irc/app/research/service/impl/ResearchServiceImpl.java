@@ -1001,7 +1001,9 @@ public class ResearchServiceImpl implements ResearchService {
                 && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
             throw new ResourceNotFoundException("Research", "id", researchId);
         }
-        return mapper.toResponse(research, currentUserId);
+        return mapper.toResponse(research, currentUserId,
+                resolveSavedFlag(researchId, currentUserId),
+                resolveReactedFlag(researchId, currentUserId));
     }
 
     @Override
@@ -1017,7 +1019,10 @@ public class ResearchServiceImpl implements ResearchService {
                 && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
             throw new ResourceNotFoundException("Research", "slug", slug);
         }
-        return mapper.toResponse(research, currentUserId);
+        UUID researchId = research.getId();
+        return mapper.toResponse(research, currentUserId,
+                resolveSavedFlag(researchId, currentUserId),
+                resolveReactedFlag(researchId, currentUserId));
     }
 
     @Override
@@ -1027,7 +1032,10 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException("Share token is required", "MISSING_TOKEN");
         Research research = researchRepo.findByShareTokenAndDeletedAtIsNull(shareToken)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "token", shareToken));
-        return mapper.toResponse(research, currentUserId);
+        UUID researchId = research.getId();
+        return mapper.toResponse(research, currentUserId,
+                resolveSavedFlag(researchId, currentUserId),
+                resolveReactedFlag(researchId, currentUserId));
     }
 
     @Override
@@ -2420,6 +2428,36 @@ public class ResearchServiceImpl implements ResearchService {
                 log.warn("Source constraint violation skipped: {}", e.getMessage());
             }
         });
+    }
+
+    /**
+     * Cheap O(1) lookup of whether {@code viewerId} saved {@code researchId} —
+     * uses the composite-PK index on {@code research_saves}. Replaces the
+     * mapper's prior {@code r.getSaves().stream()...} which lazy-loaded EVERY
+     * save row on the research just to derive one boolean.
+     *
+     * <p>Returns {@code null} for anonymous viewers so the mapper falls back
+     * to its existing "no flag" default.</p>
+     */
+    private Boolean resolveSavedFlag(UUID researchId, UUID viewerId) {
+        if (viewerId == null) return null;
+        try {
+            return saveRepo.existsById(new ResearchSaveId(researchId, viewerId));
+        } catch (Exception e) {
+            log.debug("[PERF] resolveSavedFlag fallback for {}/{}: {}", researchId, viewerId, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Counterpart to {@link #resolveSavedFlag} for the LIKE reaction. */
+    private Boolean resolveReactedFlag(UUID researchId, UUID viewerId) {
+        if (viewerId == null) return null;
+        try {
+            return reactionRepo.existsById(new ResearchReactionId(researchId, viewerId));
+        } catch (Exception e) {
+            log.debug("[PERF] resolveReactedFlag fallback for {}/{}: {}", researchId, viewerId, e.getMessage());
+            return null;
+        }
     }
 
     private void validateFile(MultipartFile file, String fileType, List<String> allowedTypes) {
