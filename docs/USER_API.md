@@ -176,7 +176,10 @@ Type of single-use verification token stored in `verification_tokens`.
 
 ### 5.6 NotificationType
 
-Fine-grained event types delivered as notifications.
+Fine-grained event types delivered as notifications. The grouping below
+shows source — see [§5.7](#57-notificationcategory) for the inbox-tab
+mapping (which is **not** 1:1 with the grouping; several types fall
+through to the SYSTEM tab as the default).
 
 **Social**
 `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`,
@@ -186,19 +189,36 @@ Fine-grained event types delivered as notifications.
 `POST_NEW`, `POST_REACTED`, `POST_COMMENTED`, `POST_COMMENT_REPLIED`,
 `POST_COMMENT_REACTED`, `POST_SHARED`, `POST_MENTIONED`
 
+> `POST_MENTIONED` is **legacy** — superseded by `USER_MENTIONED`, kept
+> in the enum for back-compat with existing rows. New code paths use
+> `USER_MENTIONED` so the row lands in the MENTIONS tab. Old
+> `POST_MENTIONED` rows still bucket into POSTS.
+
 **Q&A**
 `QUESTION_NEW`, `QUESTION_ANSWERED`, `ANSWER_REPLIED`, `ANSWER_REACTED`,
-`ANSWER_ACCEPTED`, `ANSWER_BEST_VOTED`
+`ANSWER_ACCEPTED`
+
+> `ANSWER_BEST_VOTED` was removed when the QnA scholar-best-answer
+> voting + feedback subsystem was retired — only the author-accept flow
+> (`ANSWER_ACCEPTED`) remains. Don't re-add it.
 
 **Research / Publications**
 `PUBLICATION_LIKED`, `PUBLICATION_COMMENTED`, `PUBLICATION_COMMENT_REACTED`,
 `PUBLICATION_CITED`, `RESEARCH_CONTRIBUTOR_ADDED`
 
+> Only `PUBLICATION_LIKED`, `PUBLICATION_COMMENTED`, `PUBLICATION_CITED`
+> bucket into the RESEARCH inbox tab. `PUBLICATION_COMMENT_REACTED`
+> and `RESEARCH_CONTRIBUTOR_ADDED` fall through to SYSTEM — see [§5.7](#57-notificationcategory).
+
 **Stories**
 `STORY_PUBLISHED`, `STORY_REACTED`, `STORY_REPLIED`, `SOUND_APPROVED`
 
+> No dedicated STORIES tab — all four fall through to SYSTEM via the
+> default case in `NotificationCategory.of`.
+
 **Mentions**
-`USER_MENTIONED` — cross-source; always lands in the MENTIONS inbox tab
+`USER_MENTIONED` — cross-source (post / comment / question / answer /
+research); the ONLY type that maps to the MENTIONS tab.
 
 **System**
 `SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`, `TRENDING_DIGEST`
@@ -209,16 +229,29 @@ Fine-grained event types delivered as notifications.
 
 ### 5.7 NotificationCategory
 
-Coarse inbox tab grouping. Derived from `NotificationType` at response time — never stored.
+Coarse inbox tab grouping. Derived from `NotificationType` at response
+time via `NotificationCategory.of(type)` — never stored.
 
-| Value | Types included |
+| Value | Types that bucket into this tab |
 |---|---|
-| `POSTS` | `POST_*`, except `POST_MENTIONED` which goes to MENTIONS |
-| `QNA` | `QUESTION_*`, `ANSWER_*` |
-| `RESEARCH` | `PUBLICATION_*`, `RESEARCH_CONTRIBUTOR_ADDED` |
-| `MENTIONS` | `USER_MENTIONED` |
-| `SOCIAL` | `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`, `CONNECTION_*` |
-| `SYSTEM` | `SYSTEM_*`, `ACCOUNT_WARNING`, `TRENDING_DIGEST` |
+| `POSTS` | `POST_NEW`, `POST_REACTED`, `POST_COMMENTED`, `POST_COMMENT_REPLIED`, `POST_COMMENT_REACTED`, `POST_SHARED`, `POST_MENTIONED` (legacy) |
+| `QNA` | `QUESTION_NEW`, `QUESTION_ANSWERED`, `ANSWER_REPLIED`, `ANSWER_REACTED`, `ANSWER_ACCEPTED` |
+| `RESEARCH` | `PUBLICATION_LIKED`, `PUBLICATION_COMMENTED`, `PUBLICATION_CITED` |
+| `MENTIONS` | `USER_MENTIONED` only |
+| `SOCIAL` | `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`, `CONNECTION_REQUEST`, `CONNECTION_ACCEPTED` |
+| `SYSTEM` | `SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`, `TRENDING_DIGEST` **plus** every type not explicitly bucketed above (default fallthrough) |
+
+#### Default fallthrough — what lands in SYSTEM by default
+
+`NotificationCategory.of(...)` returns `SYSTEM` for any type that
+doesn't match an explicit bucket. The following are currently in this
+fallthrough group:
+
+- `STORY_PUBLISHED`, `STORY_REACTED`, `STORY_REPLIED`, `SOUND_APPROVED`
+- `PUBLICATION_COMMENT_REACTED`, `RESEARCH_CONTRIBUTOR_ADDED`
+
+If you add an explicit STORIES tab in the future, update both
+`NotificationCategory.types()` and the `of(...)` switch.
 
 ---
 
@@ -1212,16 +1245,18 @@ POST /api/v1/users/{id}/follow
 
 **Side effects:**
 - Inserts into `user_follows`
-- Increments `user_profiles.following_count` for the caller
-- Increments `user_profiles.follower_count` for the target
-- Fires `NEW_FOLLOWER` notification to the target (aggregated by `groupKey = "NEW_FOLLOWER:targetId"`)
-- Publishes a RabbitMQ `UserEvent` for home-feed fanout
+- Follower / following counters on `user_profiles` are kept in sync via the `CounterCache` (Redis-backed) — visible on the next `ProfileResponse` read
+- Publishes a `UserFollowedEvent` to RabbitMQ → consumer creates the `NEW_FOLLOWER` notification for the target (aggregated by `groupKey = "NEW_FOLLOWER:targetId"`)
+- **Backfill**: calls `feedTimelineService.backfillFollowerFeed(...)` which copies the followed user's ~50 most recent posts into the new follower's `feed_by_user` partition, so the home feed shows content immediately (no waiting for the next post)
+- Records a follow entry on the actor's activity history
 
 **Errors:**
 
 | Status | errorCode | Condition |
 |---|---|---|
 | 400 | `CANNOT_FOLLOW_SELF` | Caller and target are the same user |
+| 403 | `CANNOT_FOLLOW_DUE_TO_BLOCK` | A block edge exists between the two users in either direction |
+| 403 | `PROFILE_LOCKED` | Target's `isProfileLocked` is `true` and the caller is not already a follower |
 | 409 | `ALREADY_FOLLOWING` | Follow relationship already exists |
 
 ---
@@ -1281,11 +1316,17 @@ POST /api/v1/users/{id}/block
 
 **Side effects:**
 - Inserts into `user_blocks`
-- Automatically removes any follow relationship in both directions
-- Fires `BLOCKED` notification to the target
-- Blocked user can no longer see or interact with the blocker's content
+- Removes follow relationships in **both directions** (`followRepository.deleteAllBetween`) — block tears down the social edge fully
+- **Block supersedes restrict**: if a `(blocker → blocked)` restriction row exists, it's deleted (the block is the stronger guarantee)
+- Publishes a `UserBlockedEvent` to RabbitMQ → consumer creates the `BLOCKED` notification for the target
+- Blocked user can no longer see or interact with the blocker's content (enforced via `SocialGuard.isBlockedBetween` on read paths)
 
-**Errors:** `400 CANNOT_BLOCK_SELF`
+**Errors:**
+
+| Status | errorCode | Condition |
+|---|---|---|
+| 400 | `CANNOT_BLOCK_SELF` | Caller and target are the same user |
+| 409 | `ALREADY_BLOCKING` | Block relationship already exists (idempotency guard) |
 
 ---
 
@@ -1518,19 +1559,35 @@ GET /api/v1/notifications/stream
 
 **Response:** `text/event-stream`
 
-Event types on this stream:
+Event types on this stream (event names match `NotificationRedisPublisher.SseEventName`):
 
 | Event name | Payload | When fired |
 |---|---|---|
-| `connected` | `{userId}` | On SSE subscription handshake |
+| `connected` | `{userId, timestamp, tabs, message}` | On SSE subscription handshake |
 | `notification` | `NotificationResponse` | New or coalesced notification arrives |
 | `unread-count` | `{count: N}` | After any state change (read / delete / new) |
 | `read` | `{ids:[...], allRead, deleted: false}` | After a mark-read action (for tab sync) |
 | `deleted` | `{ids:[...], allRead, deleted: true}` | After a delete action |
-| `heartbeat` | `{}` | Keepalive every 15 s |
+| `heartbeat` | `{timestamp}` | Keepalive every 15 s (single shared `@Scheduled` tick across all open emitters — not one timer per connection) |
+
+**Per-user connection cap:** **5 concurrent emitters per user.** Opening a 6th
+EventSource closes the **oldest** server-side (LRU eviction); the client sees
+an `onerror` followed by a normal auto-reconnect of the survivor. Always share
+ONE EventSource per stream type at the React tree root — opening a fresh one
+per panel will hit the cap. See `REALTIME_FRONTEND_GUIDE.md` §11.
+
+**Cross-instance delivery:** events are published to Redis pub/sub
+(`irc:notifications:{userId}`), so a notification produced by any backend
+instance reaches the SSE connection held by any other instance — no sticky
+sessions required behind a load balancer.
 
 **Auth failure:** If no valid token is found, the server writes `401` directly
 and closes the SSE connection (no JSON error body).
+
+**Reconnect contract:** the server sends `retry: 3000` on connect, so browsers
+back off ~3 s between reconnect attempts. Watchdog clients should treat
+**>60 s of silence** (no payload AND no heartbeat) as a wedged socket and
+force-close + reconnect.
 
 ---
 
