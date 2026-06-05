@@ -206,16 +206,27 @@ public class ResearchSocialController {
     //  Downloads
     // ══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Records a download of a physical media file and returns a 30-minute
+     * pre-signed R2 URL the front-end fetches to deliver the bytes.
+     *
+     * <p>{@code mediaId} is REQUIRED — downloads are tracked per file
+     * (PDF / video / audio / zip / book), not per research. Calling
+     * without it returns {@code 400 MISSING_MEDIA_ID}.</p>
+     *
+     * <p>Counter dedupe is server-side: re-clicking the button (React
+     * StrictMode dev double-fire, double-clicks, retries) still returns
+     * the URL but only bumps the counter once per user/file per 90 days
+     * (1h for anonymous, keyed by IP). See {@code ResearchDownloadTracker}.</p>
+     */
     @PostMapping("/download")
     public ResponseEntity<java.util.Map<String, String>> recordDownload(
             @PathVariable UUID researchId,
-            @RequestParam(required = false) UUID mediaId,
+            @RequestParam UUID mediaId,
             @AuthenticationPrincipal User user,
             HttpServletRequest request) {
         UUID uid = user != null ? user.getId() : null;
         String downloadUrl = researchService.recordDownload(researchId, mediaId, uid, extractIp(request));
-        // JSON envelope (E4) — consistent with every other endpoint; `url` is null
-        // when no mediaId was supplied (download recorded, no file to fetch).
         return ResponseEntity.ok(java.util.Collections.singletonMap("url", downloadUrl));
     }
 

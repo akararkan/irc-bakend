@@ -86,6 +86,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
+    private final ak.dev.irc.app.research.realtime.ResearchDownloadTracker downloadTracker;
     private final ak.dev.irc.app.share.FrontendUrlResolver frontendUrlResolver;
     private final ak.dev.irc.app.research.search.service.ResearchSearchService researchSearch;
     private final ak.dev.irc.app.common.tag.service.ContentTagService contentTagService;
@@ -1946,33 +1947,62 @@ public class ResearchServiceImpl implements ResearchService {
         }
     }
 
+    /**
+     * Records a download of a SPECIFIC media file under a research and
+     * returns a 30-minute pre-signed R2 URL the caller can fetch.
+     *
+     * <p><b>Counter contract</b> — the {@code download_count} is bumped
+     * AT MOST ONCE per {@code (research, media, user)} per
+     * {@value ResearchDownloadTracker#AUTHED_DEDUPE_DAYS}-day window
+     * (1 hour for anonymous, keyed by IP). Duplicate calls inside the
+     * window still return the pre-signed URL — the user gets their file
+     * — but they no longer inflate the counter. This is what fixes the
+     * "counter goes 2, 4, 6, 8 per click" symptom that was caused by the
+     * front-end firing the call twice with no server-side dedupe.</p>
+     *
+     * <p><b>Media is required</b> — the analytics surface is per physical
+     * file (PDF / video / audio / zip / book). A call without
+     * {@code mediaId} is rejected so the counter only reflects real
+     * file downloads.</p>
+     */
     @Override
     public String recordDownload(UUID researchId, UUID mediaId, UUID userId, String ipAddress) {
         if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (mediaId == null)    throw new BadRequestException(
+                "mediaId is required — downloads are tracked per physical file (PDF/video/audio/zip).",
+                "MISSING_MEDIA_ID");
+
         Research research = findPublishedOrThrow(researchId);
         if (!research.isDownloadsEnabled())
             throw new BadRequestException("Downloads are disabled for this research", "DOWNLOADS_DISABLED");
-        String s3Key = null;
-        if (mediaId != null) {
-            ResearchMedia media = mediaRepo.findById(mediaId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
-            if (!media.getResearch().getId().equals(researchId))
-                throw new ForbiddenException("Media does not belong to this research");
-            if (media.getS3Key() == null)
-                throw new BadRequestException("Media file not available for download", "FILE_NOT_AVAILABLE");
-            s3Key = media.getS3Key();
+
+        ResearchMedia media = mediaRepo.findById(mediaId)
+                .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
+        if (!media.getResearch().getId().equals(researchId))
+            throw new ForbiddenException("Media does not belong to this research");
+        if (media.getS3Key() == null || media.getS3Key().isBlank())
+            throw new BadRequestException("Media file not available for download", "FILE_NOT_AVAILABLE");
+
+        // Dedupe BEFORE publishing the event. shouldCount==false means a
+        // re-download within the dedupe window — we still hand the user a
+        // pre-signed URL so the download itself completes, but we don't
+        // emit a second ResearchDownloadedEvent (no DB row, no counter bump,
+        // no realtime re-broadcast). Fail-open if Redis is down.
+        boolean countThis = downloadTracker.shouldCount(researchId, mediaId, userId, ipAddress);
+        if (countThis) {
+            researchEventPublisher.publishDownloaded(
+                    researchId, mediaId, userId, ipAddress != null ? ipAddress : "unknown");
+        } else {
+            log.debug("[DOWNLOAD] dedupe hit — counter not bumped for research={} media={} user={}",
+                    researchId, mediaId, userId);
         }
-        researchEventPublisher.publishDownloaded(
-                researchId, mediaId, userId, ipAddress != null ? ipAddress : "unknown");
-        if (s3Key != null) {
-            try { return s3.getPreSignedUrl(s3Key, 30); }
-            catch (Exception e) {
-                log.error("Error generating pre-signed URL for {}: {}", s3Key, e.getMessage());
-                throw new AppException("Failed to generate download link",
-                        HttpStatus.INTERNAL_SERVER_ERROR, "URL_GENERATION_ERROR");
-            }
+
+        try { return s3.getPreSignedUrl(media.getS3Key(), 30); }
+        catch (Exception e) {
+            log.error("Error generating pre-signed URL for {}: {}", media.getS3Key(), e.getMessage());
+            throw new AppException("Failed to generate download link",
+                    HttpStatus.INTERNAL_SERVER_ERROR, "URL_GENERATION_ERROR");
         }
-        return null;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
