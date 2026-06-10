@@ -1,19 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-#  IRC PLATFORM — APPLICATION CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-#  CONFIGURATION CONTRACT
-#  ──────────────────────
-#  • Every value uses the form ${ENV_VAR:default}. Secrets and host endpoints
-#    have EMPTY defaults — boot fails loudly when an env var is missing rather
-#    than silently using a committed credential or pointing at a wrong host.
-#  • In Railway, set the env vars documented next to each block below
-#    (RAILWAY-SAFETY notes). In any other deployment, supply equivalent values.
-#  • The two destructive schema actions (Postgres ddl-auto, Cassandra
-#    schema-action) default to non-destructive values (`update`,
-#    `CREATE_IF_NOT_EXISTS`). Set `JPA_DDL=create-drop` or
-#    `CASSANDRA_SCHEMA_ACTION=RECREATE_DROP_UNUSED` explicitly to wipe.
-#
+#  IRC PLATFORM — APPLICATION CONFIGURATION (UPDATED WITH CASSANDRA)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 spring:
@@ -21,47 +7,14 @@ spring:
   application:
     name: irc
 
-  # ── Boot speed knobs ────────────────────────────────────────────────────────
-  # JMX off: skip MBean registration (~1s).
-  # Banner off: cosmetic only.
-  # NOTE: lazy-initialization is intentionally OFF — it makes the first request
-  # to every controller slow (Spring builds the dependency graph on demand)
-  # and can silently break @Scheduled jobs / SSE event publishers that need
-  # to be eagerly instantiated.
-  main:
-    banner-mode: off
-  jmx:
-    enabled: false
-
-  # DevTools auto-restart kills every open SSE connection on every recompile.
-  # Keep DevTools loaded (LiveReload) but disable the auto-restart so manual
-  # "Rerun" is the only thing that bounces the JVM.
-  devtools:
-    restart:
-      enabled: ${DEVTOOLS_RESTART:false}
-    livereload:
-      enabled: true
-
   # ── Database: PostgreSQL (Primary Relational DB) ───────────────────────────────
-  # URL externalized via DB_URL so containers can point at the right Postgres
-  # host without rebuilding.
-  #
-  # ⚠️  RAILWAY-SAFETY: In Railway, set:
-  #   DB_URL=jdbc:postgresql://${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}?sslmode=disable
-  #   DB_USERNAME=${{Postgres.PGUSER}}
-  #   DB_PASSWORD=${{Postgres.PGPASSWORD}}
-  # This uses the internal Railway hostname (postgres.railway.internal) which is
-  # fast and always reachable. The public proxy host times out from inside the project.
   datasource:
-    url: ${DB_URL:}
-    username: ${DB_USERNAME:}
+    url: jdbc:postgresql://localhost:5432/irc
+    username: ${DB_USERNAME:khi}
     password: ${DB_PASSWORD:}
     hikari:
-      # Sized for ~thousands of concurrent users on a single instance.
-      # Override with DB_POOL_MAX_SIZE / DB_POOL_MIN_IDLE per environment;
-      # tune off HikariCP.pending / activeConnections metrics under load.
-      maximum-pool-size: ${DB_POOL_MAX_SIZE:50}
-      minimum-idle:      ${DB_POOL_MIN_IDLE:10}
+      maximum-pool-size: 20
+      minimum-idle: 5
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
@@ -69,20 +22,13 @@ spring:
   # ── JPA Configuration (PostgreSQL) ──────────────────────────────────────────────
   jpa:
     hibernate:
-      # ⚠️  TEMPORARILY set to `create-drop` — the schema is dropped at
-      # startup AND on graceful shutdown so every boot starts from a clean
-      # Postgres state. Every restart WIPES ALL POSTGRES DATA: users,
-      # research, questions, answers, follows, audit logs, notifications,
-      # everything. Override via `JPA_DDL=update` for any environment
-      # where you need data to persist (incl. production — set this back
-      # to `update` before deploying).
-      ddl-auto: ${JPA_DDL:update}
+      ddl-auto: update
     open-in-view: false
-    show-sql: false
+    show-sql: true
     properties:
       hibernate:
-        format_sql: false
-        use_sql_comments: false
+        format_sql: true
+        use_sql_comments: true
         jdbc:
           batch_size: 30
           fetch_size: 50
@@ -91,8 +37,6 @@ spring:
         default_batch_fetch_size: 20
         query:
           in_clause_parameter_padding: true
-        bytecode:
-          provider: bytebuddy
 
   # ── SQL init disabled (no mock/seed data) ──────────────────────────────────────
   sql:
@@ -100,91 +44,39 @@ spring:
       mode: never
 
   # ── Cassandra Configuration (Time-Series & Events) ────────────────────────────
-  # ⚠️  RAILWAY-SAFETY: In Railway, set:
-  #   CASSANDRA_CONTACT_POINTS=${{Cassandra.RAILWAY_PRIVATE_DOMAIN}}:9042
-  #   CASSANDRA_KEYSPACE=irc_keyspace
-  #   CASSANDRA_DATACENTER=datacenter1
-  #   CASSANDRA_USERNAME=cassandra
-  #   CASSANDRA_PASSWORD=cassandra
   cassandra:
     keyspace-name: ${CASSANDRA_KEYSPACE:irc_keyspace}
-    contact-points: ${CASSANDRA_CONTACT_POINTS:}
+    contact-points: ${CASSANDRA_CONTACT_POINTS:localhost:9042}
     local-datacenter: ${CASSANDRA_DATACENTER:datacenter1}
-    username: ${CASSANDRA_USERNAME:}
-    password: ${CASSANDRA_PASSWORD:}
+    username: ${CASSANDRA_USERNAME:cassandra}
+    password: ${CASSANDRA_PASSWORD:cassandra}
 
-    # Schema action: CREATE_IF_NOT_EXISTS, CREATE, RECREATE, RECREATE_DROP_UNUSED, NONE.
-    # ⚠️  TEMPORARILY set to `RECREATE_DROP_UNUSED` — the Cassandra
-    # equivalent of JPA `create-drop`. On every boot Spring Data Cassandra
-    # drops every @Table entity (and any unused leftover tables) and
-    # recreates them from the entity mapping. ALL CASSANDRA DATA IS
-    # WIPED: posts, comments, reactions, saves, stories (incl. polls +
-    # votes + views), feed_by_user, notifications, friend suggestions,
-    # tags, reels — everything. The expensive cluster-wide schema
-    # agreement round runs once per DROP/CREATE so boot takes longer than
-    # CREATE_IF_NOT_EXISTS. Override via
-    # `CASSANDRA_SCHEMA_ACTION=CREATE_IF_NOT_EXISTS` for any environment
-    # where you need data to persist (incl. production — set this back
-    # before deploying).
-    schema-action: ${CASSANDRA_SCHEMA_ACTION:CREATE_IF_NOT_EXISTS}
+    # Schema action: CREATE_IF_NOT_EXISTS, CREATE, UPDATE, NONE
+    schema-action: create_if_not_exists
 
     # Connection pool settings
-    # max-queue-size bumped from 256 → 4096 so a viral-post fanout batch
-    # (FANOUT_BATCH=500 × multiple concurrent posts) doesn't saturate the
-    # driver queue and start rejecting writes. Override with
-    # CASSANDRA_POOL_MAX_QUEUE_SIZE per environment.
     pool:
       heartbeat-interval: 30s
       idle-timeout: 5m
-      max-queue-size: ${CASSANDRA_POOL_MAX_QUEUE_SIZE:4096}
+      max-queue-size: 256
 
     # Request settings
     request:
-      # Bumped to 30s so the per-DDL schema-agreement round can complete
-      # during RECREATE_DROP_UNUSED boots (each DROP/CREATE triggers a
-      # cluster-wide schema-agreement protocol that can take 1–3s).
-      timeout: 30s
+      timeout: 10s
       consistency: LOCAL_ONE
 
-    # Control connection — drives DDL + schema agreement polling.
-    controlconnection:
-      schema-agreement:
-        interval: 100ms       # default 200ms — poll twice as fast
-        timeout:  2s          # default 10s — single-node never needs longer
-        warn-on-failure: true
-
-  # ── Elasticsearch (Search Engine: posts, users, hashtags) ─────────────────────
-  # ⚠️  RAILWAY-SAFETY: In Railway, set:
-  #   ELASTICSEARCH_URIS=http://${{Elasticsearch.RAILWAY_PRIVATE_DOMAIN}}:9200
-  #   ELASTICSEARCH_USERNAME=<user if auth required>
-  #   ELASTICSEARCH_PASSWORD=<pass if auth required>
-  elasticsearch:
-    uris: ${ELASTICSEARCH_URIS:}
-    username: ${ELASTICSEARCH_USERNAME:}
-    password: ${ELASTICSEARCH_PASSWORD:}
-    connection-timeout: 2s
-    socket-timeout: 10s
-
   # ── Redis ──────────────────────────────────────────────────────────────────────
-  # ⚠️  RAILWAY-SAFETY: In Railway, set:
-  #   REDIS_HOST=${{Redis.REDISHOST}}
-  #   REDIS_PORT=${{Redis.REDISPORT}}
-  #   REDIS_PASSWORD=${{Redis.REDISPASSWORD}}    # or REDIS_PASSWORD — verify the var name on the Redis service
   data:
     redis:
-      host: ${REDIS_HOST:}
+      host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: 2000ms
       lettuce:
-        # Bumped from 8 → 32 active. The pool is shared by fanout pushes,
-        # the rate-limiter, feed-cache hits, SSE pubsub, and per-group
-        # email-throttle checks; 8 connections serialize all of those under
-        # load. Override with REDIS_POOL_MAX_ACTIVE / REDIS_POOL_MAX_IDLE.
         pool:
-          max-active: ${REDIS_POOL_MAX_ACTIVE:32}
-          max-idle:   ${REDIS_POOL_MAX_IDLE:32}
-          min-idle:   ${REDIS_POOL_MIN_IDLE:4}
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
 
   cache:
     type: redis
@@ -193,16 +85,13 @@ spring:
       cache-null-values: false
 
   # ── OAuth2 Client ──────────────────────────────────────────────────────────────
-  # Real values come from the Google Cloud Console → APIs & Services → Credentials.
-  # Defaults are empty so a missing env var fails loudly at OAuth handshake
-  # rather than silently using a placeholder credential.
   security:
     oauth2:
       client:
         registration:
           google:
-            client-id: ${GOOGLE_CLIENT_ID:}
-            client-secret: ${GOOGLE_CLIENT_SECRET:}
+            client-id: ${GOOGLE_CLIENT_ID:your-client-id}
+            client-secret: ${GOOGLE_CLIENT_SECRET:your-client-secret}
             scope:
               - email
               - profile
@@ -216,17 +105,11 @@ spring:
             user-name-attribute: sub
 
   # ── RabbitMQ ───────────────────────────────────────────────────────────────────
-  # ⚠️  RAILWAY-SAFETY: In Railway, set:
-  #   RABBITMQ_HOST=${{RabbitMQ.RAILWAY_PRIVATE_DOMAIN}}
-  #   RABBITMQ_PORT=${{RabbitMQ.RABBITMQ_PORT}}
-  #   RABBITMQ_USERNAME=${{RabbitMQ.RABBITMQ_DEFAULT_USER}}
-  #   RABBITMQ_PASSWORD=${{RabbitMQ.RABBITMQ_DEFAULT_PASS}}
-  #   RABBITMQ_VHOST=/
   rabbitmq:
-    host: ${RABBITMQ_HOST:}
+    host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USERNAME:}
-    password: ${RABBITMQ_PASSWORD:}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
     virtual-host: ${RABBITMQ_VHOST:/}
     publisher-confirm-type: correlated
     publisher-returns: true
@@ -263,10 +146,8 @@ spring:
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
-    # MAIL_USERNAME / MAIL_PASSWORD must be set per environment.
-    # Defaults are empty so a leaked-credential commit can't recur.
-    username: ${MAIL_USERNAME:}
-    password: ${MAIL_PASSWORD:}
+    username: ${MAIL_USERNAME:ika.center26@gmail.com}
+    password: ${MAIL_PASSWORD:dbfrczyhfkxqylwn}
     default-encoding: UTF-8
     properties:
       mail:
@@ -304,12 +185,15 @@ irc:
   doi:
     prefix: "10.12345"
 
-  base-url: ${IRC_BASE_URL:}
+  base-url: "https://irc.example.com"
 
   # Notification email branding + reply-to.
   email:
-    # Resolves to ${MAIL_FROM} → ${spring.mail.username} → empty.
-    from-address: ${MAIL_FROM:${spring.mail.username:}}
+    # Resolves to ${MAIL_FROM} → ${spring.mail.username} (which itself defaults
+    # to MAIL_USERNAME from the spring.mail block) → a no-reply placeholder.
+    # Reading spring.mail.username here (instead of MAIL_USERNAME directly)
+    # means the YAML default chain is honoured even when the env var is unset.
+    from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
     from-name: ${MAIL_FROM_NAME:IRC Platform}
     enabled: ${MAIL_ENABLED:true}
     # Throttle window — same (recipient, groupKey) won't be emailed twice
@@ -317,11 +201,7 @@ irc:
     throttle-minutes: ${MAIL_THROTTLE_MINUTES:60}
 
   verification:
-    # HMAC secret for IRC-ID verification hashes. Must be a stable random
-    # string ≥ 32 chars — rotating it invalidates every existing hash.
-    # No default: missing env var fails at first verification attempt
-    # instead of silently using a committed value.
-    secret: ${IRC_VERIFICATION_SECRET:}
+    secret: ${IRC_VERIFICATION_SECRET:9fK2LmQ7xA4vZpR8sD1cYwN5TgH3UeB6}
 
   # Cassandra configuration (for events, audit logs, notifications)
   cassandra:
@@ -336,52 +216,29 @@ irc:
 app:
 
   jwt:
-    # Signing key for every JWT issued by the platform. Must be a base64-
-    # encoded random ≥ 64 bytes (use `openssl rand -base64 64`).
-    # No default: missing env var fails JwtTokenProvider startup loud and
-    # immediate — strictly better than running on a leaked / weak key.
-    secret: ${APP_JWT_SECRET:}
+    secret: ${APP_JWT_SECRET:XyZ9aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJk=}
     access-token-expiration-ms: 3600000
     refresh-token-expiration-ms: 604800000
     issuer: irc-platform
 
   cors:
-    # Comma-separated list of allowed origins. Required: no default.
-    allowed-origins: ${CORS_ORIGINS:}
+    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
     allowed-headers: ${CORS_HEADERS:*}
     allow-credentials: ${CORS_CREDENTIALS:true}
     max-age: ${CORS_MAX_AGE:3600}
 
   oauth2:
-    # Required: no default. Set to your frontend's OAuth callback URL.
-    redirect-uri: ${OAUTH_REDIRECT_URI:}
-    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:}
+    redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:5173/oauth2/callback}
+    authorized-redirect-uris: ${OAUTH_AUTHORIZED_URIS:http://localhost:3000/oauth2/callback,http://localhost:5173/oauth2/callback,http://192.168.1.118:3000/oauth2/callback,http://192.168.1.118:5173/oauth2/callback}
 
   storage:
-    # Cloudflare R2 — all credentials live in env. The previous defaults
-    # exposed the live R2 access/secret keys in git history; if you're
-    # rotating after that leak, the new keys go ONLY here as env vars.
-    endpoint:        ${R2_ENDPOINT:}
-    access-key:      ${R2_ACCESS_KEY:}
-    secret-key:      ${R2_SECRET_KEY:}
-    bucket-name:     ${R2_BUCKET_NAME:irc}
-    public-url-base: ${R2_PUBLIC_URL:}
-    region:          ${R2_REGION:auto}
-
-  # ── Media URL prefix (CRITICAL for cross-origin frontends) ─────────────────
-  # When the frontend and backend run on different hosts (e.g. React on
-  # Vercel + API on Railway), media URLs returned by the API must be
-  # ABSOLUTE so the browser's <video src> / <img src> resolves to the
-  # backend, not the frontend's own origin.
-  #
-  # Set MEDIA_PUBLIC_URL to the public backend URL on each deployment:
-  #   MEDIA_PUBLIC_URL=https://irc-bakend-production.up.railway.app
-  #
-  # Leave empty in local dev — relative paths still resolve correctly
-  # when the frontend is same-origin (localhost) with the backend.
-  media:
-    public-url-prefix: ${MEDIA_PUBLIC_URL:}
+    endpoint: ${R2_ENDPOINT:https://55dce88e6a5db45662dc27ef50d83c2a.r2.cloudflarestorage.com}
+    access-key: ${R2_ACCESS_KEY:d06b80c862aca3f99a7dc4733ad26411}
+    secret-key: ${R2_SECRET_KEY:4dbb16899e5b4416c5acb94da9c47aed9d6861ec392fdb0745f75f7b3d992314}
+    bucket-name: ${R2_BUCKET_NAME:irc}
+    public-url-base: ${R2_PUBLIC_URL:https://pub-55dce88e6a5db45662dc27ef50d83c2a.r2.dev}
+    region: ${R2_REGION:auto}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -390,29 +247,18 @@ app:
 logging:
   level:
     root: INFO
-    # App-level logs at INFO by default. Override per-package via
-    # -Dlogging.level.ak.dev.irc=DEBUG when actually debugging.
-    ak.dev.irc: ${APP_LOG_LEVEL:INFO}
-    ak.dev.irc.security: INFO
-    ak.dev.irc.irc_security.rabbitmq: INFO
+    ak.dev.irc: DEBUG
+    ak.dev.irc.security: DEBUG
+    ak.dev.irc.irc_security.rabbitmq: DEBUG
     org.springframework.security: INFO
     org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR
-    # Quiet retry-storm noise on broker / driver issues.
-    # Set to INFO/DEBUG when actually debugging.
+    # Quiet retry-storm noise when RabbitMQ / Cassandra aren't running locally.
+    # Set to INFO/DEBUG when actually debugging broker/driver issues.
     org.springframework.amqp.rabbit.listener: OFF
     org.springframework.amqp.rabbit.connection: OFF
     org.springframework.amqp: WARN
     org.springframework.data.cassandra: WARN
     com.datastax.oss.driver: ERROR
-    org.springframework.data.elasticsearch: WARN
-    co.elastic.clients: ERROR
-    org.elasticsearch.client: ERROR
-    # Silence the "Could not safely identify store assignment" INFO spam.
-    # With JPA + Cassandra + Elasticsearch all on the classpath, Spring Data
-    # runs strict mode and prints one INFO line for every repo each module
-    # can't classify. WARN keeps real configuration failures visible while
-    # killing the false-negative noise.
-    org.springframework.data.repository.config: WARN
     org.hibernate.SQL: WARN
     org.hibernate: WARN
     io.netty: ERROR

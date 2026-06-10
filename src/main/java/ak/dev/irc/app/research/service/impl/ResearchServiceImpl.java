@@ -1055,12 +1055,14 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getFollowingFeed(UUID userId, Pageable pageable) {
         List<UUID> followingIds = followRepo.findFollowingIds(userId);
-        if (followingIds.isEmpty()) {
-            return Page.empty(pageable);
-        }
         followingIds.removeIf(id -> blockRepo.isBlockedBetween(userId, id));
-        if (followingIds.isEmpty()) {
-            return Page.empty(pageable);
+        // Always include the viewer's own research — the user expects to see
+        // their own publications in their following feed (Twitter / IG do the
+        // same with own posts in the Following timeline). Without this, a
+        // researcher who follows no one sees an empty feed even when they
+        // themselves have published research.
+        if (!followingIds.contains(userId)) {
+            followingIds.add(userId);
         }
         return mapSummariesWithSaves(
                 researchRepo.findFollowingFeed(followingIds, pageable), userId);

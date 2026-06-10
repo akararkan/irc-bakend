@@ -382,12 +382,18 @@ public class QuestionServiceImpl implements QuestionService {
     public Page<QuestionResponse> getFollowingFeed(UUID userId, Pageable pageable) {
         // Cached, block-filtered following set — no per-row block scan and a
         // 1-min Redis hit on the hot scroll path.
-        List<UUID> followingIds = followingIdsCache.getFilteredFollowingIds(userId);
-        if (followingIds.isEmpty()) {
-            return Page.empty(pageable);
+        List<UUID> cached = followingIdsCache.getFilteredFollowingIds(userId);
+        // Always include the viewer's own questions — without this, a user
+        // who follows no one sees an empty Following feed even when they
+        // themselves have asked questions. The cached list may be immutable,
+        // so copy before adding.
+        List<UUID> authorIds = new java.util.ArrayList<>(cached.size() + 1);
+        authorIds.addAll(cached);
+        if (!authorIds.contains(userId)) {
+            authorIds.add(userId);
         }
         return mapQuestionsWithSaves(
-                questionRepository.findFollowingFeed(followingIds, pageable), userId);
+                questionRepository.findFollowingFeed(authorIds, pageable), userId);
     }
 
     @Override

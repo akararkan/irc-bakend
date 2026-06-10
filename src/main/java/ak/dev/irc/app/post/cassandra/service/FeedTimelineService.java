@@ -18,9 +18,13 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -384,10 +388,61 @@ public class FeedTimelineService {
     // ── Read path ───────────────────────────────────────────────────────────
 
     public List<FeedByUserEntity> homeFeed(UUID userId, int pageSize) {
-        return feedRepo.firstPage(userId, pageSize);
+        return mergeWithOwnPosts(userId,
+                feedRepo.firstPage(userId, pageSize),
+                postByAuthorRepo.firstPage(userId, pageSize),
+                pageSize);
     }
 
     public List<FeedByUserEntity> homeFeedAfter(UUID userId, Instant cursor, int pageSize) {
-        return feedRepo.nextPage(userId, cursor, pageSize);
+        return mergeWithOwnPosts(userId,
+                feedRepo.nextPage(userId, cursor, pageSize),
+                postByAuthorRepo.nextPage(userId, cursor, pageSize),
+                pageSize);
+    }
+
+    /**
+     * Always-show-own-posts guarantee: the fanout-on-write path writes a
+     * self row into {@code feed_by_user} for new posts, but legacy posts
+     * (created before self-fanout existed) and posts whose self-fanout
+     * write was dropped by the circuit breaker leave the user with an
+     * incomplete home feed. Merging {@code posts_by_author} for the viewer
+     * at read time closes that gap — both reads are single-partition slices
+     * on Cassandra, so the cost is one extra cheap partition scan per
+     * request. Dedupes by postId so the self-fanout row doesn't appear twice.
+     */
+    private List<FeedByUserEntity> mergeWithOwnPosts(UUID viewerId,
+                                                     List<FeedByUserEntity> feedRows,
+                                                     List<PostByAuthorEntity> ownPosts,
+                                                     int pageSize) {
+        if (ownPosts == null || ownPosts.isEmpty()) {
+            return feedRows;
+        }
+        List<FeedByUserEntity> merged = new ArrayList<>(feedRows.size() + ownPosts.size());
+        Set<UUID> seen = new HashSet<>(feedRows.size() + ownPosts.size());
+        for (FeedByUserEntity r : feedRows) {
+            if (r.getPostId() != null && seen.add(r.getPostId())) {
+                merged.add(r);
+            }
+        }
+        for (PostByAuthorEntity p : ownPosts) {
+            if (p.getPostId() == null || !seen.add(p.getPostId())) continue;
+            merged.add(FeedByUserEntity.builder()
+                    .userId(viewerId)
+                    .createdAt(p.getCreatedAt())
+                    .postId(p.getPostId())
+                    .authorId(viewerId)
+                    .postType(p.getPostType())
+                    .textPreview(p.getTextPreview())
+                    .mediaUrl(p.getMediaUrl())
+                    .entityType("POST")
+                    .build());
+        }
+        merged.sort(Comparator.comparing(FeedByUserEntity::getCreatedAt,
+                Comparator.nullsLast(Comparator.reverseOrder())));
+        if (merged.size() > pageSize) {
+            return merged.subList(0, pageSize);
+        }
+        return merged;
     }
 }
