@@ -52,7 +52,7 @@ spring:
     password: ${CASSANDRA_PASSWORD:cassandra}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, UPDATE, NONE
-    schema-action: create_if_not_exists
+    schema-action: CREATE_IF_NOT_EXISTS
 
     # Connection pool settings
     pool:

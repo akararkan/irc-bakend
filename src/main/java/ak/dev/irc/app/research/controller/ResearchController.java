@@ -18,8 +18,12 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -38,6 +42,12 @@ import java.util.UUID;
  *
  * <p>The {@code files[]} parts are matched to the {@code mediaFiles} metadata
  * list inside the JSON body by index position.
+ *
+ * <p>For robustness, file parts are accepted under any of the common names
+ * {@code files[]}, {@code files}, {@code file}, {@code media}, {@code media[]},
+ * {@code images}, {@code image}, {@code videos}, {@code video} — frontends
+ * differ on naming and the create otherwise silently dropped the uploads,
+ * leaving {@code mediaCount=0} on the new research row.
  */
 @RestController
 @RequestMapping("/api/v1/researches")
@@ -93,12 +103,49 @@ public class ResearchController {
     @PreAuthorize("hasAnyRole('SCHOLAR', 'RESEARCHER', 'ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<ResearchResponse> create(
             @RequestPart("data") @Valid CreateResearchRequest request,
-            @RequestPart(value = "files[]", required = false) List<MultipartFile> files,
+            MultipartHttpServletRequest httpRequest,
             @AuthenticationPrincipal User user) {
+
+        List<MultipartFile> files = collectMediaParts(httpRequest);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
                 .body(researchService.create(request, files, user.getId()));
+    }
+
+    /**
+     * Pull binary file parts out of a multipart request, ignoring the {@code data}
+     * JSON part. Tries the conventional names first (preserving frontend-supplied
+     * order so the {@code mediaFiles} metadata index match stays correct), then
+     * falls back to every other file part so an unusual name still works.
+     */
+    private static List<MultipartFile> collectMediaParts(MultipartHttpServletRequest req) {
+        List<MultipartFile> out = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        String[] preferred = {
+                "files[]", "files", "file",
+                "media[]", "media",
+                "images", "image",
+                "videos", "video"
+        };
+        for (String name : preferred) {
+            List<MultipartFile> parts = req.getFiles(name);
+            if (parts == null || parts.isEmpty()) continue;
+            seen.add(name);
+            for (MultipartFile f : parts) {
+                if (f != null && !f.isEmpty()) out.add(f);
+            }
+        }
+        // Catch any uncommonly-named file parts so callers using bespoke names
+        // (e.g. "attachment", "doc") still get their uploads saved.
+        for (var entry : req.getMultiFileMap().entrySet()) {
+            if (seen.contains(entry.getKey())) continue;
+            if ("data".equals(entry.getKey())) continue;
+            for (MultipartFile f : entry.getValue()) {
+                if (f != null && !f.isEmpty()) out.add(f);
+            }
+        }
+        return out;
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -134,6 +134,13 @@ public class SecurityConfig {
         log.info("CORS allowed origins: {}", origins);
 
         config.setAllowedOrigins(origins);
+        // LAN dev: phones/tablets hitting the Vite/Next dev server over WiFi.
+        // Patterns are required because `allowCredentials=true` forbids "*" in
+        // setAllowedOrigins but works fine with setAllowedOriginPatterns.
+        config.setAllowedOriginPatterns(List.of(
+                "http://192.168.*.*:5173", "http://192.168.*.*:5174", "http://192.168.*.*:3000",
+                "http://10.*.*.*:5173",    "http://10.*.*.*:5174",    "http://10.*.*.*:3000"
+        ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Authorization", "Set-Cookie", "Content-Disposition"));

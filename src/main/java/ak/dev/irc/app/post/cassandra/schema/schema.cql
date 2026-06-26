@@ -222,7 +222,8 @@ CREATE TABLE IF NOT EXISTS story_lookup (
     story_id    uuid PRIMARY KEY,
     author_id   uuid,
     created_at  timestamp,
-    visibility  text
+    visibility  text,
+    expires_at  timestamp
 ) WITH default_time_to_live = 86400;
 
 -- 9c. Story HIGHLIGHTS — permanent (no TTL) curated archives of stories.
