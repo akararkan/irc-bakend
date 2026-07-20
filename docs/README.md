@@ -1,0 +1,100 @@
+# IRC Platform — API Documentation
+
+Complete API reference, organized as **one directory per topic** with focused
+files per sub-topic. Every endpoint is documented with request/response
+shapes, error codes, and side effects, verified against the source.
+
+## Conventions
+
+- **Base URL**: all paths are relative to the server root (e.g. `/api/v1/...`).
+- **Auth**: `Authorization: Bearer <accessToken>` unless a page says otherwise.
+  SSE streams also accept `?token=<accessToken>` because `EventSource` can't
+  set headers. See [user/security-model.md](user/security-model.md).
+- **Errors**: every error uses one JSON envelope with a machine-readable
+  `errorCode` — catalog in [errors/error-handling.md](errors/error-handling.md).
+- **Paging**: read endpoints clamp page sizes to **max 100**. Cassandra-backed
+  feeds use `cursor` (keyset) paging; Postgres lists use `page`/`size`.
+- **Realtime**: SSE + Redis pub/sub, no WebSockets. Model and endpoint table
+  in [realtime/overview.md](realtime/overview.md).
+
+## Topics
+
+### Posts — `post/`
+| File | Covers |
+|---|---|
+| [posts.md](post/posts.md) | Create (JSON + multipart), read, update, delete (async cascade) |
+| [feed.md](post/feed.md) | Home timeline, profile feed, friend suggestions |
+| [reels.md](post/reels.md) | Global / following / for-you / by-author reel feeds |
+| [engagement.md](post/engagement.md) | Reactions, comments & replies, saves, shares, views |
+| [media.md](post/media.md) | Post media CRUD (author-only mutations) |
+| [realtime.md](post/realtime.md) | Per-post SSE stream + event catalog |
+
+### Stories — `story/`
+| File | Covers |
+|---|---|
+| [stories.md](story/stories.md) | Create, visibility, TTL lifetimes, views, author-only viewer log |
+| [polls.md](story/polls.md) | 2-option polls, voting, live tallies |
+| [highlights.md](story/highlights.md) | Permanent story archives (owner-scoped) |
+| [close-friends.md](story/close-friends.md) | Both close-friends endpoint families |
+| [realtime.md](story/realtime.md) | Story-tray SSE + per-story SSE |
+
+### Users & Auth — `user/`
+| File | Covers |
+|---|---|
+| [auth.md](user/auth.md) | Register, login, refresh rotation, logout, change-password |
+| [users.md](user/users.md) | Identity, lookups, stats, links, contacts, account deletion |
+| [profile.md](user/profile.md) | UserProfile, avatar/cover, specializations, roles & badges |
+| [social.md](user/social.md) | Follow, block, restrict, social status, who-to-follow |
+| [search.md](user/search.md) | Ranked full-text user search |
+| [security-model.md](user/security-model.md) | Authorization model, SSE token auth, permit-all switch |
+
+### Notifications — `notifications/`
+| File | Covers |
+|---|---|
+| [notifications.md](notifications/notifications.md) | Inbox, unread counts, mark-read, delete, aggregation model |
+| [realtime.md](notifications/realtime.md) | Notification SSE stream + payload contract |
+| [email-preferences.md](notifications/email-preferences.md) | Email toggles, test send, unsubscribe-all |
+
+### Research — `research/`
+| File | Covers |
+|---|---|
+| [research.md](research/research.md) | Lifecycle: draft → publish/schedule → archive/retract |
+| [media-sources-contributors.md](research/media-sources-contributors.md) | Files, promo video, cover, sources, contributors |
+| [social.md](research/social.md) | Reactions, comments, saves, views, downloads |
+| [feeds-discovery.md](research/feeds-discovery.md) | Feeds, tag search, trending tags, saved collections, cite/share |
+| [realtime.md](research/realtime.md) | Per-research SSE stream + event catalog |
+
+### Q&A — `qna/`
+| File | Covers |
+|---|---|
+| [questions.md](qna/questions.md) | Question CRUD, feeds, lock, answer limits |
+| [answers.md](qna/answers.md) | Answers, reanswers (flat depth-1), author-accept |
+| [engagement.md](qna/engagement.md) | Answer reactions, attachments, sources, saves, shares |
+| [realtime.md](qna/realtime.md) | Per-question SSE stream + event catalog |
+
+### Platform services — `platform/`
+| File | Covers |
+|---|---|
+| [tags.md](platform/tags.md) | Trending tags, tag content feeds, autocomplete |
+| [search.md](platform/search.md) | Unified Elasticsearch search + admin reindex |
+| [mentions.md](platform/mentions.md) | @mention suggest/click/parse pipeline |
+| [media-proxy.md](platform/media-proxy.md) | R2/S3 streaming proxy with Range support |
+| [activity.md](platform/activity.md) | Activity history, reel watch history, activity SSE |
+| [audit.md](platform/audit.md) | Admin audit log + global audit SSE |
+
+### Errors — `errors/`
+| File | Covers |
+|---|---|
+| [error-handling.md](errors/error-handling.md) | The `ApiErrorResponse` envelope + full error-code catalog |
+| [exception-design.md](errors/exception-design.md) | Contributor guide: which exception to throw, adding codes |
+
+### Realtime & messaging — `realtime/`
+| File | Covers |
+|---|---|
+| [overview.md](realtime/overview.md) | All 8 SSE streams, event names, delta model, Redis channels |
+| [messaging.md](realtime/messaging.md) | RabbitMQ exchanges, queues, routing keys, retry/DLQ policy |
+
+## Legacy
+
+`_legacy/` holds the pre-restructure flat files (kept for history). They are
+**stale** — the per-topic files above are the source of truth.
