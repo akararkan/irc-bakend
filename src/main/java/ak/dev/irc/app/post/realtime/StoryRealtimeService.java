@@ -32,7 +32,10 @@ public class StoryRealtimeService {
 
         Runnable cleanup = () -> {
             List<SseEmitter> list = topics.get(storyId);
-            if (list != null) { list.remove(emitter); if (list.isEmpty()) topics.remove(storyId); }
+            // Two-arg remove: between isEmpty() and remove another thread can
+            // add a fresh emitter to this bucket; the conditional form only
+            // unmaps the bucket if it is still the same (now-empty) instance.
+            if (list != null) { list.remove(emitter); if (list.isEmpty()) topics.remove(storyId, list); }
         };
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
@@ -51,7 +54,8 @@ public class StoryRealtimeService {
         List<SseEmitter> emitters = topics.get(storyId);
         if (emitters == null || emitters.isEmpty()) return;
 
-        String eventName = event.getEventType().name().toLowerCase();
+        String eventName = event.getEventType() == null
+                ? "story-event" : event.getEventType().name().toLowerCase();
         for (SseEmitter emitter : emitters) {
             try {
                 emitter.send(SseEmitter.event().name(eventName).data(event));

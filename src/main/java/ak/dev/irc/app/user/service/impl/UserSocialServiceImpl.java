@@ -73,8 +73,9 @@ public class UserSocialServiceImpl implements UserSocialService {
 
         UserFollowId fid = new UserFollowId(me, targetId);
         if (followRepository.existsById(fid)) {
-            log.warn("User [{}] already follows user [{}]", me, targetId);
-            throw new DuplicateResourceException("You are already following this user.");
+            log.info("User [{}] already follows user [{}] — returning current follow state", me, targetId);
+            return SocialActionResponse.of("FOLLOWED", target.getId(), target.getUsername(),
+                    avatarOf(target), buildStatus(me, targetId));
         }
 
         User meUser = findActiveOrThrow(me);

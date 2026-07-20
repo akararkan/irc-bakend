@@ -1,6 +1,9 @@
 package ak.dev.irc.app.post.realtime;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -26,10 +29,19 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class PostRealtimeService {
 
-    /** No server-side timeout — connection lives until the client disconnects. */
-    private static final long SSE_TIMEOUT_MS = 0L;
+    /**
+     * Explicit 24h timeout. {@code 0L} is container-dependent — some servlet
+     * containers treat it as "use the default 30s", which kills the stream
+     * every 30 seconds and causes reconnect storms. A finite timeout also
+     * guarantees half-open client sockets are eventually reaped even if no
+     * send ever fails against them. EventSource auto-reconnects on expiry.
+     */
+    private static final long SSE_TIMEOUT_MS = 24 * 60 * 60 * 1000L;
+
+    private final ObjectMapper objectMapper;
 
     private final Map<UUID, CopyOnWriteArrayList<Subscription>> topics = new ConcurrentHashMap<>();
     private final AtomicLong subscriptionSeq = new AtomicLong();
@@ -103,13 +115,23 @@ public class PostRealtimeService {
         String name = event.getEventType() == null ? "post-event" : event.getEventType().name();
         UUID actorId = event.getActorId();
 
+        // Serialize ONCE — the bytes are identical for every subscriber, so a
+        // hot post with N viewers costs one JSON encode instead of N.
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(event);
+        } catch (Exception ex) {
+            log.warn("[POST-SSE] Event serialization failed post={}: {}", postId, ex.getMessage());
+            return;
+        }
+
         for (Subscription sub : subs) {
             // Skip the actor's own subscription — they already have the result
             // from the originating HTTP response, echoing the event back would
             // cause the UI to render the comment / reaction twice.
             if (actorId != null && actorId.equals(sub.viewerId)) continue;
             try {
-                sub.emitter.send(SseEmitter.event().name(name).data(event));
+                sub.emitter.send(SseEmitter.event().name(name).data(json, MediaType.APPLICATION_JSON));
             } catch (IOException | IllegalStateException ex) {
                 subs.remove(sub);
                 if (subs.isEmpty()) topics.remove(postId, subs);
@@ -127,13 +149,14 @@ public class PostRealtimeService {
     @Scheduled(fixedDelay = 25_000)
     public void heartbeat() {
         if (topics.isEmpty()) return;
-        String ts = LocalDateTime.now().toString();
+        // One shared payload for the whole sweep — no per-subscriber encode.
+        String json = "{\"timestamp\":\"" + LocalDateTime.now() + "\"}";
         topics.forEach((postId, subs) -> {
             for (Subscription sub : subs) {
                 try {
                     sub.emitter.send(SseEmitter.event()
                             .name("heartbeat")
-                            .data(Map.of("timestamp", ts)));
+                            .data(json, MediaType.APPLICATION_JSON));
                 } catch (IOException | IllegalStateException ex) {
                     subs.remove(sub);
                     if (subs.isEmpty()) topics.remove(postId, subs);

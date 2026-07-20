@@ -24,6 +24,7 @@ import ak.dev.irc.app.post.search.service.PostSearchService;
 import ak.dev.irc.app.user.repository.NotificationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -51,6 +52,8 @@ public class CassandraPostService {
 
     private final PostByIdRepository       postByIdRepo;
     private final PostByAuthorRepository   postByAuthorRepo;
+    /** Bounded shared pool (AsyncConfig) — runs the post-delete cascade off the request thread. */
+    private final ThreadPoolTaskExecutor   taskExecutor;
     private final ReelsByDayRepository     reelsByDayRepo;
     private final FeedTimelineService      feedTimelineService;
     private final PostSearchService        postSearchService;
@@ -305,6 +308,38 @@ public class CassandraPostService {
         PostByIdEntity canonical = postByIdRepo.findById(postId).orElse(null);
         if (canonical == null) return false;
 
+        // Make the post disappear IMMEDIATELY: canonical row, profile-feed
+        // row, and the search index. Everything else (comment/save fan-outs,
+        // partition sweeps) is O(comments + saves) driver round-trips — that
+        // cascade runs on the async executor so a viral post can't pin the
+        // DELETE request thread for seconds.
+        if (canonical.getAuthorId() != null && canonical.getCreatedAt() != null) {
+            try {
+                postByAuthorRepo.deleteRow(canonical.getAuthorId(),
+                                           canonical.getCreatedAt(),
+                                           postId);
+            } catch (Exception e) {
+                log.warn("[POST] profile-feed cleanup failed for {}: {}", postId, e.getMessage());
+            }
+        }
+        postByIdRepo.deleteById(postId);
+        try { postSearchService.deleteAsync(postId); }
+        catch (Exception e) { log.warn("[POST] ES delete failed for {}: {}", postId, e.getMessage()); }
+
+        final PostByIdEntity snapshot = canonical;
+        taskExecutor.execute(() -> cascadeDelete(postId, snapshot));
+
+        log.info("[POST] hard-deleted {} (author={}); cascade running async",
+                postId, canonical.getAuthorId());
+        return true;
+    }
+
+    /**
+     * Background sweep of every child table of a deleted post. Best-effort
+     * per step — a failing sub-delete is logged and skipped, since read paths
+     * join through posts_by_id (already gone) and tolerate orphans.
+     */
+    private void cascadeDelete(UUID postId, PostByIdEntity canonical) {
         // 1. Comments — walk the partition once so we can fan out to each
         //    comment's child tables before wiping the parent partition.
         try {
@@ -354,22 +389,8 @@ public class CassandraPostService {
         try { postCounterRepo.deleteByPostId(postId); }
         catch (Exception e) { log.warn("[POST] post counter delete failed for {}: {}", postId, e.getMessage()); }
 
-        // 5. The canonical row + profile-feed entry.
-        if (canonical.getAuthorId() != null && canonical.getCreatedAt() != null) {
-            try {
-                postByAuthorRepo.deleteRow(canonical.getAuthorId(),
-                                           canonical.getCreatedAt(),
-                                           postId);
-            } catch (Exception e) {
-                log.warn("[POST] profile-feed cleanup failed for {}: {}", postId, e.getMessage());
-            }
-        }
-        postByIdRepo.deleteById(postId);
-
-        // 6. Search + hashtag fan-out + notifications.
-        try { postSearchService.deleteAsync(postId); }
-        catch (Exception e) { log.warn("[POST] ES delete failed for {}: {}", postId, e.getMessage()); }
-
+        // 5. Hashtag fan-out + notifications. (Canonical row, profile-feed
+        //    row and the ES entry were already removed synchronously.)
         try {
             hashtagService.clearEntitiesForPost(
                     postId, canonical.getTextContent(), canonical.getCreatedAt());
@@ -380,8 +401,7 @@ public class CassandraPostService {
         try { notificationRepo.deleteAllByResourceId(postId); }
         catch (Exception e) { log.warn("[POST] notification cleanup failed for {}: {}", postId, e.getMessage()); }
 
-        log.info("[POST] hard-deleted with cascade {} (author={})", postId, canonical.getAuthorId());
-        return true;
+        log.info("[POST] cascade complete for {} (author={})", postId, canonical.getAuthorId());
     }
 
     public List<PostByAuthorEntity> profileFeed(UUID authorId, int pageSize) {

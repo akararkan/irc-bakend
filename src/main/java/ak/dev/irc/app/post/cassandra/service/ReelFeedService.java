@@ -9,9 +9,11 @@ import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.ReelsByDayRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.concurrent.CompletableFuture;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -54,16 +56,20 @@ public class ReelFeedService {
     private final ReelsByDayRepository   reelsByDayRepo;
     private final PostCounterRepository  postCounterRepo;
     private final FollowingIdsCache      followingIdsCache;
+    /** Bounded shared pool (AsyncConfig) — used for the per-author fan-in reads. */
+    private final ThreadPoolTaskExecutor taskExecutor;
 
     // ── Following Reels ──────────────────────────────────────────────────────
 
     /**
      * Reels from accounts the viewer follows, newest first, cursor-paginated.
      *
-     * Each followed author's posts_by_author partition is read in parallel
-     * (parallelStream). Results are merge-sorted by createdAt DESC and the
-     * top pageSize rows are returned. The cursor is passed to every author's
-     * query so scroll stays consistent across pages.
+     * Each followed author's posts_by_author partition is read concurrently
+     * on the bounded {@code taskExecutor} — NOT parallelStream, whose
+     * ForkJoin common pool is JVM-wide: hundreds of blocking driver reads
+     * there starve every other parallel stream in the process (the same
+     * hazard FeedTimelineService documents for the write path). Results are
+     * merge-sorted by createdAt DESC and the top pageSize rows returned.
      */
     public List<PostByAuthorEntity> followingReels(UUID viewerId, int pageSize, Instant cursor) {
         List<UUID> following = followingIdsCache.getFilteredFollowingIds(viewerId);
@@ -73,8 +79,20 @@ public class ReelFeedService {
                 ? following.subList(0, MAX_FOLLOWING_FANIN)
                 : following;
 
-        return capped.parallelStream()
-                .flatMap(authorId -> fetchAuthorReels(authorId, cursor).stream())
+        List<CompletableFuture<List<PostByAuthorEntity>>> futures = capped.stream()
+                .map(authorId -> CompletableFuture.supplyAsync(
+                        () -> fetchAuthorReels(authorId, cursor), taskExecutor))
+                .toList();
+
+        return futures.stream()
+                .flatMap(f -> {
+                    try {
+                        return f.join().stream();
+                    } catch (Exception e) {
+                        log.debug("[REEL-FOLLOWING] author fan-in future failed: {}", e.getMessage());
+                        return java.util.stream.Stream.empty();
+                    }
+                })
                 .sorted(Comparator.comparing(PostByAuthorEntity::getCreatedAt).reversed())
                 .limit(pageSize)
                 .collect(Collectors.toList());

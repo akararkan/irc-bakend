@@ -83,6 +83,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.user.service.NotificationDispatcher notificationDispatcher;
     private final ak.dev.irc.app.user.repository.NotificationRepository notificationRepository;
     private final ak.dev.irc.app.common.service.SocialGuard socialGuard;
+    private final ak.dev.irc.app.common.service.FollowingIdsCache followingIdsCache;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.research.realtime.ResearchViewTracker viewTracker;
@@ -124,10 +125,11 @@ public class ResearchServiceImpl implements ResearchService {
      * @return full {@link ResearchResponse} of the newly published research
      */
     @Override
-    @Caching(evict = {
-            @CacheEvict(value = "research-feed",  allEntries = true),
-            @CacheEvict(value = "trending-tags",  allEntries = true)
-    })
+    // trending-tags is deliberately NOT evicted here: trending is an
+    // aggregate leaderboard where one new paper barely moves the needle, and
+    // evicting on every write forced the full GROUP BY aggregation to re-run
+    // on most trending reads. The 10-minute TTL is the freshness contract.
+    @CacheEvict(value = "research-feed", allEntries = true)
     public ResearchResponse create(CreateResearchRequest req,
                                    List<MultipartFile> files,
                                    UUID researcherId) {
@@ -292,11 +294,11 @@ public class ResearchServiceImpl implements ResearchService {
     // ══════════════════════════════════════════════════════════════════════════
 
     @Override
+    // trending-tags eviction removed — see create() for the rationale.
     @Caching(evict = {
             @CacheEvict(value = "research-by-id",   key = "#researchId"),
             @CacheEvict(value = "research-by-slug", allEntries = true),
-            @CacheEvict(value = "research-feed",    allEntries = true),
-            @CacheEvict(value = "trending-tags",    allEntries = true)
+            @CacheEvict(value = "research-feed",    allEntries = true)
     })
     public ResearchResponse update(UUID researchId, UpdateResearchRequest req, UUID researcherId) {
         if (researchId == null || req == null)
@@ -714,40 +716,13 @@ public class ResearchServiceImpl implements ResearchService {
         return mapper.toResponse(research, researcherId);
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    //  SCHEDULED AUTO-PUBLISH
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @Override
-    @Scheduled(fixedRate = 60_000)
-    public void processScheduledPublications() {
-        LocalDateTime now = LocalDateTime.now();
-        List<Research> scheduled = researchRepo
-                .findByStatusAndScheduledPublishAtBeforeAndDeletedAtIsNull(ResearchStatus.DRAFT, now);
-        for (Research research : scheduled) {
-            try {
-                research.setStatus(ResearchStatus.PUBLISHED);
-                research.setPublishedAt(now);
-                researchRepo.save(research);
-                researchEventPublisher.publishResearchPublished(research);
-
-                String autoMentionText = joinNonBlank(
-                        research.getTitle(), research.getAbstractText(), research.getDescription());
-                mentionService.scanAndPublish(
-                        autoMentionText,
-                        MentionSource.RESEARCH,
-                        research.getId(),
-                        null,
-                        research.getResearcher().getId(),
-                        research.getResearcher().getUsername(),
-                        /* allowFollowersToken */ true);
-
-                log.info("Scheduled research auto-published: {} [{}]", research.getId(), research.getIrcId());
-            } catch (Exception e) {
-                log.error("Failed to auto-publish scheduled research {}: {}", research.getId(), e.getMessage());
-            }
-        }
-    }
+    // NOTE: scheduled auto-publish lives ONLY in ScheduledPublishJob, which
+    // delegates each due draft to the canonical publish() (full fan-out: ES
+    // index, Cassandra trending tags, @mentions, lifecycle broadcast), one
+    // transaction per item. A second @Scheduled publisher here used to race
+    // it with an INCOMPLETE publish (no ES/trending) — whichever won removed
+    // the row from the DRAFT filter, so papers auto-published by the old
+    // method were permanently missing from search and trending. Don't re-add.
 
     // ══════════════════════════════════════════════════════════════════════════
     //  MEDIA — individual post-creation uploads
@@ -1054,8 +1029,11 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getFollowingFeed(UUID userId, Pageable pageable) {
-        List<UUID> followingIds = followRepo.findFollowingIds(userId);
-        followingIds.removeIf(id -> blockRepo.isBlockedBetween(userId, id));
+        // Cached + batch block-filtered in ONE query (same path the QnA
+        // following feed uses). The previous per-id isBlockedBetween loop was
+        // O(following-count) SQL round-trips on every feed page.
+        List<UUID> followingIds = new ArrayList<>(
+                followingIdsCache.getFilteredFollowingIds(userId));
         // Always include the viewer's own research — the user expects to see
         // their own publications in their following feed (Twitter / IG do the
         // same with own posts in the Following timeline). Without this, a
@@ -1138,18 +1116,27 @@ public class ResearchServiceImpl implements ResearchService {
      */
     private Page<ResearchSummaryResponse> mapSummariesWithSaves(
             Page<ak.dev.irc.app.research.entity.Research> page, UUID viewerId) {
-        if (viewerId == null || page.isEmpty()) {
-            return page.map(r -> mapper.toSummary(r, viewerId,
-                    viewerId == null ? null : Boolean.FALSE,
-                    viewerId == null ? null : Boolean.FALSE));
+        if (page.isEmpty()) {
+            return page.map(r -> mapper.toSummary(r, viewerId, null, null));
         }
         List<UUID> ids = page.getContent().stream()
                 .map(ak.dev.irc.app.research.entity.Research::getId).toList();
+
+        // ONE pipelined Redis round trip for all 7 counters × all cards —
+        // per-card getOr() cost 7 sequential HGETs each (140 for a 20-card page).
+        Map<UUID, Map<String, Long>> counters = counterCache.getMany(
+                ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, ids);
+
+        if (viewerId == null) {
+            return page.map(r -> mapper.toSummary(r, null, null, null,
+                    null, counters.get(r.getId())));
+        }
         Set<UUID> savedIds   = saveRepo.findSavedResearchIds(viewerId, ids);
         Set<UUID> reactedIds = reactionRepo.findReactedResearchIds(viewerId, ids);
         return page.map(r -> mapper.toSummary(r, viewerId,
                 savedIds.contains(r.getId()),
-                reactedIds.contains(r.getId())));
+                reactedIds.contains(r.getId()),
+                null, counters.get(r.getId())));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1191,7 +1178,14 @@ public class ResearchServiceImpl implements ResearchService {
                     ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
                     user);
         } catch (DataIntegrityViolationException e) {
-            throw new BadRequestException("Invalid reaction data", "REACTION_ERROR");
+            // Two concurrent first-reactions both pass the existsById check;
+            // the loser hits the PK constraint. The row EXISTS — that is a
+            // successful outcome for an idempotent toggle, not a 400.
+            log.debug("[RESEARCH] concurrent duplicate reaction {}/{} — treated as success",
+                    researchId, userId);
+            broadcastCounters(researchId,
+                    ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
+                    user);
         } catch (OptimisticLockingFailureException e) {
             throw new ConflictException("Reaction update conflict. Please retry.");
         }
@@ -1603,14 +1597,22 @@ public class ResearchServiceImpl implements ResearchService {
                 : commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(researchId, pageable);
 
         final boolean canViewHidden = isResearchOwner;
-        final UUID viewerId = currentUserId;
-        return page.map(c -> {
-            ReactionType myReaction = viewerId == null ? null
-                    : commentReactionRepo.findByCommentIdAndUserId(c.getId(), viewerId)
-                            .map(ResearchCommentReaction::getReactionType)
-                            .orElse(null);
-            return mapper.toCommentResponse(c, canViewHidden, myReaction);
-        });
+
+        // Viewer reactions for the WHOLE page in one IN-query — the previous
+        // per-comment point read was O(page size) round trips per request.
+        final Map<UUID, ReactionType> myReactions;
+        if (currentUserId == null || page.isEmpty()) {
+            myReactions = Map.of();
+        } else {
+            List<UUID> commentIds = page.getContent().stream()
+                    .map(ResearchComment::getId).toList();
+            myReactions = commentReactionRepo
+                    .findMyReactionsForComments(currentUserId, commentIds).stream()
+                    .collect(Collectors.toMap(r -> r.getId().getCommentId(),
+                                              ResearchCommentReaction::getReactionType));
+        }
+        return page.map(c -> mapper.toCommentResponse(
+                c, canViewHidden, myReactions.get(c.getId())));
     }
 
     @Override
@@ -1806,12 +1808,18 @@ public class ResearchServiceImpl implements ResearchService {
             return mapper.toResponse(fresh, userId, Boolean.TRUE);
         }
 
-        saveRepo.save(ResearchSave.builder()
-                .id(sId).research(research).user(user)
-                .collectionName(collectionName != null && !collectionName.isBlank()
-                        ? collectionName.trim() : "Default")
-                .build());
-        researchRepo.adjustSaveCount(researchId, 1);
+        try {
+            saveRepo.save(ResearchSave.builder()
+                    .id(sId).research(research).user(user)
+                    .collectionName(collectionName != null && !collectionName.isBlank()
+                            ? collectionName.trim() : "Default")
+                    .build());
+            researchRepo.adjustSaveCount(researchId, 1);
+        } catch (DataIntegrityViolationException e) {
+            // Concurrent duplicate save — row already exists, idempotent success.
+            log.debug("[RESEARCH] concurrent duplicate save {}/{} — treated as success",
+                    researchId, userId);
+        }
         broadcastCounters(researchId,
                 ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.SAVE_COUNT_UPDATED,
                 user);
@@ -2090,7 +2098,9 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     @Transactional(readOnly = true)
-    @Cacheable(value = "trending-tags", key = "#limit")
+    // sync=true: concurrent cold misses collapse into ONE aggregation run
+    // instead of a stampede of identical full-table GROUP BY queries.
+    @Cacheable(value = "trending-tags", key = "#limit", sync = true)
     public List<String> getTrendingTags(int limit) {
         if (limit <= 0 || limit > 100) limit = 10;
         try {

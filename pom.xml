@@ -37,6 +37,7 @@
 	-->
 	<properties>
 		<java.version>21</java.version>
+		<app.jvm.arguments>--enable-native-access=ALL-UNNAMED</app.jvm.arguments>
 		<!-- AWS SDK v2 BOM version — keep in sync manually -->
 		<aws.sdk.version>2.25.60</aws.sdk.version>
 		<!-- Lombok 1.18.42+ supports the JDK 21–25 host range. We pin the
@@ -354,7 +355,7 @@
 					  native access on ALL-UNNAMED makes the warnings go away and
 					  forward-proofs the build.
 					-->
-					<jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>
+					<jvmArguments>${app.jvm.arguments}</jvmArguments>
 				</configuration>
 			</plugin>
 
@@ -369,6 +370,22 @@
          SPRING_PROFILES_ACTIVE=prod env var, NOT by this Maven profile).
          ═══════════════════════════════════════════════════════════ -->
 	<profiles>
+		<profile>
+			<id>jdk-25-dev-runtime</id>
+			<activation>
+				<jdk>[25,)</jdk>
+			</activation>
+			<properties>
+				<!--
+				  JDK 25 emits a terminal-deprecation warning when dependencies
+				  such as Netty allocate off-heap memory through sun.misc.Unsafe.
+				  Keep this JDK-25-only: Java 21 does not recognise the flag,
+				  and production is pinned to Java 21 by nixpacks.toml.
+				-->
+				<app.jvm.arguments>--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow</app.jvm.arguments>
+			</properties>
+		</profile>
+
 		<profile>
 			<id>production</id>
 			<properties>

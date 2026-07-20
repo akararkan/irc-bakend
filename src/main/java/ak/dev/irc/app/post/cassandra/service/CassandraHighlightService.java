@@ -135,6 +135,13 @@ public class CassandraHighlightService {
         if (!meta.getAuthorId().equals(requesterId)) {
             throw new SecurityException("Not the story author");
         }
+        // The target highlight must also belong to the requester — otherwise a
+        // caller could inject their story into somebody else's highlight rail.
+        boolean ownsHighlight = highlightRepo.listFor(requesterId).stream()
+                .anyMatch(h -> h.getHighlightId().equals(highlightId));
+        if (!ownsHighlight) {
+            throw new SecurityException("Not the highlight owner");
+        }
 
         // We need to find the actual story content. The author's partition is
         // tight so this is cheap — and most stories archived to a highlight
@@ -162,7 +169,20 @@ public class CassandraHighlightService {
         return Optional.of(row);
     }
 
-    public void removeStoryFromHighlight(UUID highlightId, Instant createdAt, UUID storyId) {
+    /**
+     * Remove a snapshotted story from a highlight — owner only. The row
+     * carries the story author (== highlight owner for self-curated rails),
+     * so ownership is verified against the stored row before the delete.
+     */
+    public void removeStoryFromHighlight(UUID highlightId, Instant createdAt,
+                                         UUID storyId, UUID requesterId) {
+        boolean owned = storyInHighlightRepo.listFor(highlightId).stream()
+                .anyMatch(r -> r.getStoryId().equals(storyId)
+                            && r.getAuthorId() != null
+                            && r.getAuthorId().equals(requesterId));
+        if (!owned) {
+            throw new SecurityException("Not the highlight owner");
+        }
         storyInHighlightRepo.delete(highlightId, createdAt, storyId);
     }
 

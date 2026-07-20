@@ -562,6 +562,234 @@ public class GlobalExceptionHandler {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  9b. CONCURRENCY + DATASTORE INFRASTRUCTURE
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * JPA optimistic-lock loss after {@code OptimisticLockRetry} exhausts its
+     * attempts. This is a CONFLICT the client can resolve by re-reading and
+     * retrying — not a server fault, so it must not land in the 500 catch-all.
+     */
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiErrorResponse> handleOptimisticLock(
+            org.springframework.dao.OptimisticLockingFailureException ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Optimistic lock conflict on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getMessage());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .message("The resource was modified concurrently. Please reload and retry.")
+                .path(request.getRequestURI())
+                .errorCode("OPTIMISTIC_LOCK_CONFLICT")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /**
+     * Transient datastore unavailability — Cassandra driver timeouts / no
+     * reachable nodes, and Spring's resource-failure/query-timeout wrappers.
+     * 503 tells clients (and load balancers) to retry, instead of a generic
+     * 500 with a full stack logged for every hiccup.
+     */
+    @ExceptionHandler({
+            com.datastax.oss.driver.api.core.DriverTimeoutException.class,
+            com.datastax.oss.driver.api.core.AllNodesFailedException.class,
+            org.springframework.dao.QueryTimeoutException.class,
+            org.springframework.dao.DataAccessResourceFailureException.class,
+    })
+    public ResponseEntity<ApiErrorResponse> handleDatastoreUnavailable(
+            Exception ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.error("[{}] Datastore unavailable on {} {} — {}: {}",
+                traceId, request.getMethod(), request.getRequestURI(),
+                ex.getClass().getSimpleName(), ex.getMessage());
+
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error("Service Unavailable")
+                .message("A backing datastore is temporarily unavailable. Please try again shortly.")
+                .path(request.getRequestURI())
+                .errorCode("DATASTORE_UNAVAILABLE")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    }
+
+    /** Invalid CQL / schema drift — a server bug, but with a stable code instead of UNHANDLED noise. */
+    @ExceptionHandler(com.datastax.oss.driver.api.core.servererrors.QueryValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleCqlValidation(
+            com.datastax.oss.driver.api.core.servererrors.QueryValidationException ex,
+            HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.error("[{}] CQL validation failure on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getMessage(), ex);
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                .error("Internal Server Error")
+                .message("A datastore query failed. Please contact support with trace ID: " + traceId)
+                .path(request.getRequestURI())
+                .errorCode("DATASTORE_QUERY_ERROR")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+
+    /**
+     * Missing object key on R2/S3 — a NOT FOUND, not a 500. Must be declared
+     * separately from (and is more specific than) the {@code S3Exception}
+     * handler below; Spring picks the most specific match.
+     */
+    @ExceptionHandler(software.amazon.awssdk.services.s3.model.NoSuchKeyException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoSuchKey(
+            software.amazon.awssdk.services.s3.model.NoSuchKeyException ex,
+            HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Storage object not found on {} {}",
+                traceId, request.getMethod(), request.getRequestURI());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .error("Not Found")
+                .message("The requested file does not exist.")
+                .path(request.getRequestURI())
+                .errorCode("MEDIA_NOT_FOUND")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    /** Storage SERVICE errors (auth, throttling, 5xx from R2) — bad gateway, not a generic 500. */
+    @ExceptionHandler(software.amazon.awssdk.services.s3.model.S3Exception.class)
+    public ResponseEntity<ApiErrorResponse> handleS3Service(
+            software.amazon.awssdk.services.s3.model.S3Exception ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.error("[{}] Storage service error on {} {} — status={} message={}",
+                traceId, request.getMethod(), request.getRequestURI(),
+                ex.statusCode(), ex.getMessage());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.BAD_GATEWAY.value())
+                .error("Bad Gateway")
+                .message("File storage returned an error. Please try again later.")
+                .path(request.getRequestURI())
+                .errorCode("STORAGE_ERROR")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(body);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  9c. REMAINING SPRING MVC EDGES (previously fell to the 500 catch-all)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** {@code @Validated} method-parameter violations (path vars / query params). */
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleConstraintViolation(
+            jakarta.validation.ConstraintViolationException ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        List<ApiErrorResponse.FieldError> fieldErrors = ex.getConstraintViolations().stream()
+                .map(v -> new ApiErrorResponse.FieldError(
+                        v.getPropertyPath() == null ? null : v.getPropertyPath().toString(),
+                        v.getMessage(),
+                        v.getInvalidValue()))
+                .toList();
+
+        log.warn("[{}] Constraint violation on {} {} — {} error(s)",
+                traceId, request.getMethod(), request.getRequestURI(), fieldErrors.size());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Validation Failed")
+                .message("One or more parameters failed validation. Check 'fieldErrors' for details.")
+                .path(request.getRequestURI())
+                .errorCode("VALIDATION_FAILED")
+                .fieldErrors(fieldErrors)
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /** Spring 6.1 method-validation wrapper (`@Valid` on params without BindingResult). */
+    @ExceptionHandler(org.springframework.web.method.annotation.HandlerMethodValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleHandlerMethodValidation(
+            org.springframework.web.method.annotation.HandlerMethodValidationException ex,
+            HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Handler method validation failed on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getReason());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Validation Failed")
+                .message("One or more request values failed validation.")
+                .path(request.getRequestURI())
+                .errorCode("VALIDATION_FAILED")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    @ExceptionHandler({
+            org.springframework.web.bind.MissingRequestHeaderException.class,
+            org.springframework.web.multipart.support.MissingServletRequestPartException.class,
+    })
+    public ResponseEntity<ApiErrorResponse> handleMissingRequestPiece(
+            Exception ex, HttpServletRequest request) {
+
+        String traceId = traceId();
+        log.warn("[{}] Missing request piece on {} {} — {}",
+                traceId, request.getMethod(), request.getRequestURI(), ex.getMessage());
+
+        ApiErrorResponse body = ApiErrorResponse.builder()
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Bad Request")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .errorCode("MISSING_REQUEST_PART")
+                .traceId(traceId)
+                .build();
+
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /**
+     * Client demanded a representation we can't produce (e.g. Accept:
+     * application/xml). A genuine 406 — previously landed in the catch-all as
+     * an ERROR-logged 500. Body-less: writing JSON would re-trigger the same
+     * negotiation failure.
+     */
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotAcceptableException.class)
+    public ResponseEntity<Void> handleNotAcceptable(
+            org.springframework.web.HttpMediaTypeNotAcceptableException ex,
+            HttpServletRequest request) {
+
+        log.warn("Not-acceptable Accept header on {} {} — {}",
+                request.getMethod(), request.getRequestURI(), request.getHeader("Accept"));
+        return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).build();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  10. CATCH-ALL
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -641,7 +869,11 @@ public class GlobalExceptionHandler {
     // ══════════════════════════════════════════════════════════════════════════
 
     private String traceId() {
-        return UUID.randomUUID().toString();
+        // Prefer the request's existing correlation id (set by a filter into
+        // MDC) so the error response joins up with access/audit logs; fall
+        // back to a fresh id that is still self-correlating via our own log line.
+        String mdc = org.slf4j.MDC.get("traceId");
+        return (mdc != null && !mdc.isBlank()) ? mdc : UUID.randomUUID().toString();
     }
 
     /**

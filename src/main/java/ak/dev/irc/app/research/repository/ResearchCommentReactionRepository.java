@@ -17,6 +17,19 @@ public interface ResearchCommentReactionRepository
 
     Optional<ResearchCommentReaction> findByCommentIdAndUserId(UUID commentId, UUID userId);
 
+    /**
+     * Batch variant for comment pages — ONE query for the viewer's reactions
+     * across a whole page instead of one point read per comment (mirrors
+     * AnswerReactionRepository.findMyReactionsForAnswers).
+     */
+    @Query("""
+        SELECT r FROM ResearchCommentReaction r
+        WHERE r.id.userId = :userId AND r.id.commentId IN :commentIds
+        """)
+    java.util.List<ResearchCommentReaction> findMyReactionsForComments(
+            @Param("userId") UUID userId,
+            @Param("commentIds") java.util.Collection<UUID> commentIds);
+
     boolean existsByCommentIdAndUserId(UUID commentId, UUID userId);
 
     /** Bulk-purge reactions when the comment is soft-deleted — mirrors PostCommentReactionRepository.deleteAllByCommentId. */

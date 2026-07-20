@@ -43,6 +43,8 @@ public class CassandraStoryController {
     private final CloseFriendsService       closeFriendsService;
     private final CassandraStoryPollService pollService;
     private final S3StorageService          storageService;
+    private final ak.dev.irc.app.post.realtime.StoryRealtimeService storyRealtimeService;
+    private final ak.dev.irc.app.security.jwt.JwtTokenProvider      jwtTokenProvider;
     /** Per-user write throttling; fail-open if Redis is down. */
     private final RateLimiter               rateLimiter;
 
@@ -136,6 +138,43 @@ public class CassandraStoryController {
     public List<StoryViewEntity> viewers(@PathVariable UUID storyId,
                                          @RequestParam(defaultValue = "50") int pageSize) {
         return storyService.viewersFor(storyId, pageSize);
+    }
+
+    /**
+     * Per-story SSE stream — live views, reactions, poll votes and lifecycle
+     * events while a viewer has the story open. The fan-out infrastructure
+     * ({@code StoryRealtimeService} + Redis {@code irc:stories:{storyId}})
+     * existed but had no HTTP binding, so every published story event fanned
+     * out to zero subscribers. Event names are the lowercased
+     * {@code StoryRealtimeEventType} values plus {@code connected} /
+     * {@code heartbeat} (every 25s).
+     *
+     * <p>Auth: bearer header, or {@code ?token=<accessToken>} for browser
+     * {@code EventSource} (same convention as the tray stream).</p>
+     */
+    @GetMapping(value = "/stories/{storyId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PreAuthorize("permitAll()")
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter stream(
+            @PathVariable UUID storyId,
+            @RequestParam(value = "token", required = false) String token,
+            jakarta.servlet.http.HttpServletResponse response) {
+
+        UUID viewerId = ak.dev.irc.app.security.SecurityUtils.getCurrentUserId().orElse(null);
+        if (viewerId == null && token != null && !token.isBlank()) {
+            try {
+                if (jwtTokenProvider.validateToken(token)
+                        && "ACCESS".equals(jwtTokenProvider.getTokenType(token))) {
+                    viewerId = jwtTokenProvider.getUserIdFromToken(token);
+                }
+            } catch (Exception ignored) { /* treated as anonymous below */ }
+        }
+        if (viewerId == null) throw new UnauthorizedException(
+                "Authentication required. Pass access token as ?token=<jwt>.");
+
+        // Disable proxy buffering so events stream immediately.
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        return storyRealtimeService.subscribe(storyId, viewerId);
     }
 
     // ── Close friends ────────────────────────────────────────────────────────

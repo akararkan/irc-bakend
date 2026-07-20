@@ -6,7 +6,6 @@ import ak.dev.irc.app.audit.enums.AuditOutcome;
 import ak.dev.irc.app.audit.service.AuditLogService;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.entity.User;
-import ak.dev.irc.app.user.repository.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -55,7 +54,6 @@ public class AuditLoggingInterceptor implements HandlerInterceptor {
     private static final String STARTED_AT_ATTR = "ak.audit.startedAt";
 
     private final AuditLogService auditService;
-    private final UserRepository  userRepo;
 
     @Override
     public boolean preHandle(@NonNull HttpServletRequest request,
@@ -78,10 +76,12 @@ public class AuditLoggingInterceptor implements HandlerInterceptor {
             long started = startedObj instanceof Long l ? l : System.currentTimeMillis();
             long duration = System.currentTimeMillis() - started;
 
-            UUID userId = SecurityUtils.getCurrentUserId().orElse(null);
-            String username = userId != null
-                    ? userRepo.findById(userId).map(User::getUsername).orElse(null)
-                    : null;
+            // The authenticated principal is already a loaded User — resolving
+            // the username from it avoids adding a Postgres round-trip to the
+            // tail latency of every audited request.
+            User principal = SecurityUtils.getCurrentUser().orElse(null);
+            UUID userId = principal != null ? principal.getId() : null;
+            String username = principal != null ? principal.getUsername() : null;
 
             AuditOperation operation = inferOperation(request);
             AuditOutcome   outcome   = inferOutcome(response, ex);

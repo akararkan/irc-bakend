@@ -151,6 +151,9 @@ public class PostHydrator {
         for (FeedByUserEntity r : rows) {
             if (isPostRow(r)) {
                 PostByIdEntity      live = canonical.get(r.getPostId());
+                // Feed rows can outlive canonical posts (fanout TTL). Once a post
+                // is deleted, hide the stale snapshot immediately.
+                if (live == null) continue;
                 PostCounterEntity   c    = counters.get(r.getPostId());
                 out.add(new FeedItemResponse(
                         r.getPostId(),
@@ -214,6 +217,7 @@ public class PostHydrator {
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (PostByAuthorEntity r : rows) {
             PostByIdEntity      live = canonical.get(r.getPostId());
+            if (live == null) continue;
             PostCounterEntity   c    = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
@@ -241,14 +245,16 @@ public class PostHydrator {
         if (rows == null || rows.isEmpty()) return List.of();
         Map<UUID, AuthorSummary> authors = bulkLoadAuthors(rows, ReelsByDayEntity::getAuthorId);
         Set<UUID> postIds = collectIds(rows, ReelsByDayEntity::getPostId);
+        Map<UUID, PostByIdEntity> canonical = bulkLoadPosts(postIds);
         Map<UUID, PostCounterEntity> counters = bulkLoadCounters(postIds);
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
         Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
-        Map<UUID, String> videoUrls = bulkVideoUrls(postIds);  // all rows are REELs
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (ReelsByDayEntity r : rows) {
+            PostByIdEntity live = canonical.get(r.getPostId());
+            if (live == null) continue;
             PostCounterEntity c = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
@@ -258,7 +264,7 @@ public class PostHydrator {
                     "REEL",
                     r.getTextPreview(),
                     r.getMediaUrl(),
-                    videoUrls.get(r.getPostId()),
+                    firstVideoUrl(live.getMediaUrls(), live.getMediaTypes()),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -461,21 +467,9 @@ public class PostHydrator {
         return out;
     }
 
-    private Map<UUID, String> bulkVideoUrls(Set<UUID> reelPostIds) {
-        if (reelPostIds.isEmpty()) return Map.of();
-        Map<UUID, String> out = new HashMap<>(reelPostIds.size());
-        bulkLoadPosts(reelPostIds).forEach((id, p) ->
-                out.put(id, firstVideoUrl(p.getMediaUrls(), p.getMediaTypes())));
-        return out;
-    }
-
     // ── Live-row preview helpers (read-time hydration off posts_by_id) ───────
 
-    /**
-     * Truncated preview of the freshest text. Falls back to the snapshot the
-     * row landed with when the canonical row is missing (deleted post still
-     * inside a follower's feed_by_user TTL).
-     */
+    /** Truncated preview of the freshest text; falls back when text is absent. */
     private static String livePreview(PostByIdEntity live, String snapshot) {
         if (live == null || live.getTextContent() == null) return snapshot;
         String t = live.getTextContent();

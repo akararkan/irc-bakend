@@ -52,7 +52,7 @@ spring:
     password: ${CASSANDRA_PASSWORD:cassandra}
 
     # Schema action: CREATE_IF_NOT_EXISTS, CREATE, UPDATE, NONE
-    schema-action: CREATE_IF_NOT_EXISTS
+    schema-action: create_if_not_exists
 
     # Connection pool settings
     pool:
@@ -83,6 +83,16 @@ spring:
     redis:
       time-to-live: 300000
       cache-null-values: false
+
+  # ── Scheduler pool ─────────────────────────────────────────────────────────────
+  # Seven SSE heartbeat sweeps + trending/expiry/publish jobs all run on the
+  # @Scheduled scheduler. The Spring default pool size is 1, which lets a
+  # single slow SSE client socket stall every heartbeat and every job in the
+  # app. Four threads keeps heartbeats isolated from long-running jobs.
+  task:
+    scheduling:
+      pool:
+        size: 4
 
   # ── OAuth2 Client ──────────────────────────────────────────────────────────────
   security:
@@ -169,10 +179,6 @@ spring:
       max-file-size: 500MB
       max-request-size: 500MB
 
-  # ── MVC ────────────────────────────────────────────────────────────────────────
-  mvc:
-    throw-exception-if-no-handler-found: true
-
   web:
     resources:
       add-mappings: false
@@ -220,6 +226,12 @@ app:
     access-token-expiration-ms: 3600000
     refresh-token-expiration-ms: 604800000
     issuer: irc-platform
+
+  security:
+    # SECURE BY DEFAULT: method security (@PreAuthorize on every controller)
+    # is enforced. Set SECURITY_PERMIT_ALL=true ONLY for throwaway local
+    # testing where you want annotations ignored — never in production.
+    permit-all: ${SECURITY_PERMIT_ALL:false}
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}

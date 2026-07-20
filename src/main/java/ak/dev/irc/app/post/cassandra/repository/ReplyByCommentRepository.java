@@ -18,6 +18,12 @@ public interface ReplyByCommentRepository extends CassandraRepository<ReplyByCom
     List<ReplyByCommentEntity> firstPage(@Param("parentId") UUID parentId,
                                          @Param("pageSize") int pageSize);
 
+    /** NEWEST replies first — see {@link CommentByPostRepository#newestPage}. */
+    @Query("SELECT * FROM replies_by_comment WHERE parent_id = :parentId " +
+           "ORDER BY created_at DESC LIMIT :pageSize")
+    List<ReplyByCommentEntity> newestPage(@Param("parentId") UUID parentId,
+                                          @Param("pageSize") int pageSize);
+
     @Query("UPDATE replies_by_comment SET text_content = :text, is_edited = true " +
            "WHERE parent_id = :parentId AND created_at = :createdAt AND reply_id = :replyId")
     void editText(@Param("parentId") UUID parentId,

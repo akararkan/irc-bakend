@@ -36,6 +36,16 @@ public class CassandraCounterTableInitializer {
     @Value("${spring.cassandra.keyspace-name:irc_keyspace}")
     private String keyspace;
 
+    /**
+     * The mistyped-column repair path DROPS the table (all counter data).
+     * That is fine the first time a dev environment migrates from bigint
+     * columns, but it must never fire unattended in production — so the
+     * destructive branch is opt-in. When off, a mistyped table is loudly
+     * logged and left alone for an operator to repair.
+     */
+    @Value("${irc.cassandra.repair-counters:false}")
+    private boolean repairCounters;
+
     /** name → (PK column, non-counter columns we need to recreate as counters) */
     private static final Map<String, TableSpec> TABLES = Map.of(
             "post_counters",
@@ -74,7 +84,14 @@ public class CassandraCounterTableInitializer {
             return;
         }
         if (currentType != null) {
-            // Wrong type (likely bigint). Drop and recreate.
+            if (!repairCounters) {
+                log.error("[CASSANDRA-COUNTER] {} column {} is {} (expected counter). "
+                        + "NOT dropping — set irc.cassandra.repair-counters=true to let "
+                        + "the initializer drop & recreate it (destroys counter data).",
+                        table, probeColumn, currentType);
+                return;
+            }
+            // Wrong type (likely bigint). Drop and recreate — opt-in only.
             log.warn("[CASSANDRA-COUNTER] {} column {} is {} — dropping and recreating as counter",
                     table, probeColumn, currentType);
             session.execute("DROP TABLE IF EXISTS " + keyspace + "." + table);

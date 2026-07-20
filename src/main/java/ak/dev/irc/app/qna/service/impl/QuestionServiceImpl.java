@@ -547,9 +547,14 @@ public class QuestionServiceImpl implements QuestionService {
         if (parent == null) {
             // Atomic — entity setter + save was racy under concurrent answer creates.
             questionRepository.adjustAnswerCount(question.getId(), 1);
+            // Refresh FIRST (pull the post-increment count into the managed
+            // entity), THEN flip the status. The old order — setStatus, save,
+            // refresh — let refresh() overwrite the entity from the DB and
+            // silently DISCARD the un-flushed ANSWERED transition. (The
+            // deleteAnswer path always did it in this order.)
+            entityManager.refresh(question);
             question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
             questionRepository.save(question);
-            entityManager.refresh(question);
             counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
                     question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
                     question.getAnswerCount());

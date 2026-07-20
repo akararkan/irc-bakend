@@ -30,20 +30,17 @@ import java.util.UUID;
  * controller closes that gap.</p>
  *
  * <h3>Event types delivered</h3>
+ * <p>Event NAMES on the wire are the lowercased enum values — clients register
+ * an {@code addEventListener} per name:</p>
  * <ul>
- *   <li>{@code connected}     — handshake on subscribe (sent by the service).</li>
- *   <li>{@code tray-event}    — a {@code StoryTrayEvent} JSON payload. Inspect
- *       {@code eventType}:
- *       <ul>
- *         <li>{@code NEW_STORY}      — a followed/close-friend just posted; light the ring.</li>
- *         <li>{@code STORY_REMOVED}  — author deleted / all stories expired; grey the ring.</li>
- *         <li>{@code POLL_VOTE_CAST} — <em>author-only</em> live poll tally update.
- *             Payload carries {@code pollId, voteA, voteB, voteTotal}; other
- *             tray fields are null. Use to update the StoryEditor's results
- *             pane without polling {@code /polls/{pollId}/results}.</li>
- *       </ul>
- *   </li>
- *   <li>{@code heartbeat}     — keepalive every 15 s.</li>
+ *   <li>{@code connected}      — handshake on subscribe (sent by the service).</li>
+ *   <li>{@code new_story}      — a followed/close-friend just posted; light the ring.</li>
+ *   <li>{@code story_removed}  — author deleted / all stories expired; grey the ring.</li>
+ *   <li>{@code poll_vote_cast} — <em>author-only</em> live poll tally update.
+ *       Payload carries {@code pollId, voteA, voteB, voteTotal}; other
+ *       tray fields are null. Use to update the StoryEditor's results
+ *       pane without polling {@code /polls/{pollId}/results}.</li>
+ *   <li>{@code heartbeat}      — keepalive every 25 s.</li>
  * </ul>
  *
  * <h3>Auth</h3>

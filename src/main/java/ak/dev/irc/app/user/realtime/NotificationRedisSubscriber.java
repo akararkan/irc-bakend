@@ -36,7 +36,11 @@ public class NotificationRedisSubscriber implements MessageListener {
             UUID userId = UUID.fromString(userIdStr);
             JsonNode root = objectMapper.readTree(message.getBody());
             String eventName = root.path("event").asText("notification");
-            Object data = objectMapper.treeToValue(root.path("data"), Object.class);
+            // Envelope form is {event, data}; if a publisher ever sends a bare
+            // payload (no "data" field), forward the whole message instead of
+            // silently delivering data=null to the browser.
+            JsonNode dataNode = root.has("data") ? root.path("data") : root;
+            Object data = objectMapper.treeToValue(dataNode, Object.class);
 
             sseService.push(userId, eventName, data);
             log.debug("[SSE-SUB] Forwarded {} to SSE for user={}", eventName, userId);

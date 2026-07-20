@@ -38,6 +38,7 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.*;
  * │  irc.dlx.exchange       ──►  irc.queue.dead-letter  (failed messages)   │
  * └──────────────────────────────────────────────────────────────────────────┘
  */
+@lombok.extern.slf4j.Slf4j
 @Configuration
 public class RabbitMQConfig {
 
@@ -216,7 +217,40 @@ public class RabbitMQConfig {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(messageConverter);
         template.setDefaultReceiveQueue(NOTIFICATION_QUEUE);
+
+        // publisher-confirm-type=correlated and publisher-returns=true are on
+        // in application.yaml — without these callbacks the app PAYS the
+        // confirm overhead but never observes a broker NACK, and mandatory
+        // returns (unroutable messages) are dropped without a trace.
+        template.setMandatory(true);
+        template.setConfirmCallback((correlation, ack, cause) -> {
+            if (!ack) {
+                log.error("[RABBIT] broker NACKed publish (correlation={}): {} — event NOT delivered",
+                        correlation != null ? correlation.getId() : "?", cause);
+            }
+        });
+        template.setReturnsCallback(returned ->
+                log.error("[RABBIT] unroutable message returned — exchange={} routingKey={} replyText={}",
+                        returned.getExchange(), returned.getRoutingKey(), returned.getReplyText()));
         return template;
+    }
+
+    /**
+     * Dead-letter drain: without a consumer the DLQ is a silent parking lot
+     * with a 24h TTL — permanently-failing messages (poison payloads,
+     * deserialization of a moved event class) vanish unobserved. This logs
+     * each casualty at ERROR with enough envelope detail to reprocess it.
+     */
+    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = DEAD_LETTER_QUEUE)
+    public void drainDeadLetter(org.springframework.amqp.core.Message message) {
+        var props = message.getMessageProperties();
+        log.error("[RABBIT-DLQ] dead-lettered message — originalExchange={} originalRoutingKey={} "
+                        + "typeId={} bodyBytes={} headers={}",
+                props.getHeader("x-first-death-exchange"),
+                props.getHeader("x-first-death-queue"),
+                props.getHeader("__TypeId__"),
+                message.getBody() == null ? 0 : message.getBody().length,
+                props.getHeaders());
     }
 
     // ── Listener container factory with retry ─────────────────────────────────

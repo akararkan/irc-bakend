@@ -147,14 +147,27 @@ public class UserActivityServiceImpl implements UserActivityService {
         final int BATCH = 200;
         final int MAX_BATCHES = 50;     // up to 10k rows per call
         int deleted = 0;
+
+        if (filter != null) {
+            // Drive the filtered clear off the PER-TYPE partition. Filtering
+            // the all-types feed in memory both missed matches deeper than the
+            // scan window and re-read the same non-matching head rows on every
+            // iteration (no forward progress).
+            for (int i = 0; i < MAX_BATCHES; i++) {
+                List<UserActivityByTypeEntity> page =
+                        byTypeRepo.firstPage(userId, filter.name(), BATCH);
+                if (page.isEmpty()) break;
+                for (UserActivityByTypeEntity row : page) {
+                    deleteOneInternal(row);
+                    deleted++;
+                }
+                if (page.size() < BATCH) break;
+            }
+            return deleted;
+        }
+
         for (int i = 0; i < MAX_BATCHES; i++) {
             List<UserActivityEntity> page = activityRepo.firstPage(userId, BATCH);
-            if (page.isEmpty()) break;
-            if (filter != null) {
-                page = page.stream()
-                        .filter(r -> filter.name().equals(r.getActivityType()))
-                        .toList();
-            }
             if (page.isEmpty()) break;
             for (UserActivityEntity row : page) {
                 deleteOneInternal(row);
@@ -166,6 +179,18 @@ public class UserActivityServiceImpl implements UserActivityService {
     }
 
     private void deleteOneInternal(UserActivityEntity row) {
+        try {
+            activityRepo.delete(row.getUserId(), row.getCreatedAt(), row.getActivityId());
+            byTypeRepo.delete(row.getUserId(), row.getActivityType(),
+                              row.getCreatedAt(), row.getActivityId());
+            lookupRepo.deleteById(row.getActivityId());
+        } catch (Exception e) {
+            log.warn("[ACTIVITY] bulk delete row {} failed: {}", row.getActivityId(), e.getMessage());
+        }
+    }
+
+    /** Same three-table delete, driven from a per-type partition row. */
+    private void deleteOneInternal(UserActivityByTypeEntity row) {
         try {
             activityRepo.delete(row.getUserId(), row.getCreatedAt(), row.getActivityId());
             byTypeRepo.delete(row.getUserId(), row.getActivityType(),

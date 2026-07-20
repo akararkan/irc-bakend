@@ -188,7 +188,8 @@ public class NotificationServiceImpl implements NotificationService {
         List<UUID> marked = new ArrayList<>();
         for (NotificationEntity n : cassandraNotifications.inbox(me, SCAN_HARD_LIMIT)) {
             if (Boolean.TRUE.equals(n.getRead())) continue;
-            cassandraNotifications.markRead(n.getNotificationId());
+            // Row is in hand and known-unread — skip the per-id lookup round trip.
+            cassandraNotifications.markReadKnownUnread(me, n.getCreatedAt(), n.getNotificationId());
             marked.add(n.getNotificationId());
         }
         eventPublisher.publishEvent(new NotificationReadEvent(me, marked, true, false));
@@ -198,23 +199,29 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     public void markOneRead(UUID notificationId) {
         UUID me = authenticatedUserId();
-        cassandraNotifications.markRead(notificationId);
+        boolean marked = cassandraNotifications.markRead(notificationId, me);
+        if (!marked) {
+            throw new ResourceNotFoundException("Notification", "id", notificationId);
+        }
         eventPublisher.publishEvent(new NotificationReadEvent(me, List.of(notificationId), false, false));
         dispatcher.publishUnreadCount(me);
     }
+
+    /** Client-supplied id lists are capped so one request can't fan into thousands of writes. */
+    private static final int MARK_MANY_LIMIT = 200;
 
     @Override
     public int markManyRead(Collection<UUID> ids) {
         UUID me = authenticatedUserId();
         if (ids == null || ids.isEmpty()) return 0;
-        int count = 0;
-        for (UUID id : ids) {
-            cassandraNotifications.markRead(id);
-            count++;
+        List<UUID> marked = new ArrayList<>();
+        for (UUID id : ids.stream().distinct().limit(MARK_MANY_LIMIT).toList()) {
+            // Owner-scoped: ids not belonging to the caller are silently skipped.
+            if (cassandraNotifications.markRead(id, me)) marked.add(id);
         }
-        eventPublisher.publishEvent(new NotificationReadEvent(me, List.copyOf(ids), false, false));
+        eventPublisher.publishEvent(new NotificationReadEvent(me, marked, false, false));
         dispatcher.publishUnreadCount(me);
-        return count;
+        return marked.size();
     }
 
     @Override
@@ -229,7 +236,7 @@ public class NotificationServiceImpl implements NotificationService {
         for (NotificationEntity n : cassandraNotifications.inbox(me, SCAN_HARD_LIMIT)) {
             if (Boolean.TRUE.equals(n.getRead())) continue;
             if (!typeNames.contains(n.getType())) continue;
-            cassandraNotifications.markRead(n.getNotificationId());
+            cassandraNotifications.markReadKnownUnread(me, n.getCreatedAt(), n.getNotificationId());
             marked.add(n.getNotificationId());
         }
         eventPublisher.publishEvent(new NotificationReadEvent(me, marked, false, false));
@@ -245,7 +252,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     public void deleteOne(UUID notificationId) {
         UUID me = authenticatedUserId();
-        boolean removed = cassandraNotifications.deleteById(notificationId);
+        boolean removed = cassandraNotifications.deleteById(notificationId, me);
         if (removed) {
             eventPublisher.publishEvent(new NotificationReadEvent(me, List.of(notificationId), false, true));
             dispatcher.publishUnreadCount(me);

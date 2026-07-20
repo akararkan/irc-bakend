@@ -1,7 +1,10 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.post.cassandra.entity.MediaByPostEntity;
+import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.repository.MediaByPostRepository;
+import ak.dev.irc.app.post.cassandra.repository.PostByIdRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,6 +29,20 @@ import java.util.UUID;
 public class CassandraMediaService {
 
     private final MediaByPostRepository repo;
+    private final PostByIdRepository    postByIdRepo;
+
+    /**
+     * Every media mutation must come from the post's author. Without this
+     * check any caller could add, delete, or reorder media on any post —
+     * mutations here don't pass through the post-service author guard.
+     */
+    public void requireAuthor(UUID postId, UUID actorId) {
+        PostByIdEntity post = postByIdRepo.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
+        if (actorId == null || !actorId.equals(post.getAuthorId())) {
+            throw new SecurityException("Not the post author");
+        }
+    }
 
     public MediaByPostEntity addMedia(UUID postId, int sortOrder, String mediaType,
                                        String url, String thumbnailUrl, String s3Key,

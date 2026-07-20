@@ -229,8 +229,14 @@ public class CassandraCommentService {
                 .orElseThrow(() -> new IllegalArgumentException("Comment not found: " + commentId));
     }
 
+    // Both dedup helpers scan the NEWEST rows — the duplicate we're trying to
+    // return was created moments ago, so it is at the tail of the partition.
+    // firstPage() would return the ten OLDEST rows and never find it on any
+    // thread with more than ten comments, falling through to create a real
+    // duplicate and double-bump the counter.
+
     private CommentByPostEntity mostRecentMatchingComment(UUID postId, UUID authorId, String text) {
-        return commentRepo.firstPage(postId, 10).stream()
+        return commentRepo.newestPage(postId, 10).stream()
                 .filter(r -> authorId.equals(r.getAuthorId()))
                 .filter(r -> text == null ? r.getTextContent() == null : text.equals(r.getTextContent()))
                 .findFirst()
@@ -238,7 +244,7 @@ public class CassandraCommentService {
     }
 
     private ReplyByCommentEntity mostRecentMatchingReply(UUID parentId, UUID authorId, String text) {
-        return replyRepo.firstPage(parentId, 10).stream()
+        return replyRepo.newestPage(parentId, 10).stream()
                 .filter(r -> authorId.equals(r.getAuthorId()))
                 .filter(r -> text == null ? r.getTextContent() == null : text.equals(r.getTextContent()))
                 .findFirst()

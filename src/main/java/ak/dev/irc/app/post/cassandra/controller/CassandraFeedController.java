@@ -11,6 +11,8 @@ import ak.dev.irc.app.post.cassandra.entity.ReplyByCommentEntity;
 import ak.dev.irc.app.post.cassandra.entity.SaveByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.ShareByPostEntity;
 import ak.dev.irc.app.common.cache.RateLimiter;
+import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.post.cassandra.service.CassandraCommentService;
 import ak.dev.irc.app.post.cassandra.service.CassandraPostService;
 import ak.dev.irc.app.post.cassandra.service.CassandraReactionService;
@@ -32,7 +34,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import ak.dev.irc.app.common.exception.ForbiddenException;
-import ak.dev.irc.app.common.exception.UnauthorizedException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -316,9 +317,10 @@ public class CassandraFeedController {
     public List<FeedItemResponse> profileFeed(@PathVariable UUID authorId,
                                               @RequestParam(defaultValue = "20") int pageSize,
                                               @RequestParam(required = false) Instant cursor) {
+        int size = Pages.clamp(pageSize);
         return hydrator.hydrateProfileFeed(cursor == null
-                ? postService.profileFeed(authorId, pageSize)
-                : postService.profileFeedAfter(authorId, cursor, pageSize));
+                ? postService.profileFeed(authorId, size)
+                : postService.profileFeedAfter(authorId, cursor, size));
     }
 
     /**
@@ -333,7 +335,7 @@ public class CassandraFeedController {
                                            @RequestParam(defaultValue = "20") int limit,
                                            @RequestParam(required = false) Instant cursor,
                                            @AuthenticationPrincipal User user) {
-        int size = limit > 0 ? limit : pageSize;
+        int size = Pages.clamp(limit > 0 ? limit : pageSize);
         // Prefer the JWT principal; fall back to ?userId= for legacy clients.
         UUID viewer = user != null ? user.getId() : userId;
         if (viewer == null) return List.of();
@@ -352,7 +354,7 @@ public class CassandraFeedController {
                                         @RequestParam(defaultValue = "20") int pageSize,
                                         @RequestParam(defaultValue = "20") int size,
                                         @RequestParam(defaultValue = "0")  int page) {
-        int effective = size > 0 ? size : pageSize;
+        int effective = Pages.clamp(size > 0 ? size : pageSize);
         String bucket = day != null ? day : LocalDate.now(ZoneOffset.UTC).toString();
         return hydrator.hydrateReels(postService.reelsForDay(bucket, effective));
     }
@@ -368,7 +370,7 @@ public class CassandraFeedController {
                                                  @AuthenticationPrincipal User user) {
         if (user == null) return List.of();
         return hydrator.hydrateProfileFeed(
-                reelFeedService.followingReels(user.getId(), pageSize, cursor));
+                reelFeedService.followingReels(user.getId(), Pages.clamp(pageSize), cursor));
     }
 
     /**
@@ -381,7 +383,7 @@ public class CassandraFeedController {
     public List<FeedItemResponse> forYouReels(@RequestParam(defaultValue = "20") int pageSize,
                                               @AuthenticationPrincipal User user) {
         UUID viewerId = user != null ? user.getId() : null;
-        return hydrator.hydrateReels(reelFeedService.forYouReels(viewerId, pageSize));
+        return hydrator.hydrateReels(reelFeedService.forYouReels(viewerId, Pages.clamp(pageSize)));
     }
 
     /**
@@ -393,22 +395,30 @@ public class CassandraFeedController {
     public List<FeedItemResponse> reelsByAuthor(@PathVariable UUID authorId,
                                                 @RequestParam(defaultValue = "20") int pageSize,
                                                 @RequestParam(required = false) Instant cursor) {
+        int size = Pages.clamp(pageSize);
         return hydrator.hydrateProfileFeed(cursor == null
-                ? postService.reelsByAuthor(authorId, pageSize)
-                : postService.reelsByAuthorAfter(authorId, cursor, pageSize));
+                ? postService.reelsByAuthor(authorId, size)
+                : postService.reelsByAuthorAfter(authorId, cursor, size));
     }
 
-    /** Friend suggestions — already sorted by mutual-count DESC at the table level. */
+    /**
+     * Friend suggestions — already sorted by mutual-count DESC at the table
+     * level. Always the CALLER's suggestions: the partition being read is
+     * bound to the JWT principal, never a query param, so one user can't
+     * browse another user's suggestion graph.
+     */
     @GetMapping("/suggestions")
-    public List<FriendSuggestionEntity> suggestions(@RequestParam UUID userId,
-                                                    @RequestParam(defaultValue = "20") int limit) {
-        return suggestionService.topSuggestionsFor(userId, limit);
+    public List<FriendSuggestionEntity> suggestions(@RequestParam(defaultValue = "20") int limit,
+                                                    @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        return suggestionService.topSuggestionsFor(user.getId(), Pages.clamp(limit));
     }
 
-    /** Trigger a recompute (e.g. from a /follow webhook). */
+    /** Trigger a recompute of the CALLER's suggestions (e.g. after onboarding). */
     @PostMapping("/suggestions/recompute")
-    public ResponseEntity<Void> recompute(@RequestParam UUID userId) {
-        suggestionService.recomputeFor(userId);
+    public ResponseEntity<Void> recompute(@AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        suggestionService.recomputeFor(user.getId());
         return ResponseEntity.accepted().build();
     }
 
@@ -438,7 +448,7 @@ public class CassandraFeedController {
     @GetMapping("/users/{userId}/reactions")
     public List<ReactionByUserEntity> userReactions(@PathVariable UUID userId,
                                                     @RequestParam(defaultValue = "20") int pageSize) {
-        return reactionService.recentForUser(userId, pageSize);
+        return reactionService.recentForUser(userId, Pages.clamp(pageSize));
     }
 
     /** Toggle a like on a comment. */
@@ -514,8 +524,8 @@ public class CassandraFeedController {
             @RequestParam(defaultValue = "20") int pageSize,
             @RequestParam(required = false) Instant cursor) {
         return hydrator.hydrateComments(cursor == null
-                ? commentService.commentsForPost(postId, pageSize)
-                : commentService.commentsForPostAfter(postId, cursor, pageSize));
+                ? commentService.commentsForPost(postId, Pages.clamp(pageSize))
+                : commentService.commentsForPostAfter(postId, cursor, Pages.clamp(pageSize)));
     }
 
     /**
@@ -538,7 +548,7 @@ public class CassandraFeedController {
     public List<ak.dev.irc.app.post.dto.ReplyResponse> listReplies(
             @PathVariable UUID commentId,
             @RequestParam(defaultValue = "20") int pageSize) {
-        return hydrator.hydrateReplies(commentService.repliesFor(commentId, pageSize));
+        return hydrator.hydrateReplies(commentService.repliesFor(commentId, Pages.clamp(pageSize)));
     }
 
     /** Edit a comment or reply — only the author can edit. */
@@ -611,8 +621,8 @@ public class CassandraFeedController {
                                         @RequestParam(defaultValue = "20") int pageSize,
                                         @RequestParam(required = false) Instant cursor) {
         List<SaveByUserEntity> rows = cursor == null
-                ? saveService.savesForUser(userId, pageSize)
-                : saveService.savesForUserAfter(userId, cursor, pageSize);
+                ? saveService.savesForUser(userId, Pages.clamp(pageSize))
+                : saveService.savesForUserAfter(userId, cursor, Pages.clamp(pageSize));
         return hydrator.hydrateSavedPosts(rows);
     }
 
@@ -636,7 +646,7 @@ public class CassandraFeedController {
     @GetMapping("/{postId}/shares")
     public List<ShareByPostEntity> shares(@PathVariable UUID postId,
                                           @RequestParam(defaultValue = "20") int pageSize) {
-        return shareService.recentShares(postId, pageSize);
+        return shareService.recentShares(postId, Pages.clamp(pageSize));
     }
 
     // ── Unified share-link API (parity with research / Q&A) ──────────────────

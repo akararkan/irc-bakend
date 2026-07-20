@@ -491,6 +491,10 @@ public class GlobalSearchService {
     }
 
     private final class Cursor {
+        /** Shared, thread-safe mapper — ObjectMapper construction is expensive
+         *  and was previously paid on every cursor encode/decode. */
+        private static final ObjectMapper CURSOR_MAPPER = new ObjectMapper();
+
         static String encode(List<FieldValue> sortValues) {
             if (sortValues == null || sortValues.isEmpty()) return null;
             try {
@@ -505,7 +509,7 @@ public class GlobalSearchService {
                         default      -> fv.toString();
                     });
                 }
-                String json = new ObjectMapper().writeValueAsString(raw);
+                String json = CURSOR_MAPPER.writeValueAsString(raw);
                 return Base64.getUrlEncoder().withoutPadding()
                         .encodeToString(json.getBytes(StandardCharsets.UTF_8));
             } catch (JsonProcessingException e) {
@@ -519,7 +523,7 @@ public class GlobalSearchService {
             try {
                 String json = new String(Base64.getUrlDecoder().decode(token),
                         StandardCharsets.UTF_8);
-                List<Object> raw = new ObjectMapper().readValue(json, List.class);
+                List<Object> raw = CURSOR_MAPPER.readValue(json, List.class);
                 List<FieldValue> out = new ArrayList<>(raw.size());
                 for (Object v : raw) {
                     if (v == null) out.add(FieldValue.NULL);

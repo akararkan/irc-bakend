@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -190,8 +191,31 @@ public class ResearchMapper {
     public ResearchSummaryResponse toSummary(Research r, UUID currentUserId,
                                              Boolean isSavedOverride, Boolean reactedOverride,
                                              java.time.LocalDateTime savedAt) {
+        return toSummary(r, currentUserId, isSavedOverride, reactedOverride, savedAt, null);
+    }
+
+    /**
+     * Feed-page overload: {@code preCounters} is this research's field map from
+     * ONE pipelined {@code CounterCache.getMany} call for the whole page —
+     * without it every card pays 7 sequential Redis HGETs (140 round trips on
+     * a 20-card page). Null/empty falls back to the per-field warming path.
+     */
+    public ResearchSummaryResponse toSummary(Research r, UUID currentUserId,
+                                             Boolean isSavedOverride, Boolean reactedOverride,
+                                             java.time.LocalDateTime savedAt,
+                                             Map<String, Long> preCounters) {
         User author = r.getResearcher();
-        long[] c = resolveCounters(r);
+        long[] c = (preCounters == null || preCounters.isEmpty())
+                ? resolveCounters(r)
+                : new long[] {
+                        preCounters.getOrDefault(CounterCache.F_VIEWS,     nz(r.getViewCount())),
+                        preCounters.getOrDefault(CounterCache.F_DOWNLOADS, nz(r.getDownloadCount())),
+                        preCounters.getOrDefault(CounterCache.F_REACTIONS, nz(r.getReactionCount())),
+                        preCounters.getOrDefault(CounterCache.F_COMMENTS,  nz(r.getCommentCount())),
+                        preCounters.getOrDefault(CounterCache.F_SAVES,     nz(r.getSaveCount())),
+                        preCounters.getOrDefault(CounterCache.F_SHARES,    nz(r.getShareCount())),
+                        preCounters.getOrDefault(CounterCache.F_CITATIONS, nz(r.getCitationCount())),
+                };
 
         boolean reacted = false;
         boolean saved   = false;

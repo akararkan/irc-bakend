@@ -6,6 +6,8 @@ import ak.dev.irc.app.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -32,16 +34,30 @@ import java.util.List;
 @Slf4j
 @Configuration
 @EnableWebSecurity
-// ⚠️ TESTING MODE — @EnableMethodSecurity disabled so @PreAuthorize annotations are ignored.
-// Re-enable before production!
-// @EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
+
+    /**
+     * Method security (@PreAuthorize enforcement) is ON by default. The whole
+     * authorization surface of this app is annotation-driven — over a hundred
+     * {@code @PreAuthorize} rules on the controllers — so this nested config
+     * is what actually locks the API down. Set {@code app.security.permit-all=true}
+     * (env var SECURITY_PERMIT_ALL) only for throwaway local testing where you
+     * want annotations ignored; it must never be set in production.
+     */
+    @Configuration
+    @ConditionalOnProperty(name = "app.security.permit-all", havingValue = "false", matchIfMissing = true)
+    @EnableMethodSecurity
+    public static class MethodSecurityConfig {
+    }
 
     private final JwtAuthenticationFilter jwtAuthFilter;
     private final JwtAuthenticationEntryPoint jwtEntryPoint;
     private final JwtAccessDeniedHandler jwtAccessDeniedHandler;
     private final UserDetailsService userDetailsService;
+
+    @Value("${app.security.permit-all:false}")
+    private boolean permitAll;
 
     /**
      * Extra origins from {@code CORS_ORIGINS} env var (comma-separated, exact).
@@ -55,7 +71,12 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 
-        log.info("IRC Security Filter Chain initializing — ALL REQUESTS PERMITTED (testing mode)");
+        if (permitAll) {
+            log.warn("IRC Security Filter Chain — app.security.permit-all=true: "
+                    + "@PreAuthorize enforcement is OFF. Local testing only — never set in production.");
+        } else {
+            log.info("IRC Security Filter Chain — method security ON (@PreAuthorize enforced).");
+        }
 
         http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -67,13 +88,21 @@ public class SecurityConfig {
                         .authenticationEntryPoint(jwtEntryPoint)
                         .accessDeniedHandler(jwtAccessDeniedHandler))
 
-                // ⚠️ TESTING MODE — permit everything, restore before production!
-                .authorizeHttpRequests(auth -> auth
-                        .anyRequest().permitAll()
-                )
+                // Endpoint-level authorization lives on the controllers as
+                // @PreAuthorize annotations (enforced by MethodSecurityConfig
+                // above). The chain stays permissive so optional-auth endpoints
+                // (anonymous view counts, public profiles, who-to-follow) keep
+                // working — with one belt-and-braces rule: admin routes require
+                // the ADMIN role at the chain level too, so a forgotten
+                // annotation can never expose them.
+                .authorizeHttpRequests(auth -> {
+                    if (!permitAll) {
+                        auth.requestMatchers("/api/v1/admin/**").hasRole("ADMIN");
+                    }
+                    auth.anyRequest().permitAll();
+                })
 
                 // JWT filter enabled so SecurityContext is populated from Bearer tokens.
-                // This does NOT block unauthenticated requests — permitAll() above handles that.
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
@@ -89,7 +118,9 @@ public class SecurityConfig {
         DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
         provider.setUserDetailsService(userDetailsService);
         provider.setPasswordEncoder(passwordEncoder());
-        provider.setHideUserNotFoundExceptions(false);
+        // Collapse "user not found" into BadCredentials so login responses
+        // can't be used to enumerate which emails are registered.
+        provider.setHideUserNotFoundExceptions(true);
         return provider;
     }
 

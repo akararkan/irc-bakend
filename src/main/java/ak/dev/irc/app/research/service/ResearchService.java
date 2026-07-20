@@ -34,9 +34,8 @@ public interface ResearchService {
 
     ResearchResponse retract(UUID researchId, UUID researcherId);
 
-    // ── Scheduled auto-publish ────────────────────────────────────────────────
-
-    void processScheduledPublications();
+    // Scheduled auto-publish is owned by ScheduledPublishJob (delegates to
+    // publish() per due draft) — no service-level scheduled method.
 
     // ── Media upload (Cloudflare R2) ─────────────────────────────────────────
 

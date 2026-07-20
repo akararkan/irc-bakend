@@ -70,6 +70,10 @@ public class CassandraViewService {
             return true;
         } catch (Exception e) {
             log.warn("[VIEW] record failed for post {} user {}: {}", postId, userId, e.getMessage());
+            // The NX dedupe key was claimed BEFORE this write; leaving it in
+            // place would suppress the user's view for the whole 7-day TTL
+            // even though nothing was recorded. Release it so a retry counts.
+            releaseDedupeKey(postId, userId);
             return false;
         }
     }
@@ -81,6 +85,15 @@ public class CassandraViewService {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    private void releaseDedupeKey(UUID postId, UUID userId) {
+        try {
+            redis.delete(REDIS_KEY_PREFIX + postId + ":" + userId);
+        } catch (Exception e) {
+            log.debug("[VIEW] dedupe-key release failed (view stays suppressed until TTL): {}",
+                    e.getMessage());
+        }
+    }
 
     private boolean alreadyCounted(UUID postId, UUID userId) {
         try {

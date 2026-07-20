@@ -33,8 +33,11 @@ import java.util.List;
 public class TrendingTagJob {
 
     private static final int TOP_K = 100;
+    // Every scope the tagging pipeline counts into MUST be rebuilt here, or
+    // GET /tags/trending?scope=X serves a permanently empty partition for it.
     private static final String[] SCOPES = {
-            ContentType.SCOPE_ALL, ContentType.QUESTION.name(), ContentType.RESEARCH.name()
+            ContentType.SCOPE_ALL, ContentType.QUESTION.name(), ContentType.RESEARCH.name(),
+            ContentType.POST.name(), ContentType.REEL.name()
     };
 
     private final TagCounterRepository  tagCounterRepo;

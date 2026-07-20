@@ -32,6 +32,13 @@ public class UserStatsService {
     private final QuestionRepository     questionRepo;
     private final PostByAuthorRepository postByAuthorRepo;
 
+    /**
+     * Cached for 30s (see RedisCacheConfig): this row costs SIX aggregate
+     * COUNTs across three datastores and sits on a public endpoint hit on
+     * every profile view. The short TTL turns a profile-view burst into one
+     * count sweep per user per 30s; sub-30s staleness is invisible for stats.
+     */
+    @org.springframework.cache.annotation.Cacheable(value = "user-stats", key = "#userId", sync = true)
     public UserStatsResponse statsFor(UUID userId) {
         long reels    = safe("reels", () -> postByAuthorRepo.countReelsByAuthor(userId));
         long allPosts = safe("posts", () -> postByAuthorRepo.countByAuthor(userId));

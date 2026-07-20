@@ -42,9 +42,12 @@ public class MentionSuggestionService {
     private final UserRepository userRepo;
     private final SocialGuard    socialGuard;
 
+    // Composite string key, NOT Objects.hash — a 32-bit hash can collide
+    // across (q, limit, viewer) triples and serve another viewer's
+    // block-filtered suggestions from cache.
     @Transactional(readOnly = true)
     @Cacheable(value = "mention-suggestions",
-               key = "T(java.util.Objects).hash(#q, #limit, #viewerId)",
+               key = "#q + ':' + #limit + ':' + #viewerId",
                unless = "#q == null || #q.isBlank()")
     public List<Suggestion> suggest(String q, int limit, UUID viewerId) {
         if (q == null) return List.of();

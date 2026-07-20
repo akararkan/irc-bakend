@@ -160,35 +160,63 @@ public class CassandraNotificationService {
         return notificationRepo.nextPage(userId, cursor, pageSize);
     }
 
-    public void markRead(UUID notificationId) {
-        lookupRepo.findById(notificationId).ifPresent(m -> {
-            notificationRepo.markRead(m.getUserId(), m.getCreatedAt(), notificationId);
-            counterService.decrementUnread(m.getUserId());
-        });
+    /**
+     * Owner-scoped mark-read. The lookup row must belong to {@code ownerId},
+     * so a caller can never mark another user's notification by guessing ids.
+     * The unread counter is only decremented when the row really was unread —
+     * repeated mark-read calls can't drift the badge count negative.
+     * Returns false when the id doesn't exist or isn't owned by the caller.
+     */
+    public boolean markRead(UUID notificationId, UUID ownerId) {
+        return lookupRepo.findById(notificationId)
+                .filter(m -> m.getUserId().equals(ownerId))
+                .map(m -> {
+                    boolean wasUnread = notificationRepo
+                            .findRow(m.getUserId(), m.getCreatedAt(), notificationId)
+                            .map(r -> !Boolean.TRUE.equals(r.getRead()))
+                            .orElse(false);
+                    notificationRepo.markRead(m.getUserId(), m.getCreatedAt(), notificationId);
+                    if (wasUnread) counterService.decrementUnread(m.getUserId());
+                    return true;
+                }).orElse(false);
     }
 
     /**
-     * Hard-delete one notification. Looks up the (user_id, created_at) PK via
-     * {@code notification_lookup}, removes the {@code notifications_by_user}
-     * row, and clears the lookup row. Decrements the unread counter if the
-     * row was still unread.
+     * Fast-path for inbox sweeps that already hold the row and verified it is
+     * unread: one write + one counter bump, no lookup and no point re-read.
      */
-    public boolean deleteById(UUID notificationId) {
-        return lookupRepo.findById(notificationId).map(meta -> {
-            try {
-                notificationRepo.deleteRow(meta.getUserId(),
-                                           meta.getCreatedAt(),
-                                           notificationId);
-                lookupRepo.deleteById(notificationId);
-                // The counter only tracks unread; we don't know prior is_read state
-                // from the lookup row, so we don't decrement here. The counter
-                // resyncs naturally on the next mark-read action.
-                return true;
-            } catch (Exception e) {
-                log.warn("[NOTIF] delete failed for {}: {}", notificationId, e.getMessage());
-                return false;
-            }
-        }).orElse(false);
+    public void markReadKnownUnread(UUID userId, Instant createdAt, UUID notificationId) {
+        notificationRepo.markRead(userId, createdAt, notificationId);
+        counterService.decrementUnread(userId);
+    }
+
+    /**
+     * Hard-delete one notification, owner-scoped. Looks up the
+     * (user_id, created_at) PK via {@code notification_lookup}, removes the
+     * {@code notifications_by_user} row, and clears the lookup row. The
+     * unread counter is decremented when the deleted row was still unread so
+     * the badge count can't drift upward permanently.
+     */
+    public boolean deleteById(UUID notificationId, UUID ownerId) {
+        return lookupRepo.findById(notificationId)
+                .filter(meta -> meta.getUserId().equals(ownerId))
+                .map(meta -> {
+                    try {
+                        boolean wasUnread = notificationRepo
+                                .findRow(meta.getUserId(), meta.getCreatedAt(), notificationId)
+                                .map(r -> !Boolean.TRUE.equals(r.getRead()))
+                                .orElse(false);
+                        notificationRepo.deleteRow(meta.getUserId(),
+                                                   meta.getCreatedAt(),
+                                                   notificationId);
+                        lookupRepo.deleteById(notificationId);
+                        if (wasUnread) counterService.decrementUnread(meta.getUserId());
+                        return true;
+                    } catch (Exception e) {
+                        log.warn("[NOTIF] delete failed for {}: {}", notificationId, e.getMessage());
+                        return false;
+                    }
+                }).orElse(false);
     }
 
     /**
@@ -421,7 +449,11 @@ public class CassandraNotificationService {
             p.put("resourceId",     n.getResourceId()   == null ? null : n.getResourceId().toString());
             p.put("groupKey",       n.getGroupKey());
             p.put("createdAt",      n.getCreatedAt().toString());
-            redis.convertAndSend(REDIS_CHANNEL_PREFIX + userId, objectMapper.writeValueAsString(p));
+            // {event, data} envelope — NotificationRedisSubscriber routes on
+            // "event" and forwards "data" as the SSE payload. Publishing the
+            // flat map would arrive as a notification event with data=null.
+            redis.convertAndSend(REDIS_CHANNEL_PREFIX + userId,
+                    objectMapper.writeValueAsString(Map.of("event", "notification", "data", p)));
         } catch (Exception e) {
             log.debug("[NOTIF] realtime publish skipped: {}", e.getMessage());
         }
@@ -440,7 +472,7 @@ public class CassandraNotificationService {
             p.put("groupKey",       req.groupKey());
             p.put("coalesced",      Boolean.TRUE);
             redis.convertAndSend(REDIS_CHANNEL_PREFIX + req.userId(),
-                                  objectMapper.writeValueAsString(p));
+                    objectMapper.writeValueAsString(Map.of("event", "notification", "data", p)));
         } catch (Exception e) {
             log.debug("[NOTIF] coalesce push skipped: {}", e.getMessage());
         }

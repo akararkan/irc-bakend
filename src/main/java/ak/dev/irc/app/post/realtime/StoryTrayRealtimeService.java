@@ -68,7 +68,9 @@ public class StoryTrayRealtimeService {
             List<SseEmitter> list = sessions.get(viewerId);
             if (list != null) {
                 list.remove(emitter);
-                if (list.isEmpty()) sessions.remove(viewerId);
+                // Two-arg remove: a concurrent subscribe may have re-populated
+                // this bucket; only unmap it if it is still this instance.
+                if (list.isEmpty()) sessions.remove(viewerId, list);
             }
         };
         emitter.onCompletion(cleanup);
@@ -92,7 +94,8 @@ public class StoryTrayRealtimeService {
         List<SseEmitter> emitters = sessions.get(viewerId);
         if (emitters == null || emitters.isEmpty()) return;
 
-        String eventName = event.getEventType().name().toLowerCase();
+        String eventName = event.getEventType() == null
+                ? "tray-event" : event.getEventType().name().toLowerCase();
         for (SseEmitter emitter : emitters) {
             try {
                 emitter.send(SseEmitter.event().name(eventName).data(event));

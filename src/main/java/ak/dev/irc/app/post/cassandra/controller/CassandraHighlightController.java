@@ -22,12 +22,16 @@ public class CassandraHighlightController {
 
     private final CassandraHighlightService highlightService;
 
+    /** {@code authorId} in the body is accepted for backward compatibility but IGNORED —
+     *  the owner is always the authenticated caller. */
     public record CreateHighlightRequest(UUID authorId, String title, String coverUrl,
                                          int displayOrder) {}
 
     @PostMapping
-    public HighlightByAuthorEntity create(@RequestBody CreateHighlightRequest req) {
-        return highlightService.createHighlight(req.authorId(), req.title(),
+    public HighlightByAuthorEntity create(@RequestBody CreateHighlightRequest req,
+                                          @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        return highlightService.createHighlight(user.getId(), req.title(),
                                                 req.coverUrl(), req.displayOrder());
     }
 
@@ -39,8 +43,11 @@ public class CassandraHighlightController {
     @PostMapping("/{highlightId}/stories/{storyId}")
     public ResponseEntity<StoryInHighlightEntity> addStory(@PathVariable UUID highlightId,
                                                            @PathVariable UUID storyId,
-                                                           @RequestParam UUID requesterId) {
-        return highlightService.addStoryToHighlight(highlightId, storyId, requesterId)
+                                                           @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        // Actor comes from the JWT — a client-supplied requesterId would defeat
+        // the service's author check entirely.
+        return highlightService.addStoryToHighlight(highlightId, storyId, user.getId())
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
@@ -53,8 +60,10 @@ public class CassandraHighlightController {
     @DeleteMapping("/{highlightId}/stories/{storyId}")
     public ResponseEntity<Void> removeStory(@PathVariable UUID highlightId,
                                             @PathVariable UUID storyId,
-                                            @RequestParam Instant createdAt) {
-        highlightService.removeStoryFromHighlight(highlightId, createdAt, storyId);
+                                            @RequestParam Instant createdAt,
+                                            @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        highlightService.removeStoryFromHighlight(highlightId, createdAt, storyId, user.getId());
         return ResponseEntity.noContent().build();
     }
 

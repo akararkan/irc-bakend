@@ -35,8 +35,10 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ApiErrorResponse {
 
+    /** UTC — JacksonConfig appends a literal 'Z' to every LocalDateTime, so the
+     *  value must actually BE UTC or the label lies on non-UTC servers. */
     @Builder.Default
-    private LocalDateTime timestamp = LocalDateTime.now();
+    private LocalDateTime timestamp = LocalDateTime.now(java.time.ZoneOffset.UTC);
 
     /** HTTP status code (e.g. 400, 401, 404, 500) */
     private int status;

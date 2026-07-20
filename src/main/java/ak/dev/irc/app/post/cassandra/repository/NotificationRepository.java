@@ -27,6 +27,13 @@ public interface NotificationRepository extends CassandraRepository<Notification
                                       @Param("cursor") Instant cursor,
                                       @Param("pageSize") int pageSize);
 
+    /** Point-read one row by its full PK — used to check is_read before counter updates. */
+    @Query("SELECT * FROM notifications_by_user " +
+           "WHERE user_id = :userId AND created_at = :createdAt AND notification_id = :notificationId")
+    java.util.Optional<NotificationEntity> findRow(@Param("userId") UUID userId,
+                                                   @Param("createdAt") Instant createdAt,
+                                                   @Param("notificationId") UUID notificationId);
+
     @Query("UPDATE notifications_by_user SET is_read = true " +
            "WHERE user_id = :userId AND created_at = :createdAt AND notification_id = :notificationId")
     void markRead(@Param("userId") UUID userId,

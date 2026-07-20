@@ -240,14 +240,20 @@ public class UserServiceImpl implements UserService {
     //  SEARCH
     // ══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Hard cap on how many ranked ids a text search will pull. Search UIs
+     * never page this deep; the cap bounds the IN-clause batch load and the
+     * response-time worst case no matter what page/size the client sends.
+     */
+    private static final int MAX_SEARCH_RESULTS = 200;
+
     @Override
     @Transactional(readOnly = true)
     public Page<UserResponse> searchUsers(String query, Pageable pageable) {
-        Page<User> raw = (query == null || query.isBlank())
-            ? userRepository.findAllActive(pageable)
-            : userRepository.searchUsers(query, pageable);
-
-        return raw.map(userMapper::toResponse);
+        if (query == null || query.isBlank()) {
+            return userRepository.findAllActive(pageable).map(userMapper::toResponse);
+        }
+        return pageRanked(searchRanked(query.trim(), fetchLimit(pageable)), pageable, u -> true);
     }
 
     @Override
@@ -256,8 +262,48 @@ public class UserServiceImpl implements UserService {
         var roles = java.util.List.of(
                 ak.dev.irc.app.user.enums.Role.RESEARCHER,
                 ak.dev.irc.app.user.enums.Role.SCHOLAR);
-        return userRepository.searchUsersByRoles(query == null ? "" : query.trim(), roles, pageable)
-                .map(userMapper::toResponse);
+        if (query == null || query.isBlank()) {
+            return userRepository.findActiveByRoles(roles, pageable).map(userMapper::toResponse);
+        }
+        return pageRanked(searchRanked(query.trim(), fetchLimit(pageable)),
+                pageable, u -> roles.contains(u.getRole()));
+    }
+
+    /**
+     * Ranked id search riding the GIN indexes instead of a sequential-scan
+     * {@code LIKE '%q%'}: full-text first, trigram fuzzy as fallback, and the
+     * prefix matcher for queries too short to form trigrams. Emails are
+     * deliberately NOT searchable here — use the dedicated email lookup.
+     */
+    private java.util.List<User> searchRanked(String q, int fetchLimit) {
+        java.util.List<Object[]> hits = q.length() < 3
+            ? userRepository.findMentionCandidates(q, fetchLimit)
+            : userRepository.searchUsersFts(q, fetchLimit);
+        if (hits.isEmpty() && q.length() >= 3) {
+            hits = userRepository.searchUsersTrgm(q, fetchLimit);
+        }
+        if (hits.isEmpty()) return java.util.List.of();
+
+        java.util.List<UUID> ids = hits.stream().map(r -> (UUID) r[0]).toList();
+        java.util.Map<UUID, User> byId = userRepository.findActiveByIdIn(ids).stream()
+            .collect(java.util.stream.Collectors.toMap(User::getId, u -> u));
+        // Re-apply the ranking order lost by the batch load.
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
+
+    private Page<UserResponse> pageRanked(java.util.List<User> ranked, Pageable pageable,
+                                          java.util.function.Predicate<User> filter) {
+        java.util.List<User> filtered = ranked.stream().filter(filter).toList();
+        java.util.List<UserResponse> slice = filtered.stream()
+            .skip(pageable.getOffset())
+            .limit(pageable.getPageSize())
+            .map(userMapper::toResponse)
+            .toList();
+        return new org.springframework.data.domain.PageImpl<>(slice, pageable, filtered.size());
+    }
+
+    private int fetchLimit(Pageable pageable) {
+        return (int) Math.min(pageable.getOffset() + pageable.getPageSize(), MAX_SEARCH_RESULTS);
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -67,6 +67,11 @@ public class RedisMessagingConfig {
         RedisMessageListenerContainer container = new ResilientRedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
         container.setRecoveryInterval(5000L);
+        // Bounded pool for message dispatch. Without this the container uses
+        // SimpleAsyncTaskExecutor, which spawns an unbounded new thread per
+        // dispatch burst; with it, a slow SSE consumer can only tie up a
+        // bounded number of workers while other channels keep flowing.
+        container.setTaskExecutor(redisListenerExecutor());
 
         // Per-user notification channels.
         container.addMessageListener(notificationSubscriber,
@@ -106,6 +111,20 @@ public class RedisMessagingConfig {
                 new PatternTopic(UserActivityRealtimePublisher.CHANNEL_PREFIX + "*"));
 
         return container;
+    }
+
+    @Bean
+    public org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor redisListenerExecutor() {
+        var exec = new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        exec.setThreadNamePrefix("redis-sub-");
+        exec.setCorePoolSize(4);
+        exec.setMaxPoolSize(8);
+        exec.setQueueCapacity(1000);
+        // On overload the Redis dispatch thread runs the task itself —
+        // natural backpressure instead of dropped realtime events.
+        exec.setRejectedExecutionHandler(new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+        exec.initialize();
+        return exec;
     }
 
     /**

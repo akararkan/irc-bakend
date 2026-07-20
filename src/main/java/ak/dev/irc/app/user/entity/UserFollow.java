@@ -15,7 +15,12 @@ import java.time.LocalDateTime;
     ),
     indexes = {
         @Index(name = "idx_follow_follower",  columnList = "follower_id"),
-        @Index(name = "idx_follow_following", columnList = "following_id")
+        @Index(name = "idx_follow_following", columnList = "following_id"),
+        // Composite covering indexes: the public followers/following pages
+        // ORDER BY followed_at DESC — without these Postgres must sort every
+        // page after the single-column index scan.
+        @Index(name = "idx_follow_following_at", columnList = "following_id, followed_at DESC"),
+        @Index(name = "idx_follow_follower_at",  columnList = "follower_id, followed_at DESC")
     }
 )
 @Getter
