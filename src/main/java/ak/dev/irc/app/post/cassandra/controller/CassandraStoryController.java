@@ -133,11 +133,13 @@ public class CassandraStoryController {
         return ResponseEntity.accepted().build();
     }
 
-    /** Viewer log for a story — newest first. Author would typically call this. */
+    /** Viewer log for a story — newest first. Author only (403 otherwise). */
     @GetMapping("/stories/{storyId}/views")
     public List<StoryViewEntity> viewers(@PathVariable UUID storyId,
-                                         @RequestParam(defaultValue = "50") int pageSize) {
-        return storyService.viewersFor(storyId, pageSize);
+                                         @RequestParam(defaultValue = "50") int pageSize,
+                                         @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        return storyService.viewersFor(storyId, user.getId(), pageSize);
     }
 
     /**
@@ -251,9 +253,15 @@ public class CassandraStoryController {
                 .map(v -> Map.<String, Object>of("pollId", pollId, "voterId", voterId,
                                                   "choice", v.getChoice(),
                                                   "votedAt", v.getVotedAt()))
-                .orElseGet(() -> Map.<String, Object>of("pollId", pollId,
-                                                        "voterId", voterId,
-                                                        "choice", (Object) null));
+                // HashMap, not Map.of — Map.of rejects null values, so the
+                // "hasn't voted yet" branch used to 500 with an NPE.
+                .orElseGet(() -> {
+                    Map<String, Object> none = new java.util.HashMap<>();
+                    none.put("pollId", pollId);
+                    none.put("voterId", voterId);
+                    none.put("choice", null);
+                    return none;
+                });
     }
 
     /** Live tallies — no auth needed, mirrors what the poll UI shows. */

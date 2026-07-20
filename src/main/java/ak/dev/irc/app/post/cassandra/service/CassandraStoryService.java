@@ -333,7 +333,17 @@ public class CassandraStoryService {
         return remainingTtlSeconds(expiresAt, Instant.now());
     }
 
-    public List<StoryViewEntity> viewersFor(UUID storyId, int pageSize) {
+    /**
+     * Viewer log — AUTHOR ONLY. Who watched your story is private to you
+     * (Instagram semantics); without this check any caller could pull any
+     * story's viewer list — a privacy leak and social-graph scraping vector.
+     */
+    public List<StoryViewEntity> viewersFor(UUID storyId, UUID requesterId, int pageSize) {
+        StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
+        if (meta == null) return List.of();
+        if (requesterId == null || !requesterId.equals(meta.getAuthorId())) {
+            throw new SecurityException("Only the story author can view the viewer log");
+        }
         return storyViewRepo.recent(storyId, pageSize);
     }
 }

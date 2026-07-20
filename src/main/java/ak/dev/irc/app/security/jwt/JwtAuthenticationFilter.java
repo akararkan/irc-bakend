@@ -38,10 +38,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final UserDetailsService userDetailsService;
     private final ObjectMapper       objectMapper;
 
-    // ── Skip filter entirely for auth routes ─────────────────────────────────
+    // ── Skip only the PUBLIC auth routes ─────────────────────────────────────
+    // Not the whole /api/v1/auth/** prefix: /logout, /logout-all and
+    // /change-password carry @PreAuthorize("isAuthenticated()"), so their
+    // Bearer tokens MUST be processed — a blanket skip left the
+    // SecurityContext empty and 403'd every caller once method security
+    // was enforced.
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getServletPath().startsWith("/api/v1/auth/");
+        String path = request.getServletPath();
+        return path.equals("/api/v1/auth/login")
+                || path.equals("/api/v1/auth/register")
+                || path.equals("/api/v1/auth/refresh");
     }
 
     @Override

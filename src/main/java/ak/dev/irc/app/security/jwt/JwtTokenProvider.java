@@ -40,11 +40,16 @@ public class JwtTokenProvider {
     private final String cookiePath;
     private final int cookieMaxAge;
 
+    // Each key resolves ${jwt.*} first (env-var deployments) and falls back to
+    // the ${app.jwt.*} section application.yaml actually defines. Before this
+    // chain, the yaml values were silently ignored — the app only worked
+    // because the hardcoded defaults happened to match, and ${jwt.secret}
+    // (no default) required an external env var to boot.
     public JwtTokenProvider(
-            @Value("${jwt.secret}") String base64Secret,
-            @Value("${jwt.expiration-ms:3600000}") long accessMs,
-            @Value("${jwt.refresh-expiration-ms:604800000}") long refreshMs,
-            @Value("${jwt.issuer:irc-platform}") String issuer,
+            @Value("${jwt.secret:${app.jwt.secret:}}") String base64Secret,
+            @Value("${jwt.expiration-ms:${app.jwt.access-token-expiration-ms:3600000}}") long accessMs,
+            @Value("${jwt.refresh-expiration-ms:${app.jwt.refresh-token-expiration-ms:604800000}}") long refreshMs,
+            @Value("${jwt.issuer:${app.jwt.issuer:irc-platform}}") String issuer,
             @Value("${jwt.cookie-name:IRC_TOKEN}") String cookieName,
             @Value("${jwt.cookie-secure:false}") boolean cookieSecure,
             @Value("${jwt.cookie-http-only:true}") boolean cookieHttpOnly,
