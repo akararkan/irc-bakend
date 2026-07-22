@@ -40,6 +40,11 @@ public enum NotificationType {
     STORY_REPLIED,        // someone replied to your story
     SOUND_APPROVED,       // your uploaded sound was approved
 
+    // ── Chat / Messaging ─────────────────────────────────────
+    NEW_MESSAGE,          // a new message for an offline recipient
+    MESSAGE_REQUEST,      // a stranger's first message (Requests inbox)
+    ADDED_TO_GROUP,       // someone added you to a group
+
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,
     ACCOUNT_WARNING,

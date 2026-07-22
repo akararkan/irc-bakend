@@ -305,6 +305,11 @@ public class EmailTemplate {
             case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT -> "sent you a system message";
             case ACCOUNT_WARNING                     -> "issued an account warning";
 
+            // Chat kinds are in-app only (never emailed) but must be covered here.
+            case NEW_MESSAGE      -> "sent you a message";
+            case MESSAGE_REQUEST  -> "wants to send you a message";
+            case ADDED_TO_GROUP   -> "added you to a group";
+
             case STORY_PUBLISHED  -> "published a new story";
             case STORY_REACTED    -> "reacted to your story";
             case STORY_REPLIED    -> "replied to your story";

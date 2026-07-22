@@ -21,6 +21,8 @@ public enum NotificationCategory {
     MENTIONS,
     /** Social: follows, blocks, unblocks, restrictions, connection requests. */
     SOCIAL,
+    /** Chat: new messages, message requests, group adds. */
+    CHAT,
     /** System / account / announcements. */
     SYSTEM;
 
@@ -58,6 +60,12 @@ public enum NotificationCategory {
             NotificationType.CONNECTION_ACCEPTED
     );
 
+    private static final Set<NotificationType> CHAT_TYPES = EnumSet.of(
+            NotificationType.NEW_MESSAGE,
+            NotificationType.MESSAGE_REQUEST,
+            NotificationType.ADDED_TO_GROUP
+    );
+
     private static final Set<NotificationType> SYSTEM_TYPES = EnumSet.of(
             NotificationType.SYSTEM_MESSAGE,
             NotificationType.SYSTEM_ANNOUNCEMENT,
@@ -78,6 +86,7 @@ public enum NotificationCategory {
         if (POST_TYPES.contains(type))     return POSTS;
         if (QNA_TYPES.contains(type))      return QNA;
         if (RESEARCH_TYPES.contains(type)) return RESEARCH;
+        if (CHAT_TYPES.contains(type))     return CHAT;
         if (SOCIAL_TYPES.contains(type))   return SOCIAL;
         if (SYSTEM_TYPES.contains(type))   return SYSTEM;
         return SYSTEM;
@@ -90,6 +99,7 @@ public enum NotificationCategory {
             case RESEARCH -> RESEARCH_TYPES;
             case MENTIONS -> EnumSet.of(NotificationType.USER_MENTIONED);
             case SOCIAL   -> SOCIAL_TYPES;
+            case CHAT     -> CHAT_TYPES;
             case SYSTEM   -> SYSTEM_TYPES;
         };
     }

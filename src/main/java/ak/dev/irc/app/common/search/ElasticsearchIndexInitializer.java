@@ -1,5 +1,6 @@
 package ak.dev.irc.app.common.search;
 
+import ak.dev.irc.app.chat.search.document.ChatMessageDocument;
 import ak.dev.irc.app.post.search.document.PostSearchDocument;
 import ak.dev.irc.app.qna.search.document.QnaSearchDocument;
 import ak.dev.irc.app.research.search.document.ResearchSearchDocument;
@@ -38,9 +39,10 @@ public class ElasticsearchIndexInitializer {
 
     @EventListener(ApplicationReadyEvent.class)
     public void ensureIndicesExist() {
-        ensureIndex(PostSearchDocument.class,     "irc-posts");
-        ensureIndex(QnaSearchDocument.class,      "irc-qna");
-        ensureIndex(ResearchSearchDocument.class, "irc-research");
+        ensureIndex(PostSearchDocument.class,       "irc-posts");
+        ensureIndex(QnaSearchDocument.class,        "irc-qna");
+        ensureIndex(ResearchSearchDocument.class,   "irc-research");
+        ensureIndex(ChatMessageDocument.class,      "irc-chat-messages");
     }
 
     private void ensureIndex(Class<?> documentClass, String label) {

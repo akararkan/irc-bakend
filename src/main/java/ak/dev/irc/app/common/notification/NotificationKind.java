@@ -125,6 +125,22 @@ public enum NotificationKind {
     UNBLOCKED            (PrefCategory.SOCIAL,   false, true),
 
     // ────────────────────────────────────────────────────────────────────────
+    //  CHAT / MESSAGING — in-app only (emailEligible=false) so an active
+    //  conversation never floods a mailbox; the SSE stream is the live path,
+    //  these bell rows are for offline / backgrounded recipients.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /** A new direct/group message for an offline recipient. Aggregated per
+     *  conversation via {@code NEW_MESSAGE:{conversationId}}. */
+    NEW_MESSAGE          (PrefCategory.SOCIAL,   true,  false),
+
+    /** A stranger's first message landed in your Message Requests inbox. */
+    MESSAGE_REQUEST      (PrefCategory.SOCIAL,   false, false),
+
+    /** Someone added you to a group conversation. */
+    ADDED_TO_GROUP       (PrefCategory.SOCIAL,   false, false),
+
+    // ────────────────────────────────────────────────────────────────────────
     //  POSTS — full details in the class Javadoc table above.
     //  All post kinds are email-eligible; per-recipient prefs + the 1h
     //  per-group email throttle keep volume sane.

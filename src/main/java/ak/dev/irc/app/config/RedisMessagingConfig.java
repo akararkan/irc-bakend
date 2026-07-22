@@ -4,6 +4,8 @@ import ak.dev.irc.app.activity.realtime.UserActivityRealtimePublisher;
 import ak.dev.irc.app.activity.realtime.UserActivityRealtimeSubscriber;
 import ak.dev.irc.app.audit.realtime.AuditRealtimePublisher;
 import ak.dev.irc.app.audit.realtime.AuditRealtimeSubscriber;
+import ak.dev.irc.app.chat.realtime.ChatRedisPublisher;
+import ak.dev.irc.app.chat.realtime.ChatRedisSubscriber;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import ak.dev.irc.app.post.realtime.PostRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.StoryRealtimePublisher;
@@ -62,7 +64,8 @@ public class RedisMessagingConfig {
             QnaRealtimeSubscriber            qnaSubscriber,
             ResearchRealtimeSubscriber       researchSubscriber,
             AuditRealtimeSubscriber          auditSubscriber,
-            UserActivityRealtimeSubscriber   activitySubscriber) {
+            UserActivityRealtimeSubscriber   activitySubscriber,
+            ChatRedisSubscriber              chatSubscriber) {
 
         RedisMessageListenerContainer container = new ResilientRedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
@@ -109,6 +112,12 @@ public class RedisMessagingConfig {
         // the moment a row is written, on any instance.
         container.addMessageListener(activitySubscriber,
                 new PatternTopic(UserActivityRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Per-user chat channels — the single chat SSE stream's cross-instance
+        // bridge (new messages, edits, deletes, reactions, receipts, typing,
+        // presence, group events), keyed by recipient userId.
+        container.addMessageListener(chatSubscriber,
+                new PatternTopic(ChatRedisPublisher.CHANNEL_PREFIX + "*"));
 
         return container;
     }

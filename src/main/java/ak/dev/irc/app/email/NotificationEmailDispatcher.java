@@ -124,6 +124,8 @@ public class NotificationEmailDispatcher {
             case MENTIONS            -> ctx.emailMentionsEnabled();
             case SYSTEM              -> ctx.emailSystemEnabled();
             case POSTS, QNA, RESEARCH -> ctx.emailSocialEnabled();
+            // Chat is in-app only (kinds are emailEligible=false) — gate under social if ever reached.
+            case CHAT                -> ctx.emailSocialEnabled();
         };
     }
 }
