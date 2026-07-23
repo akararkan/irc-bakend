@@ -30,6 +30,7 @@ public class PresenceService {
 
     private final StringRedisTemplate redis;
     private final SocialGuard socialGuard;
+    private final ChatSettingsService chatSettings;
 
     /** Mark the user online / refresh the TTL (called on stream open + heartbeat).
      *  Also stamps last-seen on every refresh so that when the presence key later
@@ -63,6 +64,44 @@ public class PresenceService {
         }
     }
 
+    /** The online subset of a batch — one MGET instead of a per-user round-trip. */
+    public java.util.Set<UUID> onlineAmong(Collection<UUID> userIds) {
+        if (userIds == null || userIds.isEmpty()) return java.util.Set.of();
+        List<UUID> ids = new ArrayList<>(userIds);
+        try {
+            List<String> vals = redis.opsForValue()
+                    .multiGet(ids.stream().map(id -> PRESENCE_PREFIX + id).toList());
+            java.util.Set<UUID> online = new java.util.HashSet<>();
+            if (vals != null) {
+                for (int i = 0; i < ids.size(); i++) {
+                    if (vals.get(i) != null) online.add(ids.get(i));
+                }
+            }
+            return online;
+        } catch (Exception e) {
+            return java.util.Set.of(); // fail closed = offline, same as isOnline
+        }
+    }
+
+    /** Last-seen for a batch — one MGET; absent/garbled entries yield no value. */
+    private java.util.Map<UUID, Long> lastSeenAmong(List<UUID> ids) {
+        java.util.Map<UUID, Long> out = new java.util.HashMap<>();
+        if (ids.isEmpty()) return out;
+        try {
+            List<String> vals = redis.opsForValue()
+                    .multiGet(ids.stream().map(id -> LASTSEEN_PREFIX + id).toList());
+            if (vals != null) {
+                for (int i = 0; i < ids.size(); i++) {
+                    String v = vals.get(i);
+                    if (v != null) {
+                        try { out.put(ids.get(i), Long.parseLong(v)); } catch (NumberFormatException ignored) { }
+                    }
+                }
+            }
+        } catch (Exception ignored) { /* best-effort */ }
+        return out;
+    }
+
     public PresenceResponse presenceOf(UUID userId) {
         boolean online = isOnline(userId);
         Long lastSeen = null;
@@ -76,8 +115,16 @@ public class PresenceService {
     }
 
     public List<PresenceResponse> presenceOf(Collection<UUID> userIds) {
-        List<PresenceResponse> out = new ArrayList<>(userIds.size());
-        for (UUID id : userIds) out.add(presenceOf(id));
+        List<UUID> ids = new ArrayList<>(userIds);
+        java.util.Set<UUID> online = onlineAmong(ids);
+        java.util.Map<UUID, Long> lastSeen = lastSeenAmong(
+                ids.stream().filter(id -> !online.contains(id)).toList());
+        List<PresenceResponse> out = new ArrayList<>(ids.size());
+        for (UUID id : ids) {
+            out.add(online.contains(id)
+                    ? new PresenceResponse(id, "online", null)
+                    : new PresenceResponse(id, "offline", lastSeen.get(id)));
+        }
         return out;
     }
 
@@ -91,12 +138,27 @@ public class PresenceService {
         // rather than a per-id block query.
         java.util.Set<UUID> blocked = viewerId == null ? java.util.Set.of()
                 : new java.util.HashSet<>(socialGuard.findRelatedBlockedIds(viewerId));
+        // Last-seen is symmetric: if the VIEWER hides theirs, they can't see others';
+        // and a target who hides theirs is never shown with a last-seen time.
+        boolean viewerHidesLastSeen = viewerId != null && !chatSettings.lastSeenVisible(viewerId);
+        java.util.Set<UUID> targetsHidingLastSeen = viewerHidesLastSeen
+                ? new java.util.HashSet<>(userIds) : chatSettings.lastSeenHiddenAmong(userIds);
+        // Batched Redis reads (one MGET each for presence + last-seen) instead of
+        // two round-trips per user.
+        List<UUID> visible = userIds.stream().filter(id -> !blocked.contains(id)).toList();
+        java.util.Set<UUID> online = onlineAmong(visible);
+        java.util.Map<UUID, Long> lastSeen = lastSeenAmong(
+                visible.stream().filter(id -> !online.contains(id)).toList());
         List<PresenceResponse> out = new ArrayList<>(userIds.size());
         for (UUID id : userIds) {
             if (blocked.contains(id)) {
                 out.add(new PresenceResponse(id, "offline", null));
+            } else if (online.contains(id)) {
+                out.add(new PresenceResponse(id, "online", null));
             } else {
-                out.add(presenceOf(id));
+                // Suppress the last-seen timestamp (keep online/offline status).
+                out.add(new PresenceResponse(id, "offline",
+                        targetsHidingLastSeen.contains(id) ? null : lastSeen.get(id)));
             }
         }
         return out;

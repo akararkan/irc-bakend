@@ -52,6 +52,8 @@ public class MessageQueryService {
     private final ConversationRepository conversationRepo;
     private final ConversationMemberRepository memberRepo;
     private final ConversationPinRepository pinRepo;
+    private final ak.dev.irc.app.chat.repository.HiddenMessageRepository hiddenRepo;
+    private final ak.dev.irc.app.chat.repository.MessageStarRepository starRepo;
     private final ReactionService reactionService;
     private final ChatSearchService chatSearch;
     private final ChatMapper mapper;
@@ -99,14 +101,17 @@ public class MessageQueryService {
 
     @Transactional(readOnly = true)
     public List<MessageResponse> sync(UUID conversationId, UUID userId, long afterId, int limit) {
-        requireConversation(conversationId);
-        requireReadableMember(conversationId, userId);
+        Conversation convo = requireConversation(conversationId);
+        ConversationMember me = requireReadableMember(conversationId, userId);
+        // Never return anything the caller has cleared ("deleted for me").
+        Long floorId = floorMessageId(convo, me);
+        long effectiveAfter = (floorId != null && floorId - 1 > afterId) ? floorId - 1 : afterId;
 
-        int fromBucket = ChatBuckets.bucketOf(afterId);
+        int fromBucket = ChatBuckets.bucketOf(effectiveAfter);
         int toBucket = ChatBuckets.currentBucket();
         List<MessageByConversationEntity> out = new ArrayList<>();
         for (int bucket = fromBucket; bucket <= toBucket && out.size() < limit; bucket++) {
-            out.addAll(messageRepo.pageAfter(conversationId, bucket, afterId, limit - out.size()));
+            out.addAll(messageRepo.pageAfter(conversationId, bucket, effectiveAfter, limit - out.size()));
         }
         // pageAfter returns DESC within a bucket; present ascending for append.
         out.sort(Comparator.comparingLong(MessageByConversationEntity::getMessageId));
@@ -119,18 +124,69 @@ public class MessageQueryService {
     public MessageResponse getOne(long messageId, UUID userId) {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
-        requireReadableMember(m.getConversationId(), userId);
+        Conversation convo = requireConversation(m.getConversationId());
+        ConversationMember me = requireReadableMember(m.getConversationId(), userId);
+        // A message the caller cleared ("delete for me") — conversation- or
+        // message-level — is not theirs to open.
+        Long floorId = floorMessageId(convo, me);
+        if (floorId != null && messageId < floorId) {
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
+        if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) {
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
         Map<UUID, User> users = loadUsers(Set.of(m.getSenderId()));
         ReplyPreview reply = m.getReplyToId() == null ? null
                 : mapper.toReplyPreview(messageByIdRepo.findById(m.getReplyToId()).orElse(null));
-        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply);
+        boolean starred = starRepo.findByUserIdAndMessageId(userId, messageId).isPresent();
+        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply, starred);
+    }
+
+    /** Hydrate an explicit list of message ids for the caller (e.g. the starred list) —
+     *  drops deleted/system/hidden, flags starred + reactedByMe, and honours each
+     *  message's own conversation clear/join floor, preserving the given order. */
+    @Transactional(readOnly = true)
+    public List<MessageResponse> messagesByIds(List<Long> ids, UUID userId) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        // The starred list spans conversations, so a single scalar floor is wrong:
+        // resolve each message's conversation and apply THAT conversation's own clear
+        // ("delete for me") / hidden-history join floor. Mirrors searchAll.
+        Map<Long, MessageByIdEntity> byId = messageByIdRepo.findAllByMessageIdIn(ids).stream()
+                .collect(Collectors.toMap(MessageByIdEntity::getMessageId, e -> e, (a, b) -> a));
+        Set<UUID> convIds = byId.values().stream().map(MessageByIdEntity::getConversationId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, Conversation> live = convIds.isEmpty() ? Map.of()
+                : conversationRepo.findAllById(convIds).stream()
+                    .filter(c -> c.getDeletedAt() == null)
+                    .collect(Collectors.toMap(Conversation::getId, c -> c));
+        Map<UUID, Long> floorByConv = new HashMap<>();
+        if (!live.isEmpty()) {
+            for (ConversationMember m : memberRepo.findMyMembershipsIn(userId, live.keySet())) {
+                Long fl = floorMessageId(live.get(m.getId().getConversationId()), m);
+                if (fl != null) floorByConv.put(m.getId().getConversationId(), fl);
+            }
+        }
+        return hydrateByIds(ids, userId, msg -> {
+            Conversation c = live.get(msg.getConversationId());
+            if (c == null) return false;                     // deleted conversation / not a member
+            Long fl = floorByConv.get(msg.getConversationId());
+            return fl == null || msg.getMessageId() >= fl;   // honour clear / join floor
+        }, true);
     }
 
     @Transactional(readOnly = true)
     public List<ReactionSummary> reactions(long messageId, UUID userId) {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
-        requireReadableMember(m.getConversationId(), userId);
+        Conversation convo = requireConversation(m.getConversationId());
+        ConversationMember me = requireReadableMember(m.getConversationId(), userId);
+        Long floorId = floorMessageId(convo, me);
+        if (floorId != null && messageId < floorId) {   // cleared or pre-join → not visible
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
+        if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) {  // "delete for me" → not visible
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
         return reactionService.detailFor(messageId, userId);
     }
 
@@ -201,14 +257,17 @@ public class MessageQueryService {
         });
     }
 
-    /** Pinned messages of a conversation, newest pin first. */
+    /** Pinned messages of a conversation, newest pin first. Honours the caller's
+     *  history/clear floor so a pinned message that is pre-join (hidden-history
+     *  group) or cleared ("deleted for me") is not leaked back through this list. */
     @Transactional(readOnly = true)
     public List<MessageResponse> pinnedMessages(UUID conversationId, UUID userId) {
-        requireConversation(conversationId);
-        requireReadableMember(conversationId, userId);
+        Conversation convo = requireConversation(conversationId);
+        ConversationMember me = requireReadableMember(conversationId, userId);
+        Long floorId = floorMessageId(convo, me);
         List<Long> ids = pinRepo.findByConversationIdOrderByPinnedAtDesc(conversationId).stream()
                 .map(ConversationPin::getMessageId).toList();
-        return hydrateByIds(ids, userId, (Long) null);
+        return hydrateByIds(ids, userId, floorId);
     }
 
     private List<MessageResponse> scanSearch(Conversation convo, ConversationMember me, String q, int limit) {
@@ -242,17 +301,25 @@ public class MessageQueryService {
 
     /** Single-conversation hydration with one history floor (search / pinned). */
     private List<MessageResponse> hydrateByIds(List<Long> ids, UUID viewerId, Long floorId) {
-        return hydrateByIds(ids, viewerId, m -> floorId == null || m.getMessageId() >= floorId);
+        return hydrateByIds(ids, viewerId, m -> floorId == null || m.getMessageId() >= floorId, false);
+    }
+
+    /** Hydrate with a custom visibility predicate; reactions without the viewer flag. */
+    private List<MessageResponse> hydrateByIds(List<Long> ids, UUID viewerId,
+                                               java.util.function.Predicate<MessageByIdEntity> visible) {
+        return hydrateByIds(ids, viewerId, visible, false);
     }
 
     /**
      * Hydrate a ranked list of message ids, preserving order and dropping deleted,
-     * system, and any message the {@code visible} predicate rejects (used to
-     * enforce per-conversation history floors + deleted-conversation exclusion in
-     * cross-conversation search).
+     * system, hidden, and any message the {@code visible} predicate rejects (used to
+     * enforce per-conversation history floors + deleted-conversation exclusion). When
+     * {@code viewerReactions} is set, {@code reactedByMe} is populated for the viewer
+     * (one extra bulk read) — the starred list promises it.
      */
     private List<MessageResponse> hydrateByIds(List<Long> ids, UUID viewerId,
-                                               java.util.function.Predicate<MessageByIdEntity> visible) {
+                                               java.util.function.Predicate<MessageByIdEntity> visible,
+                                               boolean viewerReactions) {
         if (ids == null || ids.isEmpty()) return List.of();
         Map<Long, MessageByIdEntity> byId = messageByIdRepo.findAllByMessageIdIn(ids).stream()
                 .collect(Collectors.toMap(MessageByIdEntity::getMessageId, e -> e, (a, b) -> a));
@@ -260,7 +327,9 @@ public class MessageQueryService {
         Set<UUID> senderIds = byId.values().stream().map(MessageByIdEntity::getSenderId)
                 .filter(Objects::nonNull).collect(Collectors.toSet());
         Map<UUID, User> users = loadUsers(senderIds);
-        Map<Long, List<ReactionSummary>> reactions = reactionService.countsFor(ids);
+        Map<Long, List<ReactionSummary>> reactions = viewerReactions
+                ? reactionService.countsFor(ids, viewerId)
+                : reactionService.countsFor(ids);
 
         Set<Long> replyIds = byId.values().stream().map(MessageByIdEntity::getReplyToId)
                 .filter(Objects::nonNull).collect(Collectors.toSet());
@@ -268,16 +337,20 @@ public class MessageQueryService {
                 : messageByIdRepo.findAllByMessageIdIn(replyIds).stream()
                     .collect(Collectors.toMap(MessageByIdEntity::getMessageId, e -> e, (a, b) -> a));
 
+        Set<Long> hidden = new HashSet<>(hiddenRepo.findHiddenAmong(viewerId, ids)); // "deleted for me"
+        Set<Long> starred = new HashSet<>(starRepo.findStarredAmong(viewerId, ids));
+
         List<MessageResponse> out = new ArrayList<>(ids.size());
         for (Long id : ids) {                       // preserve rank / pin order
             MessageByIdEntity m = byId.get(id);
             if (m == null) continue;
             if (!visible.test(m)) continue;
+            if (hidden.contains(id)) continue;       // per-user "delete for me"
             if (Boolean.TRUE.equals(m.getDeleted())) continue;
             if (MessageType.SYSTEM.name().equals(m.getType())) continue;
             ReplyPreview reply = m.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(m.getReplyToId()));
-            out.add(mapper.toMessage(m, users, reactions.getOrDefault(id, List.of()), reply));
+            out.add(mapper.toMessage(m, users, reactions.getOrDefault(id, List.of()), reply, starred.contains(id)));
         }
         return out;
     }
@@ -300,11 +373,16 @@ public class MessageQueryService {
                 : messageByIdRepo.findAllByMessageIdIn(replyIds).stream()
                     .collect(Collectors.toMap(MessageByIdEntity::getMessageId, e -> e));
 
+        Set<Long> hidden = new HashSet<>(hiddenRepo.findHiddenAmong(viewerId, ids)); // "delete for me"
+        Set<Long> starred = new HashSet<>(starRepo.findStarredAmong(viewerId, ids));
+
         List<MessageResponse> out = new ArrayList<>(rows.size());
         for (MessageByConversationEntity r : rows) {
+            if (hidden.contains(r.getMessageId())) continue; // per-user hide
             ReplyPreview reply = r.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(r.getReplyToId()));
-            out.add(mapper.toMessage(r, users, reactions.getOrDefault(r.getMessageId(), List.of()), reply));
+            out.add(mapper.toMessage(r, users, reactions.getOrDefault(r.getMessageId(), List.of()), reply,
+                    starred.contains(r.getMessageId())));
         }
         return out;
     }
@@ -329,22 +407,35 @@ public class MessageQueryService {
     }
 
     /** Epoch-ms floor of the scan range — never before the conversation existed,
-     *  and (for hidden-history groups) never before the member joined. */
+     *  before a hidden-history member joined, or before this member cleared
+     *  ("deleted for me") the thread. Raising it shrinks the bucket walk. */
     private long historyFloorMillis(Conversation convo, ConversationMember me) {
-        long convoFloor = convo.getCreatedAt() != null
+        long floor = convo.getCreatedAt() != null
                 ? convo.getCreatedAt().toInstant(ZoneOffset.UTC).toEpochMilli()
                 : SnowflakeIdGenerator.CUSTOM_EPOCH;
         if (hidesHistory(convo) && me.getJoinedAt() != null) {
-            return Math.max(convoFloor, me.getJoinedAt().toInstant(ZoneOffset.UTC).toEpochMilli());
+            floor = Math.max(floor, me.getJoinedAt().toInstant(ZoneOffset.UTC).toEpochMilli());
         }
-        return convoFloor;
+        if (me.getClearedBeforeMessageId() > 0) {
+            floor = Math.max(floor, SnowflakeIdGenerator.timestampOf(me.getClearedBeforeMessageId()));
+        }
+        return floor;
     }
 
-    /** The lowest message id this member may see (hidden pre-join history), or null. */
+    /** The lowest message id this member may see, or {@code null} if unrestricted.
+     *  Combines the hidden-history join floor with the per-user "delete for me"
+     *  clear point (messages must be strictly newer than the cleared id). */
     private Long floorMessageId(Conversation convo, ConversationMember me) {
-        if (!hidesHistory(convo) || me.getJoinedAt() == null) return null;
-        long joinMs = me.getJoinedAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-        return (joinMs - SnowflakeIdGenerator.CUSTOM_EPOCH) << 22;
+        Long floor = null;
+        if (hidesHistory(convo) && me.getJoinedAt() != null) {
+            long joinMs = me.getJoinedAt().toInstant(ZoneOffset.UTC).toEpochMilli();
+            floor = (joinMs - SnowflakeIdGenerator.CUSTOM_EPOCH) << 22;
+        }
+        if (me.getClearedBeforeMessageId() > 0) {
+            long clearedFloor = me.getClearedBeforeMessageId() + 1; // strictly-after the cleared id
+            floor = (floor == null) ? clearedFloor : Math.max(floor, clearedFloor);
+        }
+        return floor;
     }
 
     private boolean hidesHistory(Conversation convo) {

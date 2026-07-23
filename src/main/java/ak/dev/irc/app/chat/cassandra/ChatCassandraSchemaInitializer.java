@@ -99,6 +99,8 @@ public class ChatCassandraSchemaInitializer {
                     PRIMARY KEY ((message_id), user_id)
                 )""".formatted(keyspace));
 
+            repairMessageByIdColumn();
+
             log.info("[CHAT-CASSANDRA] media_ref UDT + message tables ready");
         } catch (Exception e) {
             // Non-fatal in a local env with no Cassandra — the app already tolerates
@@ -106,5 +108,46 @@ public class ChatCassandraSchemaInitializer {
             // error on first real use if the cluster is genuinely misconfigured.
             log.warn("[CHAT-CASSANDRA] schema init skipped/failed: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Repairs the {@code message_by_id} primary-key column name for keyspaces
+     * created by a pre-fix build.
+     *
+     * <p>The entity's id was originally a bare {@code @PrimaryKey} with no
+     * {@code @Column}. Spring Data Cassandra does <b>not</b> snake_case a camelCase
+     * property — it lowercases it — so {@code messageId} became the CQL column
+     * {@code messageid}. The entity now declares {@code @Column("message_id")} and
+     * every repository query uses {@code message_id}, but neither
+     * {@code schema-action=create_if_not_exists} nor {@code CREATE TABLE IF NOT
+     * EXISTS} ever renames a column on a table that already exists — so an existing
+     * keyspace is left with {@code messageid} and every id lookup fails with
+     * {@code Undefined column name message_id}.</p>
+     *
+     * <p>Cassandra permits renaming a primary-key column, and the rename is a pure
+     * metadata change that <b>preserves every existing row</b>, so we rename in
+     * place. Idempotent: a fresh keyspace already has {@code message_id} and skips.</p>
+     */
+    private void repairMessageByIdColumn() {
+        try {
+            boolean hasCorrect = columnExists("message_by_id", "message_id");
+            boolean hasLegacy  = columnExists("message_by_id", "messageid");
+            if (hasLegacy && !hasCorrect) {
+                session.execute("ALTER TABLE " + keyspace + ".message_by_id RENAME messageid TO message_id");
+                log.warn("[CHAT-CASSANDRA] repaired message_by_id: renamed primary-key column "
+                        + "'messageid' -> 'message_id' (existing messages preserved)");
+            }
+        } catch (Exception e) {
+            log.error("[CHAT-CASSANDRA] could not repair message_by_id primary-key column "
+                    + "('messageid' -> 'message_id'); id-based message ops will fail until fixed: {}",
+                    e.getMessage());
+        }
+    }
+
+    private boolean columnExists(String table, String column) {
+        return session.execute(
+                "SELECT column_name FROM system_schema.columns "
+                + "WHERE keyspace_name = ? AND table_name = ? AND column_name = ?",
+                keyspace, table, column).one() != null;
     }
 }

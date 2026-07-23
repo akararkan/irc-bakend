@@ -58,6 +58,18 @@ public interface MessageByConversationRepository
                   @Param("body") String body,
                   @Param("editedAt") Instant editedAt);
 
+    /** Edit under a Cassandra TTL — for a disappearing conversation, so the edited
+     *  body/edited_at expire with the rest of the row instead of living forever
+     *  (a plain UPDATE writes cells with no TTL, resurrecting a self-destruct msg). */
+    @Query("UPDATE messages_by_conversation USING TTL :ttl SET body = :body, edited_at = :editedAt " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    void editBodyWithTtl(@Param("cid") UUID conversationId,
+                         @Param("bucket") int bucket,
+                         @Param("messageId") long messageId,
+                         @Param("body") String body,
+                         @Param("editedAt") Instant editedAt,
+                         @Param("ttl") int ttl);
+
     /** Soft delete: tombstone the row and null its content, keeping ordering intact. */
     @Query("UPDATE messages_by_conversation SET deleted = true, body = null, media = null " +
            "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")

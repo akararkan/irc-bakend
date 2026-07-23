@@ -119,6 +119,22 @@ public class ConversationController {
         return ResponseEntity.ok().build();
     }
 
+    /** Mark a chat as unread (keeps it flagged unread in the inbox until next opened). */
+    @PostMapping("/{id}/unread")
+    public ResponseEntity<Void> markUnread(@PathVariable UUID id, @AuthenticationPrincipal User user) {
+        conversationService.markUnread(id, requireId(user));
+        return ResponseEntity.ok().build();
+    }
+
+    /** Set the disappearing-messages timer ({@code seconds = 0} = off). */
+    @PostMapping("/{id}/disappearing")
+    public ResponseEntity<Void> disappearing(@PathVariable UUID id,
+                                             @Valid @RequestBody DisappearingRequest req,
+                                             @AuthenticationPrincipal User user) {
+        conversationService.setDisappearing(id, requireId(user), req.getSeconds());
+        return ResponseEntity.ok().build();
+    }
+
     private static UUID requireId(User user) {
         if (user == null) throw new UnauthorizedException("Authentication required");
         return user.getId();

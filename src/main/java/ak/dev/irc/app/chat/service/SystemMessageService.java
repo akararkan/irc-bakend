@@ -51,7 +51,19 @@ public class SystemMessageService {
      *
      * @return the Snowflake id of the system message.
      */
+    @org.springframework.transaction.annotation.Transactional
     public long write(UUID conversationId, SystemEventType event, UUID actorId, String text) {
+        return write(conversationId, event, actorId, text, null, null);
+    }
+
+    /**
+     * Overload for callers that emit several system messages in one action (e.g.
+     * a batch member add): pass the precomputed recipient list and actor map so
+     * each write skips its own member-list and user queries.
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public long write(UUID conversationId, SystemEventType event, UUID actorId, String text,
+                      List<UUID> knownRecipients, Map<UUID, User> knownUsers) {
         long id = snowflake.nextId();
         int bucket = ChatBuckets.bucketOf(id);
         Instant now = Instant.now();
@@ -73,8 +85,10 @@ public class SystemMessageService {
         conversationRepo.advanceLastMessage(conversationId, id,
                 LocalDateTime.ofInstant(now, ZoneOffset.UTC), text);
 
-        List<UUID> recipients = memberRepo.findReadableMemberIds(conversationId);
-        Map<UUID, User> users = actorId == null ? Map.of()
+        List<UUID> recipients = knownRecipients != null
+                ? knownRecipients : memberRepo.findReadableMemberIds(conversationId);
+        Map<UUID, User> users = knownUsers != null ? knownUsers
+                : actorId == null ? Map.of()
                 : userRepository.findActiveByIdIn(List.of(actorId)).stream()
                     .collect(java.util.stream.Collectors.toMap(User::getId, u -> u));
 

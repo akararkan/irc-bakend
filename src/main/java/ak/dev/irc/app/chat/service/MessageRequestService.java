@@ -41,8 +41,13 @@ public class MessageRequestService {
     public Page<MessageRequestResponse> list(UUID userId, MessageRequestStatus status, Pageable pageable) {
         Page<MessageRequest> page = requestRepo.findInbox(userId,
                 status == null ? MessageRequestStatus.PENDING : status, pageable);
-        return page.map(r -> mapper.toMessageRequest(r,
-                userRepository.findById(r.getRequesterId()).orElse(null)));
+        // One bulk requester load for the page (previously a findById per row).
+        java.util.Set<UUID> requesterIds = page.getContent().stream()
+                .map(MessageRequest::getRequesterId).collect(java.util.stream.Collectors.toSet());
+        java.util.Map<UUID, User> users = requesterIds.isEmpty() ? java.util.Map.of()
+                : userRepository.findAllById(requesterIds).stream()
+                    .collect(java.util.stream.Collectors.toMap(User::getId, u -> u));
+        return page.map(r -> mapper.toMessageRequest(r, users.get(r.getRequesterId())));
     }
 
     @Transactional(readOnly = true)

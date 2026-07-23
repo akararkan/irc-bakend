@@ -41,6 +41,8 @@ public class MessageController {
     private final MessageService messageService;
     private final MessageQueryService messageQueryService;
     private final S3StorageService storageService;
+    private final ak.dev.irc.app.chat.service.StarService starService;
+    private final ak.dev.irc.app.chat.service.ScheduledMessageService scheduledMessageService;
 
     // ── Read ─────────────────────────────────────────────────────────────────────
 
@@ -171,10 +173,64 @@ public class MessageController {
         return ResponseEntity.ok(messageService.edit(messageId, requireId(user), req.getBody()));
     }
 
+    /** Delete a message. {@code scope=everyone} (default) tombstones it for the whole
+     *  conversation (own message, or group admin); {@code scope=me} hides it for you only. */
     @DeleteMapping("/messages/{messageId}")
     public ResponseEntity<Void> delete(@PathVariable long messageId,
+                                       @RequestParam(defaultValue = "everyone") String scope,
                                        @AuthenticationPrincipal User user) {
-        messageService.delete(messageId, requireId(user));
+        UUID uid = requireId(user);
+        if ("me".equalsIgnoreCase(scope)) {
+            messageService.deleteForMe(messageId, uid);
+        } else {
+            messageService.delete(messageId, uid);
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Star / bookmark ──────────────────────────────────────────────────────────
+
+    @PostMapping("/messages/{messageId}/star")
+    public ResponseEntity<Void> star(@PathVariable long messageId, @AuthenticationPrincipal User user) {
+        starService.star(messageId, requireId(user));
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/messages/{messageId}/star")
+    public ResponseEntity<Void> unstar(@PathVariable long messageId, @AuthenticationPrincipal User user) {
+        starService.unstar(messageId, requireId(user));
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Seen-by (group read receipts) ────────────────────────────────────────────
+
+    @GetMapping("/messages/{messageId}/seen-by")
+    public ResponseEntity<List<ak.dev.irc.app.chat.dto.response.ParticipantSummary>> seenBy(
+            @PathVariable long messageId, @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(messageService.seenBy(messageId, requireId(user)));
+    }
+
+    // ── Scheduled messages ───────────────────────────────────────────────────────
+
+    @PostMapping("/conversations/{id}/messages/schedule")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.ScheduledMessageResponse> schedule(
+            @PathVariable UUID id,
+            @Valid @RequestBody ak.dev.irc.app.chat.dto.request.ScheduleMessageRequest req,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(scheduledMessageService.schedule(id, requireId(user), req));
+    }
+
+    @GetMapping("/conversations/{id}/scheduled")
+    public ResponseEntity<List<ak.dev.irc.app.chat.dto.response.ScheduledMessageResponse>> listScheduled(
+            @PathVariable UUID id, @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(scheduledMessageService.listPending(id, requireId(user)));
+    }
+
+    @DeleteMapping("/messaging/scheduled/{scheduledId}")
+    public ResponseEntity<Void> cancelScheduled(@PathVariable UUID scheduledId,
+                                                @AuthenticationPrincipal User user) {
+        scheduledMessageService.cancel(scheduledId, requireId(user));
         return ResponseEntity.noContent().build();
     }
 

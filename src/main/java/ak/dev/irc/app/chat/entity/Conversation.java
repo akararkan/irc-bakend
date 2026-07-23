@@ -47,9 +47,32 @@ public class Conversation extends BaseAuditEntity {
     @Column(name = "title", length = 120)
     private String title;
 
+    /** Group description / topic (GROUP only). */
+    @Column(name = "description", length = 500)
+    private String description;
+
     /** R2/S3 key for the group avatar (GROUP only). */
     @Column(name = "avatar_key", length = 255)
     private String avatarKey;
+
+    /** Public @handle for a CHANNEL (unique; null for DM / GROUP / private channel). */
+    @Column(name = "handle", length = 32, unique = true)
+    private String handle;
+
+    /** CHANNEL discoverability — public channels appear in discovery/search. */
+    @Column(name = "is_public", nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean publicChannel = false;
+
+    /**
+     * Disappearing-messages timer in seconds (0 = off). When &gt; 0, every new
+     * message is written to Cassandra with this TTL so it auto-deletes after the
+     * window — WhatsApp "disappearing messages" / Telegram auto-delete.
+     */
+    @Column(name = "disappearing_seconds", nullable = false,
+            columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int disappearingSeconds = 0;
 
     /** The creator/owner. For DIRECT, an arbitrary-but-stable participant. */
     @Column(name = "owner_id", nullable = false)
@@ -93,5 +116,9 @@ public class Conversation extends BaseAuditEntity {
 
     public boolean isDirect() {
         return type == ConversationType.DIRECT;
+    }
+
+    public boolean isChannel() {
+        return type == ConversationType.CHANNEL;
     }
 }

@@ -20,6 +20,7 @@ import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
 import ak.dev.irc.app.chat.repository.ConversationMemberRepository;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.util.DirectKeys;
+import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
@@ -58,6 +59,7 @@ public class ConversationService {
     private final ChatMapper mapper;
     private final UserRepository userRepository;
     private final UnreadBadgeCache unreadBadge;
+    private final ChatSettingsService chatSettings;
 
     // ── Create ─────────────────────────────────────────────────────────────────
     // NOTE: the controller calls createDirect / createGroup directly (not a single
@@ -103,22 +105,28 @@ public class ConversationService {
         }
         Map<UUID, User> users = candidates.isEmpty() ? Map.of()
                 : userRepository.findActiveByIdIn(candidates).stream().collect(Collectors.toMap(User::getId, u -> u));
+        // One cached blocked-set lookup instead of a per-candidate block query.
+        Set<UUID> blocked = candidates.isEmpty() ? Set.of() : relationships.blockedEitherWayIds(creatorId);
         List<UUID> toAdd = candidates.stream()
                 .filter(users::containsKey)
-                .filter(id -> !relationships.isBlockedEitherWay(creatorId, id))
+                .filter(id -> !blocked.contains(id))
                 .toList();
 
         Conversation c = conversationRepo.save(Conversation.builder()
                 .type(ConversationType.GROUP)
                 .title(req.getTitle().trim())
+                .description(req.getDescription() == null || req.getDescription().isBlank()
+                        ? null : req.getDescription().trim())
                 .avatarKey(req.getAvatarKey())
                 .ownerId(creatorId)
                 .groupSettings(GroupSettings.defaults())
                 .memberCount(1 + toAdd.size())
                 .build());
 
-        memberRepo.save(ConversationMember.of(c, creatorId, MemberRole.OWNER));
-        for (UUID id : toAdd) memberRepo.save(ConversationMember.of(c, id, MemberRole.MEMBER));
+        List<ConversationMember> rows = new ArrayList<>(toAdd.size() + 1);
+        rows.add(ConversationMember.of(c, creatorId, MemberRole.OWNER));
+        for (UUID id : toAdd) rows.add(ConversationMember.of(c, id, MemberRole.MEMBER));
+        memberRepo.saveAll(rows);
 
         String creatorLabel = label(creatorId, users);
         systemMessages.write(c.getId(), SystemEventType.GROUP_CREATED, creatorId,
@@ -147,12 +155,26 @@ public class ConversationService {
                 .filter(ConversationMember::canRead)
                 .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
         ParticipantSummary peer = null;
+        Long peerLastRead = null, peerLastDelivered = null;
         if (c.isDirect()) {
-            UUID peerId = memberRepo.findAllByConversation(conversationId).stream()
-                    .map(m -> m.getId().getUserId()).filter(id -> !id.equals(userId)).findFirst().orElse(null);
-            peer = peerId == null ? null : mapper.toParticipant(userRepository.findById(peerId).orElse(null));
+            ConversationMember peerMember = memberRepo.findAllByConversation(conversationId).stream()
+                    .filter(m -> !m.getId().getUserId().equals(userId)).findFirst().orElse(null);
+            if (peerMember != null) {
+                UUID peerId = peerMember.getId().getUserId();
+                peer = mapper.toParticipant(userRepository.findById(peerId).orElse(null));
+                // Expose the peer's receipt markers only when BOTH share read receipts
+                // AND no restrict/pending suppression applies — otherwise a silent
+                // restrict (or an unaccepted request) would leak the peer's read/
+                // delivered state via this pull path even though the realtime paths
+                // suppress it there.
+                if (chatSettings.readReceiptsBetween(userId, peerId)
+                        && !relationships.suppressEphemeral(conversationId, userId)) {
+                    peerLastRead = peerMember.getLastReadMessageId();
+                    peerLastDelivered = peerMember.getLastDeliveredMessageId();
+                }
+            }
         }
-        return mapper.toConversation(c, me, peer);
+        return mapper.toConversation(c, me, peer, peerLastRead, peerLastDelivered);
     }
 
     @Transactional(readOnly = true)
@@ -200,7 +222,7 @@ public class ConversationService {
         ConversationMember me = requireActiveMember(conversationId, userId);
 
         boolean touchedInfo = false;
-        if (req.getTitle() != null || req.getAvatarKey() != null) {
+        if (req.getTitle() != null || req.getAvatarKey() != null || req.getDescription() != null) {
             if (!GroupPermissions.can(me.getRole(), GroupAction.EDIT_INFO, null, c.getGroupSettings())) {
                 throw new ForbiddenException("You cannot edit this group's info.", "ADMINS_ONLY");
             }
@@ -208,6 +230,12 @@ public class ConversationService {
                 c.setTitle(req.getTitle().trim());
                 systemMessages.write(conversationId, SystemEventType.TITLE_CHANGED, userId,
                         label(userId, Map.of()) + " changed the group name to \"" + c.getTitle() + "\"");
+                touchedInfo = true;
+            }
+            if (req.getDescription() != null && !req.getDescription().equals(c.getDescription())) {
+                c.setDescription(req.getDescription().isBlank() ? null : req.getDescription().trim());
+                systemMessages.write(conversationId, SystemEventType.DESCRIPTION_CHANGED, userId,
+                        label(userId, Map.of()) + " changed the group description");
                 touchedInfo = true;
             }
             if (req.getAvatarKey() != null && !req.getAvatarKey().equals(c.getAvatarKey())) {
@@ -243,22 +271,75 @@ public class ConversationService {
     public void markRead(UUID conversationId, UUID userId, long lastReadMessageId) {
         ConversationMember me = memberRepo.findMember(conversationId, userId)
                 .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
-        if (lastReadMessageId <= me.getLastReadMessageId()) return; // no rewind
-        me.setLastReadMessageId(lastReadMessageId);
-        me.setUnreadCount(0);
+        boolean advanced = lastReadMessageId > me.getLastReadMessageId();
+        if (advanced) {
+            me.setLastReadMessageId(lastReadMessageId);
+            me.setUnreadCount(0);
+        }
+        // Opening the chat always clears an explicit "marked unread" flag.
+        me.setMarkedUnread(false);
         memberRepo.save(me);
         unreadBadge.invalidate(userId);
+        if (!advanced) return;
 
-        // Blue-tick the sender(s) — but never leak receipts on a pending request
-        // or a restricted thread.
-        if (!relationships.suppressEphemeral(conversationId, userId)) {
-            broadcaster.broadcastExcept(memberRepo.findActiveMemberIds(conversationId), userId,
-                    ChatRealtimeEvent.builder()
-                            .eventType(ChatRealtimeEventType.RECEIPT_READ)
-                            .conversationId(conversationId)
-                            .userId(userId).lastReadMessageId(lastReadMessageId)
-                            .build());
+        // Blue-tick the sender(s) — but never leak receipts on a pending request /
+        // restricted thread, or if the reader turned read receipts off (symmetric).
+        if (!relationships.suppressEphemeral(conversationId, userId)
+                && chatSettings.readReceiptsEnabled(userId)) {
+            // Symmetric: only members who ALSO share read receipts get the blue tick,
+            // so a peer who turned read receipts off never receives one over SSE.
+            List<UUID> recipients = chatSettings.receiptRecipients(
+                    memberRepo.findActiveMemberIds(conversationId), userId);
+            if (!recipients.isEmpty()) {
+                broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
+                        .eventType(ChatRealtimeEventType.RECEIPT_READ)
+                        .conversationId(conversationId)
+                        .userId(userId).lastReadMessageId(lastReadMessageId)
+                        .build());
+            }
         }
+    }
+
+    /** Mark a chat as unread (WhatsApp/Telegram) — keeps it flagged unread in the
+     *  inbox until it is next opened, without touching the read marker. */
+    @Transactional
+    public void markUnread(UUID conversationId, UUID userId) {
+        requireMember(conversationId, userId);
+        memberRepo.setMarkedUnread(conversationId, userId, true);
+        unreadBadge.invalidate(userId);
+    }
+
+    /** Set the disappearing-messages timer (seconds; 0 = off). Group: requires
+     *  {@code CHANGE_SETTINGS}; DM: either participant. Writes a system message. */
+    @Transactional
+    public void setDisappearing(UUID conversationId, UUID userId, int seconds) {
+        if (seconds < 0) throw new BadRequestException("seconds must be >= 0.");
+        Conversation c = conversationRepo.findById(conversationId)
+                .filter(x -> x.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
+        ConversationMember me = requireActiveMember(conversationId, userId);
+        if (c.isGroup()
+                && !GroupPermissions.can(me.getRole(), GroupAction.CHANGE_SETTINGS, null, c.getGroupSettings())) {
+            throw new ForbiddenException("You cannot change this group's settings.", "ADMINS_ONLY");
+        }
+        c.setDisappearingSeconds(seconds);
+        conversationRepo.save(c);
+        systemMessages.write(conversationId, SystemEventType.DISAPPEARING_CHANGED, userId,
+                label(userId, Map.of()) + (seconds == 0
+                        ? " turned off disappearing messages"
+                        : " set disappearing messages to " + humanDuration(seconds)));
+        broadcaster.broadcast(memberRepo.findActiveMemberIds(conversationId),
+                ChatRealtimeEvent.builder()
+                        .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
+                        .conversationId(conversationId).conversation(get(conversationId, userId))
+                        .build());
+    }
+
+    private static String humanDuration(int seconds) {
+        if (seconds % 86400 == 0) return (seconds / 86400) + "d";
+        if (seconds % 3600 == 0) return (seconds / 3600) + "h";
+        if (seconds % 60 == 0) return (seconds / 60) + "m";
+        return seconds + "s";
     }
 
     // ── Personal toggles ──────────────────────────────────────────────────────────────
@@ -286,15 +367,24 @@ public class ConversationService {
 
     // ── Delete / hide ──────────────────────────────────────────────────────────────────
 
+    /**
+     * {@code DELETE /conversations/{id}}. The <b>group owner</b> deletes the whole
+     * group for everyone (destructive soft-delete). <b>Everyone else</b> — a DM
+     * participant or a non-owner group member — performs a per-user
+     * <b>"delete conversation for me"</b>: the thread is cleared and hidden on
+     * their side and re-surfaces (showing only newer messages) the next time the
+     * peer sends. See {@link #deleteForMe}.
+     */
     @Transactional
     public void delete(UUID conversationId, UUID userId) {
         Conversation c = conversationRepo.findById(conversationId)
+                .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         ConversationMember me = requireMember(conversationId, userId);
-        if (c.isGroup()) {
-            if (!GroupPermissions.can(me.getRole(), GroupAction.DELETE_GROUP, null, c.getGroupSettings())) {
-                throw new ForbiddenException("Only the owner can delete the group.", "NOT_OWNER");
-            }
+
+        if (c.isGroup()
+                && GroupPermissions.can(me.getRole(), GroupAction.DELETE_GROUP, null, c.getGroupSettings())) {
+            // Owner deletes the group for everyone.
             c.setDeletedAt(LocalDateTime.now());
             conversationRepo.save(c);
             broadcaster.broadcast(memberRepo.findActiveMemberIds(conversationId),
@@ -303,11 +393,35 @@ public class ConversationService {
                             .conversationId(conversationId)
                             .memberChange("DELETED")
                             .build());
-        } else {
-            // Hide a DM for me only (archive my side).
-            me.setArchived(true);
-            memberRepo.save(me);
+            return;
         }
+        // Everyone else: delete the conversation for me only.
+        deleteForMe(c, me);
+    }
+
+    /**
+     * Clear + hide the conversation for one member: mark everything up to the
+     * current last message as cleared, drop it out of BOTH the inbox and the
+     * archived list, unpin it, and zero the unread state. It re-appears (in the
+     * inbox, showing only messages newer than the clear point) when a message with
+     * a larger id arrives — the read path floors reads at {@code clearedBeforeMessageId}.
+     */
+    private void deleteForMe(Conversation c, ConversationMember me) {
+        // For an empty conversation (no messages yet) fall back to a "now" floor in
+        // Snowflake id-space. Use the LARGEST id of the current millisecond (all 22
+        // node+seq bits set) so any strictly-later message re-surfaces the thread —
+        // the smallest-id form could collide with a same-ms node-0/seq-0 message id
+        // and leave the conversation stuck invisible.
+        long highWater = c.getLastMessageId() != null
+                ? c.getLastMessageId()
+                : (((System.currentTimeMillis() - SnowflakeIdGenerator.CUSTOM_EPOCH) << 22) | ((1L << 22) - 1));
+        me.setClearedBeforeMessageId(highWater);
+        me.setArchived(false);          // out of the archived list too
+        me.setPinned(false);
+        if (me.getLastReadMessageId() < highWater) me.setLastReadMessageId(highWater);
+        me.setUnreadCount(0);
+        memberRepo.save(me);
+        unreadBadge.invalidate(me.getId().getUserId());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────

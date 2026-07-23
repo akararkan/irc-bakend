@@ -50,16 +50,25 @@ public class ChatSseService {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
         Subscription sub = new Subscription(seq.incrementAndGet(), emitter);
 
-        CopyOnWriteArrayList<Subscription> bucket =
-                emittersByUser.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>());
+        CopyOnWriteArrayList<Subscription> bucket;
+        while (true) {
+            bucket = emittersByUser.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>());
 
-        // Evict oldest tabs beyond the cap (LRU) so one account can't exhaust memory.
-        while (bucket.size() >= MAX_EMITTERS_PER_USER) {
-            Subscription oldest = bucket.get(0);
-            try { oldest.emitter().complete(); } catch (Exception ignore) { /* best-effort */ }
-            bucket.remove(oldest);
+            // Evict oldest tabs beyond the cap (LRU) so one account can't exhaust memory.
+            while (bucket.size() >= MAX_EMITTERS_PER_USER) {
+                try {
+                    Subscription oldest = bucket.get(0);
+                    try { oldest.emitter().complete(); } catch (Exception ignore) { /* best-effort */ }
+                    bucket.remove(oldest);
+                } catch (IndexOutOfBoundsException raced) { break; } // emptied concurrently
+            }
+            bucket.add(sub);
+            // A concurrent push/heartbeat may have removed the then-empty bucket from
+            // the map between computeIfAbsent and add — if so this subscription would
+            // be orphaned (never receive a push); re-check and retry on loss.
+            if (emittersByUser.get(userId) == bucket) break;
+            bucket.remove(sub);
         }
-        bucket.add(sub);
 
         Runnable cleanup = () -> {
             CopyOnWriteArrayList<Subscription> b = emittersByUser.get(userId);
@@ -73,15 +82,19 @@ public class ChatSseService {
         emitter.onError(ex -> cleanup.run());
 
         try {
-            emitter.send(SseEmitter.event().reconnectTime(3000L));
-            emitter.send(SseEmitter.event().comment(" ".repeat(2048)));
-            emitter.send(SseEmitter.event()
-                    .name("connected")
-                    .data(Map.of(
-                            "userId", userId.toString(),
-                            "timestamp", LocalDateTime.now().toString(),
-                            "tabs", bucket.size(),
-                            "message", "Chat stream active")));
+            // Serialized on the subscription: SseEmitter.send is not safe to call
+            // concurrently, and a heartbeat/push can fire while the handshake runs.
+            synchronized (sub) {
+                emitter.send(SseEmitter.event().reconnectTime(3000L));
+                emitter.send(SseEmitter.event().comment(" ".repeat(2048)));
+                emitter.send(SseEmitter.event()
+                        .name("connected")
+                        .data(Map.of(
+                                "userId", userId.toString(),
+                                "timestamp", LocalDateTime.now().toString(),
+                                "tabs", bucket.size(),
+                                "message", "Chat stream active")));
+            }
             log.info("[CHAT-SSE] user={} subscribed — tabs={} totalUsers={}",
                     userId, bucket.size(), emittersByUser.size());
         } catch (IOException ex) {
@@ -99,7 +112,9 @@ public class ChatSseService {
         if (bucket == null || bucket.isEmpty()) return;
         for (Subscription sub : bucket) {
             try {
-                sub.emitter.send(SseEmitter.event().name(eventName).data(payload));
+                synchronized (sub) { // one writer at a time per emitter (push vs heartbeat)
+                    sub.emitter.send(SseEmitter.event().name(eventName).data(payload));
+                }
             } catch (IOException | IllegalStateException ex) {
                 bucket.remove(sub);
                 if (bucket.isEmpty()) emittersByUser.remove(userId, bucket);
@@ -118,7 +133,9 @@ public class ChatSseService {
             presenceService.markOnline(userId);
             for (Subscription sub : bucket) {
                 try {
-                    sub.emitter.send(SseEmitter.event().name("heartbeat").data(Map.of("timestamp", ts)));
+                    synchronized (sub) { // never interleave with a concurrent push
+                        sub.emitter.send(SseEmitter.event().name("heartbeat").data(Map.of("timestamp", ts)));
+                    }
                 } catch (IOException | IllegalStateException ex) {
                     bucket.remove(sub);
                     if (bucket.isEmpty()) emittersByUser.remove(userId, bucket);

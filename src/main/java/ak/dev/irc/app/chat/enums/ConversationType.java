@@ -7,5 +7,7 @@ package ak.dev.irc.app.chat.enums;
  */
 public enum ConversationType {
     DIRECT,
-    GROUP
+    GROUP,
+    /** Telegram-style broadcast channel: admins post, everyone else subscribes and reads. */
+    CHANNEL
 }

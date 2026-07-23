@@ -62,11 +62,32 @@ public class UnreadBadgeCache {
         }
     }
 
+    /** Batch form of {@link #invalidate(UUID)} — one DEL for the whole recipient set. */
+    public void invalidateAll(java.util.Collection<UUID> userIds) {
+        if (userIds == null || userIds.isEmpty()) return;
+        java.util.List<UUID> ids = java.util.List.copyOf(userIds);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { evictAll(ids); }
+            });
+        } else {
+            evictAll(ids);
+        }
+    }
+
     private void evict(UUID userId) {
         try {
             redis.delete(PREFIX + userId);
         } catch (Exception e) {
             log.debug("[UNREAD-BADGE] invalidate failed for {}: {}", userId, e.getMessage());
+        }
+    }
+
+    private void evictAll(java.util.Collection<UUID> userIds) {
+        try {
+            redis.delete(userIds.stream().map(id -> PREFIX + id).toList());
+        } catch (Exception e) {
+            log.debug("[UNREAD-BADGE] batch invalidate failed: {}", e.getMessage());
         }
     }
 }

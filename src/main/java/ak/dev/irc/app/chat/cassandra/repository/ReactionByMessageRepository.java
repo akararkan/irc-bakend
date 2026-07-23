@@ -7,6 +7,7 @@ import org.springframework.data.cassandra.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -30,4 +31,9 @@ public interface ReactionByMessageRepository
 
     @Query("DELETE FROM reactions_by_message WHERE message_id = :messageId")
     void deleteAllForMessage(@Param("messageId") long messageId);
+
+    /** The viewer's own reaction rows among a set of messages (≤1 per message) — one
+     *  query to populate {@code reactedByMe} for a hydrated page. Derived (not a
+     *  {@code @Query}) so the {@code IN} collection binds as a CQL list. */
+    List<ReactionByMessageEntity> findByMessageIdInAndUserId(Collection<Long> messageIds, UUID userId);
 }

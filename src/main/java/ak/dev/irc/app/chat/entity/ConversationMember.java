@@ -59,9 +59,24 @@ public class ConversationMember extends BaseAuditEntity {
     @Builder.Default
     private long lastReadMessageId = 0L;
 
+    /** High-water DELIVERED marker — Snowflake id of the last message that reached
+     *  this user's device (advanced by {@code /delivered}). Drives the DM double-tick. */
+    @Column(name = "last_delivered_message_id", nullable = false,
+            columnDefinition = "bigint not null default 0")
+    @Builder.Default
+    private long lastDeliveredMessageId = 0L;
+
     @Column(name = "unread_count", nullable = false)
     @Builder.Default
     private int unreadCount = 0;
+
+    /** User explicitly "marked as unread" (WhatsApp/Telegram) — keeps the chat
+     *  flagged unread in the inbox even when the read marker is current, until it
+     *  is next opened/read. */
+    @Column(name = "marked_unread", nullable = false,
+            columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean markedUnread = false;
 
     /** Null = not muted. Mute suppresses push but NOT the unread count. */
     @Column(name = "muted_until")
@@ -74,6 +89,20 @@ public class ConversationMember extends BaseAuditEntity {
     @Column(name = "archived", nullable = false)
     @Builder.Default
     private boolean archived = false;
+
+    /**
+     * "Delete conversation for me" high-water mark. When &gt; 0, the caller cleared
+     * the thread at this Snowflake message id: everything up to and including it is
+     * hidden on their side, the conversation drops out of both the inbox and the
+     * archived list, and it re-surfaces (showing only the new messages) once the
+     * peer sends a message with a larger id. 0 = never cleared. The
+     * {@code columnDefinition} default lets {@code ddl-auto=update} add the column
+     * to an existing table and back-fill old rows to 0.
+     */
+    @Column(name = "cleared_before_message_id", nullable = false,
+            columnDefinition = "bigint not null default 0")
+    @Builder.Default
+    private long clearedBeforeMessageId = 0L;
 
     @Column(name = "joined_at", nullable = false, updatable = false)
     @Builder.Default

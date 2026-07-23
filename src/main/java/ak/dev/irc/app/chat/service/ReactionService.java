@@ -24,6 +24,10 @@ import java.util.*;
 public class ReactionService {
 
     private static final String HASH_PREFIX = "chat:reactions:";
+    /** Field marking a hash rebuilt from Cassandra that found no reactions, so a
+     *  reaction-less message is a warm cache hit instead of a Cassandra re-scan. */
+    private static final String EMPTY_SENTINEL = "~";
+    private static final java.time.Duration EMPTY_TTL = java.time.Duration.ofHours(6);
 
     private final ReactionByMessageRepository reactionRepo;
     private final StringRedisTemplate redis;
@@ -76,19 +80,100 @@ public class ReactionService {
      */
     public Map<Long, List<ReactionSummary>> countsFor(Collection<Long> messageIds) {
         Map<Long, List<ReactionSummary>> result = new HashMap<>();
-        for (Long id : messageIds) {
-            try {
-                Map<Object, Object> hash = redis.opsForHash().entries(HASH_PREFIX + id);
-                if (hash == null || hash.isEmpty()) continue;
-                List<ReactionSummary> list = new ArrayList<>(hash.size());
-                for (Map.Entry<Object, Object> e : hash.entrySet()) {
-                    long count = parse(e.getValue());
-                    if (count > 0) list.add(new ReactionSummary(String.valueOf(e.getKey()), count, false));
-                }
-                if (!list.isEmpty()) result.put(id, list);
-            } catch (Exception ignored) { /* cold/unavailable cache → no reactions rendered */ }
+        if (messageIds == null || messageIds.isEmpty()) return result;
+        // One pipelined round-trip for the whole page instead of an HGETALL per message.
+        List<Long> ids = List.copyOf(messageIds);
+        List<Object> hashes = null;
+        try {
+            hashes = redis.executePipelined(
+                    (org.springframework.data.redis.core.RedisCallback<Object>) conn -> {
+                        for (Long id : ids) {
+                            conn.hGetAll((HASH_PREFIX + id)
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        }
+                        return null;
+                    });
+        } catch (Exception ignored) { /* Redis down → rebuild from Cassandra below */ }
+        for (int i = 0; i < ids.size(); i++) {
+            long id = ids.get(i);
+            Object o = hashes == null || i >= hashes.size() ? null : hashes.get(i);
+            List<ReactionSummary> list = (o instanceof Map<?, ?> hash && !hash.isEmpty())
+                    ? summarize(hash)
+                    : rebuild(id); // cold (flushed/never built) → self-heal from Cassandra
+            if (!list.isEmpty()) result.put(id, list);
         }
         return result;
+    }
+
+    private static List<ReactionSummary> summarize(Map<?, ?> hash) {
+        List<ReactionSummary> list = new ArrayList<>(hash.size());
+        for (Map.Entry<?, ?> e : hash.entrySet()) {
+            String emoji = String.valueOf(e.getKey());
+            if (EMPTY_SENTINEL.equals(emoji)) continue;
+            long count = parse(e.getValue());
+            if (count > 0) list.add(new ReactionSummary(emoji, count, false));
+        }
+        return list;
+    }
+
+    /**
+     * Rebuild a cold count hash from the Cassandra source of truth so counts
+     * survive a Redis flush (the documented self-heal). A message with no
+     * reactions is negative-cached under a sentinel field with a TTL, so the
+     * common reaction-less case stays a warm hash hit rather than a Cassandra
+     * read on every page render.
+     */
+    private List<ReactionSummary> rebuild(long messageId) {
+        List<ReactionByMessageEntity> rows;
+        try {
+            rows = reactionRepo.findByMessage(messageId);
+        } catch (Exception e) {
+            return List.of(); // Cassandra unavailable → render no reactions
+        }
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (ReactionByMessageEntity r : rows) counts.merge(r.getEmoji(), 1L, Long::sum);
+        String key = HASH_PREFIX + messageId;
+        try {
+            if (counts.isEmpty()) {
+                redis.opsForHash().put(key, EMPTY_SENTINEL, "0");
+                redis.expire(key, EMPTY_TTL);
+            } else {
+                Map<String, String> m = new HashMap<>(counts.size());
+                counts.forEach((emoji, c) -> m.put(emoji, Long.toString(c)));
+                redis.opsForHash().putAll(key, m);
+                redis.persist(key); // real counts are delta-maintained, never expiring
+            }
+        } catch (Exception ignored) { /* best-effort cache refill */ }
+        List<ReactionSummary> out = new ArrayList<>(counts.size());
+        counts.forEach((emoji, count) -> out.add(new ReactionSummary(emoji, count, false)));
+        return out;
+    }
+
+    /**
+     * Like {@link #countsFor(Collection)} but also sets {@code reactedByMe} for the
+     * viewer, via one bulk Cassandra read of the viewer's own reaction rows. Used by
+     * the starred list, which promises a fully-hydrated {@code reactedByMe}.
+     */
+    public Map<Long, List<ReactionSummary>> countsFor(Collection<Long> messageIds, UUID viewerId) {
+        Map<Long, List<ReactionSummary>> base = countsFor(messageIds);
+        if (viewerId == null || base.isEmpty()) return base;
+        Map<Long, String> mine = new HashMap<>();
+        try {
+            for (ReactionByMessageEntity r : reactionRepo.findByMessageIdInAndUserId(messageIds, viewerId)) {
+                mine.put(r.getMessageId(), r.getEmoji());   // ≤1 reaction per (message, user)
+            }
+        } catch (Exception e) {
+            log.debug("[REACTION] viewer reaction load failed: {}", e.getMessage());
+            return base;
+        }
+        Map<Long, List<ReactionSummary>> out = new HashMap<>(base.size());
+        base.forEach((id, list) -> {
+            String myEmoji = mine.get(id);
+            out.put(id, myEmoji == null ? list : list.stream()
+                    .map(s -> new ReactionSummary(s.emoji(), s.count(), myEmoji.equals(s.emoji())))
+                    .toList());
+        });
+        return out;
     }
 
     public void clear(long messageId) {
@@ -104,6 +189,8 @@ public class ReactionService {
         try {
             Long v = redis.opsForHash().increment(HASH_PREFIX + messageId, emoji, delta);
             if (v != null && v <= 0) redis.opsForHash().delete(HASH_PREFIX + messageId, emoji);
+            // A real count must outlive any negative-cache TTL left by rebuild().
+            if (delta > 0) redis.persist(HASH_PREFIX + messageId);
         } catch (Exception e) {
             log.debug("[REACTION] redis adjust failed: {}", e.getMessage());
         }

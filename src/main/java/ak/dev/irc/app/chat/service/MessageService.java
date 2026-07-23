@@ -87,6 +87,10 @@ public class MessageService {
     private final ConversationPinRepository pinRepo;
     private final SystemMessageService systemMessages;
     private final ChatSearchService chatSearch;
+    private final ak.dev.irc.app.chat.repository.HiddenMessageRepository hiddenRepo;
+    private final ak.dev.irc.app.chat.repository.MessageStarRepository starRepo;
+    private final ChatSettingsService chatSettings;
+    private final org.springframework.data.cassandra.core.CassandraOperations cassandraOps;
 
     // ── SEND ──────────────────────────────────────────────────────────────────
 
@@ -114,7 +118,7 @@ public class MessageService {
             // Permission — group vs direct.
             SendDecision decision = SendDecision.ALLOW;
             UUID directPeer = null;
-            if (convo.isGroup()) {
+            if (convo.isGroup() || convo.isChannel()) {
                 authorizeGroupSend(senderMember, convo);
             } else {
                 directPeer = otherDirectMember(conversationId, senderId);
@@ -140,8 +144,13 @@ public class MessageService {
             MessageResponse response = persist(convo, senderId, messageId, type,
                     req.getBody(), media, mentions, req.getReplyToId(), null);
 
+            // Redact the notification/inbox preview for disappearing conversations so
+            // the body doesn't linger in a push notification either.
+            String preview = convo.getDisappearingSeconds() > 0
+                    ? disappearingPreview(type, media)
+                    : previewOf(req.getBody(), type, media);
             dispatch(convo, senderId, directPeer, decision, request, requestJustCreated,
-                    response, previewOf(req.getBody(), type, media));
+                    response, preview);
 
             return response;
         } catch (RuntimeException e) {
@@ -173,7 +182,7 @@ public class MessageService {
 
         SendDecision decision = SendDecision.ALLOW;
         UUID directPeer = null;
-        if (target.isGroup()) {
+        if (target.isGroup() || target.isChannel()) {
             authorizeGroupSend(targetMember, target);
         } else {
             directPeer = otherDirectMember(targetConversationId, senderId);
@@ -201,8 +210,11 @@ public class MessageService {
             MessageResponse response = persist(target, senderId, messageId, src.getType(),
                     src.getBody(), src.getMedia(), null, null, src.getConversationId());
 
+            String preview = target.getDisappearingSeconds() > 0
+                    ? disappearingPreview(src.getType(), src.getMedia())
+                    : previewOf(src.getBody(), src.getType(), src.getMedia());
             dispatch(target, senderId, directPeer, decision, request, requestJustCreated,
-                    response, previewOf(src.getBody(), src.getType(), src.getMedia()));
+                    response, preview);
             return response;
         } catch (RuntimeException e) {
             idempotency.release(senderId, nonce);
@@ -226,11 +238,20 @@ public class MessageService {
             throw new ForbiddenException("You can only edit your own messages.", "ACCESS_FORBIDDEN");
         }
         Instant now = Instant.now();
-        messageRepo.editBody(m.getConversationId(), m.getBucket(), messageId, body, now);
-        messageByIdRepo.editBody(messageId, body, now);
+        // Preserve the disappearing guarantee: an edit must NOT resurrect a TTL'd
+        // message. Re-apply the remaining TTL so the edited body expires with the rest
+        // of the row (a plain UPDATE writes body with no TTL = forever).
+        int ttl = remainingDisappearingTtl(m.getConversationId(), m.getCreatedAt(), now);
+        if (ttl > 0) {
+            messageRepo.editBodyWithTtl(m.getConversationId(), m.getBucket(), messageId, body, now, ttl);
+            messageByIdRepo.editBodyWithTtl(messageId, body, now, ttl);
+        } else {
+            messageRepo.editBody(m.getConversationId(), m.getBucket(), messageId, body, now);
+            messageByIdRepo.editBody(messageId, body, now);
+        }
         m.setBody(body);
         m.setEditedAt(now);
-        chatSearch.indexAsync(m); // re-index the edited body
+        if (ttl <= 0) chatSearch.indexAsync(m); // re-index the edited body (never a disappearing one)
 
         List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
         broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
@@ -265,6 +286,8 @@ public class MessageService {
         reactionService.clear(messageId);
         chatSearch.deleteAsync(messageId);
         pinRepo.deletePin(m.getConversationId(), messageId); // a deleted message can't stay pinned
+        starRepo.deleteByMessageId(messageId);   // documented: a deleted message drops its stars
+        hiddenRepo.deleteByMessageId(messageId); // and its per-user "delete for me" rows
 
         List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
         broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
@@ -298,16 +321,65 @@ public class MessageService {
 
     // ── DELIVERED RECEIPT ────────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional
     public void markDelivered(long messageId, UUID userId) {
         MessageByIdEntity m = requireReadableMessage(messageId, userId);
-        // Don't leak presence/receipts on a pending request or a restricted thread.
+        // Persist the delivered high-water so the DM double-tick survives (idempotent, forward-only).
+        memberRepo.advanceDeliveredMarker(m.getConversationId(), userId, messageId);
+        // Don't leak receipts on a pending request / restricted thread, or if the
+        // user turned read receipts off (they don't give the delivered signal either).
         if (relationships.suppressEphemeral(m.getConversationId(), userId)) return;
-        List<UUID> recipients = memberRepo.findActiveMemberIds(m.getConversationId());
-        broadcaster.broadcastExcept(recipients, userId, ChatRealtimeEvent.builder()
+        if (!chatSettings.readReceiptsEnabled(userId)) return;
+        // Symmetric: only members who ALSO share read receipts receive the double-tick,
+        // so a peer who turned receipts off never gets one (for a DM that's the peer
+        // iff both share; for a group, the opted-in subset).
+        List<UUID> recipients = chatSettings.receiptRecipients(
+                memberRepo.findActiveMemberIds(m.getConversationId()), userId);
+        if (recipients.isEmpty()) return;
+        broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.RECEIPT_DELIVERED)
                 .conversationId(m.getConversationId())
                 .messageId(messageId).userId(userId)
+                .build());
+    }
+
+    // ── SEEN BY (group read receipts) ───────────────────────────────────────────────
+
+    /** Members who have seen a message (read marker ≥ it), excluding the sender and
+     *  anyone who has read receipts turned off. Empty if the caller has receipts off
+     *  (symmetric — you can't see what you won't share). */
+    @Transactional(readOnly = true)
+    public List<ak.dev.irc.app.chat.dto.response.ParticipantSummary> seenBy(long messageId, UUID userId) {
+        MessageByIdEntity m = requireReadableMessage(messageId, userId);
+        // Same baseline suppression as the realtime receipt paths: a pending request or
+        // a restricted DM must not leak the peer's read state via this pull path.
+        if (relationships.suppressEphemeral(m.getConversationId(), userId)) return List.of();
+        if (!chatSettings.readReceiptsEnabled(userId)) return List.of();
+        List<UUID> seers = memberRepo.findSeenBy(m.getConversationId(), messageId, m.getSenderId());
+        if (seers.isEmpty()) return List.of();
+        Set<UUID> sharing = chatSettings.receiptSharersAmong(seers);
+        List<UUID> visible = seers.stream().filter(sharing::contains).toList();
+        if (visible.isEmpty()) return List.of();
+        Map<UUID, User> users = loadUsers(new HashSet<>(visible));
+        return visible.stream().map(id -> mapper.toParticipant(users.get(id)))
+                .filter(java.util.Objects::nonNull).toList();
+    }
+
+    // ── DELETE FOR ME (per-message hide) ─────────────────────────────────────────────
+
+    /** Hide a single message for the caller only ("delete for me") — the message
+     *  stays in the timeline for everyone else. Any readable member may hide any
+     *  message on their own side. */
+    @Transactional
+    public void deleteForMe(long messageId, UUID userId) {
+        MessageByIdEntity m = messageByIdRepo.findById(messageId)
+                .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
+        memberRepo.findMember(m.getConversationId(), userId)
+                .filter(ConversationMember::canRead)
+                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+        if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) return; // idempotent
+        hiddenRepo.save(ak.dev.irc.app.chat.entity.HiddenMessage.builder()
+                .userId(userId).messageId(messageId).conversationId(m.getConversationId())
                 .build());
     }
 
@@ -373,7 +445,6 @@ public class MessageService {
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
                 .deleted(false).createdAt(now)
                 .build();
-        messageRepo.save(row);
         MessageByIdEntity byId = MessageByIdEntity.builder()
                 .messageId(messageId).conversationId(convo.getId()).bucket(bucket)
                 .senderId(senderId).type(type).body(emptyToNull(body))
@@ -382,10 +453,23 @@ public class MessageService {
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
                 .deleted(false).createdAt(now)
                 .build();
-        messageByIdRepo.save(byId);
+        // Disappearing messages: write with a Cassandra TTL so the rows auto-delete.
+        int ttl = convo.getDisappearingSeconds();
+        if (ttl > 0) {
+            var opts = org.springframework.data.cassandra.core.InsertOptions.builder()
+                    .ttl(java.time.Duration.ofSeconds(ttl)).build();
+            cassandraOps.insert(row, opts);
+            cassandraOps.insert(byId, opts);
+        } else {
+            messageRepo.save(row);
+            messageByIdRepo.save(byId);
+        }
 
+        // For a disappearing conversation the Postgres inbox preview must not persist
+        // the body (no TTL there) — store a non-revealing placeholder instead.
+        String inboxPreview = ttl > 0 ? disappearingPreview(type, media) : previewOf(body, type, media);
         conversationRepo.advanceLastMessage(convo.getId(), messageId,
-                LocalDateTime.ofInstant(now, ZoneOffset.UTC), previewOf(body, type, media));
+                LocalDateTime.ofInstant(now, ZoneOffset.UTC), inboxPreview);
 
         // The sender has, by definition, "read" their own message — advance their
         // own marker so they're never shown as unread on their own latest message
@@ -394,7 +478,9 @@ public class MessageService {
         unreadBadge.invalidate(senderId);
 
         // Index for full-text search (async, best-effort — never blocks the send).
-        chatSearch.indexAsync(byId);
+        // Never index a disappearing message: Elasticsearch has no TTL, so its body
+        // would outlive the Cassandra row it "disappears" with.
+        if (ttl <= 0) chatSearch.indexAsync(byId);
 
         Map<UUID, User> users = loadUsers(Set.of(senderId));
         ReplyPreview replyPreview = replyToId == null ? null
@@ -451,20 +537,27 @@ public class MessageService {
         }
 
         // Offline bell notifications (skip restricted; request → one MESSAGE_REQUEST).
+        // The sender label comes from the already-hydrated response — no extra read.
         if (decision == SendDecision.ROUTE_TO_REQUEST) {
             if (requestJustCreated) {
-                chatNotifications.notifyMessageRequest(directPeer, senderId, conversationId, senderLabel(senderId));
+                chatNotifications.notifyMessageRequest(directPeer, senderId, conversationId, labelOf(response));
             }
         } else if (decision == SendDecision.ALLOW && smallEnough) {
-            String label = senderLabel(senderId);
-            for (UUID r : recipients) {
-                if (r.equals(senderId)) continue;
-                unreadBadge.invalidate(r);
-                if (!presence.isOnline(r)) {
+            String label = labelOf(response);
+            List<UUID> others = recipients.stream().filter(r -> !r.equals(senderId)).toList();
+            unreadBadge.invalidateAll(others);                    // one DEL, not one per member
+            Set<UUID> online = presence.onlineAmong(others);      // one MGET, not one per member
+            for (UUID r : others) {
+                if (!online.contains(r)) {
                     chatNotifications.notifyNewMessage(r, senderId, conversationId, label, preview);
                 }
             }
         }
+    }
+
+    private static String labelOf(MessageResponse response) {
+        return response != null && response.senderUsername() != null
+                ? "@" + response.senderUsername() : "Someone";
     }
 
     private void authorizeGroupSend(ConversationMember member, Conversation convo) {
@@ -603,7 +696,7 @@ public class MessageService {
         return new MessageResponse(existingId, conversationId, senderId, null, null,
                 req.getType() != null ? req.getType().name() : MessageType.TEXT.name(),
                 req.getBody(), List.of(), req.getReplyToId(), null, null, null, List.of(),
-                null, false, null, Instant.now());
+                null, false, null, Instant.now(), false);
     }
 
     private String previewOf(String body, String type, List<MediaRef> media) {
@@ -620,6 +713,23 @@ public class MessageService {
             case "SYSTEM" -> "";
             default -> "";
         };
+    }
+
+    /** Non-revealing inbox/notification preview for a disappearing message — the media
+     *  kind if any, else a generic label; never the body (which must not persist past
+     *  the TTL in Postgres or a push notification). */
+    private String disappearingPreview(String type, List<MediaRef> media) {
+        String p = previewOf(null, type, media);
+        return p.isEmpty() ? "🕓 Disappearing message" : p;
+    }
+
+    /** Remaining seconds of a disappearing message's TTL (0 if the conversation is not
+     *  disappearing) — keeps an edited body expiring with the original row. */
+    private int remainingDisappearingTtl(UUID conversationId, Instant createdAt, Instant now) {
+        Conversation convo = conversationRepo.findById(conversationId).orElse(null);
+        if (convo == null || convo.getDisappearingSeconds() <= 0) return 0;
+        long elapsed = createdAt == null ? 0 : Math.max(0, Duration.between(createdAt, now).getSeconds());
+        return (int) Math.max(1, convo.getDisappearingSeconds() - elapsed);
     }
 
     private static String emptyToNull(String s) {

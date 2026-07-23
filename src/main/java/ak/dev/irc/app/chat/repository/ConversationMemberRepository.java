@@ -40,6 +40,8 @@ public interface ConversationMemberRepository
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.archived = false
           AND c.deletedAt IS NULL
+          AND (m.clearedBeforeMessageId = 0
+               OR (c.lastMessageId IS NOT NULL AND c.lastMessageId > m.clearedBeforeMessageId))
           AND NOT EXISTS (
               SELECT 1 FROM MessageRequest r
               WHERE r.conversationId = c.id
@@ -53,6 +55,9 @@ public interface ConversationMemberRepository
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.archived = false
           AND m.conversation.deletedAt IS NULL
+          AND (m.clearedBeforeMessageId = 0
+               OR (m.conversation.lastMessageId IS NOT NULL
+                   AND m.conversation.lastMessageId > m.clearedBeforeMessageId))
           AND NOT EXISTS (
               SELECT 1 FROM MessageRequest r
               WHERE r.conversationId = m.conversation.id
@@ -67,6 +72,8 @@ public interface ConversationMemberRepository
         WHERE m.id.userId = :uid AND m.archived = true
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND c.deletedAt IS NULL
+          AND (m.clearedBeforeMessageId = 0
+               OR (c.lastMessageId IS NOT NULL AND c.lastMessageId > m.clearedBeforeMessageId))
         ORDER BY c.lastMessageAt DESC NULLS LAST
         """,
         countQuery = """
@@ -74,6 +81,9 @@ public interface ConversationMemberRepository
         WHERE m.id.userId = :uid AND m.archived = true
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.conversation.deletedAt IS NULL
+          AND (m.clearedBeforeMessageId = 0
+               OR (m.conversation.lastMessageId IS NOT NULL
+                   AND m.conversation.lastMessageId > m.clearedBeforeMessageId))
         """)
     Page<ConversationMember> findArchived(@Param("uid") UUID userId, Pageable pageable);
 
@@ -95,6 +105,15 @@ public interface ConversationMemberRepository
     @Query("SELECT m FROM ConversationMember m WHERE m.id.conversationId = :cid")
     List<ConversationMember> findAllByConversation(@Param("cid") UUID conversationId);
 
+    /** Membership rows of ONE conversation for a set of users — the batch
+     *  existence check for group add (replaces a per-candidate point read). */
+    @Query("""
+        SELECT m FROM ConversationMember m
+        WHERE m.id.conversationId = :cid AND m.id.userId IN :uids
+        """)
+    List<ConversationMember> findMembersIn(@Param("cid") UUID conversationId,
+                                           @Param("uids") java.util.Collection<UUID> userIds);
+
     /** My membership rows across a set of conversations (for per-conversation
      *  history-floor resolution in cross-conversation search). */
     @Query("""
@@ -108,10 +127,33 @@ public interface ConversationMemberRepository
      *  user is never shown as unread on their own latest message). Only moves forward. */
     @Modifying
     @Query("""
-        UPDATE ConversationMember m SET m.lastReadMessageId = :mid, m.unreadCount = 0
+        UPDATE ConversationMember m SET m.lastReadMessageId = :mid, m.unreadCount = 0, m.markedUnread = false
          WHERE m.id.conversationId = :cid AND m.id.userId = :uid AND m.lastReadMessageId < :mid
         """)
     int advanceOwnMarker(@Param("cid") UUID conversationId, @Param("uid") UUID userId, @Param("mid") long messageId);
+
+    /** Advance a member's DELIVERED marker (device received the message). Only moves forward. */
+    @Modifying
+    @Query("""
+        UPDATE ConversationMember m SET m.lastDeliveredMessageId = :mid
+         WHERE m.id.conversationId = :cid AND m.id.userId = :uid AND m.lastDeliveredMessageId < :mid
+        """)
+    int advanceDeliveredMarker(@Param("cid") UUID conversationId, @Param("uid") UUID userId, @Param("mid") long messageId);
+
+    /** Set the explicit "marked as unread" flag on my membership. */
+    @Modifying
+    @Query("UPDATE ConversationMember m SET m.markedUnread = :flag WHERE m.id.conversationId = :cid AND m.id.userId = :uid")
+    int setMarkedUnread(@Param("cid") UUID conversationId, @Param("uid") UUID userId, @Param("flag") boolean flag);
+
+    /** Members who have SEEN (read marker ≥) a message — the group "seen by" set. */
+    @Query("""
+        SELECT m.id.userId FROM ConversationMember m
+        WHERE m.id.conversationId = :cid AND m.lastReadMessageId >= :messageId
+          AND m.id.userId <> :exclude
+        """)
+    List<UUID> findSeenBy(@Param("cid") UUID conversationId,
+                          @Param("messageId") long messageId,
+                          @Param("exclude") UUID exclude);
 
     /** Conversation ids the user can read — the membership scope for cross-conversation search. */
     @Query("""

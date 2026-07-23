@@ -72,6 +72,21 @@ shapes, error codes, and side effects, verified against the source.
 | [engagement.md](qna/engagement.md) | Answer reactions, attachments, sources, saves, shares |
 | [realtime.md](qna/realtime.md) | Per-question SSE stream + event catalog |
 
+### Chat & Messaging — `chat/`
+| File | Covers |
+|---|---|
+| [api-reference.md](chat/api-reference.md) | Conventions + the full chat error-code catalog (start here) |
+| [conversations.md](chat/conversations.md) | Inbox, create DM/group, get/update/delete (incl. "delete for me"), read/mute/pin/archive |
+| [messages.md](chat/messages.md) | Send (idempotent), read (cursor + gap sync), edit/delete/forward, reactions, pinned, delivered |
+| [groups.md](chat/groups.md) | Members, roles, restrict, leave, transfer ownership, invite links, join |
+| [message-requests.md](chat/message-requests.md) | Message Requests inbox + the stranger-contact flow |
+| [channels.md](chat/channels.md) | Telegram-style broadcast channels — create, discover, subscribe, post |
+| [calls.md](chat/calls.md) | Voice/video calls — ring/answer/decline/end + WebRTC SDP/ICE relay |
+| [live-streaming.md](chat/live-streaming.md) | Live streaming — go live, viewer registry, live chat |
+| [realtime.md](chat/realtime.md) | The single per-user SSE stream + event catalog, typing, presence, unread badge |
+| [settings.md](chat/settings.md) | Chat privacy — read receipts, last-seen, typing (symmetric-gate model) |
+| [search.md](chat/search.md) | In-conversation and cross-conversation message search |
+
 ### Platform services — `platform/`
 | File | Covers |
 |---|---|

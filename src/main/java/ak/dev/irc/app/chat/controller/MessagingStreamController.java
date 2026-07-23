@@ -43,6 +43,8 @@ public class MessagingStreamController {
     private final PresenceService presenceService;
     private final UnreadBadgeCache unreadBadge;
     private final JwtTokenProvider jwtTokenProvider;
+    private final ak.dev.irc.app.chat.service.ChatSettingsService chatSettings;
+    private final ak.dev.irc.app.chat.service.StarService starService;
 
     /** The one SSE stream for all of the caller's conversations. */
     @GetMapping(value = "/messaging/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -97,6 +99,30 @@ public class MessagingStreamController {
     @GetMapping("/messaging/unread-count")
     public ResponseEntity<Map<String, Long>> unreadCount(@AuthenticationPrincipal User user) {
         return ResponseEntity.ok(Map.of("count", unreadBadge.total(requireId(user))));
+    }
+
+    // ── Chat privacy settings ─────────────────────────────────────────────────────
+
+    @GetMapping("/messaging/settings")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.ChatSettingsResponse> getSettings(
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(chatSettings.get(requireId(user)));
+    }
+
+    @PutMapping("/messaging/settings")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.ChatSettingsResponse> updateSettings(
+            @RequestBody ak.dev.irc.app.chat.dto.request.UpdateChatSettingsRequest req,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(chatSettings.update(requireId(user), req));
+    }
+
+    // ── Starred messages ──────────────────────────────────────────────────────────
+
+    @GetMapping("/messaging/starred")
+    public ResponseEntity<List<ak.dev.irc.app.chat.dto.response.MessageResponse>> starred(
+            @AuthenticationPrincipal User user,
+            @org.springframework.data.web.PageableDefault(size = 30) org.springframework.data.domain.Pageable pageable) {
+        return ResponseEntity.ok(starService.listStarred(requireId(user), pageable));
     }
 
     private static UUID requireId(User user) {

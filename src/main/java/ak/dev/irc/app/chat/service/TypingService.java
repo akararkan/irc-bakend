@@ -32,6 +32,7 @@ public class TypingService {
     private final ConversationMemberRepository memberRepo;
     private final ChatRelationshipService relationships;
     private final ChatRealtimeBroadcaster broadcaster;
+    private final ChatSettingsService chatSettings;
 
     public void handleTyping(UUID conversationId, UUID senderId, boolean isTyping) {
         // Must be an active member to signal typing.
@@ -49,8 +50,10 @@ public class TypingService {
         }
 
         // Suppress while a request is pending or the thread is restricted, so the
-        // other party never learns the sender is around (privacy — see design 05).
+        // other party never learns the sender is around; also honour the sender's
+        // own "typing indicators off" preference.
         if (relationships.suppressEphemeral(conversationId, senderId)) return;
+        if (!chatSettings.typingEnabled(senderId)) return;
 
         List<UUID> recipients = memberRepo.findActiveMemberIds(conversationId);
         ChatRealtimeEvent event = ChatRealtimeEvent.builder()

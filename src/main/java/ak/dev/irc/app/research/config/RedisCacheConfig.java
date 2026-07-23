@@ -93,7 +93,11 @@ public class RedisCacheConfig {
                         // Profile stat row = 6 aggregate COUNTs across 3
                         // datastores on a public endpoint — 30s staleness is
                         // invisible, the query collapse is not.
-                        Map.entry("user-stats",         defaults.entryTtl(Duration.ofSeconds(30)))
+                        Map.entry("user-stats",         defaults.entryTtl(Duration.ofSeconds(30))),
+                        // Chat ephemeral-suppression gate (typing/receipts) — runs
+                        // at keystroke cadence, ~5 queries cold; 10s staleness on
+                        // an ephemeral signal is invisible.
+                        Map.entry("chat-suppress-ephemeral", defaults.entryTtl(Duration.ofSeconds(10)))
                 ))
                 .build();
     }

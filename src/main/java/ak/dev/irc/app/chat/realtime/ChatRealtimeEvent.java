@@ -60,6 +60,14 @@ public class ChatRealtimeEvent {
     // request.new
     private MessageRequestResponse request;
 
+    // calls (voice/video) — call.* events
+    private ak.dev.irc.app.chat.dto.response.CallResponse call;
+    private ak.dev.irc.app.chat.dto.response.CallSignalMessage signal;
+
+    // live streaming — stream.* events
+    private ak.dev.irc.app.chat.dto.response.LiveStreamResponse stream;
+    private ak.dev.irc.app.chat.dto.response.LiveChatMessage streamChat;
+
     @Builder.Default
     private Instant timestamp = Instant.now();
 }

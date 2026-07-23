@@ -30,6 +30,14 @@ public interface MessageByIdRepository extends CassandraRepository<MessageByIdEn
                   @Param("body") String body,
                   @Param("editedAt") Instant editedAt);
 
+    /** Edit under a Cassandra TTL (disappearing conversations) — see the twin on
+     *  {@code MessageByConversationRepository}. */
+    @Query("UPDATE message_by_id USING TTL :ttl SET body = :body, edited_at = :editedAt WHERE message_id = :messageId")
+    void editBodyWithTtl(@Param("messageId") long messageId,
+                         @Param("body") String body,
+                         @Param("editedAt") Instant editedAt,
+                         @Param("ttl") int ttl);
+
     @Query("UPDATE message_by_id SET deleted = true, body = null, media = null WHERE message_id = :messageId")
     void tombstone(@Param("messageId") long messageId);
 }

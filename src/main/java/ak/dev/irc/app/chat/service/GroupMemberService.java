@@ -80,32 +80,52 @@ public class GroupMemberService {
         }
 
         LinkedHashSet<UUID> candidates = new LinkedHashSet<>(userIds);
-        Map<UUID, User> users = candidates.isEmpty() ? Map.of()
-                : userRepository.findActiveByIdIn(candidates).stream().collect(Collectors.toMap(User::getId, u -> u));
+        LinkedHashSet<UUID> toLoad = new LinkedHashSet<>(candidates);
+        toLoad.add(actorId);   // one round-trip covers the actor label too
+        Map<UUID, User> users = userRepository.findActiveByIdIn(toLoad).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
         String actorLabel = label(actorId, users);
 
-        int added = 0;
+        // Batched pre-checks: one blocked-set lookup + one membership query for the
+        // whole candidate list (previously one query per candidate).
+        Set<UUID> blocked = relationships.blockedEitherWayIds(actorId);
+        Map<UUID, ConversationMember> existingByUser = candidates.isEmpty() ? Map.of()
+                : memberRepo.findMembersIn(conversationId, candidates).stream()
+                    .collect(Collectors.toMap(m -> m.getId().getUserId(), m -> m));
+
+        List<ConversationMember> toSave = new ArrayList<>();
+        List<UUID> addedIds = new ArrayList<>();
         for (UUID id : candidates) {
             if (!users.containsKey(id)) continue;                      // no such active user
-            if (relationships.isBlockedEitherWay(actorId, id)) continue; // abuse guard
-            ConversationMember existing = memberRepo.findMember(conversationId, id).orElse(null);
+            if (blocked.contains(id)) continue;                        // abuse guard
+            ConversationMember existing = existingByUser.get(id);
             // Already a member (ACTIVE) — or RESTRICTED, which must NOT be silently
             // lifted by an add — so skip. Only truly-departed members re-join.
             if (existing != null && !isRejoinable(existing)) continue;
             if (existing != null) {                                     // re-activate a LEFT/REMOVED member
                 existing.setStatus(MemberStatus.ACTIVE);
                 existing.setRole(MemberRole.MEMBER);
-                memberRepo.save(existing);
+                toSave.add(existing);
             } else {
-                memberRepo.save(ConversationMember.of(c, id, MemberRole.MEMBER));
+                toSave.add(ConversationMember.of(c, id, MemberRole.MEMBER));
             }
-            added++;
-            systemMessages.write(conversationId, SystemEventType.MEMBER_ADDED, actorId,
-                    actorLabel + " added " + label(id, users));
-            chatNotifications.notifyAddedToGroup(id, actorId, conversationId, c.getTitle(), actorLabel);
-            emitMemberChange(conversationId, id, "ADDED", MemberRole.MEMBER, true);
+            addedIds.add(id);
         }
-        if (added > 0) conversationRepo.adjustMemberCount(conversationId, added);
+        if (addedIds.isEmpty()) return;
+
+        memberRepo.saveAll(toSave);
+        conversationRepo.adjustMemberCount(conversationId, addedIds.size());
+
+        // One member-list read shared by every per-member event below (previously
+        // re-queried once per added member, by both write() and emitMemberChange).
+        List<UUID> readable = memberRepo.findReadableMemberIds(conversationId);
+        List<UUID> actives = memberRepo.findActiveMemberIds(conversationId);
+        for (UUID id : addedIds) {
+            systemMessages.write(conversationId, SystemEventType.MEMBER_ADDED, actorId,
+                    actorLabel + " added " + label(id, users), readable, users);
+            chatNotifications.notifyAddedToGroup(id, actorId, conversationId, c.getTitle(), actorLabel);
+            emitMemberChange(conversationId, id, "ADDED", MemberRole.MEMBER, actives);
+        }
     }
 
     // ── Remove (kick) ──────────────────────────────────────────────────────────────
@@ -298,13 +318,20 @@ public class GroupMemberService {
     // ── helpers ──────────────────────────────────────────────────────────────────────
 
     private void emitMemberChange(UUID conversationId, UUID userId, String change, MemberRole role, boolean toGroup) {
+        emitMemberChange(conversationId, userId, change, role,
+                toGroup ? memberRepo.findActiveMemberIds(conversationId) : null);
+    }
+
+    /** Variant taking a precomputed recipient list so batch callers fetch it once. */
+    private void emitMemberChange(UUID conversationId, UUID userId, String change, MemberRole role,
+                                  List<UUID> groupRecipients) {
         ChatRealtimeEvent evt = ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.MEMBER_CHANGED)
                 .conversationId(conversationId).userId(userId)
                 .memberChange(change).role(role == null ? null : role.name())
                 .build();
-        if (toGroup) {
-            broadcaster.broadcast(memberRepo.findActiveMemberIds(conversationId), evt);
+        if (groupRecipients != null) {
+            broadcaster.broadcast(groupRecipients, evt);
         }
         // Always deliver to the affected user so their client updates even if
         // they've just lost active membership (removed/left).

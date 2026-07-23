@@ -23,5 +23,7 @@ public record MessageResponse(
         Instant editedAt,
         boolean deleted,
         String systemEvent,
-        Instant createdAt
+        Instant createdAt,
+        /** Viewer-relative: has the caller starred/bookmarked this message. */
+        boolean starred
 ) {}

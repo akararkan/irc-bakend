@@ -29,22 +29,14 @@ public class ChatRealtimeBroadcaster {
     /** Deliver to every recipient (typically all conversation members). */
     public void broadcast(Collection<UUID> recipientIds, ChatRealtimeEvent event) {
         if (recipientIds == null || recipientIds.isEmpty()) return;
-        runAfterCommit(() -> {
-            for (UUID recipientId : recipientIds) {
-                publisher.publish(recipientId, event);
-            }
-        });
+        runAfterCommit(() -> publisher.publishAll(recipientIds, event));
     }
 
     /** Deliver to everyone except {@code excludeUserId} (e.g. the actor). */
     public void broadcastExcept(Collection<UUID> recipientIds, UUID excludeUserId, ChatRealtimeEvent event) {
         if (recipientIds == null || recipientIds.isEmpty()) return;
-        runAfterCommit(() -> {
-            for (UUID recipientId : recipientIds) {
-                if (recipientId.equals(excludeUserId)) continue;
-                publisher.publish(recipientId, event);
-            }
-        });
+        runAfterCommit(() -> publisher.publishAll(
+                recipientIds.stream().filter(id -> !id.equals(excludeUserId)).toList(), event));
     }
 
     /** Deliver to a single recipient. */

@@ -18,7 +18,21 @@ public enum ChatRealtimeEventType {
     PRESENCE("presence"),
     CONVERSATION_UPDATED("conversation.updated"),
     MEMBER_CHANGED("member.changed"),
-    REQUEST_NEW("request.new");
+    REQUEST_NEW("request.new"),
+
+    // Calls (voice/video signaling)
+    CALL_INCOMING("call.incoming"),
+    CALL_ACCEPTED("call.accepted"),
+    CALL_DECLINED("call.declined"),
+    CALL_ENDED("call.ended"),
+    CALL_PARTICIPANT("call.participant"),
+    CALL_SIGNAL("call.signal"),
+
+    // Live streaming
+    STREAM_STARTED("stream.started"),
+    STREAM_ENDED("stream.ended"),
+    STREAM_VIEWER("stream.viewer"),
+    STREAM_CHAT("stream.chat");
 
     private final String wire;
 

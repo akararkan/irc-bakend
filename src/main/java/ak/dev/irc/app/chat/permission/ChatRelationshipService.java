@@ -46,6 +46,13 @@ public class ChatRelationshipService {
         return socialGuard.isBlockedBetween(a, b);
     }
 
+    /** Everyone in a block relation (either direction) with {@code userId} — one
+     *  cached lookup, for filtering a whole candidate batch without a per-id query. */
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> blockedEitherWayIds(UUID userId) {
+        return new java.util.HashSet<>(socialGuard.findRelatedBlockedIds(userId));
+    }
+
     /** True when {@code recipient} has restricted {@code sender}. */
     @Transactional(readOnly = true)
     public boolean isRestrictedBy(UUID recipient, UUID sender) {
@@ -65,8 +72,15 @@ public class ChatRelationshipService {
      * so the other party never learns the actor is around before the relationship
      * is settled. True when a request is still pending, or (for a DIRECT thread) a
      * restrict relationship exists in either direction.
+     *
+     * <p>Short-TTL cached: this gate runs on every typing ping and every
+     * delivered/read receipt (keystroke cadence) and costs ~5 relational queries
+     * cold. A few seconds of staleness on an ephemeral signal is invisible; the
+     * query collapse is not.</p>
      */
     @Transactional(readOnly = true)
+    @org.springframework.cache.annotation.Cacheable(value = "chat-suppress-ephemeral",
+            key = "#conversationId + ':' + #actorId")
     public boolean suppressEphemeral(UUID conversationId, UUID actorId) {
         MessageRequest req = messageRequestRepo.findByConversationId(conversationId).orElse(null);
         if (req != null && req.getStatus() == MessageRequestStatus.PENDING) return true;
@@ -94,6 +108,12 @@ public class ChatRelationshipService {
         Conversation convo = conversationRepo.findByDirectKey(DirectKeys.of(a, b)).orElse(null);
         if (convo == null) return false;
         MessageRequest req = messageRequestRepo.findByConversationId(convo.getId()).orElse(null);
-        return req == null || req.getStatus() == MessageRequestStatus.ACCEPTED;
+        if (req != null) return req.getStatus() == MessageRequestStatus.ACCEPTED;
+        // No request row: only an ESTABLISHED thread (one with actual history)
+        // counts as accepted. A bare conversation row must not — anyone may create
+        // a DIRECT conversation, and counting it as accepted would let a stranger
+        // bypass the whole message-request quarantine (and its pre-accept cap)
+        // simply by creating the thread before their first send.
+        return convo.getLastMessageId() != null;
     }
 }

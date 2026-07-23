@@ -70,6 +70,14 @@ public class ChatMapper {
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
+        return toMessage(e, users, reactions, replyTo, false);
+    }
+
+    public MessageResponse toMessage(MessageByConversationEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred) {
         User sender = users == null ? null : users.get(e.getSenderId());
         return new MessageResponse(
                 e.getMessageId(),
@@ -88,13 +96,22 @@ public class ChatMapper {
                 e.getEditedAt(),
                 Boolean.TRUE.equals(e.getDeleted()),
                 e.getSystemEvent(),
-                e.getCreatedAt());
+                e.getCreatedAt(),
+                starred);
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
+        return toMessage(e, users, reactions, replyTo, false);
+    }
+
+    public MessageResponse toMessage(MessageByIdEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred) {
         User sender = users == null ? null : users.get(e.getSenderId());
         return new MessageResponse(
                 e.getMessageId(),
@@ -113,7 +130,8 @@ public class ChatMapper {
                 e.getEditedAt(),
                 Boolean.TRUE.equals(e.getDeleted()),
                 e.getSystemEvent(),
-                e.getCreatedAt());
+                e.getCreatedAt(),
+                starred);
     }
 
     public ReplyPreview toReplyPreview(MessageByIdEntity e) {
@@ -143,10 +161,22 @@ public class ChatMapper {
     // ── Conversation ────────────────────────────────────────────────────────────
 
     public ConversationResponse toConversation(Conversation c, ConversationMember me, ParticipantSummary peer) {
+        return toConversation(c, me, peer, null, null);
+    }
+
+    /** {@code peerLastRead}/{@code peerLastDelivered} are the DM peer's receipt
+     *  markers (for the ✓✓ / blue-tick), or {@code null} when the pair don't both
+     *  share read receipts. */
+    public ConversationResponse toConversation(Conversation c, ConversationMember me, ParticipantSummary peer,
+                                               Long peerLastRead, Long peerLastDelivered) {
+        boolean marked = me != null && me.isMarkedUnread();
+        boolean hasUnread = marked || (me != null && c.getLastMessageId() != null
+                && c.getLastMessageId() > me.getLastReadMessageId());
         return new ConversationResponse(
                 c.getId(),
                 c.getType().name(),
                 c.getTitle(),
+                c.getDescription(),
                 c.getAvatarKey(),
                 resolveUrl(null, c.getAvatarKey()),
                 c.getOwnerId(),
@@ -155,16 +185,20 @@ public class ChatMapper {
                 c.getLastMessageAt(),
                 c.getLastMessagePreview(),
                 c.getGroupSettings(),
+                c.getDisappearingSeconds(),
                 me != null ? me.getRole().name() : null,
                 me != null ? me.getStatus().name() : null,
                 me != null ? me.getLastReadMessageId() : 0L,
+                me != null ? me.getLastDeliveredMessageId() : 0L,
                 me != null ? me.getUnreadCount() : 0,
-                me != null && c.getLastMessageId() != null
-                        && c.getLastMessageId() > me.getLastReadMessageId(),
+                hasUnread,
+                marked,
                 me != null ? me.getMutedUntil() : null,
                 me != null && me.isPinned(),
                 me != null && me.isArchived(),
                 peer,
+                peerLastRead,
+                peerLastDelivered,
                 c.getCreatedAt());
     }
 

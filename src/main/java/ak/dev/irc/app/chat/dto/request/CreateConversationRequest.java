@@ -28,6 +28,10 @@ public class CreateConversationRequest {
     @Size(max = 120, message = "group title must not exceed 120 characters")
     private String title;
 
+    /** GROUP only — optional description/topic. */
+    @Size(max = 500, message = "group description must not exceed 500 characters")
+    private String description;
+
     /** GROUP only — R2/S3 key for the avatar. */
     @Size(max = 255)
     private String avatarKey;

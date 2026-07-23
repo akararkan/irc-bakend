@@ -1,11 +1,14 @@
 package ak.dev.irc.app.chat.repository;
 
 import ak.dev.irc.app.chat.entity.Conversation;
+import ak.dev.irc.app.chat.enums.ConversationType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -51,4 +54,24 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("UPDATE Conversation c SET c.deletedAt = :at WHERE c.id = :id")
     void softDelete(@Param("id") UUID id, @Param("at") LocalDateTime at);
+
+    // ── Channels ─────────────────────────────────────────────────────────────────
+
+    /** Public channel lookup by @handle. */
+    Optional<Conversation> findByHandle(String handle);
+
+    boolean existsByHandle(String handle);
+
+    /** Discover public channels by title/handle, most-subscribed first. An empty
+     *  {@code q} lists all public channels. */
+    @Query("""
+        SELECT c FROM Conversation c
+         WHERE c.type = :type AND c.publicChannel = true AND c.deletedAt IS NULL
+           AND (:q = '' OR LOWER(c.title) LIKE LOWER(CONCAT('%', :q, '%'))
+                       OR LOWER(c.handle) LIKE LOWER(CONCAT('%', :q, '%')))
+         ORDER BY c.memberCount DESC
+        """)
+    List<Conversation> discoverChannels(@Param("type") ConversationType type,
+                                        @Param("q") String q,
+                                        Pageable pageable);
 }
