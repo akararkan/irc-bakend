@@ -45,6 +45,10 @@ public class ChannelService {
     private final ConversationMemberRepository memberRepo;
     private final ChatRealtimeBroadcaster broadcaster;
 
+    /** Web origin the share links point at (frontend routes /c/{handle}). */
+    @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
+    private String baseUrl;
+
     @Transactional
     public ChannelResponse create(UUID ownerId, CreateChannelRequest req) {
         if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException("A channel requires a title.");
@@ -87,7 +91,10 @@ public class ChannelService {
             memberRepo.save(ConversationMember.of(c, userId, MemberRole.MEMBER));
         }
         conversationRepo.adjustMemberCount(channelId, +1);
-        broadcaster.broadcastTo(userId, ChatRealtimeEvent.builder()
+        // Realtime subscriber count: every active member (including the new
+        // subscriber's own tabs) gets the member change and applies +1 locally —
+        // the platform's delta-not-counts model.
+        broadcaster.broadcast(memberRepo.findActiveMemberIds(channelId), ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.MEMBER_CHANGED)
                 .conversationId(channelId).userId(userId)
                 .memberChange("SUBSCRIBED").role(MemberRole.MEMBER.name())
@@ -103,6 +110,15 @@ public class ChannelService {
         if (m.isOwner()) throw new ForbiddenException("The owner cannot unsubscribe from their own channel.", "ACCESS_FORBIDDEN");
         memberRepo.delete(m);
         conversationRepo.adjustMemberCount(channelId, -1);
+        // Remaining members apply −1; the leaver's own tabs get it explicitly
+        // (they are no longer in the active list).
+        ChatRealtimeEvent evt = ChatRealtimeEvent.builder()
+                .eventType(ChatRealtimeEventType.MEMBER_CHANGED)
+                .conversationId(channelId).userId(userId)
+                .memberChange("UNSUBSCRIBED")
+                .build();
+        broadcaster.broadcast(memberRepo.findActiveMemberIds(channelId), evt);
+        broadcaster.broadcastTo(userId, evt);
     }
 
     @Transactional(readOnly = true)
@@ -146,8 +162,13 @@ public class ChannelService {
     }
 
     private ChannelResponse toResponse(Conversation c, boolean subscribed) {
+        // A private channel has no public link — it is shared via an invite link
+        // (POST /conversations/{id}/invite-link) instead.
+        String shareUrl = c.isPublicChannel() && c.getHandle() != null
+                ? ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/c/" + c.getHandle()) : null;
         return new ChannelResponse(c.getId(), c.getHandle(), c.getTitle(), c.getDescription(),
-                c.isPublicChannel(), c.getMemberCount(), c.getOwnerId(), subscribed, c.getCreatedAt());
+                c.isPublicChannel(), c.getMemberCount(), c.getOwnerId(), subscribed, c.getCreatedAt(),
+                shareUrl);
     }
 
     private String normalizeHandle(String raw) {

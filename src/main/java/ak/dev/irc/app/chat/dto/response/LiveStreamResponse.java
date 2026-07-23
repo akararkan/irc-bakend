@@ -15,5 +15,7 @@ public record LiveStreamResponse(
         String ingestUrl,      // host-only; null for viewers
         int viewerCount,
         Instant startedAt,
-        Instant endedAt
+        Instant endedAt,
+        /** Shareable watch link ({@code {base}/live/{id}}) — safe for anyone. */
+        String shareUrl
 ) {}

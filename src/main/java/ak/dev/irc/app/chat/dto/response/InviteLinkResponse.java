@@ -13,5 +13,7 @@ public record InviteLinkResponse(
         String token,
         LocalDateTime expiresAt,
         Integer maxUses,
-        int useCount
+        int useCount,
+        /** Ready-to-share join link ({@code {base}/join/{token}}). */
+        String shareUrl
 ) {}

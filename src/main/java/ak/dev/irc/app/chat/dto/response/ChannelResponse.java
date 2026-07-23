@@ -14,5 +14,8 @@ public record ChannelResponse(
         long subscriberCount,
         UUID ownerId,
         boolean subscribed,
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        /** Public share link ({@code {base}/c/{handle}}); {@code null} for a
+         *  private channel — share those via an invite link instead. */
+        String shareUrl
 ) {}

@@ -56,6 +56,10 @@ public class GroupMemberService {
     private final UserRepository userRepository;
     private final ConversationService conversationService;
 
+    /** Web origin invite share links point at (frontend routes /join/{token}). */
+    @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
+    private String baseUrl;
+
     // ── List ─────────────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -250,7 +254,7 @@ public class GroupMemberService {
 
     @Transactional
     public InviteLinkResponse createInvite(UUID conversationId, UUID actorId, CreateInviteLinkRequest req) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
             throw new ForbiddenException("You cannot create invite links here.", "ADMINS_ONLY");
@@ -268,12 +272,13 @@ public class GroupMemberService {
                 .expiresAt(expiresAt)
                 .maxUses(req.getMaxUses())
                 .build());
-        return new InviteLinkResponse(conversationId, token, invite.getExpiresAt(), invite.getMaxUses(), invite.getUseCount());
+        return new InviteLinkResponse(conversationId, token, invite.getExpiresAt(), invite.getMaxUses(),
+                invite.getUseCount(), ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/join/" + token));
     }
 
     @Transactional
     public void revokeInvite(UUID conversationId, UUID actorId) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
             throw new ForbiddenException("You cannot revoke invite links here.", "ADMINS_ONLY");
@@ -343,6 +348,18 @@ public class GroupMemberService {
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         if (!c.isGroup()) throw new BadRequestException("This action applies only to group conversations.");
+        return c;
+    }
+
+    /** Invite links apply to groups AND channels (a private channel is shared by
+     *  invite link — it has no public @handle URL). */
+    private Conversation requireGroupOrChannel(UUID conversationId) {
+        Conversation c = conversationRepo.findById(conversationId)
+                .filter(x -> x.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
+        if (!c.isGroup() && !c.isChannel()) {
+            throw new BadRequestException("This action applies only to group or channel conversations.");
+        }
         return c;
     }
 

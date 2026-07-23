@@ -56,6 +56,10 @@ public class LiveStreamService {
     @Value("${app.streaming.playback-base:https://play.local/live}")
     private String playbackBase;
 
+    /** Web origin the share links point at (frontend routes /live/{id}). */
+    @Value("${irc.base-url:https://irc.example.com}")
+    private String baseUrl;
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     @Transactional
@@ -106,11 +110,14 @@ public class LiveStreamService {
         }
         viewerRepo.save(v);
         if (nowActive) {
-            int count = (int) viewerRepo.countByStreamIdAndActiveTrue(streamId);
+            // One id-list read serves both the new count and the broadcast
+            // recipients (was a COUNT query + a second id-list query).
+            List<UUID> viewers = activeViewerIds(streamId);
+            int count = viewers.size();
             s.setViewerCount(count);
             if (count > s.getPeakViewerCount()) s.setPeakViewerCount(count);
             streamRepo.save(s);
-            broadcastViewer(s, userId, "JOINED");
+            broadcastViewer(s, viewers, userId, "JOINED");
         }
         return toResponse(s, s.getHostId().equals(userId));
     }
@@ -124,11 +131,12 @@ public class LiveStreamService {
         v.setActive(false);
         v.setLeftAt(Instant.now());
         viewerRepo.save(v);
+        List<UUID> viewers = activeViewerIds(streamId); // post-save: excludes the leaver
         if (s.getStatus() == LiveStreamStatus.LIVE) {
-            s.setViewerCount((int) viewerRepo.countByStreamIdAndActiveTrue(streamId));
+            s.setViewerCount(viewers.size());
             streamRepo.save(s);
         }
-        broadcastViewer(s, userId, "LEFT");
+        broadcastViewer(s, viewers, userId, "LEFT");
     }
 
     // ── Live chat (ephemeral) ────────────────────────────────────────────────────
@@ -165,8 +173,8 @@ public class LiveStreamService {
 
     // ── internals ──────────────────────────────────────────────────────────────
 
-    private void broadcastViewer(LiveStream s, UUID userId, String change) {
-        broadcaster.broadcast(withHost(activeViewerIds(s.getId()), s.getHostId()),
+    private void broadcastViewer(LiveStream s, List<UUID> activeViewers, UUID userId, String change) {
+        broadcaster.broadcast(withHost(activeViewers, s.getHostId()),
                 ChatRealtimeEvent.builder()
                         .eventType(ChatRealtimeEventType.STREAM_VIEWER)
                         .stream(toResponse(s, false)).userId(userId).memberChange(change)
@@ -197,8 +205,9 @@ public class LiveStreamService {
     private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest) {
         String playbackUrl = playbackBase + "/" + s.getId() + ".m3u8";
         String ingestUrl = includeIngest ? ingestBase + "/" + s.getStreamKey() : null;
+        String shareUrl = ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/live/" + s.getId());
         return new LiveStreamResponse(s.getId(), s.getHostId(), s.getTitle(), s.getDescription(),
                 s.getStatus().name(), playbackUrl, ingestUrl, s.getViewerCount(),
-                s.getStartedAt(), s.getEndedAt());
+                s.getStartedAt(), s.getEndedAt(), shareUrl);
     }
 }

@@ -240,7 +240,9 @@ an active member.
 ### `POST /conversations/{id}/invite-link` — create / rotate
 
 Mint a Telegram-style invite link. Requires `CREATE_INVITE`. Creating a link
-**revokes any prior links** for the group first (rotation).
+**revokes any prior links** for the group first (rotation). Works for **groups
+and channels** (a private channel is shared exactly this way — it has no public
+@handle URL).
 
 **Request body (`CreateInviteLinkRequest`, optional — may be omitted entirely):**
 
@@ -256,11 +258,13 @@ Mint a Telegram-style invite link. Requires `CREATE_INVITE`. Creating a link
   "token": "9a1f…c4",          // plaintext, shown ONCE — only a SHA-256 hash is stored
   "expiresAt": "2026-07-23T14:30:00.000Z" | null,
   "maxUses": 50 | null,
-  "useCount": 0 }
+  "useCount": 0,
+  "shareUrl": "https://irc.example.com/join/9a1f…c4" }  // ready-to-share ({irc.base-url}/join/{token})
 ```
 
 The **`token` is returned exactly once** and can never be recovered from the
-database — surface it in the share link immediately. Distribute it as-is to
+database — surface it in the share link immediately. `shareUrl` is the
+ready-to-share form; the frontend route behind it hands the token to
 `POST /conversations/join`.
 
 **Errors:** `ADMINS_ONLY` (403) if the caller lacks `CREATE_INVITE`;

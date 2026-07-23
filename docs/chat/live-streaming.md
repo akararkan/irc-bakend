@@ -31,10 +31,15 @@ app.streaming.playback-base=https://your-cdn/live      # viewers play here   (+ 
   "id": "<uuid>", "hostId": "<uuid>", "title": "…", "description": "…",
   "status": "LIVE", "playbackUrl": "https://your-cdn/live/<id>.m3u8",
   "ingestUrl": "rtmp://your-ingest/live/<streamKey>",
-  "viewerCount": 342, "startedAt": "…", "endedAt": null
+  "viewerCount": 342, "startedAt": "…", "endedAt": null,
+  "shareUrl": "https://irc.example.com/live/<id>"
 }
 ```
 `ingestUrl` is **host-only** (carries the secret key); it is `null` for viewers.
+
+`shareUrl` (`{irc.base-url}/live/{id}`) is the safe-for-anyone watch link: the
+frontend route behind it resolves the stream via `GET /streams/{id}` and calls
+`join` — it never exposes the stream key.
 
 ## Realtime (multiplexed on `/messaging/stream`)
 
@@ -43,6 +48,10 @@ app.streaming.playback-base=https://your-cdn/live      # viewers play here   (+ 
 | `stream.viewer` | `stream`, `userId`, `memberChange` (`JOINED`/`LEFT`) | current viewers + host |
 | `stream.chat` | `streamChat` (`LiveChatMessage`) | current viewers + host |
 | `stream.ended` | `stream` | current viewers + host |
+
+The `stream` object inside `stream.viewer` carries the **already-updated**
+`viewerCount`, so the viewer counter updates in realtime on every join/leave —
+render it directly, no re-fetch needed.
 
 `LiveChatMessage`: `{ "streamId", "userId", "username", "text", "sentAt" }`.
 (`stream.started` is reserved for a future followers fan-out.)

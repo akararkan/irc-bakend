@@ -54,7 +54,7 @@ public class ChatRealtimeEvent {
     private ConversationResponse conversation;
 
     // member.changed
-    private String memberChange;     // ADDED | REMOVED | LEFT | PROMOTED | DEMOTED | RESTRICTED | UNRESTRICTED
+    private String memberChange;     // ADDED | REMOVED | LEFT | PROMOTED | DEMOTED | RESTRICTED | UNRESTRICTED | SUBSCRIBED | UNSUBSCRIBED
     private String role;
 
     // request.new

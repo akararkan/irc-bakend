@@ -31,9 +31,24 @@ and unique for public channels.
 {
   "id": "<uuid>", "handle": "ai_research", "title": "…", "description": "…",
   "publicChannel": true, "subscriberCount": 128, "ownerId": "<uuid>",
-  "subscribed": false, "createdAt": "…"
+  "subscribed": false, "createdAt": "…",
+  "shareUrl": "https://irc.example.com/c/ai_research"
 }
 ```
+
+## Share links
+
+- **Public channel** — every `ChannelResponse` carries a ready-to-share
+  `shareUrl` built as `{irc.base-url}/c/{handle}`. The frontend route behind it
+  resolves the channel via `GET /channels/by-handle/{handle}` and offers
+  subscribe.
+- **Private channel** — `shareUrl` is `null` (there is nothing publicly
+  resolvable). Share it with an **invite link** instead:
+  `POST /conversations/{channelId}/invite-link` (owner/admin) returns a `token`
+  plus its own `shareUrl` (`{irc.base-url}/join/{token}`); the recipient joins
+  with `POST /conversations/join { "token": … }` and lands in the channel as a
+  subscriber. Rotation/expiry/max-uses work exactly as for
+  [group invite links](groups.md).
 
 ## Posting & reading
 - **Post:** `POST /conversations/{channelId}/messages` — only `OWNER`/`ADMIN`
@@ -45,9 +60,25 @@ and unique for public channels.
   `message.deleted` / `message.reaction` on their `/messaging/stream`, exactly
   like a group.
 
+## Realtime subscriber count
+
+Every subscribe/unsubscribe is broadcast to **all active members** of the
+channel (owner, admins and subscribers) on `/messaging/stream`:
+
+| event | payload | meaning |
+|---|---|---|
+| `member.changed` | `conversationId`, `userId`, `memberChange: "SUBSCRIBED"`, `role: "MEMBER"` | someone subscribed |
+| `member.changed` | `conversationId`, `userId`, `memberChange: "UNSUBSCRIBED"` | someone unsubscribed (also sent to the leaver's own tabs) |
+
+Per the platform's **delta-not-counts** realtime model the event carries no
+counter value: clients apply `+1` / `-1` to the `subscriberCount` they already
+hold from `ChannelResponse`. A fresh absolute value is always available from
+`GET /channels/by-handle/{handle}` or the conversation endpoint.
+
 ## Notes
 - Private channels (`publicChannel: false`) are not discoverable and reject
-  self-subscribe; add members via the group [invite link](groups.md) flow.
+  self-subscribe; share them via the [invite link](groups.md) flow (see
+  **Share links** above).
 - The owner cannot unsubscribe from their own channel.
 - Subscribers are `conversation_members`; promote one to `ADMIN` via the
   [group roles](groups.md) endpoint to let them post.
