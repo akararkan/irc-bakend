@@ -70,6 +70,22 @@ public interface MessageByConversationRepository
                          @Param("editedAt") Instant editedAt,
                          @Param("ttl") int ttl);
 
+    /** Re-write the extracted hashtags after a body edit. */
+    @Query("UPDATE messages_by_conversation SET tags = :tags " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    void updateTags(@Param("cid") UUID conversationId,
+                    @Param("bucket") int bucket,
+                    @Param("messageId") long messageId,
+                    @Param("tags") java.util.Set<String> tags);
+
+    /** Re-write the poll payload (close, tally metadata). */
+    @Query("UPDATE messages_by_conversation SET poll = :poll " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    void updatePoll(@Param("cid") UUID conversationId,
+                    @Param("bucket") int bucket,
+                    @Param("messageId") long messageId,
+                    @Param("poll") String poll);
+
     /** Soft delete: tombstone the row and null its content, keeping ordering intact. */
     @Query("UPDATE messages_by_conversation SET deleted = true, body = null, media = null " +
            "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")

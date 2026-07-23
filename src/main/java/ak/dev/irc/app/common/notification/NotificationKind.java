@@ -259,7 +259,19 @@ public enum NotificationKind {
      * research). Fired by {@code TrendingNotificationJob}; one notification
      * per user per day max via the {@code TRENDING_DIGEST:{date}} group key.
      */
-    TRENDING_DIGEST     (PrefCategory.TRENDING, false, true);
+    TRENDING_DIGEST     (PrefCategory.TRENDING, false, true),
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  CHAT — CHANNELS (in-app only, like the other chat kinds)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /** Someone asked to join a channel you administer. Aggregates per channel
+     *  ("@alice and 3 others requested to join") via
+     *  {@code CHANNEL_JOIN_REQUEST:{channelId}}. */
+    CHANNEL_JOIN_REQUEST (PrefCategory.SOCIAL, true,  false),
+
+    /** Your join request was approved — you're in. */
+    CHANNEL_JOIN_APPROVED(PrefCategory.SOCIAL, false, false);
 
     /** Maps to the corresponding {@code user.email*Enabled} toggle. */
     public enum PrefCategory { SOCIAL, MENTIONS, SYSTEM, TRENDING }

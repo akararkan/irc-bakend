@@ -58,6 +58,13 @@ public class ConversationInvite extends BaseAuditEntity {
     @Builder.Default
     private boolean revoked = false;
 
+    /** When true, using the link files a join request an admin must approve
+     *  instead of joining immediately (Telegram "request admin approval"). */
+    @Column(name = "requires_approval", nullable = false,
+            columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean requiresApproval = false;
+
     public boolean isUsable() {
         if (revoked) return false;
         if (expiresAt != null && expiresAt.isBefore(LocalDateTime.now())) return false;

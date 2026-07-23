@@ -34,4 +34,7 @@ public class ScheduleMessageRequest {
     @Valid
     @Size(max = 10)
     private List<MediaRefDto> media;
+
+    /** Send silently (no push notification) when the schedule fires. */
+    private boolean silent;
 }

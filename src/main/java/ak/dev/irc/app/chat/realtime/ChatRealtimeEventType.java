@@ -20,6 +20,13 @@ public enum ChatRealtimeEventType {
     MEMBER_CHANGED("member.changed"),
     REQUEST_NEW("request.new"),
 
+    // Channels
+    POLL_UPDATED("poll.updated"),
+    JOIN_REQUEST_NEW("channel.join_request"),
+    /** A discussion-group comment was added (+1) / removed (−1) on a channel
+     *  post — {@code messageId} is the POST id; delta-not-counts. */
+    MESSAGE_COMMENT("message.comment"),
+
     // Calls (voice/video signaling)
     CALL_INCOMING("call.incoming"),
     CALL_ACCEPTED("call.accepted"),

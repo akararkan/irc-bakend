@@ -43,6 +43,11 @@ public class GroupSettings {
     @Builder.Default
     private boolean historyVisibleToNewMembers = true;
 
+    /** Telegram slow mode — non-admin members may send at most one message per
+     *  this many seconds (0 = off). Typical for channel discussion groups. */
+    @Builder.Default
+    private int slowModeSeconds = 0;
+
     /** Sensible defaults for a freshly created group. */
     public static GroupSettings defaults() {
         return GroupSettings.builder().build();

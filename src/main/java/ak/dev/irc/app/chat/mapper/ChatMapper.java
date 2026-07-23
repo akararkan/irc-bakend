@@ -28,6 +28,21 @@ import java.util.UUID;
 public class ChatMapper {
 
     private final S3StorageService storageService;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
+    private ak.dev.irc.app.chat.dto.request.LocationDto parseLocation(String json) {
+        if (!StringUtils.hasText(json)) return null;
+        try {
+            return objectMapper.readValue(json, ak.dev.irc.app.chat.dto.request.LocationDto.class);
+        } catch (Exception e) { return null; }
+    }
+
+    private ak.dev.irc.app.chat.dto.request.ContactDto parseContact(String json) {
+        if (!StringUtils.hasText(json)) return null;
+        try {
+            return objectMapper.readValue(json, ak.dev.irc.app.chat.dto.request.ContactDto.class);
+        } catch (Exception e) { return null; }
+    }
 
     // ── Media ─────────────────────────────────────────────────────────────────
 
@@ -66,11 +81,18 @@ public class ChatMapper {
 
     // ── Messages ────────────────────────────────────────────────────────────────
 
+    /** Per-message hydration extras (channel view/forward/comment counters +
+     *  poll state); every field nullable — plain conversations pass {@code null}. */
+    public record MessageExtras(Long views, Long forwards, Long comments,
+                                ak.dev.irc.app.chat.dto.response.PollResponse poll) {
+        public static final MessageExtras NONE = new MessageExtras(null, null, null, null);
+    }
+
     public MessageResponse toMessage(MessageByConversationEntity e,
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
-        return toMessage(e, users, reactions, replyTo, false);
+        return toMessage(e, users, reactions, replyTo, false, null);
     }
 
     public MessageResponse toMessage(MessageByConversationEntity e,
@@ -78,7 +100,18 @@ public class ChatMapper {
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo,
                                      boolean starred) {
+        return toMessage(e, users, reactions, replyTo, starred, null);
+    }
+
+    public MessageResponse toMessage(MessageByConversationEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred,
+                                     MessageExtras extras) {
         User sender = users == null ? null : users.get(e.getSenderId());
+        MessageExtras x = extras == null ? MessageExtras.NONE : extras;
+        boolean deleted = Boolean.TRUE.equals(e.getDeleted());
         return new MessageResponse(
                 e.getMessageId(),
                 e.getConversationId(),
@@ -86,25 +119,33 @@ public class ChatMapper {
                 sender != null ? sender.getUsername() : null,
                 sender != null ? sender.getFullName() : null,
                 e.getType(),
-                Boolean.TRUE.equals(e.getDeleted()) ? null : e.getBody(),
-                Boolean.TRUE.equals(e.getDeleted()) ? List.of() : toMediaList(e.getMedia()),
+                deleted ? null : e.getBody(),
+                deleted ? List.of() : toMediaList(e.getMedia()),
                 e.getReplyToId(),
                 replyTo,
                 e.getForwardedFrom(),
                 e.getMentions(),
                 reactions == null ? List.of() : reactions,
                 e.getEditedAt(),
-                Boolean.TRUE.equals(e.getDeleted()),
+                deleted,
                 e.getSystemEvent(),
                 e.getCreatedAt(),
-                starred);
+                starred,
+                deleted ? null : e.getTags(),
+                e.getAuthorSignature(),
+                x.views(),
+                x.forwards(),
+                x.comments(),
+                deleted ? null : x.poll(),
+                deleted ? null : parseLocation(e.getLocation()),
+                deleted ? null : parseContact(e.getContact()));
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
-        return toMessage(e, users, reactions, replyTo, false);
+        return toMessage(e, users, reactions, replyTo, false, null);
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
@@ -112,7 +153,18 @@ public class ChatMapper {
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo,
                                      boolean starred) {
+        return toMessage(e, users, reactions, replyTo, starred, null);
+    }
+
+    public MessageResponse toMessage(MessageByIdEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred,
+                                     MessageExtras extras) {
         User sender = users == null ? null : users.get(e.getSenderId());
+        MessageExtras x = extras == null ? MessageExtras.NONE : extras;
+        boolean deleted = Boolean.TRUE.equals(e.getDeleted());
         return new MessageResponse(
                 e.getMessageId(),
                 e.getConversationId(),
@@ -120,18 +172,26 @@ public class ChatMapper {
                 sender != null ? sender.getUsername() : null,
                 sender != null ? sender.getFullName() : null,
                 e.getType(),
-                Boolean.TRUE.equals(e.getDeleted()) ? null : e.getBody(),
-                Boolean.TRUE.equals(e.getDeleted()) ? List.of() : toMediaList(e.getMedia()),
+                deleted ? null : e.getBody(),
+                deleted ? List.of() : toMediaList(e.getMedia()),
                 e.getReplyToId(),
                 replyTo,
                 e.getForwardedFrom(),
                 e.getMentions(),
                 reactions == null ? List.of() : reactions,
                 e.getEditedAt(),
-                Boolean.TRUE.equals(e.getDeleted()),
+                deleted,
                 e.getSystemEvent(),
                 e.getCreatedAt(),
-                starred);
+                starred,
+                deleted ? null : e.getTags(),
+                e.getAuthorSignature(),
+                x.views(),
+                x.forwards(),
+                x.comments(),
+                deleted ? null : x.poll(),
+                deleted ? null : parseLocation(e.getLocation()),
+                deleted ? null : parseContact(e.getContact()));
     }
 
     public ReplyPreview toReplyPreview(MessageByIdEntity e) {
@@ -153,6 +213,10 @@ public class ChatMapper {
             case "IMAGE" -> "📷 Photo";
             case "VIDEO" -> "🎥 Video";
             case "VOICE" -> "🎤 Voice message";
+            case "AUDIO" -> "🎵 Audio";
+            case "GIF" -> "GIF";
+            case "STICKER" -> "Sticker";
+            case "POLL" -> "📊 Poll";
             case "FILE"  -> "📎 File";
             default -> "";
         };

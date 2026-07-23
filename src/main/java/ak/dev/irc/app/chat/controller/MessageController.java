@@ -43,6 +43,7 @@ public class MessageController {
     private final S3StorageService storageService;
     private final ak.dev.irc.app.chat.service.StarService starService;
     private final ak.dev.irc.app.chat.service.ScheduledMessageService scheduledMessageService;
+    private final ak.dev.irc.app.chat.service.PollService pollService;
 
     // ── Read ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,28 @@ public class MessageController {
         return ResponseEntity.ok(messageQueryService.pinnedMessages(id, requireId(user)));
     }
 
+    /** Shared-media gallery — messages of one media kind (IMAGE/VIDEO/VOICE/AUDIO/
+     *  GIF/STICKER/FILE/LINK), newest first; cursor = last messageId of the page. */
+    @GetMapping("/conversations/{id}/media")
+    public ResponseEntity<List<MessageResponse>> gallery(
+            @PathVariable UUID id,
+            @RequestParam String kind,
+            @RequestParam(required = false) Long before,
+            @RequestParam(defaultValue = "30") int limit,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(messageQueryService.gallery(id, requireId(user), kind, before, Pages.clamp(limit)));
+    }
+
+    /** Posts of this conversation carrying an exact {@code #tag}, newest first. */
+    @GetMapping("/conversations/{id}/messages/by-tag")
+    public ResponseEntity<List<MessageResponse>> byTag(
+            @PathVariable UUID id,
+            @RequestParam String tag,
+            @RequestParam(defaultValue = "30") int limit,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(messageQueryService.byTag(id, requireId(user), tag, Pages.clamp(limit)));
+    }
+
     @GetMapping("/messages/{messageId}")
     public ResponseEntity<MessageResponse> one(@PathVariable long messageId,
                                                @AuthenticationPrincipal User user) {
@@ -123,6 +146,7 @@ public class MessageController {
             @PathVariable UUID id,
             @RequestParam String clientNonce,
             @RequestParam(required = false) String body,
+            @RequestParam(required = false, defaultValue = "false") boolean silent,
             @RequestPart(value = "files", required = false) List<MultipartFile> files,
             @AuthenticationPrincipal User user) {
         UUID userId = requireId(user);
@@ -134,6 +158,7 @@ public class MessageController {
         SendMessageRequest req = new SendMessageRequest();
         req.setClientNonce(clientNonce);
         req.setBody(body);
+        req.setSilent(silent);
 
         List<MediaRefDto> media = new ArrayList<>();
         List<String> uploadedKeys = new ArrayList<>();
@@ -234,6 +259,33 @@ public class MessageController {
         return ResponseEntity.noContent().build();
     }
 
+    // ── Polls ────────────────────────────────────────────────────────────────────
+
+    /** Cast (or change) a vote on a poll message. */
+    @PostMapping("/messages/{messageId}/poll/votes")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.PollResponse> pollVote(
+            @PathVariable long messageId,
+            @Valid @RequestBody PollVoteRequest req,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(pollService.vote(messageId, requireId(user), req));
+    }
+
+    /** Retract the caller's vote (regular polls only — quiz answers are final). */
+    @DeleteMapping("/messages/{messageId}/poll/votes")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.PollResponse> pollRetract(
+            @PathVariable long messageId,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(pollService.retract(messageId, requireId(user)));
+    }
+
+    /** Close voting (poll author, or a channel admin with the edit right). */
+    @PostMapping("/messages/{messageId}/poll/close")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.PollResponse> pollClose(
+            @PathVariable long messageId,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(pollService.close(messageId, requireId(user)));
+    }
+
     @PostMapping("/messages/{messageId}/react")
     public ResponseEntity<List<ReactionSummary>> react(@PathVariable long messageId,
                                                        @Valid @RequestBody ReactRequest req,
@@ -280,9 +332,10 @@ public class MessageController {
 
     private static String classifyKind(String contentType) {
         if (contentType == null) return "FILE";
+        if (contentType.equals("image/gif")) return "GIF";
         if (contentType.startsWith("image/")) return "IMAGE";
         if (contentType.startsWith("video/")) return "VIDEO";
-        if (contentType.startsWith("audio/")) return "VOICE";
+        if (contentType.startsWith("audio/")) return "AUDIO";
         return "FILE";
     }
 

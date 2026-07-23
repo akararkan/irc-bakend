@@ -60,6 +60,12 @@ public class ChatRealtimeEvent {
     // request.new
     private MessageRequestResponse request;
 
+    // poll.updated — the poll's fresh aggregate state (viewer-neutral)
+    private ak.dev.irc.app.chat.dto.response.PollResponse poll;
+
+    // channel.join_request — sent to admins who can approve
+    private ak.dev.irc.app.chat.dto.response.JoinRequestResponse joinRequest;
+
     // calls (voice/video) — call.* events
     private ak.dev.irc.app.chat.dto.response.CallResponse call;
     private ak.dev.irc.app.chat.dto.response.CallSignalMessage signal;

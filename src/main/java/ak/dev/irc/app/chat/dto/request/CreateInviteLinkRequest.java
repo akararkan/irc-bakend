@@ -12,4 +12,7 @@ public class CreateInviteLinkRequest {
 
     @Positive(message = "maxUses must be positive")
     private Integer maxUses;
+
+    /** When true, using the link files a join request an admin must approve. */
+    private boolean requiresApproval;
 }

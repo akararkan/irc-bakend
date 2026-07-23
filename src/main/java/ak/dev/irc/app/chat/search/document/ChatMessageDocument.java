@@ -35,6 +35,9 @@ public class ChatMessageDocument {
 
     @Field(type = FieldType.Keyword) private String type;
 
+    /** Lowercased #hashtags for exact-term tag search. */
+    @Field(type = FieldType.Keyword) private java.util.List<String> tags;
+
     @Field(type = FieldType.Date, format = DateFormat.date_time)
     private Instant createdAt;
 

@@ -216,4 +216,77 @@ public interface ConversationMemberRepository
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
         """)
     long sumUnread(@Param("uid") UUID userId);
+
+    // ── Channels ─────────────────────────────────────────────────────────────────
+
+    /** Active owner + admin ids — join-request notifications and admin fan-out. */
+    @Query("""
+        SELECT m.id.userId FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND (m.role = ak.dev.irc.app.chat.enums.MemberRole.OWNER
+               OR m.role = ak.dev.irc.app.chat.enums.MemberRole.ADMIN)
+        """)
+    List<UUID> findStaffIds(@Param("cid") UUID conversationId);
+
+    /** Subscribers who joined since {@code since} (subscriber-growth stats). */
+    @Query("""
+        SELECT COUNT(m) FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND m.joinedAt >= :since
+        """)
+    long countJoinedSince(@Param("cid") UUID conversationId,
+                          @Param("since") java.time.LocalDateTime since);
+
+    /** Members who left / were removed since {@code since} (churn stats). */
+    @Query("""
+        SELECT COUNT(m) FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND (m.status = ak.dev.irc.app.chat.enums.MemberStatus.LEFT
+               OR m.status = ak.dev.irc.app.chat.enums.MemberStatus.REMOVED)
+          AND m.updatedAt >= :since
+        """)
+    long countLeftSince(@Param("cid") UUID conversationId,
+                        @Param("since") java.time.LocalDateTime since);
+
+    /** Active subscribers currently muting the conversation. */
+    @Query("""
+        SELECT COUNT(m) FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND m.mutedUntil IS NOT NULL AND m.mutedUntil > CURRENT_TIMESTAMP
+        """)
+    long countMuted(@Param("cid") UUID conversationId);
+
+    /** Joins per day since {@code since} — (ISO date string, count) rows. */
+    @Query(value = """
+        SELECT to_char(m.joined_at, 'YYYY-MM-DD') AS day, COUNT(*) AS joins
+          FROM conversation_members m
+         WHERE m.conversation_id = :cid AND m.status = 'ACTIVE' AND m.joined_at >= :since
+         GROUP BY day ORDER BY day
+        """, nativeQuery = true)
+    List<Object[]> joinsByDay(@Param("cid") UUID conversationId,
+                              @Param("since") java.time.LocalDateTime since);
+
+    /** The CHANNEL conversations this user actively subscribes to — the
+     *  channel-story tray scope. */
+    @Query("""
+        SELECT m.conversation FROM ConversationMember m
+        WHERE m.id.userId = :uid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND m.conversation.type = ak.dev.irc.app.chat.enums.ConversationType.CHANNEL
+          AND m.conversation.deletedAt IS NULL
+        """)
+    List<ak.dev.irc.app.chat.entity.Conversation> findMySubscribedChannels(@Param("uid") UUID userId);
+
+    /** Active members per join source — (source, count) rows; legacy null rows
+     *  are reported as 'UNKNOWN'. */
+    @Query(value = """
+        SELECT COALESCE(m.join_source, 'UNKNOWN') AS source, COUNT(*) AS joins
+          FROM conversation_members m
+         WHERE m.conversation_id = :cid AND m.status = 'ACTIVE'
+         GROUP BY source ORDER BY joins DESC
+        """, nativeQuery = true)
+    List<Object[]> joinsBySource(@Param("cid") UUID conversationId);
 }

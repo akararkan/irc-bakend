@@ -38,6 +38,16 @@ public class MessageByIdEntity {
     @Column("reply_to_id")     private Long replyToId;
     @Column("forwarded_from")  private UUID forwardedFrom;
     @Column("mentions")        private Set<UUID> mentions;
+    /** Lowercased #hashtags extracted from the body/caption. */
+    @Column("tags")            private Set<String> tags;
+    /** Posting admin's display label on channel posts when "sign messages" is on. */
+    @Column("author_signature") private String authorSignature;
+    /** JSON poll payload for {@code POLL} messages (question/options/flags). */
+    @Column("poll")            private String poll;
+    /** JSON location payload for {@code LOCATION} messages. */
+    @Column("location")        private String location;
+    /** JSON contact payload for {@code CONTACT} messages. */
+    @Column("contact")         private String contact;
     @Column("deleted")         private Boolean deleted;
     @Column("edited_at")       private Instant editedAt;
     @Column("system_event")    private String systemEvent;

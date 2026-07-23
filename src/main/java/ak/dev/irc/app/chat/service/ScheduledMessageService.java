@@ -67,6 +67,7 @@ public class ScheduledMessageService {
                 .body(req.getBody())
                 .media(req.getMedia())
                 .replyToId(req.getReplyToId())
+                .silent(req.isSilent())
                 .clientNonce(req.getClientNonce())
                 .status(ScheduledMessageStatus.PENDING)
                 .build());
@@ -130,6 +131,7 @@ public class ScheduledMessageService {
         req.setBody(s.getBody());
         req.setReplyToId(s.getReplyToId());
         req.setMedia(s.getMedia());
+        req.setSilent(s.isSilent());
         var sent = messageService.send(s.getConversationId(), s.getSenderId(), req);
         s.setStatus(ScheduledMessageStatus.SENT);
         s.setSentMessageId(sent.messageId());

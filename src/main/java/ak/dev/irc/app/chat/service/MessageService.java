@@ -28,6 +28,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.repository.MessageRequestRepository;
 import ak.dev.irc.app.chat.search.service.ChatSearchService;
 import ak.dev.irc.app.chat.util.ChatBuckets;
+import ak.dev.irc.app.chat.util.Hashtags;
 import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
@@ -91,6 +92,12 @@ public class MessageService {
     private final ak.dev.irc.app.chat.repository.MessageStarRepository starRepo;
     private final ChatSettingsService chatSettings;
     private final org.springframework.data.cassandra.core.CassandraOperations cassandraOps;
+    private final ChannelPostMetricsService channelMetrics;
+    private final PollService pollService;
+    private final ak.dev.irc.app.chat.cassandra.repository.MediaByConversationRepository mediaGalleryRepo;
+    private final ak.dev.irc.app.chat.cassandra.repository.ChatCommentByPostRepository commentRepo;
+    private final ak.dev.irc.app.chat.repository.ConversationDraftRepository draftRepo;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     // ── SEND ──────────────────────────────────────────────────────────────────
 
@@ -137,12 +144,41 @@ public class MessageService {
                 requestJustCreated = ro.justCreated();
             }
 
+            // Poll payload — POLL messages must carry one, others must not.
+            String pollJson = null;
+            if (req.getPoll() != null) {
+                if (req.getType() != null && req.getType() != MessageType.POLL) {
+                    throw new BadRequestException("A poll payload requires type POLL.");
+                }
+                req.setType(MessageType.POLL);
+                pollJson = pollService.validateAndSerialize(req.getPoll());
+            } else if (req.getType() == MessageType.POLL) {
+                throw new BadRequestException("A POLL message requires a poll payload.");
+            }
+
+            // Location / contact payloads — required by their types, forbidden otherwise.
+            String locationJson = payloadJson(req.getType() == MessageType.LOCATION,
+                    req.getLocation(), "LOCATION", "location");
+            String contactJson = payloadJson(req.getType() == MessageType.CONTACT,
+                    req.getContact(), "CONTACT", "contact");
+
             String type = req.getType() != null ? req.getType().name() : MessageType.TEXT.name();
             List<MediaRef> media = buildMedia(req.getMedia());
             Set<UUID> mentions = resolveMentions(req.getBody());
 
             MessageResponse response = persist(convo, senderId, messageId, type,
-                    req.getBody(), media, mentions, req.getReplyToId(), null);
+                    req.getBody(), media, mentions, req.getReplyToId(), null, pollJson,
+                    locationJson, contactJson);
+
+            // Discussion-group comments: a reply in a channel's linked group to one
+            // of that channel's posts is a comment — index it and bump the count.
+            if (convo.isGroup() && req.getReplyToId() != null) {
+                indexCommentIfDiscussionReply(convo, req.getReplyToId(), messageId);
+            }
+
+            // Sending clears the user's draft for this conversation (Telegram).
+            try { draftRepo.deleteByUserIdAndConversationId(senderId, conversationId); }
+            catch (Exception ignored) { /* best-effort */ }
 
             // Redact the notification/inbox preview for disappearing conversations so
             // the body doesn't linger in a push notification either.
@@ -150,7 +186,7 @@ public class MessageService {
                     ? disappearingPreview(type, media)
                     : previewOf(req.getBody(), type, media);
             dispatch(convo, senderId, directPeer, decision, request, requestJustCreated,
-                    response, preview);
+                    response, preview, req.isSilent());
 
             return response;
         } catch (RuntimeException e) {
@@ -173,6 +209,15 @@ public class MessageService {
         memberRepo.findMember(src.getConversationId(), senderId)
                 .filter(ConversationMember::canRead)
                 .orElseThrow(() -> new ForbiddenException("You cannot access the source message.", "NOT_A_MEMBER"));
+
+        // Telegram "protected content": posts of a protected channel cannot be
+        // forwarded out of it.
+        Conversation source = conversationRepo.findById(src.getConversationId()).orElse(null);
+        boolean sourceIsChannel = source != null && source.isChannel();
+        if (sourceIsChannel && source.channelSettingsOrDefaults().isProtectedContent()) {
+            throw new ForbiddenException("This channel's content is protected and cannot be forwarded.",
+                    "PROTECTED_CONTENT");
+        }
 
         Conversation target = conversationRepo.findById(targetConversationId)
                 .filter(c -> c.getDeletedAt() == null)
@@ -208,13 +253,20 @@ public class MessageService {
             }
 
             MessageResponse response = persist(target, senderId, messageId, src.getType(),
-                    src.getBody(), src.getMedia(), null, null, src.getConversationId());
+                    src.getBody(), src.getMedia(), null, null, src.getConversationId(),
+                    src.getPoll(), // forwarded poll keeps the definition; votes start fresh
+                    src.getLocation(), src.getContact());
+
+            // Channel forward counter (the source post's "shares").
+            if (sourceIsChannel) {
+                channelMetrics.onForwarded(src.getConversationId(), sourceMessageId);
+            }
 
             String preview = target.getDisappearingSeconds() > 0
                     ? disappearingPreview(src.getType(), src.getMedia())
                     : previewOf(src.getBody(), src.getType(), src.getMedia());
             dispatch(target, senderId, directPeer, decision, request, requestJustCreated,
-                    response, preview);
+                    response, preview, false);
             return response;
         } catch (RuntimeException e) {
             idempotency.release(senderId, nonce);
@@ -235,7 +287,16 @@ public class MessageService {
             throw new BadRequestException("System messages cannot be edited.");
         }
         if (!userId.equals(m.getSenderId())) {
-            throw new ForbiddenException("You can only edit your own messages.", "ACCESS_FORBIDDEN");
+            // Channel posts belong to the channel: any admin with the edit right
+            // may edit them (Telegram's canEditMessages).
+            Conversation convo = conversationRepo.findById(m.getConversationId()).orElse(null);
+            ConversationMember me = memberRepo.findMember(m.getConversationId(), userId).orElse(null);
+            boolean channelAdminEdit = convo != null && convo.isChannel()
+                    && ak.dev.irc.app.chat.permission.ChannelRights.can(
+                            me, ak.dev.irc.app.chat.dto.AdminRights::isCanEditMessages);
+            if (!channelAdminEdit) {
+                throw new ForbiddenException("You can only edit your own messages.", "ACCESS_FORBIDDEN");
+            }
         }
         Instant now = Instant.now();
         // Preserve the disappearing guarantee: an edit must NOT resurrect a TTL'd
@@ -251,6 +312,14 @@ public class MessageService {
         }
         m.setBody(body);
         m.setEditedAt(now);
+        // Hashtags follow the body. Skipped for disappearing rows (a no-TTL tags
+        // cell would outlive the message).
+        if (ttl <= 0) {
+            Set<String> tags = Hashtags.extract(body);
+            messageRepo.updateTags(m.getConversationId(), m.getBucket(), messageId, tags);
+            messageByIdRepo.updateTags(messageId, tags);
+            m.setTags(tags);
+        }
         if (ttl <= 0) chatSearch.indexAsync(m); // re-index the edited body (never a disappearing one)
 
         List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
@@ -270,13 +339,20 @@ public class MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         if (Boolean.TRUE.equals(m.getDeleted())) return; // idempotent
 
+        Conversation convo = conversationRepo.findById(m.getConversationId()).orElse(null);
         boolean own = userId.equals(m.getSenderId());
         if (!own) {
-            // Group admins/owners may delete anyone's message.
-            Conversation convo = conversationRepo.findById(m.getConversationId()).orElse(null);
+            // Group admins/owners may delete anyone's message; channel admins need
+            // the granular delete right.
             ConversationMember me = memberRepo.findMember(m.getConversationId(), userId).orElse(null);
-            boolean adminDelete = convo != null && convo.isGroup() && me != null && me.isActive()
-                    && GroupPermissions.can(me.getRole(), GroupAction.DELETE_ANY_MESSAGE, null, convo.getGroupSettings());
+            boolean adminDelete;
+            if (convo != null && convo.isChannel()) {
+                adminDelete = ak.dev.irc.app.chat.permission.ChannelRights.can(
+                        me, ak.dev.irc.app.chat.dto.AdminRights::isCanDeleteMessages);
+            } else {
+                adminDelete = convo != null && convo.isGroup() && me != null && me.isActive()
+                        && GroupPermissions.can(me.getRole(), GroupAction.DELETE_ANY_MESSAGE, null, convo.getGroupSettings());
+            }
             if (!adminDelete) {
                 throw new ForbiddenException("You cannot delete this message.", "ACCESS_FORBIDDEN");
             }
@@ -288,6 +364,14 @@ public class MessageService {
         pinRepo.deletePin(m.getConversationId(), messageId); // a deleted message can't stay pinned
         starRepo.deleteByMessageId(messageId);   // documented: a deleted message drops its stars
         hiddenRepo.deleteByMessageId(messageId); // and its per-user "delete for me" rows
+        if (StringUtils.hasText(m.getPoll())) pollService.clear(messageId); // poll votes + counts
+        dropGalleryRows(m);                      // shared-media gallery index rows
+        dropCommentLinks(convo, m);              // discussion-comment index rows
+        if (convo != null && convo.isChannel() && !MessageType.SYSTEM.name().equals(m.getType())) {
+            channelMetrics.clear(m.getConversationId(), messageId);          // views/forwards
+            channelMetrics.postTypeAdjust(m.getConversationId(), m.getType(), -1);
+            conversationRepo.adjustPostCount(m.getConversationId(), -1);
+        }
 
         List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
         broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
@@ -302,6 +386,7 @@ public class MessageService {
     @Transactional
     public List<ReactionSummary> react(long messageId, UUID userId, String emoji) {
         MessageByIdEntity m = requirePostableMessage(messageId, userId);
+        enforceReactionPolicy(m.getConversationId(), emoji);
         boolean changed = reactionService.react(messageId, userId, emoji);
         if (changed) {
             broadcastReaction(m.getConversationId(), messageId, userId, emoji, true);
@@ -425,7 +510,26 @@ public class MessageService {
                 && !GroupPermissions.can(me.getRole(), GroupAction.PIN_MESSAGE, null, convo.getGroupSettings())) {
             throw new ForbiddenException("You cannot pin messages in this group.", "ADMINS_ONLY");
         }
+        if (convo.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
+                me, ak.dev.irc.app.chat.dto.AdminRights::isCanPinMessages)) {
+            throw new ForbiddenException("You cannot pin posts in this channel.", "ADMINS_ONLY");
+        }
         return convo;
+    }
+
+    /** Channel reaction policy — reactions can be disabled or limited to a set of
+     *  emoji by the channel's settings. */
+    private void enforceReactionPolicy(UUID conversationId, String emoji) {
+        Conversation convo = conversationRepo.findById(conversationId).orElse(null);
+        if (convo == null || !convo.isChannel()) return;
+        var settings = convo.channelSettingsOrDefaults();
+        if (!settings.isReactionsEnabled()) {
+            throw new ForbiddenException("Reactions are disabled in this channel.", "REACTIONS_DISABLED");
+        }
+        List<String> allowed = settings.getAllowedReactions();
+        if (allowed != null && !allowed.isEmpty() && !allowed.contains(emoji)) {
+            throw new BadRequestException("This reaction is not allowed in this channel.");
+        }
     }
 
     // ── internals ────────────────────────────────────────────────────────────────────
@@ -433,9 +537,21 @@ public class MessageService {
     /** Writes the twin Cassandra rows and advances the inbox pointer. Returns the mapped response. */
     private MessageResponse persist(Conversation convo, UUID senderId, long messageId, String type,
                                     String body, List<MediaRef> media, Set<UUID> mentions,
-                                    Long replyToId, UUID forwardedFrom) {
+                                    Long replyToId, UUID forwardedFrom, String pollJson,
+                                    String locationJson, String contactJson) {
         int bucket = ChatBuckets.bucketOf(messageId);
         Instant now = Instant.now();
+
+        // Sender loaded up-front: the response needs it anyway, and a signed
+        // channel post stamps the posting admin's label at write time.
+        Map<UUID, User> users = loadUsers(Set.of(senderId));
+        boolean channelPost = convo.isChannel() && !MessageType.SYSTEM.name().equals(type);
+        String signature = null;
+        if (channelPost && convo.channelSettingsOrDefaults().isSignMessages()) {
+            User sender = users.get(senderId);
+            signature = sender != null ? "@" + sender.getUsername() : null;
+        }
+        Set<String> tags = Hashtags.extract(body);
 
         MessageByConversationEntity row = MessageByConversationEntity.builder()
                 .conversationId(convo.getId()).bucket(bucket).messageId(messageId)
@@ -443,6 +559,8 @@ public class MessageService {
                 .media(media == null || media.isEmpty() ? null : media)
                 .replyToId(replyToId).forwardedFrom(forwardedFrom)
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
+                .tags(tags).authorSignature(signature).poll(pollJson)
+                .location(locationJson).contact(contactJson)
                 .deleted(false).createdAt(now)
                 .build();
         MessageByIdEntity byId = MessageByIdEntity.builder()
@@ -451,6 +569,8 @@ public class MessageService {
                 .media(media == null || media.isEmpty() ? null : media)
                 .replyToId(replyToId).forwardedFrom(forwardedFrom)
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
+                .tags(tags).authorSignature(signature).poll(pollJson)
+                .location(locationJson).contact(contactJson)
                 .deleted(false).createdAt(now)
                 .build();
         // Disappearing messages: write with a Cassandra TTL so the rows auto-delete.
@@ -482,16 +602,107 @@ public class MessageService {
         // would outlive the Cassandra row it "disappears" with.
         if (ttl <= 0) chatSearch.indexAsync(byId);
 
-        Map<UUID, User> users = loadUsers(Set.of(senderId));
+        // Shared-media gallery index (one row per attachment + a LINK row for
+        // bodies carrying a URL). Skipped for disappearing conversations: the
+        // gallery table has no TTL, so its rows must not outlive the message.
+        if (ttl <= 0) writeGalleryRows(convo.getId(), messageId, body, media, now);
+
+        // Channel post accounting — live post count + per-type breakdown.
+        if (channelPost) {
+            conversationRepo.adjustPostCount(convo.getId(), +1);
+            channelMetrics.postTypeAdjust(convo.getId(), type, +1);
+        }
+
         ReplyPreview replyPreview = replyToId == null ? null
                 : mapper.toReplyPreview(messageByIdRepo.findById(replyToId).orElse(null));
-        return mapper.toMessage(row, users, List.of(), replyPreview);
+        // The send echo carries the freshly-created poll (zero votes) and, for
+        // channel posts, zeroed counters — so clients render without a re-fetch.
+        ChatMapper.MessageExtras extras = new ChatMapper.MessageExtras(
+                channelPost ? 0L : null, channelPost ? 0L : null, channelPost ? 0L : null,
+                pollJson != null ? pollService.renderFor(byId, senderId) : null);
+        return mapper.toMessage(row, users, List.of(), replyPreview, false, extras);
     }
 
-    /** Unread fan-out, realtime broadcast, and offline notifications. */
+    /** Write the (conversation, kind)-partitioned gallery rows for a new message. */
+    private void writeGalleryRows(UUID conversationId, long messageId, String body,
+                                  List<MediaRef> media, Instant now) {
+        try {
+            List<ak.dev.irc.app.chat.cassandra.entity.MediaByConversationEntity> rows = new ArrayList<>();
+            if (media != null) {
+                for (int i = 0; i < media.size(); i++) {
+                    String kind = media.get(i).getKind();
+                    if (!StringUtils.hasText(kind)) continue;
+                    rows.add(ak.dev.irc.app.chat.cassandra.entity.MediaByConversationEntity.builder()
+                            .conversationId(conversationId).kind(kind)
+                            .messageId(messageId).mediaIndex(i).createdAt(now)
+                            .build());
+                }
+            }
+            if (Hashtags.hasLink(body)) {
+                rows.add(ak.dev.irc.app.chat.cassandra.entity.MediaByConversationEntity.builder()
+                        .conversationId(conversationId).kind("LINK")
+                        .messageId(messageId).mediaIndex(0).createdAt(now)
+                        .build());
+            }
+            if (!rows.isEmpty()) mediaGalleryRepo.saveAll(rows);
+        } catch (Exception e) {
+            log.debug("[CHAT] gallery index write failed for {}: {}", messageId, e.getMessage());
+        }
+    }
+
+    /** Comment-index cleanup on delete: a deleted comment decrements its post's
+     *  count; a deleted channel post drops its whole comment index (the comment
+     *  messages themselves stay in the discussion group's log). */
+    private void dropCommentLinks(Conversation convo, MessageByIdEntity m) {
+        try {
+            if (convo == null) return;
+            if (convo.isChannel()) {
+                commentRepo.deleteAllForPost(m.getMessageId());
+                return;
+            }
+            if (convo.isGroup() && m.getReplyToId() != null) {
+                Conversation channel = conversationRepo.findByLinkedGroupId(convo.getId()).orElse(null);
+                if (channel == null) return;
+                MessageByIdEntity post = messageByIdRepo.findById(m.getReplyToId()).orElse(null);
+                if (post == null || !channel.getId().equals(post.getConversationId())) return;
+                commentRepo.deleteOne(m.getReplyToId(), m.getMessageId());
+                channelMetrics.onCommentDelta(m.getReplyToId(), -1);
+                broadcaster.broadcast(memberRepo.findActiveMemberIds(channel.getId()),
+                        ChatRealtimeEvent.builder()
+                                .eventType(ChatRealtimeEventType.MESSAGE_COMMENT)
+                                .conversationId(channel.getId())
+                                .messageId(m.getReplyToId()).added(false)
+                                .build());
+            }
+        } catch (Exception e) {
+            log.debug("[CHAT] comment index cleanup failed for {}: {}", m.getMessageId(), e.getMessage());
+        }
+    }
+
+    /** Remove a deleted message's gallery rows (kinds derived from its content). */
+    private void dropGalleryRows(MessageByIdEntity m) {
+        try {
+            Set<String> kinds = new HashSet<>();
+            if (m.getMedia() != null) {
+                for (MediaRef ref : m.getMedia()) {
+                    if (StringUtils.hasText(ref.getKind())) kinds.add(ref.getKind());
+                }
+            }
+            if (Hashtags.hasLink(m.getBody())) kinds.add("LINK");
+            for (String kind : kinds) {
+                mediaGalleryRepo.deleteForMessage(m.getConversationId(), kind, m.getMessageId());
+            }
+        } catch (Exception e) {
+            log.debug("[CHAT] gallery index cleanup failed for {}: {}", m.getMessageId(), e.getMessage());
+        }
+    }
+
+    /** Unread fan-out, realtime broadcast, and offline notifications. A silent
+     *  post ({@code silent=true}) delivers and counts normally but never pushes
+     *  a bell notification. */
     private void dispatch(Conversation convo, UUID senderId, UUID directPeer, SendDecision decision,
                           MessageRequest request, boolean requestJustCreated,
-                          MessageResponse response, String preview) {
+                          MessageResponse response, String preview, boolean silent) {
         UUID conversationId = convo.getId();
 
         // Recipients for realtime + unread. Readable members (ACTIVE + RESTRICTED)
@@ -546,10 +757,12 @@ public class MessageService {
             String label = labelOf(response);
             List<UUID> others = recipients.stream().filter(r -> !r.equals(senderId)).toList();
             unreadBadge.invalidateAll(others);                    // one DEL, not one per member
-            Set<UUID> online = presence.onlineAmong(others);      // one MGET, not one per member
-            for (UUID r : others) {
-                if (!online.contains(r)) {
-                    chatNotifications.notifyNewMessage(r, senderId, conversationId, label, preview);
+            if (!silent) {
+                Set<UUID> online = presence.onlineAmong(others);  // one MGET, not one per member
+                for (UUID r : others) {
+                    if (!online.contains(r)) {
+                        chatNotifications.notifyNewMessage(r, senderId, conversationId, label, preview);
+                    }
                 }
             }
         }
@@ -569,6 +782,62 @@ public class MessageService {
         }
         if (!GroupPermissions.can(member.getRole(), GroupAction.SEND_MESSAGE, null, convo.getGroupSettings())) {
             throw new ForbiddenException("Only admins can send messages here.", "ADMINS_ONLY");
+        }
+        // Channels: an admin additionally needs the granular post right.
+        if (convo.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
+                member, ak.dev.irc.app.chat.dto.AdminRights::isCanPostMessages)) {
+            throw new ForbiddenException("You do not have the right to post in this channel.", "ADMINS_ONLY");
+        }
+        // Slow mode: non-admin group members get one message per window.
+        if (convo.isGroup() && convo.getGroupSettings() != null && !member.isAdminOrOwner()) {
+            int slow = convo.getGroupSettings().getSlowModeSeconds();
+            if (slow > 0) {
+                rateLimiter.check("chat-slow-" + convo.getId(), member.getId().getUserId(),
+                        1, Duration.ofSeconds(slow));
+            }
+        }
+    }
+
+    /** Serialize a typed payload (location/contact) enforcing type ↔ payload pairing. */
+    private String payloadJson(boolean typeMatches, Object payload, String typeName, String field) {
+        if (payload == null) {
+            if (typeMatches) throw new BadRequestException(
+                    "A " + typeName + " message requires a " + field + " payload.");
+            return null;
+        }
+        if (!typeMatches) throw new BadRequestException(
+                "A " + field + " payload requires type " + typeName + ".");
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new BadRequestException("Could not store the " + field + " payload.");
+        }
+    }
+
+    /** If {@code group} is a channel's discussion group and {@code replyToId} is a
+     *  post of that channel, index the new message as a comment on the post. */
+    private void indexCommentIfDiscussionReply(Conversation group, long replyToId, long commentId) {
+        try {
+            Conversation channel = conversationRepo.findByLinkedGroupId(group.getId()).orElse(null);
+            if (channel == null) return;
+            MessageByIdEntity post = messageByIdRepo.findById(replyToId).orElse(null);
+            if (post == null || !channel.getId().equals(post.getConversationId())
+                    || Boolean.TRUE.equals(post.getDeleted())) {
+                return;
+            }
+            commentRepo.save(ak.dev.irc.app.chat.cassandra.entity.ChatCommentByPostEntity.builder()
+                    .postMessageId(replyToId).commentMessageId(commentId)
+                    .createdAt(Instant.now())
+                    .build());
+            channelMetrics.onCommentDelta(replyToId, +1);
+            broadcaster.broadcast(memberRepo.findActiveMemberIds(channel.getId()),
+                    ChatRealtimeEvent.builder()
+                            .eventType(ChatRealtimeEventType.MESSAGE_COMMENT)
+                            .conversationId(channel.getId())
+                            .messageId(replyToId).added(true)
+                            .build());
+        } catch (Exception e) {
+            log.debug("[CHAT] comment index failed for {}: {}", commentId, e.getMessage());
         }
     }
 
@@ -696,7 +965,7 @@ public class MessageService {
         return new MessageResponse(existingId, conversationId, senderId, null, null,
                 req.getType() != null ? req.getType().name() : MessageType.TEXT.name(),
                 req.getBody(), List.of(), req.getReplyToId(), null, null, null, List.of(),
-                null, false, null, Instant.now(), false);
+                null, false, null, Instant.now(), false, null, null, null, null, null, null, null, null);
     }
 
     private String previewOf(String body, String type, List<MediaRef> media) {
@@ -709,6 +978,10 @@ public class MessageService {
             case "IMAGE" -> "📷 Photo";
             case "VIDEO" -> "🎥 Video";
             case "VOICE" -> "🎤 Voice message";
+            case "AUDIO" -> "🎵 Audio";
+            case "GIF" -> "GIF";
+            case "STICKER" -> "Sticker";
+            case "POLL" -> "📊 Poll";
             case "FILE"  -> "📎 File";
             case "SYSTEM" -> "";
             default -> "";

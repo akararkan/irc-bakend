@@ -48,7 +48,7 @@ public class ScheduledMessage extends BaseAuditEntity {
     @Column(name = "scheduled_at", nullable = false)
     private LocalDateTime scheduledAt;
 
-    @Column(name = "type", nullable = false, length = 8)
+    @Column(name = "type", nullable = false, length = 16)
     private String type;
 
     @Column(name = "body", columnDefinition = "TEXT")
@@ -60,6 +60,11 @@ public class ScheduledMessage extends BaseAuditEntity {
 
     @Column(name = "reply_to_id")
     private Long replyToId;
+
+    /** Send silently (no push notification) when the schedule fires. */
+    @Column(name = "silent", nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean silent = false;
 
     /** Idempotency key reused when the scheduler actually sends. */
     @Column(name = "client_nonce", nullable = false, length = 64)

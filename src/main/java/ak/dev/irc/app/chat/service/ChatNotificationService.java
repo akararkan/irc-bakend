@@ -63,6 +63,32 @@ public class ChatNotificationService {
                 "ADDED_TO_GROUP:" + conversationId + ":" + recipientId));
     }
 
+    /** Someone asked to join a channel this admin can approve requests for. */
+    public void notifyJoinRequest(UUID adminId, UUID requesterId, UUID channelId,
+                                  String requesterLabel, String channelTitle) {
+        notifications.deliverAsync(new DeliverRequest(
+                adminId,
+                NotificationKind.CHANNEL_JOIN_REQUEST,
+                "Join request",
+                requesterLabel + " requested to join "
+                        + (channelTitle == null ? "your channel" : "\"" + channelTitle + "\""),
+                requesterId,
+                "Conversation", channelId,
+                "CHANNEL_JOIN_REQUEST:" + channelId));
+    }
+
+    /** The user's join request was approved. */
+    public void notifyJoinApproved(UUID userId, UUID channelId, String channelTitle) {
+        notifications.deliverAsync(new DeliverRequest(
+                userId,
+                NotificationKind.CHANNEL_JOIN_APPROVED,
+                "Request approved",
+                "You joined " + (channelTitle == null ? "the channel" : "\"" + channelTitle + "\""),
+                null,
+                "Conversation", channelId,
+                "CHANNEL_JOIN_APPROVED:" + channelId + ":" + userId));
+    }
+
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() <= max ? s : s.substring(0, max - 1) + "…";

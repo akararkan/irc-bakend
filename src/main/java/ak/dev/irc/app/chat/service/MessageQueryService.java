@@ -58,6 +58,9 @@ public class MessageQueryService {
     private final ChatSearchService chatSearch;
     private final ChatMapper mapper;
     private final UserRepository userRepository;
+    private final ChannelPostMetricsService channelMetrics;
+    private final PollService pollService;
+    private final ak.dev.irc.app.chat.cassandra.repository.MediaByConversationRepository mediaGalleryRepo;
 
     // ── Page (newest → older, bucket walk) ─────────────────────────────────────
 
@@ -94,7 +97,7 @@ public class MessageQueryService {
 
         boolean hasMore = out.size() >= limit;
         Long nextCursor = out.isEmpty() ? null : out.get(out.size() - 1).getMessageId();
-        return new MessagePage<>(hydrate(out, userId), nextCursor, hasMore);
+        return new MessagePage<>(hydrate(out, userId, convo.isChannel()), nextCursor, hasMore);
     }
 
     // ── Gap sync (everything strictly newer than a high-water id) ────────────────
@@ -115,7 +118,7 @@ public class MessageQueryService {
         }
         // pageAfter returns DESC within a bucket; present ascending for append.
         out.sort(Comparator.comparingLong(MessageByConversationEntity::getMessageId));
-        return hydrate(out, userId);
+        return hydrate(out, userId, convo.isChannel());
     }
 
     // ── Single message ───────────────────────────────────────────────────────────
@@ -139,7 +142,22 @@ public class MessageQueryService {
         ReplyPreview reply = m.getReplyToId() == null ? null
                 : mapper.toReplyPreview(messageByIdRepo.findById(m.getReplyToId()).orElse(null));
         boolean starred = starRepo.findByUserIdAndMessageId(userId, messageId).isPresent();
-        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply, starred);
+        ChatMapper.MessageExtras extras = extrasForOne(m, userId, convo.isChannel());
+        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply, starred, extras);
+    }
+
+    /** Views/forwards (channels) + live poll state for one message. */
+    private ChatMapper.MessageExtras extrasForOne(MessageByIdEntity m, UUID viewerId, boolean channel) {
+        Long views = null, forwards = null;
+        Long comments = null;
+        if (channel && !MessageType.SYSTEM.name().equals(m.getType())) {
+            var metrics = channelMetrics.metricsFor(List.of(m.getMessageId())).get(m.getMessageId());
+            views = metrics == null ? 0L : metrics.views();
+            forwards = metrics == null ? 0L : metrics.forwards();
+            comments = metrics == null ? 0L : metrics.comments();
+        }
+        var poll = StringUtils.hasText(m.getPoll()) ? pollService.renderFor(m, viewerId) : null;
+        return new ChatMapper.MessageExtras(views, forwards, comments, poll);
     }
 
     /** Hydrate an explicit list of message ids for the caller (e.g. the starred list) —
@@ -270,6 +288,85 @@ public class MessageQueryService {
         return hydrateByIds(ids, userId, floorId);
     }
 
+    // ── Shared-media gallery ───────────────────────────────────────────────────────
+
+    /**
+     * The conversation's shared media of one kind (IMAGE/VIDEO/VOICE/AUDIO/GIF/
+     * STICKER/FILE/LINK), newest first — a single-partition slice of the gallery
+     * index, hydrated into full messages (an album message appears once).
+     */
+    @Transactional(readOnly = true)
+    public List<MessageResponse> gallery(UUID conversationId, UUID userId, String kind,
+                                         Long beforeMessageId, int limit) {
+        Conversation convo = requireConversation(conversationId);
+        ConversationMember me = requireReadableMember(conversationId, userId);
+        String k = kind == null ? "" : kind.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("IMAGE", "VIDEO", "VOICE", "AUDIO", "GIF", "STICKER", "VIDEO_NOTE",
+                    "FILE", "LINK").contains(k)) {
+            throw new ak.dev.irc.app.common.exception.BadRequestException(
+                    "kind must be one of IMAGE, VIDEO, VOICE, AUDIO, GIF, STICKER, VIDEO_NOTE, FILE, LINK.");
+        }
+        // Over-fetch: albums yield several rows per message; we return distinct messages.
+        int fetch = Math.min(limit * 3, 300);
+        var rows = beforeMessageId != null
+                ? mediaGalleryRepo.pageBefore(conversationId, k, beforeMessageId, fetch)
+                : mediaGalleryRepo.firstPage(conversationId, k, fetch);
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        for (var row : rows) {
+            ids.add(row.getMessageId());
+            if (ids.size() >= limit) break;
+        }
+        return hydrateByIds(List.copyOf(ids), userId, floorMessageId(convo, me));
+    }
+
+    // ── Hashtag search ─────────────────────────────────────────────────────────────
+
+    /** Posts of this conversation carrying {@code #tag}, newest first (ES-backed
+     *  with a bounded Cassandra scan fallback while the index is cold). */
+    @Transactional(readOnly = true)
+    public List<MessageResponse> byTag(UUID conversationId, UUID userId, String tag, int limit) {
+        Conversation convo = requireConversation(conversationId);
+        ConversationMember me = requireReadableMember(conversationId, userId);
+        String needle = tag == null ? "" : tag.trim().toLowerCase(Locale.ROOT);
+        if (needle.startsWith("#")) needle = needle.substring(1);
+        if (needle.isEmpty()) return List.of();
+
+        try {
+            List<Long> ids = chatSearch.searchIdsByTag(List.of(conversationId), needle, limit);
+            if (!ids.isEmpty()) {
+                return hydrateByIds(ids, userId, floorMessageId(convo, me));
+            }
+        } catch (Exception e) {
+            log.debug("[CHAT-SEARCH] tag search ES unavailable, falling back to scan: {}", e.getMessage());
+        }
+        return scanByTag(convo, me, needle, limit);
+    }
+
+    private List<MessageResponse> scanByTag(Conversation convo, ConversationMember me, String tag, int limit) {
+        int minBucket = ChatBuckets.bucketForTimestamp(historyFloorMillis(convo, me));
+        Long floorId = floorMessageId(convo, me);
+        int startBucket = convo.getLastMessageId() != null
+                ? ChatBuckets.bucketOf(convo.getLastMessageId()) : ChatBuckets.currentBucket();
+
+        List<MessageByConversationEntity> matches = new ArrayList<>();
+        int scanned = 0, bucketsWalked = 0;
+        for (int bucket = startBucket; bucket >= minBucket
+                && bucketsWalked < SEARCH_MAX_BUCKETS
+                && scanned < SEARCH_MAX_SCANNED
+                && matches.size() < limit; bucket--, bucketsWalked++) {
+            for (MessageByConversationEntity r : messageRepo.firstPage(convo.getId(), bucket, 500)) {
+                scanned++;
+                if (floorId != null && r.getMessageId() < floorId) continue;
+                if (Boolean.TRUE.equals(r.getDeleted())) continue;
+                if (r.getTags() != null && r.getTags().contains(tag)) {
+                    matches.add(r);
+                    if (matches.size() >= limit) break;
+                }
+            }
+        }
+        return hydrate(matches, me.getId().getUserId(), convo.isChannel());
+    }
+
     private List<MessageResponse> scanSearch(Conversation convo, ConversationMember me, String q, int limit) {
         String needle = q.toLowerCase(Locale.ROOT);
 
@@ -296,7 +393,7 @@ public class MessageQueryService {
                 }
             }
         }
-        return hydrate(matches, me.getId().getUserId());
+        return hydrate(matches, me.getId().getUserId(), convo.isChannel());
     }
 
     /** Single-conversation hydration with one history floor (search / pinned). */
@@ -339,6 +436,11 @@ public class MessageQueryService {
 
         Set<Long> hidden = new HashSet<>(hiddenRepo.findHiddenAmong(viewerId, ids)); // "deleted for me"
         Set<Long> starred = new HashSet<>(starRepo.findStarredAmong(viewerId, ids));
+        // Channel view/forward counters (absent rows → no counters) + poll state.
+        Map<Long, ChannelPostMetricsService.PostMetrics> metrics = channelMetrics.metricsFor(ids);
+        Map<Long, String> pollJson = new HashMap<>();
+        byId.values().forEach(m -> { if (StringUtils.hasText(m.getPoll())) pollJson.put(m.getMessageId(), m.getPoll()); });
+        Map<Long, ak.dev.irc.app.chat.dto.response.PollResponse> polls = pollService.pollsFor(pollJson, viewerId);
 
         List<MessageResponse> out = new ArrayList<>(ids.size());
         for (Long id : ids) {                       // preserve rank / pin order
@@ -350,7 +452,12 @@ public class MessageQueryService {
             if (MessageType.SYSTEM.name().equals(m.getType())) continue;
             ReplyPreview reply = m.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(m.getReplyToId()));
-            out.add(mapper.toMessage(m, users, reactions.getOrDefault(id, List.of()), reply, starred.contains(id)));
+            var pm = metrics.get(id);
+            ChatMapper.MessageExtras extras = new ChatMapper.MessageExtras(
+                    pm == null ? null : pm.views(), pm == null ? null : pm.forwards(),
+                    pm == null ? null : pm.comments(), polls.get(id));
+            out.add(mapper.toMessage(m, users, reactions.getOrDefault(id, List.of()), reply,
+                    starred.contains(id), extras));
         }
         return out;
     }
@@ -358,6 +465,13 @@ public class MessageQueryService {
     // ── hydration ──────────────────────────────────────────────────────────────────
 
     private List<MessageResponse> hydrate(List<MessageByConversationEntity> rows, UUID viewerId) {
+        return hydrate(rows, viewerId, false);
+    }
+
+    /** {@code channel} switches on view/forward counter hydration (one bulk
+     *  counter read per page — pointless for DMs/groups, which have no counters). */
+    private List<MessageResponse> hydrate(List<MessageByConversationEntity> rows, UUID viewerId,
+                                          boolean channel) {
         if (rows.isEmpty()) return List.of();
 
         Set<UUID> senderIds = rows.stream().map(MessageByConversationEntity::getSenderId)
@@ -376,13 +490,31 @@ public class MessageQueryService {
         Set<Long> hidden = new HashSet<>(hiddenRepo.findHiddenAmong(viewerId, ids)); // "delete for me"
         Set<Long> starred = new HashSet<>(starRepo.findStarredAmong(viewerId, ids));
 
+        Map<Long, ChannelPostMetricsService.PostMetrics> metrics = channel
+                ? channelMetrics.metricsFor(ids) : Map.of();
+        Map<Long, String> pollJson = new HashMap<>();
+        for (MessageByConversationEntity r : rows) {
+            if (StringUtils.hasText(r.getPoll())) pollJson.put(r.getMessageId(), r.getPoll());
+        }
+        Map<Long, ak.dev.irc.app.chat.dto.response.PollResponse> polls =
+                pollService.pollsFor(pollJson, viewerId);
+
         List<MessageResponse> out = new ArrayList<>(rows.size());
         for (MessageByConversationEntity r : rows) {
             if (hidden.contains(r.getMessageId())) continue; // per-user hide
             ReplyPreview reply = r.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(r.getReplyToId()));
+            ChatMapper.MessageExtras extras;
+            if (channel && !MessageType.SYSTEM.name().equals(r.getType())) {
+                var pm = metrics.get(r.getMessageId());
+                extras = new ChatMapper.MessageExtras(
+                        pm == null ? 0L : pm.views(), pm == null ? 0L : pm.forwards(),
+                        pm == null ? 0L : pm.comments(), polls.get(r.getMessageId()));
+            } else {
+                extras = new ChatMapper.MessageExtras(null, null, null, polls.get(r.getMessageId()));
+            }
             out.add(mapper.toMessage(r, users, reactions.getOrDefault(r.getMessageId(), List.of()), reply,
-                    starred.contains(r.getMessageId())));
+                    starred.contains(r.getMessageId()), extras));
         }
         return out;
     }

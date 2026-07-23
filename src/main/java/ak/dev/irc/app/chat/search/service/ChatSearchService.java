@@ -56,6 +56,7 @@ public class ChatSearchService {
                 .senderId(m.getSenderId() == null ? null : m.getSenderId().toString())
                 .body(m.getBody())
                 .type(m.getType())
+                .tags(m.getTags() == null || m.getTags().isEmpty() ? null : List.copyOf(m.getTags()))
                 .createdAt(m.getCreatedAt())
                 .build();
         try {
@@ -118,6 +119,43 @@ public class ChatSearchService {
                 return List.of();
             }
             throw e; // hard failure → caller falls back to a bounded Cassandra scan
+        }
+    }
+
+    /**
+     * Message ids of posts carrying an exact {@code #tag} (lowercased, no '#'),
+     * newest first, scoped to the caller's conversations. Same failure contract
+     * as {@link #searchMessageIds}: empty on missing index, throws on hard
+     * failure so the caller can fall back to a bounded scan.
+     */
+    public List<Long> searchIdsByTag(Collection<UUID> conversationIds, String tag, int size) {
+        if (!StringUtils.hasText(tag) || conversationIds == null || conversationIds.isEmpty()) {
+            return List.of();
+        }
+        List<FieldValue> scope = conversationIds.stream()
+                .map(id -> FieldValue.of(id.toString())).toList();
+
+        Query esQuery = Query.of(q -> q.bool(b -> {
+            b.must(m -> m.term(t -> t.field("tags").value(tag)));
+            b.filter(f -> f.terms(t -> t.field("conversationId").terms(tt -> tt.value(scope))));
+            return b;
+        }));
+
+        NativeQuery nq = NativeQuery.builder()
+                .withQuery(esQuery)
+                .withSort(s -> s.field(f -> f.field("messageId")
+                        .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
+                .withPageable(PageRequest.of(0, size))
+                .build();
+
+        try {
+            SearchHits<ChatMessageDocument> hits = EsRetry.call(
+                    () -> esOps.search(nq, ChatMessageDocument.class, IndexCoordinates.of(INDEX)),
+                    "[CHAT-SEARCH] tag query");
+            return hits.stream().map(h -> h.getContent().getMessageId()).filter(java.util.Objects::nonNull).toList();
+        } catch (Exception e) {
+            if (EsRetry.isIndexNotFound(e)) return List.of();
+            throw e;
         }
     }
 }

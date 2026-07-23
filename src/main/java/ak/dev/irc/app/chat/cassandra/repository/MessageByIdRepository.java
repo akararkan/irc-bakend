@@ -38,6 +38,14 @@ public interface MessageByIdRepository extends CassandraRepository<MessageByIdEn
                          @Param("editedAt") Instant editedAt,
                          @Param("ttl") int ttl);
 
+    /** Re-write the extracted hashtags after a body edit. */
+    @Query("UPDATE message_by_id SET tags = :tags WHERE message_id = :messageId")
+    void updateTags(@Param("messageId") long messageId, @Param("tags") java.util.Set<String> tags);
+
+    /** Re-write the poll payload (close, tally metadata). */
+    @Query("UPDATE message_by_id SET poll = :poll WHERE message_id = :messageId")
+    void updatePoll(@Param("messageId") long messageId, @Param("poll") String poll);
+
     @Query("UPDATE message_by_id SET deleted = true, body = null, media = null WHERE message_id = :messageId")
     void tombstone(@Param("messageId") long messageId);
 }

@@ -80,7 +80,13 @@ shapes, error codes, and side effects, verified against the source.
 | [messages.md](chat/messages.md) | Send (idempotent), read (cursor + gap sync), edit/delete/forward, reactions, pinned, delivered |
 | [groups.md](chat/groups.md) | Members, roles, restrict, leave, transfer ownership, invite links, join |
 | [message-requests.md](chat/message-requests.md) | Message Requests inbox + the stranger-contact flow |
-| [channels.md](chat/channels.md) | Telegram-style broadcast channels — create, discover, subscribe, post |
+| [channels/overview.md](chat/channels/overview.md) | Telegram-style broadcast **channels** — lifecycle, profile, settings (index into the `channels/` subdir) |
+| [channels/admins.md](chat/channels/admins.md) | Granular admin rights, invite links, join requests, transfer/kick/restrict |
+| [channels/posts.md](chat/channels/posts.md) | Channel posts — tags, signatures, views/forwards, message types, polls, gallery |
+| [channels/discussion.md](chat/channels/discussion.md) | Linked discussion group & comments, drafts, slow mode |
+| [channels/stories.md](chat/channels/stories.md) | Channel stories, story tray, profile highlights |
+| [channels/inbox.md](chat/channels/inbox.md) | Subscriber/member list, the channel in your inbox, notifications, delete |
+| [channels/stats.md](chat/channels/stats.md) | Channel statistics + realtime SSE stream & event catalog |
 | [calls.md](chat/calls.md) | Voice/video calls — ring/answer/decline/end + WebRTC SDP/ICE relay |
 | [live-streaming.md](chat/live-streaming.md) | Live streaming — go live, viewer registry, live chat |
 | [realtime.md](chat/realtime.md) | The single per-user SSE stream + event catalog, typing, presence, unread badge |

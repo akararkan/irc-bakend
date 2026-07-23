@@ -35,4 +35,19 @@ public class SendMessageRequest {
     @Valid
     @Size(max = 10, message = "at most 10 attachments per message")
     private List<MediaRefDto> media;
+
+    /** Telegram "silent post" — delivered normally but with no push notification. */
+    private boolean silent;
+
+    /** Poll payload — required when {@code type} is {@code POLL}, else must be absent. */
+    @Valid
+    private PollCreateDto poll;
+
+    /** Location payload — required when {@code type} is {@code LOCATION}. */
+    @Valid
+    private LocationDto location;
+
+    /** Contact payload — required when {@code type} is {@code CONTACT}. */
+    @Valid
+    private ContactDto contact;
 }

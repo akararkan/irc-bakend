@@ -49,6 +49,11 @@ public class CassandraStoryService {
     private final StoryViewRepository     storyViewRepo;
     private final CloseFriendsService     closeFriendsService;
     private final UserFollowRepository    userFollowRepo;
+    /** Channel stories: the "author" is a CHANNEL conversation — membership
+     *  checks resolve against the chat domain (same cross-domain bridging as
+     *  ChatNotificationService → CassandraNotificationService, reversed). */
+    private final ak.dev.irc.app.chat.repository.ConversationRepository chatConversationRepo;
+    private final ak.dev.irc.app.chat.repository.ConversationMemberRepository chatMemberRepo;
     private final CassandraStoryPollService pollService;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
     /**
@@ -268,6 +273,19 @@ public class CassandraStoryService {
     public boolean canView(StoryByAuthorEntity story, UUID viewerId) {
         String v = story.getVisibility();
         if (v == null || "PUBLIC".equals(v)) return true;
+        // Channel story: authorId is the channel's conversation id. Public
+        // channel → visible to anyone; private → active subscribers only.
+        if ("CHANNEL".equals(v)) {
+            var channel = chatConversationRepo.findById(story.getAuthorId())
+                    .filter(c -> c.getDeletedAt() == null && c.isChannel())
+                    .orElse(null);
+            if (channel == null) return false;
+            if (channel.isPublicChannel()) return true;
+            if (viewerId == null) return false;
+            return chatMemberRepo.findMember(channel.getId(), viewerId)
+                    .filter(ak.dev.irc.app.chat.entity.ConversationMember::canRead)
+                    .isPresent();
+        }
         if (viewerId == null) return false;
         if (viewerId.equals(story.getAuthorId())) return true;       // own story
         if ("ONLY_ME".equals(v)) return false;
@@ -341,6 +359,15 @@ public class CassandraStoryService {
     public List<StoryViewEntity> viewersFor(UUID storyId, UUID requesterId, int pageSize) {
         StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
         if (meta == null) return List.of();
+        // Channel story viewer log — visible to the channel's owner/admins.
+        if ("CHANNEL".equals(meta.getVisibility())) {
+            boolean staff = requesterId != null && chatMemberRepo
+                    .findMember(meta.getAuthorId(), requesterId)
+                    .filter(m -> m.isActive() && m.isAdminOrOwner())
+                    .isPresent();
+            if (!staff) throw new SecurityException("Only channel admins can view the viewer log");
+            return storyViewRepo.recent(storyId, pageSize);
+        }
         if (requesterId == null || !requesterId.equals(meta.getAuthorId())) {
             throw new SecurityException("Only the story author can view the viewer log");
         }

@@ -55,6 +55,7 @@ public class GroupMemberService {
     private final ChatMapper mapper;
     private final UserRepository userRepository;
     private final ConversationService conversationService;
+    private final ChannelJoinRequestService joinRequestService;
 
     /** Web origin invite share links point at (frontend routes /join/{token}). */
     @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
@@ -64,8 +65,13 @@ public class GroupMemberService {
 
     @Transactional(readOnly = true)
     public Page<MemberResponse> listMembers(UUID conversationId, UUID userId, Pageable pageable) {
-        requireGroup(conversationId);
-        requireReadableMember(conversationId, userId);
+        Conversation c = requireGroupOrChannel(conversationId);
+        ConversationMember me = requireReadableMember(conversationId, userId);
+        // Channels can hide their subscriber list from non-admins (count stays public).
+        if (c.isChannel() && c.channelSettingsOrDefaults().isHiddenSubscribers()
+                && !me.isAdminOrOwner()) {
+            throw new ForbiddenException("This channel's subscriber list is hidden.", "SUBSCRIBERS_HIDDEN");
+        }
         Page<ConversationMember> page = memberRepo.findByConversation(conversationId, pageable);
         Set<UUID> ids = page.getContent().stream().map(m -> m.getId().getUserId()).collect(Collectors.toSet());
         Map<UUID, User> users = ids.isEmpty() ? Map.of()
@@ -77,10 +83,14 @@ public class GroupMemberService {
 
     @Transactional
     public void addMembers(UUID conversationId, UUID actorId, List<UUID> userIds) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.ADD_MEMBERS, null, c.getGroupSettings())) {
             throw new ForbiddenException("You cannot add members to this group.", "ADMINS_ONLY");
+        }
+        if (c.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
+                actor, ak.dev.irc.app.chat.dto.AdminRights::isCanInviteUsers)) {
+            throw new ForbiddenException("You cannot add subscribers to this channel.", "ADMINS_ONLY");
         }
 
         LinkedHashSet<UUID> candidates = new LinkedHashSet<>(userIds);
@@ -109,9 +119,10 @@ public class GroupMemberService {
             if (existing != null) {                                     // re-activate a LEFT/REMOVED member
                 existing.setStatus(MemberStatus.ACTIVE);
                 existing.setRole(MemberRole.MEMBER);
+                existing.setJoinSource("ADDED_BY_ADMIN");
                 toSave.add(existing);
             } else {
-                toSave.add(ConversationMember.of(c, id, MemberRole.MEMBER));
+                toSave.add(ConversationMember.of(c, id, MemberRole.MEMBER, "ADDED_BY_ADMIN"));
             }
             addedIds.add(id);
         }
@@ -136,7 +147,7 @@ public class GroupMemberService {
 
     @Transactional
     public void removeMember(UUID conversationId, UUID actorId, UUID targetId) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
@@ -160,7 +171,7 @@ public class GroupMemberService {
         if (newRole != MemberRole.ADMIN && newRole != MemberRole.MEMBER) {
             throw new BadRequestException("role must be ADMIN or MEMBER.");
         }
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
@@ -185,7 +196,7 @@ public class GroupMemberService {
 
     @Transactional
     public void restrictMember(UUID conversationId, UUID actorId, UUID targetId, boolean restricted) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
@@ -228,7 +239,7 @@ public class GroupMemberService {
 
     @Transactional
     public void transferOwnership(UUID conversationId, UUID actorId, UUID newOwnerId) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = memberRepo.findMember(conversationId, actorId)
                 .orElseThrow(() -> new ForbiddenException("You are not a member.", "NOT_A_MEMBER"));
         if (!GroupPermissions.can(actor.getRole(), GroupAction.TRANSFER_OWNERSHIP, null, c.getGroupSettings())) {
@@ -254,40 +265,56 @@ public class GroupMemberService {
 
     @Transactional
     public InviteLinkResponse createInvite(UUID conversationId, UUID actorId, CreateInviteLinkRequest req) {
-        Conversation c = requireGroupOrChannel(conversationId);
-        ConversationMember actor = requireActiveMember(conversationId, actorId);
-        if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot create invite links here.", "ADMINS_ONLY");
-        }
+        requireInviteManager(conversationId, actorId);
         // Rotate: revoke any existing links, mint a fresh token.
         inviteRepo.revokeAllForConversation(conversationId);
+        return mintInvite(conversationId, actorId, req);
+    }
 
-        String token = (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", "");
-        LocalDateTime expiresAt = req.getExpiresInHours() == null ? null
-                : LocalDateTime.now().plusHours(req.getExpiresInHours());
-        ConversationInvite invite = inviteRepo.save(ConversationInvite.builder()
-                .conversationId(conversationId)
-                .tokenHash(sha256(token))
-                .createdByUser(actorId)
-                .expiresAt(expiresAt)
-                .maxUses(req.getMaxUses())
-                .build());
-        return new InviteLinkResponse(conversationId, token, invite.getExpiresAt(), invite.getMaxUses(),
-                invite.getUseCount(), ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/join/" + token));
+    /** Create an ADDITIONAL invite link without revoking the existing ones —
+     *  Telegram supports many parallel links per chat. */
+    @Transactional
+    public InviteLinkResponse createAdditionalInvite(UUID conversationId, UUID actorId,
+                                                     CreateInviteLinkRequest req) {
+        requireInviteManager(conversationId, actorId);
+        return mintInvite(conversationId, actorId, req);
+    }
+
+    /** Every non-revoked link's metadata (tokens are not recoverable). */
+    @Transactional(readOnly = true)
+    public List<ak.dev.irc.app.chat.dto.response.InviteLinkInfoResponse> listInvites(
+            UUID conversationId, UUID actorId) {
+        requireInviteManager(conversationId, actorId);
+        return inviteRepo.findByConversationIdAndRevokedFalse(conversationId).stream()
+                .map(i -> new ak.dev.irc.app.chat.dto.response.InviteLinkInfoResponse(
+                        i.getId(), i.getConversationId(), i.getCreatedByUser(), i.getCreatedAt(),
+                        i.getExpiresAt(), i.getMaxUses(), i.getUseCount(), i.isRevoked(),
+                        i.isRequiresApproval(),
+                        i.getExpiresAt() == null && i.getMaxUses() == null))
+                .toList();
     }
 
     @Transactional
     public void revokeInvite(UUID conversationId, UUID actorId) {
-        Conversation c = requireGroupOrChannel(conversationId);
-        ConversationMember actor = requireActiveMember(conversationId, actorId);
-        if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot revoke invite links here.", "ADMINS_ONLY");
-        }
+        requireInviteManager(conversationId, actorId);
         inviteRepo.revokeAllForConversation(conversationId);
     }
 
+    /** Revoke a single link, leaving the others working. */
     @Transactional
-    public ConversationResponse join(UUID userId, String token) {
+    public void revokeOneInvite(UUID conversationId, UUID actorId, UUID inviteId) {
+        requireInviteManager(conversationId, actorId);
+        ConversationInvite invite = inviteRepo.findById(inviteId)
+                .filter(i -> conversationId.equals(i.getConversationId()))
+                .orElseThrow(() -> new ResourceNotFoundException("InviteLink", "id", inviteId));
+        if (!invite.isRevoked()) {
+            invite.setRevoked(true);
+            inviteRepo.save(invite);
+        }
+    }
+
+    @Transactional
+    public ak.dev.irc.app.chat.dto.response.JoinByTokenResponse join(UUID userId, String token) {
         ConversationInvite invite = inviteRepo.findByTokenHash(sha256(token))
                 .filter(ConversationInvite::isUsable)
                 .orElseThrow(() -> new ForbiddenException("This invite link is invalid or has expired.", "INVITE_INVALID"));
@@ -299,25 +326,63 @@ public class GroupMemberService {
         // Already a member (ACTIVE) or RESTRICTED (read-only) → idempotent no-op;
         // a restricted member can't use an invite link to lift their restriction.
         if (existing != null && !isRejoinable(existing)) {
-            return conversationService.get(c.getId(), userId);
+            return new ak.dev.irc.app.chat.dto.response.JoinByTokenResponse(
+                    "JOINED", conversationService.get(c.getId(), userId));
         }
         // Atomically consume a use up-front so maxUses can't be exceeded under
         // concurrency (guarded UPDATE; 0 rows affected ⇒ exhausted/expired).
         if (inviteRepo.consumeUse(invite.getId()) == 0) {
             throw new ForbiddenException("This invite link is invalid or has expired.", "INVITE_INVALID");
         }
+        // Approval-gated link → file a join request instead of joining now.
+        if (invite.isRequiresApproval()) {
+            joinRequestService.file(c, userId, invite.getId());
+            return new ak.dev.irc.app.chat.dto.response.JoinByTokenResponse("PENDING_APPROVAL", null);
+        }
         if (existing != null) {
             existing.setStatus(MemberStatus.ACTIVE);
             existing.setRole(MemberRole.MEMBER);
+            existing.setJoinSource("INVITE_LINK");
             memberRepo.save(existing);
         } else {
-            memberRepo.save(ConversationMember.of(c, userId, MemberRole.MEMBER));
+            memberRepo.save(ConversationMember.of(c, userId, MemberRole.MEMBER, "INVITE_LINK"));
         }
         conversationRepo.adjustMemberCount(c.getId(), 1);
         systemMessages.write(c.getId(), SystemEventType.MEMBER_ADDED, userId,
                 label(userId, Map.of()) + " joined via invite link");
         emitMemberChange(c.getId(), userId, "ADDED", MemberRole.MEMBER, true);
-        return conversationService.get(c.getId(), userId);
+        return new ak.dev.irc.app.chat.dto.response.JoinByTokenResponse(
+                "JOINED", conversationService.get(c.getId(), userId));
+    }
+
+    /** Groups: the permission matrix's CREATE_INVITE; channels additionally need
+     *  the granular {@code canInviteUsers} right. */
+    private void requireInviteManager(UUID conversationId, UUID actorId) {
+        Conversation c = requireGroupOrChannel(conversationId);
+        ConversationMember actor = requireActiveMember(conversationId, actorId);
+        if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
+            throw new ForbiddenException("You cannot manage invite links here.", "ADMINS_ONLY");
+        }
+        if (c.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
+                actor, ak.dev.irc.app.chat.dto.AdminRights::isCanInviteUsers)) {
+            throw new ForbiddenException("You cannot manage invite links here.", "ADMINS_ONLY");
+        }
+    }
+
+    private InviteLinkResponse mintInvite(UUID conversationId, UUID actorId, CreateInviteLinkRequest req) {
+        String token = (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", "");
+        LocalDateTime expiresAt = req.getExpiresInHours() == null ? null
+                : LocalDateTime.now().plusHours(req.getExpiresInHours());
+        ConversationInvite invite = inviteRepo.save(ConversationInvite.builder()
+                .conversationId(conversationId)
+                .tokenHash(sha256(token))
+                .createdByUser(actorId)
+                .expiresAt(expiresAt)
+                .maxUses(req.getMaxUses())
+                .requiresApproval(req.isRequiresApproval())
+                .build());
+        return new InviteLinkResponse(conversationId, token, invite.getExpiresAt(), invite.getMaxUses(),
+                invite.getUseCount(), ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/join/" + token));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────

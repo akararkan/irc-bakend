@@ -1,10 +1,13 @@
 package ak.dev.irc.app.chat.entity;
 
+import ak.dev.irc.app.chat.dto.AdminRights;
 import ak.dev.irc.app.chat.enums.MemberRole;
 import ak.dev.irc.app.chat.enums.MemberStatus;
 import ak.dev.irc.app.common.BaseAuditEntity;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -53,6 +56,12 @@ public class ConversationMember extends BaseAuditEntity {
     @Column(name = "status", nullable = false, length = 10)
     @Builder.Default
     private MemberStatus status = MemberStatus.ACTIVE;
+
+    /** Granular admin rights (CHANNEL admins) as JSONB. {@code null} = full
+     *  rights — legacy admins and the owner are unrestricted. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "admin_rights", columnDefinition = "jsonb")
+    private AdminRights adminRights;
 
     /** High-water read marker — Snowflake id of the last message this user read. */
     @Column(name = "last_read_message_id", nullable = false)
@@ -108,6 +117,12 @@ public class ConversationMember extends BaseAuditEntity {
     @Builder.Default
     private LocalDateTime joinedAt = LocalDateTime.now();
 
+    /** How this member arrived: OWNER | DISCOVERY | INVITE_LINK | JOIN_REQUEST |
+     *  ADDED_BY_ADMIN | COMMENT (auto-joined a discussion group to comment).
+     *  Null on legacy rows. Feeds the channel stats "source of joins". */
+    @Column(name = "join_source", length = 20)
+    private String joinSource;
+
     public boolean isActive()      { return status == MemberStatus.ACTIVE; }
     public boolean canRead()       { return status == MemberStatus.ACTIVE || status == MemberStatus.RESTRICTED; }
     public boolean isOwner()       { return role == MemberRole.OWNER; }
@@ -115,12 +130,18 @@ public class ConversationMember extends BaseAuditEntity {
 
     /** Build a fresh ACTIVE membership row for {@code userId} in {@code c}. */
     public static ConversationMember of(Conversation c, UUID userId, MemberRole role) {
+        return of(c, userId, role, null);
+    }
+
+    /** Variant stamping the join source (stats "source of joins"). */
+    public static ConversationMember of(Conversation c, UUID userId, MemberRole role, String joinSource) {
         return ConversationMember.builder()
                 .id(new ConversationMemberId(c.getId(), userId))
                 .conversation(c)
                 .role(role)
                 .status(MemberStatus.ACTIVE)
                 .joinedAt(LocalDateTime.now())
+                .joinSource(joinSource)
                 .build();
     }
 }

@@ -32,6 +32,31 @@ import java.util.UUID;
 public class ConversationController {
 
     private final ConversationService conversationService;
+    private final ak.dev.irc.app.chat.service.ChatDraftService draftService;
+
+    // ── Drafts (Telegram-style unsent drafts) ────────────────────────────────────
+
+    /** Save/overwrite my draft for this conversation. */
+    @PutMapping("/{id}/draft")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.DraftResponse> saveDraft(
+            @PathVariable UUID id,
+            @Valid @RequestBody SaveDraftRequest req,
+            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(draftService.save(id, requireId(user), req));
+    }
+
+    @GetMapping("/{id}/draft")
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.DraftResponse> getDraft(
+            @PathVariable UUID id, @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(draftService.get(id, requireId(user)));
+    }
+
+    /** Discard my draft (idempotent; sending also clears it). */
+    @DeleteMapping("/{id}/draft")
+    public ResponseEntity<Void> deleteDraft(@PathVariable UUID id, @AuthenticationPrincipal User user) {
+        draftService.delete(id, requireId(user));
+        return ResponseEntity.noContent().build();
+    }
 
     /** My inbox, pinned first then newest activity. */
     @GetMapping

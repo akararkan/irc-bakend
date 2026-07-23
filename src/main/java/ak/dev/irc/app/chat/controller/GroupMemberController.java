@@ -1,7 +1,6 @@
 package ak.dev.irc.app.chat.controller;
 
 import ak.dev.irc.app.chat.dto.request.*;
-import ak.dev.irc.app.chat.dto.response.ConversationResponse;
 import ak.dev.irc.app.chat.dto.response.InviteLinkResponse;
 import ak.dev.irc.app.chat.dto.response.MemberResponse;
 import ak.dev.irc.app.chat.service.GroupMemberService;
@@ -18,6 +17,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 /** Group membership, roles, invite links, and joining. */
@@ -99,10 +99,41 @@ public class GroupMemberController {
         return ResponseEntity.noContent().build();
     }
 
-    /** Join a group via an invite token. Exact-match path wins over {@code /{id}}. */
+    // ── Multi-link manager (Telegram-style parallel invite links) ────────────────
+
+    /** Create an additional link WITHOUT revoking the existing ones. */
+    @PostMapping("/{id}/invite-links")
+    public ResponseEntity<InviteLinkResponse> createAdditionalInvite(
+            @PathVariable UUID id,
+            @Valid @RequestBody(required = false) CreateInviteLinkRequest req,
+            @AuthenticationPrincipal User user) {
+        CreateInviteLinkRequest body = req != null ? req : new CreateInviteLinkRequest();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(memberService.createAdditionalInvite(id, requireId(user), body));
+    }
+
+    /** All active links' metadata (tokens are shown only at creation). */
+    @GetMapping("/{id}/invite-links")
+    public ResponseEntity<List<ak.dev.irc.app.chat.dto.response.InviteLinkInfoResponse>> listInvites(
+            @PathVariable UUID id, @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(memberService.listInvites(id, requireId(user)));
+    }
+
+    /** Revoke one specific link, leaving the others working. */
+    @DeleteMapping("/{id}/invite-links/{inviteId}")
+    public ResponseEntity<Void> revokeOneInvite(@PathVariable UUID id,
+                                                @PathVariable UUID inviteId,
+                                                @AuthenticationPrincipal User user) {
+        memberService.revokeOneInvite(id, requireId(user), inviteId);
+        return ResponseEntity.noContent().build();
+    }
+
+    /** Join a group/channel via an invite token. {@code status} is JOINED, or
+     *  PENDING_APPROVAL when the link requires admin approval. */
     @PostMapping("/join")
-    public ResponseEntity<ConversationResponse> join(@Valid @RequestBody JoinByTokenRequest req,
-                                                     @AuthenticationPrincipal User user) {
+    public ResponseEntity<ak.dev.irc.app.chat.dto.response.JoinByTokenResponse> join(
+            @Valid @RequestBody JoinByTokenRequest req,
+            @AuthenticationPrincipal User user) {
         return ResponseEntity.ok(memberService.join(requireId(user), req.getToken()));
     }
 

@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.entity;
 
+import ak.dev.irc.app.chat.dto.ChannelSettings;
 import ak.dev.irc.app.chat.dto.GroupSettings;
 import ak.dev.irc.app.chat.enums.ConversationType;
 import ak.dev.irc.app.common.BaseAuditEntity;
@@ -64,6 +65,35 @@ public class Conversation extends BaseAuditEntity {
     @Builder.Default
     private boolean publicChannel = false;
 
+    /** R2/S3 key for the channel cover/banner image (CHANNEL only). */
+    @Column(name = "cover_key", length = 255)
+    private String coverKey;
+
+    /** Platform-granted verified badge (CHANNEL only; set by a platform admin). */
+    @Column(name = "verified", nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean verified = false;
+
+    /** Channel directory category slug (e.g. "news", "science"; CHANNEL only). */
+    @Column(name = "category", length = 48)
+    private String category;
+
+    /** Denormalised count of live (non-deleted, non-system) channel posts. */
+    @Column(name = "post_count", nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int postCount = 0;
+
+    /** CHANNEL knobs as JSONB — reactions policy, protected content, signatures,
+     *  join-by-request, … Null for DIRECT/GROUP (and legacy channels → defaults). */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "channel_settings", columnDefinition = "jsonb")
+    private ChannelSettings channelSettings;
+
+    /** CHANNEL only: the linked discussion GROUP where subscribers comment on
+     *  posts (Telegram "discussion group"). Null = comments disabled. */
+    @Column(name = "linked_group_id")
+    private UUID linkedGroupId;
+
     /**
      * Disappearing-messages timer in seconds (0 = off). When &gt; 0, every new
      * message is written to Cassandra with this TTL so it auto-deletes after the
@@ -120,5 +150,10 @@ public class Conversation extends BaseAuditEntity {
 
     public boolean isChannel() {
         return type == ConversationType.CHANNEL;
+    }
+
+    /** Channel settings, falling back to defaults for legacy rows (null column). */
+    public ChannelSettings channelSettingsOrDefaults() {
+        return channelSettings != null ? channelSettings : ChannelSettings.defaults();
     }
 }

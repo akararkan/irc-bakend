@@ -65,6 +65,11 @@ public class ChatCassandraSchemaInitializer {
                     reply_to_id     bigint,
                     forwarded_from  uuid,
                     mentions        set<uuid>,
+                    tags            set<text>,
+                    author_signature text,
+                    poll            text,
+                    location        text,
+                    contact         text,
                     edited_at       timestamp,
                     deleted         boolean,
                     system_event    text,
@@ -84,6 +89,11 @@ public class ChatCassandraSchemaInitializer {
                     reply_to_id     bigint,
                     forwarded_from  uuid,
                     mentions        set<uuid>,
+                    tags            set<text>,
+                    author_signature text,
+                    poll            text,
+                    location        text,
+                    contact         text,
                     deleted         boolean,
                     edited_at       timestamp,
                     system_event    text,
@@ -99,9 +109,65 @@ public class ChatCassandraSchemaInitializer {
                     PRIMARY KEY ((message_id), user_id)
                 )""".formatted(keyspace));
 
+            // Poll votes — one row per (poll message, voter); Redis holds the counts.
+            session.execute("""
+                CREATE TABLE IF NOT EXISTS %s.poll_votes_by_message (
+                    message_id bigint,
+                    user_id    uuid,
+                    options    set<int>,
+                    created_at timestamp,
+                    PRIMARY KEY ((message_id), user_id)
+                )""".formatted(keyspace));
+
+            // Per-post view/forward counters (Cassandra counter table — counters
+            // must live in their own table).
+            session.execute("""
+                CREATE TABLE IF NOT EXISTS %s.message_counters (
+                    message_id bigint PRIMARY KEY,
+                    views      counter,
+                    forwards   counter
+                )""".formatted(keyspace));
+
+            // Shared-media gallery index: one partition per (conversation, kind),
+            // newest first — "all photos of this channel" without a timeline scan.
+            session.execute("""
+                CREATE TABLE IF NOT EXISTS %s.media_by_conversation (
+                    conversation_id uuid,
+                    kind            text,
+                    message_id      bigint,
+                    media_index     int,
+                    created_at      timestamp,
+                    PRIMARY KEY ((conversation_id, kind), message_id, media_index)
+                ) WITH CLUSTERING ORDER BY (message_id DESC, media_index ASC)""".formatted(keyspace));
+
+            // Discussion-group comment index: comments on a channel post are the
+            // linked group's replies to it — one partition per post, newest first.
+            session.execute("""
+                CREATE TABLE IF NOT EXISTS %s.chat_comments_by_post (
+                    post_message_id    bigint,
+                    comment_message_id bigint,
+                    created_at         timestamp,
+                    PRIMARY KEY ((post_message_id), comment_message_id)
+                ) WITH CLUSTERING ORDER BY (comment_message_id DESC)""".formatted(keyspace));
+
             repairMessageByIdColumn();
 
-            log.info("[CHAT-CASSANDRA] media_ref UDT + message tables ready");
+            // Channel-post columns added after the tables first shipped —
+            // CREATE TABLE IF NOT EXISTS never alters an existing table, so an
+            // existing keyspace needs an explicit, idempotent ALTER per column.
+            ensureColumn("messages_by_conversation", "tags", "set<text>");
+            ensureColumn("messages_by_conversation", "author_signature", "text");
+            ensureColumn("messages_by_conversation", "poll", "text");
+            ensureColumn("messages_by_conversation", "location", "text");
+            ensureColumn("messages_by_conversation", "contact", "text");
+            ensureColumn("message_by_id", "tags", "set<text>");
+            ensureColumn("message_by_id", "author_signature", "text");
+            ensureColumn("message_by_id", "poll", "text");
+            ensureColumn("message_by_id", "location", "text");
+            ensureColumn("message_by_id", "contact", "text");
+            ensureColumn("message_counters", "comments", "counter");
+
+            log.info("[CHAT-CASSANDRA] media_ref UDT + message/poll/counter/gallery tables ready");
         } catch (Exception e) {
             // Non-fatal in a local env with no Cassandra — the app already tolerates
             // a missing broker/driver; log loudly and let Spring surface a clearer
@@ -141,6 +207,19 @@ public class ChatCassandraSchemaInitializer {
             log.error("[CHAT-CASSANDRA] could not repair message_by_id primary-key column "
                     + "('messageid' -> 'message_id'); id-based message ops will fail until fixed: {}",
                     e.getMessage());
+        }
+    }
+
+    /** Idempotently add a column to an existing table (no-op when present). */
+    private void ensureColumn(String table, String column, String cqlType) {
+        try {
+            if (!columnExists(table, column)) {
+                session.execute("ALTER TABLE " + keyspace + "." + table
+                        + " ADD " + column + " " + cqlType);
+                log.info("[CHAT-CASSANDRA] added {}.{} ({})", table, column, cqlType);
+            }
+        } catch (Exception e) {
+            log.warn("[CHAT-CASSANDRA] could not ensure column {}.{}: {}", table, column, e.getMessage());
         }
     }
 
