@@ -233,6 +233,21 @@ app:
     # testing where you want annotations ignored — never in production.
     permit-all: ${SECURITY_PERMIT_ALL:false}
 
+  # Live-streaming media plane. The app never proxies audio/video — it only hands
+  # clients these origins and authorizes the media server's publish/read calls.
+  # Local dev: the `mediamtx` service in docker-compose.yml (RTMP :1935, HLS :8888,
+  # CORS '*'). Publish + playback share the public stream-id path; the ingest URL
+  # additionally carries the secret streamKey (?pass=), which the media server
+  # forwards to the auth hook — so only the host can publish. See
+  # MediaAuthController + LiveStreamService.authorizeMediaAccess.
+  streaming:
+    ingest-base: ${STREAM_INGEST_BASE:rtmp://localhost:1935}
+    playback-base: ${STREAM_PLAYBACK_BASE:http://localhost:8888}
+    # Shared secret in the media-auth hook URL — MediaMTX (mediamtx.yml
+    # authHTTPAddress) MUST use the same value. Keep the two in sync; override
+    # both in production.
+    auth-secret: ${STREAM_AUTH_SECRET:dev-media-auth-secret}
+
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}

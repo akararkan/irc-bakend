@@ -1,0 +1,40 @@
+###############################################
+# MediaMTX — media plane for the IRC live-streaming feature.
+# RTMP ingest (:1935) → HLS playback (:8888).
+#
+# Authorization is delegated to the backend: MediaMTX POSTs every publish/read
+# to the app's media-auth hook, which authorizes a *publish* only when it carries
+# the stream's secret streamKey (so the ingest URL stays host-only) and allows
+# *reads* (HLS playback) for any LIVE stream. See MediaAuthController /
+# LiveStreamService.authorizeMediaAccess in the backend.
+
+logLevel: info
+
+# Protocols: RTMP in, HLS out. Everything else off.
+rtsp: no
+rtmp: yes
+webrtc: no
+srt: no
+
+# HLS: classic MPEG-TS variant (plays via hls.js everywhere, natively in Safari);
+# CORS open so the browser can read the manifest/segments cross-origin.
+hls: yes
+hlsVariant: mpegts
+hlsAllowOrigins: ["*"]
+
+# HTTP authentication: every publish/read decision goes to the backend. The
+# {secret} path segment must match app.streaming.auth-secret so only our media
+# server can call the hook. `host.docker.internal` = the host running the app.
+authMethod: http
+authHTTPAddress: http://host.docker.internal:8080/internal/media/auth/dev-media-auth-secret
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+# Accept any path name (the stream id). `source: publisher` = the path is fed by
+# whoever publishes to it (our host). Authorization is still enforced globally by
+# the HTTP auth hook above, so this catch-all does not weaken access control.
+paths:
+  all_others:
+    source: publisher

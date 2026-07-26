@@ -51,9 +51,9 @@ public class LiveStreamService {
 
     /** External media-server endpoints. Defaults are placeholders — point these at
      *  your RTMP/WebRTC ingest and HLS/WebRTC playback origins. */
-    @Value("${app.streaming.ingest-base:rtmp://ingest.local/live}")
+    @Value("${app.streaming.ingest-base:rtmp://localhost:1935}")
     private String ingestBase;
-    @Value("${app.streaming.playback-base:https://play.local/live}")
+    @Value("${app.streaming.playback-base:http://localhost:8888}")
     private String playbackBase;
 
     /** Web origin the share links point at (frontend routes /live/{id}). */
@@ -171,6 +171,58 @@ public class LiveStreamService {
         return toResponse(s, s.getHostId().equals(userId));
     }
 
+    // ── Media-server authorization ───────────────────────────────────────────────
+
+    /**
+     * Called by {@code MediaAuthController} for every publish/read the media server
+     * (MediaMTX) attempts. The media path is the stream id.
+     * <ul>
+     *   <li><b>publish</b> — allowed only for a LIVE stream when the caller presents
+     *       the stream's secret {@code streamKey} (keeps the ingest host-only).</li>
+     *   <li><b>read / playback</b> — public HLS playback: allowed for any LIVE stream.</li>
+     * </ul>
+     * Any unknown path, ended stream, wrong key, or unexpected action is denied.
+     */
+    @Transactional(readOnly = true)
+    public boolean authorizeMediaAccess(String action, String path, String password, String query) {
+        LiveStream s = pathToStream(path);
+        if (s == null) return false;
+        boolean live = s.getStatus() == LiveStreamStatus.LIVE;
+        return switch (action == null ? "" : action) {
+            case "publish" -> live && streamKeyMatches(s, password, query);
+            case "read", "playback" -> live;
+            default -> false;
+        };
+    }
+
+    private LiveStream pathToStream(String path) {
+        if (!StringUtils.hasText(path)) return null;
+        try {
+            return streamRepo.findById(UUID.fromString(path.trim())).orElse(null);
+        } catch (IllegalArgumentException notAUuid) {
+            return null; // paths that aren't a stream id are never authorized
+        }
+    }
+
+    /** The publish credential is the streamKey; MediaMTX puts it in `password`,
+     *  falling back to the raw `?pass=` query param. Compared in constant time. */
+    private boolean streamKeyMatches(LiveStream s, String password, String query) {
+        String provided = StringUtils.hasText(password) ? password : queryParam(query, "pass");
+        if (provided == null || s.getStreamKey() == null) return false;
+        return java.security.MessageDigest.isEqual(
+                provided.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                s.getStreamKey().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static String queryParam(String query, String name) {
+        if (!StringUtils.hasText(query)) return null;
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).equals(name)) return pair.substring(eq + 1);
+        }
+        return null;
+    }
+
     // ── internals ──────────────────────────────────────────────────────────────
 
     private void broadcastViewer(LiveStream s, List<UUID> activeViewers, UUID userId, String change) {
@@ -203,8 +255,15 @@ public class LiveStreamService {
     }
 
     private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest) {
-        String playbackUrl = playbackBase + "/" + s.getId() + ".m3u8";
-        String ingestUrl = includeIngest ? ingestBase + "/" + s.getStreamKey() : null;
+        // Publish and playback share the public stream-id path. Playback (HLS) is
+        // public; the ingest URL additionally carries the secret streamKey as an
+        // RTMP publish credential (?pass=), which the media server forwards to the
+        // media-auth hook (authorizeMediaAccess) — so only the host who holds this
+        // URL can publish, while the ingest URL itself stays host-only.
+        String playbackUrl = playbackBase + "/" + s.getId() + "/index.m3u8";
+        String ingestUrl = includeIngest
+                ? ingestBase + "/" + s.getId() + "?user=publisher&pass=" + s.getStreamKey()
+                : null;
         String shareUrl = ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/live/" + s.getId());
         return new LiveStreamResponse(s.getId(), s.getHostId(), s.getTitle(), s.getDescription(),
                 s.getStatus().name(), playbackUrl, ingestUrl, s.getViewerCount(),
