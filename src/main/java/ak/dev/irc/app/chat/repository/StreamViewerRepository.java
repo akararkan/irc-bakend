@@ -29,4 +29,10 @@ public interface StreamViewerRepository extends JpaRepository<StreamViewer, UUID
     @Query("UPDATE StreamViewer v SET v.active = false, v.leftAt = CURRENT_TIMESTAMP " +
            "WHERE v.streamId = :sid AND v.active = true")
     int deactivateAll(@Param("sid") UUID streamId);
+
+    /** Purge every presence row for a stream — used when the stream is deleted.
+     *  Indexed by stream_id, so O(rows-for-this-stream). */
+    @Modifying
+    @Query("DELETE FROM StreamViewer v WHERE v.streamId = :sid")
+    int deleteByStreamId(@Param("sid") UUID streamId);
 }

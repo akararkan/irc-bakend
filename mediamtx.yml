@@ -1,30 +1,88 @@
 ###############################################
 # MediaMTX — media plane for the IRC live-streaming feature.
-# RTMP ingest (:1935) → HLS playback (:8888).
 #
-# Authorization is delegated to the backend: MediaMTX POSTs every publish/read
-# to the app's media-auth hook, which authorizes a *publish* only when it carries
-# the stream's secret streamKey (so the ingest URL stays host-only) and allows
-# *reads* (HLS playback) for any LIVE stream. See MediaAuthController /
-# LiveStreamService.authorizeMediaAccess in the backend.
+# Two ways to go live, one way (×2) to watch:
+#   • WHIP  (WebRTC, :8889)  — the BROWSER camera publishes here ("Go Live" in the
+#                              app). This is how TikTok/YouTube/Facebook go live from
+#                              the app: browsers CANNOT publish RTMP, only WebRTC.
+#   • RTMP  (:1935)          — OBS / ffmpeg / desktop encoders publish here.
+#   • WHEP  (WebRTC, :8889)  — viewers watch with sub-second latency (the "live" feel).
+#   • HLS   (:8888)          — viewers watch with higher latency but universal reach.
+#
+# Authorization is delegated to the backend: MediaMTX POSTs every publish/read to the
+# app's media-auth hook, which authorizes a *publish* (WHIP or RTMP) only when it
+# carries the stream's secret streamKey (?pass=), and allows *reads* (WHEP/HLS) for
+# any LIVE stream. See MediaAuthController / LiveStreamService.authorizeMediaAccess.
 
 logLevel: info
 
-# Protocols: RTMP in, HLS out. Everything else off.
+# ── Ingest / playback protocols ──────────────────────────────────────────────
 rtsp: no
-rtmp: yes
-webrtc: no
+rtmp: yes            # RTMP ingest (:1935) — OBS / ffmpeg
 srt: no
 
-# HLS: classic MPEG-TS variant (plays via hls.js everywhere, natively in Safari);
-# CORS open so the browser can read the manifest/segments cross-origin.
+# WebRTC (:8889) — WHIP publish (browser camera) + WHEP playback (low latency).
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no                 # plain HTTP for local dev; put TLS in front for prod
+webrtcAllowOrigins: ["*"]            # browser reads the WHIP/WHEP endpoint cross-origin
+# ICE: advertise only `localhost` and mux media over one published UDP port, so WebRTC
+# works through Docker Desktop's NAT (the container's own 172.x IPs are unreachable from
+# the host and would just waste ICE time). In production, replace `localhost` with the
+# server's public IP/hostname and publish 8189/udp on the firewall.
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: [localhost]
+# How long MediaMTX waits, after the peer connection is up, to gather the
+# session's track list before freezing it. The DEFAULT 2s loses a race on a COLD
+# browser camera: getUserMedia resolves when the device opens, but Chrome's first
+# ENCODED H264 frame lands later — miss the window and the session is frozen as
+# audio-only, so every viewer AND the recorder get sound with no picture (a black
+# download). 10s comfortably covers cold-camera encoder start-up. Verified: at 2s
+# a cold camera registers ["Opus"] only; at 10s it registers ["Opus","H264"].
+webrtcTrackGatherTimeout: 10s
+
+# HLS (:8888) — fMP4/CMAF so BOTH sources remux cleanly: RTMP (H264+AAC) and WHIP
+# (H264+Opus). The old `mpegts` variant cannot carry Opus, so browser-published audio
+# would be dropped. hls.js plays fMP4 everywhere; Safari plays it natively. CORS open
+# so the browser can read the manifest/segments cross-origin.
 hls: yes
-hlsVariant: mpegts
+hlsVariant: fmp4
 hlsAllowOrigins: ["*"]
 
-# HTTP authentication: every publish/read decision goes to the backend. The
-# {secret} path segment must match app.streaming.auth-secret so only our media
-# server can call the hook. `host.docker.internal` = the host running the app.
+# ── Control API ──────────────────────────────────────────────────────────────
+# Runtime config API (:9997), used by the backend (MediaControlClient) to enable
+# recording PER STREAM. Excluded from the media-auth hook below (authHTTPExclude:
+# action: api) so the app can call it without a stream key. Trusted on the network
+# — localhost in dev; firewall it (do NOT publish 9997 publicly) in prod.
+api: yes
+apiAddress: :9997
+
+# ── Recording (per-path opt-in) ──────────────────────────────────────────────
+# record: no here means NOTHING is recorded by default — only streams the host
+# opted into get a per-path config with record: true (POST /v3/config/paths/add
+# from MediaControlClient), so only those ever touch disk (no wasted writes, no
+# delete-race orphans, no privacy window). When a path IS recording it uses the
+# settings below: fMP4 (.mp4) under /recordings/<path>/ — <path> is the stream id.
+# The bind mount (docker-compose.yml) lands files on the host, so the backend
+# serves the owner a download straight from disk (RecordingStorageService), no
+# media round trip. A long segment window keeps a typical broadcast in a single
+# downloadable file; recordDeleteAfter: 0s = never auto-delete (the app owns
+# retention — on stream/recording delete). These live under pathDefaults (the
+# top-level record* keys are deprecated in MediaMTX ≥1.x); every path — including
+# the ones the Control API adds — inherits them unless it overrides record.
+pathDefaults:
+  record: no
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 24h
+  recordDeleteAfter: 0s
+
+# ── Backend authorization hook ───────────────────────────────────────────────
+# Every publish/read decision goes to the backend. The {secret} path segment must
+# match app.streaming.auth-secret so only our media server can call the hook.
+# `host.docker.internal` = the host running the app.
 authMethod: http
 authHTTPAddress: http://host.docker.internal:8080/internal/media/auth/dev-media-auth-secret
 authHTTPExclude:
@@ -33,7 +91,7 @@ authHTTPExclude:
   - action: pprof
 
 # Accept any path name (the stream id). `source: publisher` = the path is fed by
-# whoever publishes to it (our host). Authorization is still enforced globally by
+# whoever publishes to it (WHIP or RTMP). Authorization is still enforced globally by
 # the HTTP auth hook above, so this catch-all does not weaken access control.
 paths:
   all_others:

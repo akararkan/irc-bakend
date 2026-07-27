@@ -67,20 +67,29 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
 
-  # Live-streaming media plane: RTMP in (:1935), HLS out (:8888).
-  # Serves HLS with Access-Control-Allow-Origin: * so the browser can read the
-  # .m3u8/.ts cross-origin. Config (incl. the backend HTTP-auth hook that keeps
-  # ingest host-only) lives in ./mediamtx.yml. extra_hosts lets the container
-  # reach the app on the host at host.docker.internal for the auth callback.
+  # Live-streaming media plane. Browsers go live over WebRTC/WHIP (:8889) — they
+  # cannot publish RTMP — while OBS/ffmpeg use RTMP (:1935). Viewers watch over WHEP
+  # (:8889, low latency) or HLS (:8888). All HTTP surfaces send CORS '*' so the
+  # browser can reach them cross-origin. Config (incl. the backend HTTP-auth hook
+  # that keeps ingest host-only) lives in ./mediamtx.yml. extra_hosts lets the
+  # container reach the app on the host at host.docker.internal for the auth callback.
   mediamtx:
     image: bluenviron/mediamtx:latest
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+      # Recordings land on the host so the backend (running on the host) serves
+      # the owner a download straight from disk. Keep this path in sync with
+      # app.streaming.recordings-dir (default ./recordings).
+      - ./recordings:/recordings
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "1935:1935"   # RTMP ingest  (host publishes here, gated by streamKey)
-      - "8888:8888"   # HLS playback (viewers read here)
+      - "1935:1935"       # RTMP ingest    (OBS/ffmpeg publish, gated by streamKey)
+      - "8889:8889"       # WebRTC WHIP/WHEP (browser publish + low-latency playback)
+      - "8189:8189/udp"   # WebRTC ICE/media (UDP mux for WHIP/WHEP)
+      - "8888:8888"       # HLS playback    (viewers read here)
+      - "127.0.0.1:9997:9997"  # Control API — backend enables per-stream recording.
+                               # Bound to localhost only: never expose it publicly.
 
 volumes:
   db-data:

@@ -186,6 +186,19 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     List<User> findActiveByIdIn(@Param("ids") Collection<UUID> ids);
 
     /**
+     * Batch fetch active users <em>with their profile eagerly joined</em> — one
+     * round trip that also carries the avatar, so identity enrichment (live-stream
+     * host row, watch page) never triggers an N+1 on the LAZY profile.
+     */
+    @Query("""
+        SELECT u FROM User u
+        LEFT JOIN FETCH u.profile
+        WHERE u.id IN :ids
+          AND u.deletedAt IS NULL
+        """)
+    List<User> findActiveWithProfileByIdIn(@Param("ids") Collection<UUID> ids);
+
+    /**
      * Slim projection for the email pipeline — just enough fields to decide
      * whether to send and where. Avoids loading the full User entity (with
      * all its {@code @ManyToOne}/{@code @OneToMany} fields and the audit

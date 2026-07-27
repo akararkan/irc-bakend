@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.entity;
 
 import ak.dev.irc.app.chat.enums.LiveStreamStatus;
+import ak.dev.irc.app.chat.enums.RecordingStatus;
 import ak.dev.irc.app.common.BaseAuditEntity;
 import jakarta.persistence.*;
 import lombok.*;
@@ -65,4 +66,22 @@ public class LiveStream extends BaseAuditEntity {
 
     @Column(name = "ended_at")
     private Instant endedAt;
+
+    // ── Recording ────────────────────────────────────────────────────────────
+    // The host chooses at go-live whether the broadcast is recorded. When on,
+    // MediaMTX writes the media to disk (recordings-dir/<id>/) and the owner can
+    // download it after the stream ends. recordingStatus tracks the lifecycle.
+
+    /** Whether the host asked for this stream to be recorded. Defaulted with a
+     *  DB default so adding the column to an existing table doesn't need a backfill. */
+    @Column(name = "recording_enabled", nullable = false, columnDefinition = "boolean default false")
+    @Builder.Default
+    private boolean recordingEnabled = false;
+
+    /** On-disk recording lifecycle. Nullable so the column can be added to an
+     *  existing {@code live_streams} table without a not-null backfill. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recording_status", length = 12)
+    @Builder.Default
+    private RecordingStatus recordingStatus = RecordingStatus.DISABLED;
 }

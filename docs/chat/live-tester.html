@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>IRC Live — WHIP/WHEP tester</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:#0b0e14; color:#e6e9ef; }
+  header { padding:18px 22px; border-bottom:1px solid #1c2230; background:#0f1420; }
+  header h1 { margin:0; font-size:18px; }
+  header p  { margin:4px 0 0; color:#8b94a7; font-size:13px; }
+  main { max-width:1080px; margin:0 auto; padding:22px; display:grid; gap:22px;
+         grid-template-columns:1fr 1fr; }
+  @media (max-width:840px){ main{ grid-template-columns:1fr; } }
+  .card { background:#0f1420; border:1px solid #1c2230; border-radius:14px; padding:18px; }
+  .card h2 { margin:0 0 14px; font-size:15px; letter-spacing:.02em; }
+  label { display:block; font-size:12px; color:#8b94a7; margin:10px 0 4px; }
+  input { width:100%; padding:9px 11px; background:#0b0e14; border:1px solid #26304a;
+          border-radius:9px; color:#e6e9ef; font-size:14px; }
+  button { cursor:pointer; border:0; border-radius:10px; padding:11px 16px; font-size:14px;
+           font-weight:600; color:#04121f; background:#39d0ff; margin-top:14px; }
+  button.secondary { background:#26304a; color:#e6e9ef; }
+  button.danger { background:#ff5470; color:#1a0208; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  video { width:100%; border-radius:12px; background:#000; aspect-ratio:16/9; margin-top:12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > button { flex:1; }
+  .log { margin-top:12px; font:12px/1.5 ui-monospace,Menlo,monospace; color:#9fb0c9;
+         background:#0b0e14; border:1px solid #1c2230; border-radius:9px; padding:10px;
+         max-height:150px; overflow:auto; white-space:pre-wrap; }
+  .pill { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+          background:#12331f; color:#5be59a; margin-left:8px; }
+  .pill.off { background:#331216; color:#ff8b9c; }
+  a { color:#39d0ff; word-break:break-all; }
+  .links { font-size:12px; margin-top:10px; }
+  .links div { margin:4px 0; color:#8b94a7; }
+</style>
+</head>
+<body>
+<header>
+  <h1>IRC Live — WHIP / WHEP tester</h1>
+  <p>Go live from your browser camera (WebRTC/WHIP) and watch it back (WebRTC/WHEP, with HLS fallback) — the same path TikTok / YouTube / Facebook use to broadcast from the app.</p>
+</header>
+
+<main>
+  <!-- ─────────────── BROADCAST ─────────────── -->
+  <section class="card">
+    <h2>📡 Broadcast <span id="bstate" class="pill off">idle</span></h2>
+
+    <label>API base</label>
+    <input id="api" value="http://localhost:8080/api/v1" />
+    <div class="row">
+      <div style="flex:1"><label>Username (or email)</label><input id="user" placeholder="your login" /></div>
+      <div style="flex:1"><label>Password</label><input id="pass" type="password" placeholder="password" /></div>
+    </div>
+    <label style="margin-top:6px"><input type="checkbox" id="reg" style="width:auto;vertical-align:middle" /> register this as a brand-new test user</label>
+
+    <label>Stream title</label>
+    <input id="title" value="My live stream" />
+
+    <div class="row">
+      <button id="golive">Go Live 🔴</button>
+      <button id="endlive" class="danger" disabled>End</button>
+    </div>
+
+    <video id="preview" autoplay muted playsinline></video>
+    <div class="links" id="blinks"></div>
+    <div class="log" id="blog"></div>
+  </section>
+
+  <!-- ─────────────── WATCH ─────────────── -->
+  <section class="card">
+    <h2>👀 Watch <span id="wstate" class="pill off">idle</span></h2>
+
+    <label>Stream ID (from the broadcast side, or paste one)</label>
+    <input id="wid" placeholder="e.g. 2d19d719-625d-4695-be12-3e7d88214b5a" />
+    <label>WebRTC base / HLS base</label>
+    <div class="row">
+      <div style="flex:1"><input id="wrtc" value="http://localhost:8889" /></div>
+      <div style="flex:1"><input id="whls" value="http://localhost:8888" /></div>
+    </div>
+
+    <div class="row">
+      <button id="watchwhep">Watch (WHEP · low latency)</button>
+      <button id="watchhls" class="secondary">Watch (HLS)</button>
+      <button id="stopwatch" class="secondary" disabled>Stop</button>
+    </div>
+
+    <video id="player" autoplay controls playsinline></video>
+    <div class="log" id="wlog"></div>
+  </section>
+</main>
+
+<script>
+// ── tiny helpers ────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const log = (el, m) => { const t = new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${m}\n`; el.scrollTop = el.scrollHeight; };
+const setPill = (el, on, txt) => { el.textContent = txt; el.className = 'pill' + (on ? '' : ' off'); };
+
+async function api(base, path, body, token) {
+  const r = await fetch(base + path, {
+    method: 'POST', headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: 'Bearer ' + token } : {})
+    }, body: JSON.stringify(body)
+  });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`${path} → ${r.status} ${txt}`);
+  return txt ? JSON.parse(txt) : {};
+}
+
+// Wait for ICE gathering to finish, then we POST the full SDP (non-trickle WHIP/WHEP).
+function iceComplete(pc) {
+  return new Promise(res => {
+    if (pc.iceGatheringState === 'complete') return res();
+    const check = () => { if (pc.iceGatheringState === 'complete') {
+      pc.removeEventListener('icegatheringstatechange', check); res(); } };
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(res, 1500); // localhost gathers instantly; don't hang
+  });
+}
+
+// Prefer H264 on the video sender so the HLS remux works too (WHEP is codec-agnostic).
+function preferH264(pc) {
+  const tx = pc.getTransceivers().find(t => t.sender && t.sender.track && t.sender.track.kind === 'video');
+  if (!tx || !tx.setCodecPreferences || !RTCRtpSender.getCapabilities) return;
+  const caps = RTCRtpSender.getCapabilities('video');
+  if (!caps) return;
+  const h264 = caps.codecs.filter(c => /H264/i.test(c.mimeType));
+  const rest = caps.codecs.filter(c => !/H264/i.test(c.mimeType));
+  if (h264.length) tx.setCodecPreferences([...h264, ...rest]);
+}
+
+// ── BROADCAST: publish the camera via WHIP ──────────────────────────────────
+let bpc, bstream, current;
+$('golive').onclick = async () => {
+  const blog = $('blog'); $('golive').disabled = true;
+  try {
+    const base = $('api').value.trim();
+    // 1) auth
+    let auth;
+    if ($('reg').checked) {
+      const u = $('user').value.trim() || ('live_' + Date.now());
+      auth = await api(base, '/auth/register', {
+        fname: 'Live', lname: 'Test', username: u,
+        email: u.includes('@') ? u : u + '@example.com', password: $('pass').value || 'Password123!'
+      });
+      log(blog, 'registered ' + u);
+    } else {
+      auth = await api(base, '/auth/login', { username: $('user').value.trim(), password: $('pass').value });
+      log(blog, 'logged in');
+    }
+    const token = auth.accessToken;
+
+    // 2) go live → get whipUrl + playback urls
+    const s = await api(base, '/streams', { title: $('title').value.trim() || 'My live stream' }, token);
+    current = s;
+    log(blog, 'stream created: ' + s.id);
+    $('blinks').innerHTML =
+      `<div>Stream ID: <b style="color:#e6e9ef">${s.id}</b></div>` +
+      `<div>WHEP: <a href="#">${s.whepUrl}</a></div>` +
+      `<div>HLS: <a href="${s.playbackUrl}" target="_blank">${s.playbackUrl}</a></div>` +
+      `<div>Share: <a href="${s.shareUrl}" target="_blank">${s.shareUrl}</a></div>`;
+    $('wid').value = s.id; // wire the Watch panel to this stream
+
+    // 3) camera + mic
+    bstream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: true });
+    $('preview').srcObject = bstream;
+
+    // 4) WHIP: offer → POST → answer
+    bpc = new RTCPeerConnection();
+    bstream.getTracks().forEach(t => bpc.addTrack(t, bstream));
+    preferH264(bpc);
+    await bpc.setLocalDescription(await bpc.createOffer());
+    await iceComplete(bpc);
+    const res = await fetch(s.whipUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: bpc.localDescription.sdp
+    });
+    if (!res.ok) throw new Error('WHIP ' + res.status + ' ' + await res.text());
+    await bpc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+    bpc.onconnectionstatechange = () => {
+      log(blog, 'pc: ' + bpc.connectionState);
+      setPill($('bstate'), bpc.connectionState === 'connected', bpc.connectionState);
+    };
+    log(blog, '🔴 LIVE — publishing camera via WHIP');
+    $('endlive').disabled = false;
+    window._token = token;
+  } catch (e) {
+    log(blog, '❌ ' + e.message); $('golive').disabled = false;
+  }
+};
+
+$('endlive').onclick = async () => {
+  try {
+    if (current && window._token)
+      await fetch($('api').value.trim() + '/streams/' + current.id + '/end',
+        { method: 'POST', headers: { Authorization: 'Bearer ' + window._token } });
+  } catch (_) {}
+  if (bpc) bpc.close();
+  if (bstream) bstream.getTracks().forEach(t => t.stop());
+  $('preview').srcObject = null; setPill($('bstate'), false, 'ended');
+  $('golive').disabled = false; $('endlive').disabled = true;
+  log($('blog'), 'stream ended');
+};
+
+// ── WATCH: WHEP (WebRTC, low latency) ───────────────────────────────────────
+let wpc, whls;
+function stopWatch() {
+  if (wpc) { wpc.close(); wpc = null; }
+  if (whls) { whls.destroy(); whls = null; }
+  $('player').srcObject = null; $('player').removeAttribute('src'); $('player').load();
+  setPill($('wstate'), false, 'idle'); $('stopwatch').disabled = true;
+}
+$('stopwatch').onclick = stopWatch;
+
+$('watchwhep').onclick = async () => {
+  stopWatch(); const wlog = $('wlog');
+  try {
+    const id = $('wid').value.trim();
+    const url = $('wrtc').value.trim() + '/' + id + '/whep';
+    wpc = new RTCPeerConnection();
+    wpc.addTransceiver('video', { direction: 'recvonly' });
+    wpc.addTransceiver('audio', { direction: 'recvonly' });
+    wpc.ontrack = e => { $('player').srcObject = e.streams[0]; };
+    wpc.onconnectionstatechange = () => {
+      log(wlog, 'pc: ' + wpc.connectionState);
+      setPill($('wstate'), wpc.connectionState === 'connected', 'WHEP ' + wpc.connectionState);
+    };
+    await wpc.setLocalDescription(await wpc.createOffer());
+    await iceComplete(wpc);
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: wpc.localDescription.sdp });
+    if (!res.ok) throw new Error('WHEP ' + res.status + ' ' + await res.text());
+    await wpc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+    log(wlog, 'watching via WHEP (low latency)');
+    $('stopwatch').disabled = false;
+  } catch (e) { log(wlog, '❌ ' + e.message); }
+};
+
+// ── WATCH: HLS (fallback / scale) ───────────────────────────────────────────
+$('watchhls').onclick = () => {
+  stopWatch(); const wlog = $('wlog'); const v = $('player');
+  const id = $('wid').value.trim();
+  const src = $('whls').value.trim() + '/' + id + '/index.m3u8';
+  if (v.canPlayType('application/vnd.apple.mpegurl')) {           // Safari native
+    v.src = src; setPill($('wstate'), true, 'HLS (native)');
+    log(wlog, 'watching via native HLS'); $('stopwatch').disabled = false; return;
+  }
+  // hls.js for everything else
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+  s.onload = () => {
+    if (!window.Hls || !Hls.isSupported()) { log(wlog, 'HLS not supported here'); return; }
+    whls = new Hls({ lowLatencyMode: true });
+    whls.on(Hls.Events.ERROR, (_, d) => log(wlog, 'hls: ' + d.details));
+    whls.loadSource(src); whls.attachMedia(v);
+    setPill($('wstate'), true, 'HLS'); log(wlog, 'watching via hls.js'); $('stopwatch').disabled = false;
+  };
+  s.onerror = () => log(wlog, 'could not load hls.js (offline?) — use WHEP instead');
+  document.head.appendChild(s);
+};
+</script>
+</body>
+</html>

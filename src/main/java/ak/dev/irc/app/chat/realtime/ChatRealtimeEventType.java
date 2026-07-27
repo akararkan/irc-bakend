@@ -38,6 +38,7 @@ public enum ChatRealtimeEventType {
     // Live streaming
     STREAM_STARTED("stream.started"),
     STREAM_ENDED("stream.ended"),
+    STREAM_UPDATED("stream.updated"),
     STREAM_VIEWER("stream.viewer"),
     STREAM_CHAT("stream.chat");
 

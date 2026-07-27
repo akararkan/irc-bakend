@@ -13,4 +13,8 @@ public class StartStreamRequest {
 
     @Size(max = 500)
     private String description;
+
+    /** Record this broadcast to disk so the host can download it afterwards.
+     *  Optional; defaults to {@code false} (opt-in) when absent. */
+    private Boolean record;
 }

@@ -271,7 +271,18 @@ public enum NotificationKind {
     CHANNEL_JOIN_REQUEST (PrefCategory.SOCIAL, true,  false),
 
     /** Your join request was approved — you're in. */
-    CHANNEL_JOIN_APPROVED(PrefCategory.SOCIAL, false, false);
+    CHANNEL_JOIN_APPROVED(PrefCategory.SOCIAL, false, false),
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  LIVE STREAMING
+    // ────────────────────────────────────────────────────────────────────────
+
+    /** A user you follow went live. Fanned out per follower from
+     *  {@code LiveStreamFanoutService} when a stream starts. In-app + realtime
+     *  only ({@code emailEligible=false}) — emailing every follower on each
+     *  go-live would spam, same reasoning as {@link #POST_NEW}. One row per
+     *  go-live via the {@code STREAM_STARTED:{streamId}} group key. */
+    STREAM_STARTED       (PrefCategory.SOCIAL, false, false);
 
     /** Maps to the corresponding {@code user.email*Enabled} toggle. */
     public enum PrefCategory { SOCIAL, MENTIONS, SYSTEM, TRENDING }

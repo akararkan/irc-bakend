@@ -191,7 +191,10 @@ irc:
   doi:
     prefix: "10.12345"
 
-  base-url: "https://irc.example.com"
+  # The FRONTEND origin that share links (live streams, channels, …) point at —
+  # NOT the API. Dev default targets the Vite dev server; override IRC_BASE_URL to
+  # the real web origin in prod. A wrong value here mints dead share links.
+  base-url: ${IRC_BASE_URL:http://localhost:5173}
 
   # Notification email branding + reply-to.
   email:
@@ -235,18 +238,32 @@ app:
 
   # Live-streaming media plane. The app never proxies audio/video — it only hands
   # clients these origins and authorizes the media server's publish/read calls.
-  # Local dev: the `mediamtx` service in docker-compose.yml (RTMP :1935, HLS :8888,
-  # CORS '*'). Publish + playback share the public stream-id path; the ingest URL
-  # additionally carries the secret streamKey (?pass=), which the media server
-  # forwards to the auth hook — so only the host can publish. See
-  # MediaAuthController + LiveStreamService.authorizeMediaAccess.
+  # Local dev: the `mediamtx` service in docker-compose.yml. Four surfaces:
+  #   webrtc-base  (:8889) — browser camera publishes via WHIP; viewers watch via WHEP
+  #   ingest-base  (:1935) — OBS/ffmpeg publish via RTMP
+  #   playback-base(:8888) — viewers watch via HLS
+  # Publish + playback share the public stream-id path; the publish URLs (WHIP/RTMP)
+  # additionally carry the secret streamKey (?pass=), which the media server forwards
+  # to the auth hook — so only the host can publish. See MediaAuthController +
+  # LiveStreamService.authorizeMediaAccess.
   streaming:
+    webrtc-base: ${STREAM_WEBRTC_BASE:http://localhost:8889}
     ingest-base: ${STREAM_INGEST_BASE:rtmp://localhost:1935}
     playback-base: ${STREAM_PLAYBACK_BASE:http://localhost:8888}
     # Shared secret in the media-auth hook URL — MediaMTX (mediamtx.yml
     # authHTTPAddress) MUST use the same value. Keep the two in sync; override
     # both in production.
     auth-secret: ${STREAM_AUTH_SECRET:dev-media-auth-secret}
+    # Where MediaMTX writes recordings (mediamtx.yml recordPath → /recordings,
+    # bind-mounted here). The backend reads/serves owner downloads from this dir.
+    recordings-dir: ${STREAM_RECORDINGS_DIR:./recordings}
+    # MediaMTX Control API (mediamtx.yml api: yes → :9997, published to localhost).
+    # The backend calls it to enable recording PER STREAM (only opted-in streams
+    # ever touch disk). Keep this reachable only from the app, never public.
+    control-api-base: ${STREAM_CONTROL_API_BASE:http://localhost:9997}
+    recording:
+      # Default when a go-live request omits `record`. Opt-in by default.
+      default-on: ${STREAM_RECORDING_DEFAULT_ON:false}
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
