@@ -2,9 +2,14 @@
 
 Go live to an audience over the existing SSE stream. The server owns the **stream
 lifecycle**, a **live viewer registry** (drives the viewer count + presence),
-**discovery**, and **live chat** — the audio/video itself is ingested to and
-served from an **external media server** (MediaMTX) addressed by a per-stream
-secret `streamKey`. The media never flows through this app.
+**discovery**, **live chat**, a **multi-guest stage** (co-hosts who come up and
+talk beside the host), and live **reactions + gifts** — the audio/video itself is
+ingested to and served from an **external media server** (MediaMTX) addressed by a
+per-stream secret `streamKey`. The media never flows through this app.
+
+> **Multi-guest / co-hosts, reactions and gifts** live in their own section below:
+> [Multi-guest stage, reactions & gifts](#multi-guest-stage-reactions--gifts).
+> Frontend build guide: [`live-multiguest-frontend.md`](./live-multiguest-frontend.md).
 
 ## The media plane — four surfaces, one stream-id path
 
@@ -204,6 +209,156 @@ per-stream fan-out storm), so a rail's viewer counts are approximate between
 refreshes by design; the exact count is live on the watch page (a participant).
 
 `LiveChatMessage`: `{ "streamId", "userId", "username", "text", "sentAt" }`.
+
+## Multi-guest stage, reactions & gifts
+
+The host can bring viewers **up on stage** to talk beside them (the TikTok
+"multi-guest" experience), mute them, and take them down; anyone watching can
+**tap reactions** and send **symbolic gifts**. It all rides the same per-user SSE
+stream and the same MediaMTX media plane. Frontend build guide:
+[`live-multiguest-frontend.md`](./live-multiguest-frontend.md).
+
+### The media model — many publishers, one audience
+
+Single-host streaming has one publisher (the host, on the stream-id path). The
+stage adds **more publishers**: each active guest publishes their own camera to
+**their own media path** — a fresh id minted when they come up, gated by their
+**own** secret key (never the host's stream key). Everyone (host, other guests,
+viewers) then **subscribes to every active publisher**:
+
+| Who | Publishes to (WHIP, secret) | Everyone watches (WHEP, public) |
+|---|---|---|
+| **Host** | `…/{streamId}/whip?pass={streamKey}` | `…/{streamId}/whep` |
+| **Guest** | `…/{publishPath}/whip?pass={publishKey}` | `…/{publishPath}/whep` |
+
+So a room with the host + 3 guests is **4 publishers and 4 WHEP subscriptions**
+per viewer. The guest paths are ordinary MediaMTX paths (the `all_others`
+catch-all), authorized by the same auth hook: `LiveStreamService.authorizeMediaAccess`
+now also resolves a **guest** path (`authorizeGuestMediaAccess`) — a **publish** is
+allowed only for an `ACTIVE` guest of a LIVE stream presenting their matching
+`publishKey`; **reads** are public while the parent stream is LIVE. **Guests are
+never recorded** — only the host path opts into recording, so the downloadable file
+is still the host's broadcast (guest paths inherit `record: no`).
+
+Stage size is capped by `app.streaming.stage.max-guests` (default **6**; the host
+is always on and does not count).
+
+### The stage lifecycle
+
+```
+viewer ──raise hand──▶ REQUESTED ──host approve──▶ ACTIVE ──(step down / removed / stream ends)──▶ REMOVED
+host ──invite──▶ INVITED ──viewer accept──▶ ACTIVE
+              (host deny / viewer decline) ──▶ DECLINED
+```
+
+Only an `ACTIVE` guest holds live publish credentials and counts against the cap.
+
+### Endpoints (all under `/api/v1`, `isAuthenticated()`)
+
+| Method & path | Body | Who | Does |
+|---|---|---|---|
+| `GET /streams/{id}/stage` | — | anyone | Current roster (host + active guests). → `StageState` |
+| `POST /streams/{id}/stage/requests` | — | viewer | **Raise your hand** to come up. Host gets `stream.stage.request`. → `StageMember` (you) |
+| `GET /streams/{id}/stage/requests` | — | **host** | Pending hand-raises (the request queue). → `[StageMember]` |
+| `POST /streams/{id}/stage/requests/{userId}/approve` | — | **host** | Approve a hand-raise → guest goes up. → `StageMember` (public) |
+| `POST /streams/{id}/stage/requests/{userId}/deny` | — | **host** | Deny a hand-raise. → `204` |
+| `POST /streams/{id}/stage/invites/{userId}` | — | **host** | **Invite** a viewer up. They get `stream.stage.invite`. → `204` |
+| `POST /streams/{id}/stage/accept` | — | invitee | Accept an invite → you go up. **Response carries YOUR publish creds.** → `StageMember` (with `whipUrl`/`publishKey`) |
+| `POST /streams/{id}/stage/decline` | — | invitee | Decline an invite. → `204` |
+| `POST /streams/{id}/stage/leave` | — | guest | **Step down** off the stage yourself. → `204` |
+| `DELETE /streams/{id}/stage/{userId}` | — | **host** | **Take a guest down** (revokes creds + kicks their media session). → `204` |
+| `POST /streams/{id}/stage/{userId}/mute` | — | **host** | **Mute** a guest for everyone. → `204` |
+| `POST /streams/{id}/stage/{userId}/unmute` | — | **host** | **Unmute** a guest. → `204` |
+| `POST /streams/{id}/reactions` | `{ "type": "LIKE" }` | watcher | Tap a floating reaction (`type` optional → `LIKE`). Broadcast, never stored. → `204` |
+| `GET /streams/gifts/catalog` | — | anyone | The gift catalogue for the picker. → `[GiftCatalogEntry]` |
+| `POST /streams/{id}/gifts` | `{ "giftId": "ROSE" }` | watcher | Send a **symbolic** gift. → `StreamGiftEvent` (incl. your new total) |
+| `GET /streams/{id}/gifts/top?limit=10` | — | anyone | **Top supporters** leaderboard, biggest first. → `[GiftSupporter]` |
+
+To send a reaction or gift you must be the host or a joined viewer; the stage
+mutations enforce host-only (`403 ACCESS_FORBIDDEN`) or membership as noted.
+Reactions are rate-limited 30/10s, gifts 10/10s, hand-raises 5/30s.
+
+### Mute is authoritative, not just the host's speaker
+
+There is **no per-track server-side mute** at this layer. A host mute is a
+`muted` flag on the guest that rides **every `stream.stage` roster broadcast** — so
+**every client** (viewers, the guest themselves, other guests) mutes that guest's
+audio locally. A muted guest is therefore silent for *everyone*, and even a client
+that ignores the flag is muted by everyone else. `DELETE …/stage/{userId}` is the
+hard stop: it flips the guest to `REMOVED` (so the auth hook denies any re-publish),
+best-effort **kicks** their live WebRTC session via the MediaMTX Control API, and
+sends them a `stream.stage.grant` with `status: REMOVED` so their own client tears
+its publisher down.
+
+### Credential visibility (important)
+
+A guest's `whipUrl` + `publishKey` are the secret **publish** credential. They are
+returned **only to that guest** — in the `accept` response and the private
+`stream.stage.grant` frame addressed to them — and are `null` (dropped by the
+global `non_null` inclusion) everywhere else: the roster (`stream.stage`), the
+request frame to the host, and the host's `approve` response all carry the
+**public** member view (`whepUrl` only). The `whepUrl` (subscribe) is safe for
+anyone.
+
+### Realtime events (multiplexed on `/messaging/stream`)
+
+| event | payload | delivered to |
+|---|---|---|
+| `stream.stage` | `stage` (`StageState`) | current viewers + host + active guests |
+| `stream.stage.request` | `stageMember` (the requester), `userId` | **host only** |
+| `stream.stage.invite` | `stageMember` (the host who invited), `userId` | **the invited viewer only** |
+| `stream.stage.grant` | `stageMember` (**with creds** when going up; `status: REMOVED` on revoke) | **that one guest only** |
+| `stream.reaction` | `streamReaction`, `userId` | current viewers + host + active guests |
+| `stream.gift` | `streamGift`, `userId` | current viewers + host + active guests |
+
+`stream.stage` is the whole panel — render the roster straight from `stage.members`
+(host first, then guests) and the "stage is full" state from
+`stage.guestCount >= stage.maxGuests`. A guest learns their own publish URL from
+`stream.stage.grant` (host-approved) or the `accept` response (they accepted an
+invite). `stream.ended` already tears the whole stage down — there is no separate
+"stage cleared" frame.
+
+### DTO shapes
+
+```json
+// StageState (GET /streams/{id}/stage, and stream.stage)
+{
+  "streamId": "<uuid>", "hostId": "<uuid>",
+  "guestCount": 2, "maxGuests": 6,
+  "members": [
+    { "streamId":"<uuid>", "userId":"<host>", "username":"alice", "displayName":"Alice Ng",
+      "avatarUrl":"https://…", "role":"HOST", "status":"ACTIVE", "muted":false,
+      "whepUrl":"http://localhost:8889/<streamId>/whep", "joinedAt":"…" },
+    { "streamId":"<uuid>", "userId":"<guest>", "username":"omar", "displayName":"Omar K",
+      "avatarUrl":"https://…", "role":"GUEST", "status":"ACTIVE", "muted":true,
+      "whepUrl":"http://localhost:8889/<publishPath>/whep", "joinedAt":"…" }
+    // public members omit whipUrl / publishKey
+  ]
+}
+
+// StageMember delivered privately to the guest (accept response / stream.stage.grant)
+// — same shape PLUS the secret publish credential:
+//   "whipUrl": "http://localhost:8889/<publishPath>/whip?pass=<publishKey>",
+//   "publishKey": "<publishKey>"
+
+// StreamReaction (stream.reaction)
+{ "streamId":"<uuid>", "userId":"<uuid>", "type":"LIKE", "sentAt":"…" }
+
+// StreamGiftEvent (POST /streams/{id}/gifts, and stream.gift)
+{ "streamId":"<uuid>", "senderId":"<uuid>", "senderUsername":"omar",
+  "senderAvatarUrl":"https://…", "giftId":"ROSE", "giftName":"Rose", "iconKey":"rose",
+  "coins":1, "senderTotalCoins":12, "sentAt":"…" }
+
+// GiftCatalogEntry (GET /streams/gifts/catalog)  ·  GiftSupporter (GET …/gifts/top)
+{ "id":"ROSE", "name":"Rose", "iconKey":"rose", "coins":1 }
+{ "userId":"<uuid>", "username":"omar", "displayName":"Omar K", "avatarUrl":"https://…",
+  "coins":12, "giftCount":5 }
+```
+
+Gifts are **symbolic** — `coins` is a ranking score for the "top supporters"
+board, never money; there is no wallet, purchase, or payout. The gift *animation*
+is ephemeral (broadcast only), but the per-sender coin **tally persists** so the
+leaderboard survives a reload and outlives the stream.
 
 ## Recording & management (owner-only)
 

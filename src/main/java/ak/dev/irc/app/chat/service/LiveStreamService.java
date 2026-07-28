@@ -7,14 +7,18 @@ import ak.dev.irc.app.chat.dto.response.LiveChatMessage;
 import ak.dev.irc.app.chat.dto.response.LiveStreamResponse;
 import ak.dev.irc.app.chat.dto.response.RecordingInfo;
 import ak.dev.irc.app.chat.entity.LiveStream;
+import ak.dev.irc.app.chat.entity.StreamGuest;
 import ak.dev.irc.app.chat.entity.StreamViewer;
 import ak.dev.irc.app.chat.enums.LiveStreamStatus;
 import ak.dev.irc.app.chat.enums.RecordingStatus;
+import ak.dev.irc.app.chat.enums.StreamGuestStatus;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeBroadcaster;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEvent;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
 import ak.dev.irc.app.chat.repository.LiveStreamRepository;
+import ak.dev.irc.app.chat.repository.StreamGiftTallyRepository;
+import ak.dev.irc.app.chat.repository.StreamGuestRepository;
 import ak.dev.irc.app.chat.repository.StreamViewerRepository;
 import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.BadRequestException;
@@ -30,9 +34,14 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
+import jakarta.annotation.PreDestroy;
 import java.nio.file.Path;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -57,6 +66,8 @@ public class LiveStreamService {
 
     private final LiveStreamRepository streamRepo;
     private final StreamViewerRepository viewerRepo;
+    private final StreamGuestRepository guestRepo;
+    private final StreamGiftTallyRepository giftTallyRepo;
     private final ChatRealtimeBroadcaster broadcaster;
     private final UserRepository userRepository;
     private final UserFollowRepository userFollowRepo;
@@ -68,6 +79,16 @@ public class LiveStreamService {
     /** Default recording choice when {@code StartStreamRequest.record} is absent. */
     @Value("${app.streaming.recording.default-on:false}")
     private boolean recordingDefaultOn;
+
+    /** Joins run off the request path. One at a time on purpose: a re-encode is
+     *  CPU-hungry and several concurrent ones would starve the media server it
+     *  shares the box with. */
+    private final ExecutorService combineExecutor =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "recording-combine");
+                t.setDaemon(true);
+                return t;
+            });
 
     /** External media-server endpoints. Defaults target the local `mediamtx` service. */
     @Value("${app.streaming.webrtc-base:http://localhost:8889}")
@@ -99,10 +120,22 @@ public class LiveStreamService {
                 .recordingStatus(record ? RecordingStatus.RECORDING : RecordingStatus.DISABLED)
                 .build());
 
-        // Per-path recording opt-in: tell MediaMTX to record THIS path (and only
-        // this one) before the browser publishes. Best-effort — if it fails the
-        // stream still goes live, it just won't be recorded (manifest → EMPTY).
-        if (record) mediaControl.enableRecording(s.getId());
+        /* Create the per-path config before the browser publishes, ALWAYS — with
+           `record` set to the host's opening choice.
+
+           It is created even for an opted-out stream, and that is load-bearing:
+           the host can turn recording on later, mid-broadcast, and the only safe
+           way to flip it then is to PATCH a config entry that already exists.
+           Adding or deleting a path config underneath a live publisher tears down
+           the path the browser is publishing to and drops the broadcast. Creating
+           it up front means every mid-stream change is a patch.
+
+           The privacy property is unchanged: `record: false` writes nothing to
+           disk. What exists is a config entry, not a recording.
+
+           Best-effort — if it fails the stream still goes live, it just won't be
+           recordable (manifest → EMPTY). */
+        mediaControl.ensurePath(s.getId(), record);
 
         // "@host is live" fan-out to followers — realtime stream.started + inbox
         // notification, async & capped. Broadcast the PUBLIC view (includeIngest
@@ -124,19 +157,76 @@ public class LiveStreamService {
             throw new ForbiddenException("Only the host can end this stream.", "ACCESS_FORBIDDEN");
         }
         if (s.getStatus() == LiveStreamStatus.ENDED) return; // idempotent
-        List<UUID> audience = withHost(activeViewerIds(streamId), s.getHostId());
+        // Everyone who should hear "it's over": viewers, the host, and any co-host
+        // guests on the stage (a guest may be up without being a registered viewer).
+        List<UUID> audience = withGuests(streamId, withHost(activeViewerIds(streamId), s.getHostId()));
         s.setStatus(LiveStreamStatus.ENDED);
         s.setEndedAt(Instant.now());
         s.setViewerCount(0);
         finalizeRecording(s);
         streamRepo.save(s);
         viewerRepo.deactivateAll(streamId);
+        guestRepo.removeAllActive(streamId); // clear the stage + revoke every guest key
         LiveStreamResponse ended = toResponse(s, false);
         broadcaster.broadcast(audience, ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.STREAM_ENDED).stream(ended).build());
         // Also tell the host's FOLLOWERS so their "following is live" rail drops the
         // card — the started fan-out's mirror image (realtime only, no inbox notif).
         streamFanout.fanoutStreamEnded(ended, s.getHostId());
+    }
+
+    // ── Recording, under the host's control mid-broadcast ──────────────────────
+
+    /**
+     * Start (or resume) recording while the stream is LIVE.
+     *
+     * <p>A host can record in takes: on, off, on again. Each take becomes its own
+     * part on disk, and every part is joined into a single file when the stream
+     * ends — so "how many times did I record" is never something the viewer of
+     * the finished file can tell.</p>
+     *
+     * <p>Recording can be turned on here even for a stream that went live opted
+     * OUT: the opt-in at go-live decides whether MediaMTX starts writing
+     * immediately, not whether the host may ever choose to. Turning it on is what
+     * creates the path config, so an opted-out stream still touches no disk until
+     * the host asks.</p>
+     */
+    @Transactional
+    public LiveStreamResponse startRecording(UUID streamId, UUID hostId) {
+        LiveStream s = requireOwnedLiveStream(streamId, hostId);
+        if (s.getRecordingStatus() == RecordingStatus.RECORDING) return toResponse(s, true); // idempotent
+        mediaControl.resumeRecording(streamId);
+        s.setRecordingEnabled(true);
+        s.setRecordingStatus(RecordingStatus.RECORDING);
+        streamRepo.save(s);
+        return toResponse(s, true);
+    }
+
+    /**
+     * Pause recording while staying live. Closes the current part; the broadcast
+     * and its viewers are untouched (see {@link MediaControlClient#pauseRecording}
+     * for why this must not delete the path config).
+     */
+    @Transactional
+    public LiveStreamResponse stopRecording(UUID streamId, UUID hostId) {
+        LiveStream s = requireOwnedLiveStream(streamId, hostId);
+        if (s.getRecordingStatus() != RecordingStatus.RECORDING) return toResponse(s, true); // idempotent
+        mediaControl.pauseRecording(streamId);
+        s.setRecordingStatus(RecordingStatus.PAUSED);
+        streamRepo.save(s);
+        return toResponse(s, true);
+    }
+
+    /** A live stream owned by this caller, or the matching 4xx. */
+    private LiveStream requireOwnedLiveStream(UUID streamId, UUID hostId) {
+        LiveStream s = requireStream(streamId);
+        if (!s.getHostId().equals(hostId)) {
+            throw new ForbiddenException("Only the host can control this recording.", "ACCESS_FORBIDDEN");
+        }
+        if (s.getStatus() != LiveStreamStatus.LIVE) {
+            throw new BadRequestException("This stream is not live.", "STREAM_NOT_LIVE");
+        }
+        return s;
     }
 
     /**
@@ -146,16 +236,71 @@ public class LiveStreamService {
      * frees the MediaMTX config entry) and mark it AVAILABLE (parts on disk) or
      * EMPTY (nothing was published). Never throws — a hiccup must not block ending;
      * {@link #recording} self-heals a stale EMPTY once the flush lands.
+     *
+     * <p>When the host recorded in several takes there are several parts, and the
+     * join into one file is a re-encode that can run for minutes on a long
+     * broadcast. That must not sit inside the end-of-stream request, so the status
+     * goes PROCESSING and the join runs after this transaction commits; it flips
+     * to AVAILABLE when the file is ready. The parts stay downloadable throughout,
+     * so a host who will not wait is never blocked.</p>
      */
     private void finalizeRecording(LiveStream s) {
+        /* Free the config entry for EVERY stream. Since ensurePath now creates one
+           whether or not the host opted in, skipping this for opted-out streams
+           would leak a MediaMTX path per broadcast, forever. */
+        try { mediaControl.removeRecordingPath(s.getId()); }
+        catch (Exception e) { log.warn("[REC] path cleanup failed for {}: {}", s.getId(), e.getMessage()); }
+
         if (!s.isRecordingEnabled()) { s.setRecordingStatus(RecordingStatus.DISABLED); return; }
         try {
-            mediaControl.removeRecordingPath(s.getId());
-            s.setRecordingStatus(recordings.hasRecording(s.getId())
-                    ? RecordingStatus.AVAILABLE : RecordingStatus.EMPTY);
+            if (!recordings.hasRecording(s.getId())) { s.setRecordingStatus(RecordingStatus.EMPTY); return; }
+            boolean needsJoin = recordings.listParts(s.getId()).size() > 1;
+            s.setRecordingStatus(needsJoin ? RecordingStatus.PROCESSING : RecordingStatus.AVAILABLE);
+            if (needsJoin) scheduleCombine(s.getId());
         } catch (Exception e) {
             log.warn("[REC] finalize failed for {}: {}", s.getId(), e.getMessage());
         }
+    }
+
+    /** Run the join once the ENDED/PROCESSING write is durable — never before, or
+     *  the completion update could race the transaction that scheduled it. */
+    private void scheduleCombine(UUID streamId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) { combineNow(streamId); return; }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { combineExecutor.submit(() -> combineNow(streamId)); }
+        });
+    }
+
+    /** Join the parts, then publish the result. A failed join is not an error the
+     *  host needs to see: the parts are still there and still downloadable, so the
+     *  recording lands AVAILABLE either way. */
+    private void combineNow(UUID streamId) {
+        try {
+            recordings.combineParts(streamId);
+        } catch (Exception e) {
+            log.warn("[REC] combine threw for {}: {}", streamId, e.getMessage());
+        } finally {
+            try { markCombined(streamId); }
+            catch (Exception e) { log.warn("[REC] could not publish combined recording {}: {}", streamId, e.getMessage()); }
+        }
+    }
+
+    /* Deliberately NOT @Transactional: this runs on the combine thread, called
+       directly rather than through the Spring proxy, so the annotation would be
+       silently ignored. Spring Data's own repository transactions cover the
+       find-then-save, which is all this needs. */
+    private void markCombined(UUID streamId) {
+        streamRepo.findById(streamId).ifPresent(s -> {
+            if (s.getRecordingStatus() != RecordingStatus.PROCESSING) return;  // deleted meanwhile
+            s.setRecordingStatus(recordings.hasRecording(streamId)
+                    ? RecordingStatus.AVAILABLE : RecordingStatus.EMPTY);
+            streamRepo.save(s);
+        });
+    }
+
+    @PreDestroy
+    void shutdownCombineExecutor() {
+        combineExecutor.shutdown();
     }
 
     // ── Viewers ────────────────────────────────────────────────────────────────
@@ -302,7 +447,9 @@ public class LiveStreamService {
         if (s.getStatus() == LiveStreamStatus.LIVE) {
             s.setStatus(LiveStreamStatus.ENDED);
             s.setEndedAt(Instant.now());
-            List<UUID> audience = withHost(activeViewerIds(streamId), s.getHostId());
+            // Include on-stage guests, mirroring end() — a guest may be up without
+            // being a registered viewer, and still needs the teardown signal.
+            List<UUID> audience = withGuests(streamId, withHost(activeViewerIds(streamId), s.getHostId()));
             LiveStreamResponse ended = toResponse(s, false);
             broadcaster.broadcast(audience, ChatRealtimeEvent.builder()
                     .eventType(ChatRealtimeEventType.STREAM_ENDED).stream(ended).build());
@@ -311,6 +458,8 @@ public class LiveStreamService {
         mediaControl.removeRecordingPath(streamId); // stop recording + free config entry
         recordings.deleteRecording(streamId);       // discard media parts
         viewerRepo.deleteByStreamId(streamId);      // clear presence rows
+        guestRepo.deleteByStreamId(streamId);       // clear stage rows
+        giftTallyRepo.deleteByStreamId(streamId);   // clear gift leaderboard
         streamRepo.delete(s);                       // remove the control-plane record
     }
 
@@ -323,9 +472,17 @@ public class LiveStreamService {
     public RecordingInfo recording(UUID streamId, UUID hostId) {
         LiveStream s = requireOwnedStream(streamId, hostId);
         List<Path> parts = recordings.listParts(streamId);
+        /* Self-heal only the states that mean "we expected nothing yet". The three
+           excluded ones are live decisions, not stale reads: RECORDING and PAUSED
+           belong to a broadcast still in progress, and PROCESSING means the join
+           is running right now — flipping any of them to AVAILABLE would report a
+           finished recording that does not exist yet. */
         if (s.isRecordingEnabled() && !parts.isEmpty()
                 && s.getRecordingStatus() != RecordingStatus.AVAILABLE
-                && s.getRecordingStatus() != RecordingStatus.DELETED) {
+                && s.getRecordingStatus() != RecordingStatus.DELETED
+                && s.getRecordingStatus() != RecordingStatus.RECORDING
+                && s.getRecordingStatus() != RecordingStatus.PAUSED
+                && s.getRecordingStatus() != RecordingStatus.PROCESSING) {
             s.setRecordingStatus(RecordingStatus.AVAILABLE);
             streamRepo.save(s);
         }
@@ -397,13 +554,46 @@ public class LiveStreamService {
     @Transactional(readOnly = true)
     public boolean authorizeMediaAccess(String action, String path, String password, String query) {
         LiveStream s = pathToStream(path);
-        if (s == null) return false;
-        boolean live = s.getStatus() == LiveStreamStatus.LIVE;
+        if (s != null) {
+            boolean live = s.getStatus() == LiveStreamStatus.LIVE;
+            return switch (action == null ? "" : action) {
+                case "publish" -> live && streamKeyMatches(s, password, query);
+                case "read", "playback" -> live;
+                default -> false;
+            };
+        }
+        // Not the host's stream path — it may be a guest's own stage path.
+        return authorizeGuestMediaAccess(action, path, password, query);
+    }
+
+    /**
+     * Authorize a co-host guest's own media path (a multi-guest "stage" publisher).
+     * A guest publishes their camera to a fresh path minted when they came up; that
+     * path is <b>not</b> a stream id, so it falls through {@link #pathToStream} to
+     * here. Publish is allowed only for an {@code ACTIVE} guest of a LIVE stream
+     * presenting their matching per-guest key; reads (so the audience can watch the
+     * guest) are public while the parent stream is LIVE.
+     */
+    private boolean authorizeGuestMediaAccess(String action, String path, String password, String query) {
+        if (!StringUtils.hasText(path)) return false;
+        StreamGuest g = guestRepo.findByPublishPath(path.trim()).orElse(null);
+        if (g == null || g.getStatus() != StreamGuestStatus.ACTIVE) return false;
+        LiveStream parent = streamRepo.findById(g.getStreamId()).orElse(null);
+        boolean live = parent != null && parent.getStatus() == LiveStreamStatus.LIVE;
         return switch (action == null ? "" : action) {
-            case "publish" -> live && streamKeyMatches(s, password, query);
+            case "publish" -> live && guestKeyMatches(g, password, query);
             case "read", "playback" -> live;
             default -> false;
         };
+    }
+
+    /** The guest publish credential is their per-guest key (never the stream key). */
+    private boolean guestKeyMatches(StreamGuest g, String password, String query) {
+        String provided = StringUtils.hasText(password) ? password : queryParam(query, "pass");
+        if (provided == null || g.getPublishKey() == null) return false;
+        return java.security.MessageDigest.isEqual(
+                provided.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                g.getPublishKey().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private LiveStream pathToStream(String path) {
@@ -453,6 +643,17 @@ public class LiveStreamService {
         List<UUID> out = new ArrayList<>(viewers);
         out.add(hostId);
         return out;
+    }
+
+    /** Add any active co-host guests to a recipient set (deduped). A guest is on
+     *  the stage even if they never registered as a plain viewer. */
+    private List<UUID> withGuests(UUID streamId, List<UUID> recipients) {
+        List<StreamGuest> active = guestRepo.findByStreamIdAndStatusOrderByJoinedAtAsc(
+                streamId, StreamGuestStatus.ACTIVE);
+        if (active.isEmpty()) return recipients;
+        java.util.LinkedHashSet<UUID> set = new java.util.LinkedHashSet<>(recipients);
+        active.forEach(g -> set.add(g.getUserId()));
+        return new ArrayList<>(set);
     }
 
     private LiveStream requireStream(UUID id) {

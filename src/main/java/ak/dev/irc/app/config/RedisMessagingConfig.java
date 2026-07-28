@@ -6,6 +6,8 @@ import ak.dev.irc.app.audit.realtime.AuditRealtimePublisher;
 import ak.dev.irc.app.audit.realtime.AuditRealtimeSubscriber;
 import ak.dev.irc.app.chat.realtime.ChatRedisPublisher;
 import ak.dev.irc.app.chat.realtime.ChatRedisSubscriber;
+import ak.dev.irc.app.post.cassandra.realtime.FeedRealtimePublisher;
+import ak.dev.irc.app.post.cassandra.realtime.FeedRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.PostRealtimePublisher;
 import ak.dev.irc.app.post.realtime.PostRealtimeSubscriber;
 import ak.dev.irc.app.post.realtime.StoryRealtimePublisher;
@@ -59,6 +61,7 @@ public class RedisMessagingConfig {
             RedisConnectionFactory           connectionFactory,
             NotificationRedisSubscriber      notificationSubscriber,
             PostRealtimeSubscriber           postSubscriber,
+            FeedRealtimeSubscriber           feedSubscriber,
             StoryRealtimeSubscriber          storySubscriber,
             StoryTrayRealtimeSubscriber      storyTraySubscriber,
             QnaRealtimeSubscriber            qnaSubscriber,
@@ -83,6 +86,11 @@ public class RedisMessagingConfig {
         // Per-post realtime channels (reactions, comments, replies, view counts).
         container.addMessageListener(postSubscriber,
                 new PatternTopic(PostRealtimePublisher.CHANNEL_PREFIX + "*"));
+
+        // Per-user home-feed channels — bridges FEED_NEW_POST fan-out onto the
+        // notification SSE stream so the browser can prepend new posts live.
+        container.addMessageListener(feedSubscriber,
+                new PatternTopic(FeedRealtimePublisher.CHANNEL_PREFIX + "*"));
 
         // Per-story realtime channels (views, reactions, poll votes, reply count, lifecycle).
         container.addMessageListener(storySubscriber,

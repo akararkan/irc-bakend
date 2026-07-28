@@ -91,6 +91,24 @@ public class LiveStreamController {
 
     // ── Recording (owner-only) ───────────────────────────────────────────────────
 
+    /**
+     * Start or resume recording while the stream is LIVE. The host may do this as
+     * often as they like during a broadcast; each take is written separately and
+     * all of them are joined into one file when the stream ends.
+     */
+    @PostMapping("/streams/{id}/recording/start")
+    public ResponseEntity<LiveStreamResponse> startRecording(@PathVariable UUID id,
+                                                             @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(streamService.startRecording(id, requireId(user)));
+    }
+
+    /** Pause recording, staying live. The broadcast and its viewers continue. */
+    @PostMapping("/streams/{id}/recording/stop")
+    public ResponseEntity<LiveStreamResponse> stopRecording(@PathVariable UUID id,
+                                                            @AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(streamService.stopRecording(id, requireId(user)));
+    }
+
     /** Recording manifest — status + downloadable parts. */
     @GetMapping("/streams/{id}/recording")
     public ResponseEntity<RecordingInfo> recording(@PathVariable UUID id, @AuthenticationPrincipal User user) {

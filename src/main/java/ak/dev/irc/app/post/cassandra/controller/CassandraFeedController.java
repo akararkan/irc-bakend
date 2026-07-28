@@ -171,6 +171,19 @@ public class CassandraFeedController {
                     .body(Map.of("error", "upload_failed", "message", String.valueOf(e.getMessage())));
         }
 
+        // 2b) VOICE_POST: an uploaded audio file must surface in `audioTrackUrl`
+        //     (not buried in mediaUrls) so the response is consistent with the
+        //     JSON create path and the feed item. Promote the first AUDIO part
+        //     to audioTrackUrl and drop it from the generic media lists.
+        if ("VOICE_POST".equalsIgnoreCase(postType)
+                && (audioTrackUrl == null || audioTrackUrl.isBlank())) {
+            int audioIdx = mediaTypes.indexOf("AUDIO");
+            if (audioIdx >= 0) {
+                audioTrackUrl = mediaUrls.remove(audioIdx);
+                mediaTypes.remove(audioIdx);
+            }
+        }
+
         // 3) Persist the post. On any DB failure, clean up R2 so we never
         //    leave orphaned files paid-for in R2 but not addressable from any post.
         try {

@@ -40,7 +40,29 @@ public enum ChatRealtimeEventType {
     STREAM_ENDED("stream.ended"),
     STREAM_UPDATED("stream.updated"),
     STREAM_VIEWER("stream.viewer"),
-    STREAM_CHAT("stream.chat");
+    STREAM_CHAT("stream.chat"),
+
+    // Live streaming — multi-guest "stage", reactions & gifts
+    /** The stage roster changed (guest up/down/muted). Carries {@code stage};
+     *  delivered to everyone watching + the host. */
+    STREAM_STAGE("stream.stage"),
+    /** A viewer raised their hand to come up. Carries {@code stageMember} (the
+     *  requester); delivered to the host only. */
+    STREAM_STAGE_REQUEST("stream.stage.request"),
+    /** The host invited a viewer up. Carries {@code stageMember} (the host who
+     *  invited, so the client can say "@host invited you up"); delivered to that
+     *  one invited viewer. */
+    STREAM_STAGE_INVITE("stream.stage.invite"),
+    /** A guest's private stage grant — carries {@code stageMember} WITH their
+     *  secret publish credentials (or {@code status=REMOVED} on revoke). Delivered
+     *  to that one guest only. */
+    STREAM_STAGE_GRANT("stream.stage.grant"),
+    /** An ephemeral floating reaction. Carries {@code streamReaction}; delivered
+     *  to everyone watching + the host. */
+    STREAM_REACTION("stream.reaction"),
+    /** A symbolic gift landed. Carries {@code streamGift}; delivered to everyone
+     *  watching + the host. */
+    STREAM_GIFT("stream.gift");
 
     private final String wire;
 

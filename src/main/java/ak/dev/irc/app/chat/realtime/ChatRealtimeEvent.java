@@ -74,6 +74,12 @@ public class ChatRealtimeEvent {
     private ak.dev.irc.app.chat.dto.response.LiveStreamResponse stream;
     private ak.dev.irc.app.chat.dto.response.LiveChatMessage streamChat;
 
+    // live streaming — multi-guest stage / reactions / gifts
+    private ak.dev.irc.app.chat.dto.response.StageState stage;          // stream.stage
+    private ak.dev.irc.app.chat.dto.response.StageMember stageMember;   // stream.stage.request / .grant
+    private ak.dev.irc.app.chat.dto.response.StreamReaction streamReaction; // stream.reaction
+    private ak.dev.irc.app.chat.dto.response.StreamGiftEvent streamGift;    // stream.gift
+
     @Builder.Default
     private Instant timestamp = Instant.now();
 }

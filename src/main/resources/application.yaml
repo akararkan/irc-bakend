@@ -257,6 +257,11 @@ app:
     # Where MediaMTX writes recordings (mediamtx.yml recordPath → /recordings,
     # bind-mounted here). The backend reads/serves owner downloads from this dir.
     recordings-dir: ${STREAM_RECORDINGS_DIR:./recordings}
+    # ffmpeg binary used to JOIN a multi-take recording into one file at stream end
+    # (re-encode, not stream-copy — see RecordingStorageService.combineParts). MUST
+    # be on the backend host's PATH, or set an absolute path here. Missing ⇒ the
+    # join silently no-ops and the recording stays multi-part (degraded, not broken).
+    ffmpeg-bin: ${STREAM_FFMPEG_BIN:ffmpeg}
     # MediaMTX Control API (mediamtx.yml api: yes → :9997, published to localhost).
     # The backend calls it to enable recording PER STREAM (only opted-in streams
     # ever touch disk). Keep this reachable only from the app, never public.
@@ -264,6 +269,12 @@ app:
     recording:
       # Default when a go-live request omits `record`. Opt-in by default.
       default-on: ${STREAM_RECORDING_DEFAULT_ON:false}
+    stage:
+      # TikTok-style multi-guest "stage": how many guests can be UP and talking
+      # beside the host at once (the host is always on and does not count). Each
+      # guest publishes their own camera to their own media path; everyone
+      # subscribes to every active guest, so keep this modest.
+      max-guests: ${STREAM_STAGE_MAX_GUESTS:6}
 
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
