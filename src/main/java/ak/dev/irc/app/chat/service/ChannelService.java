@@ -431,7 +431,6 @@ public class ChannelService {
         if (req.getCanChangeInfo() != null) r.setCanChangeInfo(req.getCanChangeInfo());
         if (req.getCanAddAdmins() != null) r.setCanAddAdmins(req.getCanAddAdmins());
         if (req.getCanManageLive() != null) r.setCanManageLive(req.getCanManageLive());
-        if (req.getCanManageStories() != null) r.setCanManageStories(req.getCanManageStories());
         if (StringUtils.hasText(req.getCustomTitle())) r.setCustomTitle(req.getCustomTitle().trim());
         return r;
     }

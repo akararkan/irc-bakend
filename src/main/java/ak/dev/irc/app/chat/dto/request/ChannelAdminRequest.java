@@ -19,7 +19,6 @@ public class ChannelAdminRequest {
     private Boolean canChangeInfo;
     private Boolean canAddAdmins;
     private Boolean canManageLive;
-    private Boolean canManageStories;
 
     /** Custom rank label (e.g. "Editor"). */
     @Size(max = 32)

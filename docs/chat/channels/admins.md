@@ -31,7 +31,7 @@ full rights). Any member may call it.
                 "canDeleteMessages": true, "canPinMessages": true,
                 "canInviteUsers": true, "canApproveJoinRequests": true,
                 "canChangeInfo": true, "canAddAdmins": true,
-                "canManageLive": true, "canManageStories": true,
+                "canManageLive": true,
                 "customTitle": null },
     "since": "2026-07-24T09:12:00" } ]
 ```
@@ -58,13 +58,15 @@ Every flag is nullable; **null flags default to `true`**, so rights only ever
 | `canChangeInfo` | boolean | title/photo/cover/settings, link a discussion group. |
 | `canAddAdmins` | boolean | promote / demote admins. |
 | `canManageLive` | boolean | live streams & video chats. |
-| `canManageStories` | boolean | post / delete channel stories & highlights. |
 | `customTitle` | string | ≤ 32-char rank label (e.g. `"Editor"`). |
+
+> **Removed:** `canManageStories` no longer exists — [channel stories &
+> highlights](stories.md) were deleted. Sending it is silently ignored.
 
 ```json
 { "canPostMessages": true, "canEditMessages": true, "canDeleteMessages": false,
   "canPinMessages": true, "canChangeInfo": false, "canAddAdmins": false,
-  "canManageStories": true, "customTitle": "Editor" }
+  "canManageLive": true, "customTitle": "Editor" }
 ```
 
 **Response** — `200`, [`ChannelAdminResponse`](#get-channelsidadmins--list-admins).
@@ -95,8 +97,10 @@ allowed; a `403 ADMINS_ONLY` is raised otherwise.
 | `canChangeInfo` | Title, photo, cover, settings; linking a [discussion group](discussion.md). |
 | `canAddAdmins` | Promoting / demoting admins. |
 | `canManageLive` | Starting / managing [live streams](../live-streaming.md) and video chats. |
-| `canManageStories` | Posting / deleting [channel stories & highlights](stories.md). |
 | `customTitle` | Display-only rank label. |
+
+> `canManageStories` was **removed** with [channel stories](stories.md); reads of
+> older `admin_rights` JSON that still contain it ignore the stale flag.
 
 ---
 

@@ -55,7 +55,25 @@ every conversation the caller is in (full transport in [realtime.md](../realtime
 Browsers use `EventSource`, which can't set headers, so the access token is
 passed as `?token=<accessToken>` (falls back from the `Authorization` header).
 Each event arrives as a named SSE event with a JSON `{ event, data }` envelope.
-Channel-relevant events:
+
+**Post delivery.** A channel is a conversation, so posting/editing/deleting/
+reacting fan out over the same stream to **every readable subscriber**
+(`findReadableMemberIds`) — this is how a client keeps the open channel live
+without polling. These are the ordinary [message events](../realtime.md); they
+are the primary signal for a channel and are listed here for completeness:
+
+| event | `data` payload | meaning |
+|---|---|---|
+| `message.new` | `{ conversationId, message }` — the full [`MessageResponse`](posts.md#messageresponse) | **a new post was broadcast** (the core channel event); also fires for system rows (member joins, etc.). |
+| `message.edited` | `{ conversationId, messageId, body, editedAt }` | a post's body was edited — swap the text and show *edited*. |
+| `message.deleted` | `{ conversationId, messageId }` | a post was tombstoned — drop it from the feed. |
+| `message.reaction` | `{ conversationId, messageId, userId, emoji, added }` | a reaction was added (`added:true`) / removed (`false`) — apply the ±1 delta locally. |
+
+`receipt.read` / `receipt.delivered`, `typing` and `presence` also ride the same
+stream but matter mostly on the [discussion group](discussion.md) side of a
+channel (broadcast posts have no per-subscriber read receipts).
+
+**Channel-specific.**
 
 | event | `data` payload | meaning |
 |---|---|---|
@@ -65,5 +83,5 @@ Channel-relevant events:
 | `channel.join_request` | `{ joinRequest }` | to the channel's admins on a new request. |
 | `message.comment` | `{ messageId, added }` (`messageId` = the POST id) | a comment was added/removed — apply ±1 to `comments`. |
 
-Channel **stories** fan out on the **separate** story-tray SSE
-(`GET /api/v1/stories/tray/stream`) — see [stories.md](stories.md#story-tray).
+Channel **stories** were [removed](stories.md), so there are no longer any
+channel-authored story-tray events.

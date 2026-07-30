@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -12,12 +13,17 @@ import lombok.NoArgsConstructor;
  * <b>full rights</b> — every flag defaults to {@code true}, so promoting an
  * admin without specifying rights grants everything, and rights only ever
  * <i>remove</i> capability.
+ *
+ * <p>{@code ignoreUnknown = true} keeps reads of already-persisted rows tolerant
+ * of retired flags — notably {@code canManageStories}, dropped when channel
+ * stories were removed; stale JSON that still carries it deserializes cleanly.</p>
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class AdminRights {
 
     /** Post new messages to the channel. */
@@ -46,9 +52,6 @@ public class AdminRights {
 
     /** Start / manage live streams and video chats. */
     @Builder.Default private boolean canManageLive = true;
-
-    /** Post / delete channel stories. */
-    @Builder.Default private boolean canManageStories = true;
 
     /** Custom rank label shown next to the admin's name (e.g. "Editor"). */
     private String customTitle;

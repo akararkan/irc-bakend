@@ -19,7 +19,7 @@ search is **Elasticsearch**; media rides the existing R2/S3 proxy.
 | [messages.md](messages.md) | Send (idempotent), read (cursor page + gap sync), edit, **delete for me / everyone**, forward, reactions, **star**, **seen-by**, **scheduled**, pinned, delivered |
 | [groups.md](groups.md) | Members, roles, restrict, leave, transfer ownership, invite links, join |
 | [message-requests.md](message-requests.md) | The Message Requests inbox + the stranger-contact flow |
-| [channels/](channels/overview.md) | Telegram-style broadcast **channels** — a subdirectory: [overview](channels/overview.md) · [admins & invites](channels/admins.md) · [posts](channels/posts.md) · [discussion & drafts](channels/discussion.md) · [stories & highlights](channels/stories.md) · [inbox & members](channels/inbox.md) · [stats & realtime](channels/stats.md) |
+| [channels/](channels/overview.md) | Telegram-style broadcast **channels** — a subdirectory: [overview](channels/overview.md) · [admins & invites](channels/admins.md) · [posts](channels/posts.md) · [discussion & drafts](channels/discussion.md) · [inbox & members](channels/inbox.md) · [stats & realtime](channels/stats.md) |
 | [calls.md](calls.md) | Voice/video **calls** — ring/answer/decline/end + WebRTC SDP/ICE relay |
 | [live-streaming.md](live-streaming.md) | **Live streaming** — go live, viewer registry, live chat, **multi-guest stage / reactions / gifts**, recording |
 | [live-multiguest-frontend.md](live-multiguest-frontend.md) | Frontend build guide for the **multi-guest stage** (co-hosts), live reactions & gifts |

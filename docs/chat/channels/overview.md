@@ -13,7 +13,7 @@ reading a channel use the normal [conversation](../conversations.md) /
 | [admins.md](admins.md) | Granular admin rights & enforcement, invite links, join requests & approval, transfer/kick/restrict |
 | [posts.md](posts.md) | Channel posts — full lifecycle: create, read feed, edit/delete/pin/schedule, reactions, types, polls, views/forwards, gallery, hashtags |
 | [discussion.md](discussion.md) | Linked discussion group & comments, per-user drafts, slow mode |
-| [stories.md](stories.md) | Channel stories, the story tray, profile highlights |
+| ~~[stories.md](stories.md)~~ | **⛔ Removed** — channel stories & highlights were deleted; the page is a tombstone. |
 | [inbox.md](inbox.md) | Subscriber/member list, the channel in your inbox (read/mute/pin/archive), notifications, deleting the channel |
 | [stats.md](stats.md) | Statistics endpoint + connecting to the realtime SSE stream & event catalog |
 
@@ -70,7 +70,9 @@ owns that handle.
 ## `GET /channels/discover?q=&category=` — directory
 
 Public channels, **most-subscribed first**. Both query params optional: `q`
-matches title/handle/description; `category` filters by the slug.
+matches title/handle/description; `category` filters by the slug. The result is
+**capped at 50** and **not paged** — it's a directory/typeahead, not a full
+scan; narrow with `q`/`category` rather than expecting more rows.
 
 **Response** — `200`, `ChannelResponse[]` (a plain JSON array).
 

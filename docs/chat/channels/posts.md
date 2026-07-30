@@ -304,8 +304,8 @@ Rides on the message wherever it's hydrated. Quiz `correctOptionIndex` +
 | `totalVoters` | long | |
 | `myVotes` | int[] | option indexes the viewer picked (empty if none). |
 
-> This is the in-**post** poll. Story polls are the separate A/B mechanism in
-> [stories.md](stories.md#story-polls).
+> This is the in-**post** poll. (Channel story polls were removed along with
+> [channel stories](stories.md).)
 
 ---
 
