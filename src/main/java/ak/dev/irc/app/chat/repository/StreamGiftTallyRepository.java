@@ -22,8 +22,13 @@ public interface StreamGiftTallyRepository extends JpaRepository<StreamGiftTally
      *  in the database ({@code coins = coins + :coins}), so concurrent gifts from the
      *  same sender can't lose an update (unlike read-modify-write). Returns the number
      *  of rows updated: 1 if the sender already had a tally, 0 if this is their first
-     *  gift (caller then inserts the row). */
-    @Modifying
+     *  gift (caller then inserts the row).
+     *
+     *  <p>{@code flushAutomatically} pushes any pending context writes before the
+     *  bulk UPDATE, and {@code clearAutomatically} evicts the now-stale managed copy
+     *  after it — so a read-back of this tally in the same transaction always returns
+     *  the fresh post-increment value, even if a future edit loads the row first.</p> */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE StreamGiftTally t SET t.coins = t.coins + :coins, " +
            "t.giftCount = t.giftCount + 1, t.lastGiftAt = :now " +
            "WHERE t.streamId = :sid AND t.userId = :uid")
