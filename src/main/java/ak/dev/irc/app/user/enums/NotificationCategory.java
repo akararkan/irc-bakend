@@ -21,7 +21,8 @@ public enum NotificationCategory {
     MENTIONS,
     /** Social: follows, blocks, unblocks, restrictions, connection requests. */
     SOCIAL,
-    /** Chat: new messages, message requests, group adds. */
+    /** Chat: new messages, message requests, group adds, missed calls,
+     *  channel posts and channel membership. */
     CHAT,
     /** System / account / announcements. */
     SYSTEM;
@@ -57,13 +58,18 @@ public enum NotificationCategory {
             NotificationType.UNBLOCKED,
             NotificationType.RESTRICTED,
             NotificationType.CONNECTION_REQUEST,
-            NotificationType.CONNECTION_ACCEPTED
+            NotificationType.CONNECTION_ACCEPTED,
+            NotificationType.STREAM_STARTED   // follow-driven, like NEW_FOLLOWER
     );
 
     private static final Set<NotificationType> CHAT_TYPES = EnumSet.of(
             NotificationType.NEW_MESSAGE,
             NotificationType.MESSAGE_REQUEST,
-            NotificationType.ADDED_TO_GROUP
+            NotificationType.ADDED_TO_GROUP,
+            NotificationType.CALL_MISSED,
+            NotificationType.CHANNEL_NEW_POST,
+            NotificationType.CHANNEL_JOIN_REQUEST,
+            NotificationType.CHANNEL_JOIN_APPROVED
     );
 
     private static final Set<NotificationType> SYSTEM_TYPES = EnumSet.of(
@@ -82,7 +88,8 @@ public enum NotificationCategory {
      */
     public static NotificationCategory of(NotificationType type) {
         if (type == null) return SYSTEM;
-        if (type == NotificationType.USER_MENTIONED) return MENTIONS;
+        if (type == NotificationType.USER_MENTIONED
+                || type == NotificationType.MESSAGE_MENTION) return MENTIONS;
         if (POST_TYPES.contains(type))     return POSTS;
         if (QNA_TYPES.contains(type))      return QNA;
         if (RESEARCH_TYPES.contains(type)) return RESEARCH;
@@ -97,7 +104,8 @@ public enum NotificationCategory {
             case POSTS    -> POST_TYPES;
             case QNA      -> QNA_TYPES;
             case RESEARCH -> RESEARCH_TYPES;
-            case MENTIONS -> EnumSet.of(NotificationType.USER_MENTIONED);
+            case MENTIONS -> EnumSet.of(NotificationType.USER_MENTIONED,
+                                        NotificationType.MESSAGE_MENTION);
             case SOCIAL   -> SOCIAL_TYPES;
             case CHAT     -> CHAT_TYPES;
             case SYSTEM   -> SYSTEM_TYPES;

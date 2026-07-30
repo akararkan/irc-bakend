@@ -140,6 +140,20 @@ public enum NotificationKind {
     /** Someone added you to a group conversation. */
     ADDED_TO_GROUP       (PrefCategory.SOCIAL,   false, false),
 
+    /** You missed a call — it rang out unanswered, or the caller hung up
+     *  while it was still ringing. Aggregates per conversation via
+     *  {@code CALL_MISSED:{conversationId}} so three missed calls from the
+     *  same person render as one "3 missed calls" row. */
+    CALL_MISSED          (PrefCategory.SOCIAL,   true,  false),
+
+    /** You were {@code @}-mentioned in a chat message or channel post.
+     *  High-signal: delivered regardless of the conversation's mute state,
+     *  the recipient's presence, or the group size — the whole point of a
+     *  ping is to cut through those filters (Telegram semantics). Each
+     *  mention is its own row (not aggregated). In-app only — a chat
+     *  mention email would leak private message text into a mailbox. */
+    MESSAGE_MENTION      (PrefCategory.MENTIONS, false, false),
+
     // ────────────────────────────────────────────────────────────────────────
     //  POSTS — full details in the class Javadoc table above.
     //  All post kinds are email-eligible; per-recipient prefs + the 1h
@@ -264,6 +278,14 @@ public enum NotificationKind {
     // ────────────────────────────────────────────────────────────────────────
     //  CHAT — CHANNELS (in-app only, like the other chat kinds)
     // ────────────────────────────────────────────────────────────────────────
+
+    /** A channel you subscribe to published a new post. Fanned out to every
+     *  active, non-muted subscriber by {@code ChannelPostFanoutService}
+     *  (Telegram-style: mute the channel to silence it). Aggregates per
+     *  channel via {@code CHANNEL_NEW_POST:{channelId}} so a posting burst
+     *  renders as one "N new posts" row instead of N rows. In-app only —
+     *  emailing every subscriber per post would be spam. */
+    CHANNEL_NEW_POST     (PrefCategory.SOCIAL, true,  false),
 
     /** Someone asked to join a channel you administer. Aggregates per channel
      *  ("@alice and 3 others requested to join") via

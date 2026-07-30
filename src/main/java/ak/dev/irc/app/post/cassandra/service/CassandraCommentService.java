@@ -69,6 +69,7 @@ public class CassandraCommentService {
     private final UserRepository            userRepo;
     private final CassandraNotificationService notificationService;
     private final DedupGuard                   dedupGuard;
+    private final ak.dev.irc.app.common.service.MentionService mentionService;
 
     // ── Create top-level comment ─────────────────────────────────────────────
 
@@ -100,6 +101,7 @@ public class CassandraCommentService {
         broadcast(postId, commentId, null, authorId, text, mediaUrl, mediaType,
                   PostRealtimeEventType.COMMENT_CREATED);
         notifyPostCommented(postId, commentId, authorId, text);
+        scanMentions(null, text, commentId, postId, authorId);
         return row;
     }
 
@@ -149,6 +151,7 @@ public class CassandraCommentService {
         broadcast(postId, replyId, truParentId, authorId, text, mediaUrl, null,
                   PostRealtimeEventType.REPLY_CREATED);
         notifyReply(postId, truParentId, replyId, authorId, text);
+        scanMentions(null, text, replyId, postId, authorId);
         return row;
     }
 
@@ -159,13 +162,46 @@ public class CassandraCommentService {
         if (!meta.getAuthorId().equals(authorId)) {
             throw new SecurityException("Not the author");
         }
+        // Pre-edit text so the mention scan only pings NEWLY added handles.
+        String oldText;
         if (Boolean.TRUE.equals(meta.getReply())) {
+            oldText = replyRepo.findRow(meta.getParentId(), meta.getCreatedAt(), commentId)
+                    .map(ReplyByCommentEntity::getTextContent).orElse(null);
             replyRepo.editText(meta.getParentId(), meta.getCreatedAt(), commentId, newText);
         } else {
+            oldText = commentRepo.findRow(meta.getPostId(), meta.getCreatedAt(), commentId)
+                    .map(CommentByPostEntity::getTextContent).orElse(null);
             commentRepo.editText(meta.getPostId(), meta.getCreatedAt(), commentId, newText);
         }
         broadcast(meta.getPostId(), commentId, meta.getParentId(), authorId, newText, null, null,
                   PostRealtimeEventType.COMMENT_EDITED);
+        scanMentions(oldText, newText, commentId, meta.getPostId(), authorId);
+    }
+
+    /**
+     * @-mention scan for comment/reply text. Create passes {@code oldText=null}
+     * (full scan); edit passes the pre-edit body so only newly added handles
+     * get pinged. {@code @followers} is never honoured on comments. The
+     * author-username read is skipped entirely when the text has no {@code @}.
+     */
+    private void scanMentions(String oldText, String newText, UUID commentId, UUID postId, UUID authorId) {
+        try {
+            if (newText == null || newText.indexOf('@') < 0) return;
+            String username = userRepo.findById(authorId)
+                    .map(ak.dev.irc.app.user.entity.User::getUsername).orElse(null);
+            if (oldText == null) {
+                mentionService.scanAndPublish(newText,
+                        ak.dev.irc.app.rabbitmq.event.user.MentionSource.POST_COMMENT,
+                        commentId, postId, authorId, username,
+                        /* allowFollowersToken */ false);
+            } else {
+                mentionService.scanAndPublishDelta(oldText, newText,
+                        ak.dev.irc.app.rabbitmq.event.user.MentionSource.POST_COMMENT,
+                        commentId, postId, authorId, username);
+            }
+        } catch (Exception e) {
+            log.warn("[COMMENT] mention scan failed for {}: {}", commentId, e.getMessage());
+        }
     }
 
     // ── Hard delete ──────────────────────────────────────────────────────────

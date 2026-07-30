@@ -29,9 +29,10 @@ Source of truth: `NotificationController`, `NotificationServiceImpl`,
 2. [Notification kinds](#notification-kinds)
 3. [Categories (inbox tabs)](#categories-inbox-tabs)
 4. [The `TRENDING_DIGEST` daily digest](#the-trending_digest-daily-digest)
-5. [`NotificationResponse` shape](#notificationresponse-shape)
-6. [Endpoints](#endpoints)
-7. [Storage & retention](#storage--retention)
+5. [Chat, channel & live notifications](#chat-channel--live-notifications)
+6. [`NotificationResponse` shape](#notificationresponse-shape)
+7. [Endpoints](#endpoints)
+8. [Storage & retention](#storage--retention)
 
 ---
 
@@ -150,10 +151,25 @@ email-eligible at all.
 | `SYSTEM_ANNOUNCEMENT` | SYSTEM | no | yes | Broadcast platform announcement |
 | `ACCOUNT_WARNING` | SYSTEM | no | yes | Moderation warning on your account |
 | `TRENDING_DIGEST` | TRENDING | no | yes | Daily "trending in scholarship" digest — [details below](#the-trending_digest-daily-digest) |
+| `NEW_MESSAGE` | SOCIAL | yes | **no** | A new direct/group message while you were offline — [details below](#chat-channel--live-notifications) |
+| `MESSAGE_REQUEST` | SOCIAL | no | **no** | A stranger's first message landed in your Requests inbox |
+| `ADDED_TO_GROUP` | SOCIAL | no | **no** | Someone added you to a group conversation |
+| `CALL_MISSED` | SOCIAL | yes | **no** | A call rang out (or the caller hung up) before you answered |
+| `MESSAGE_MENTION` | MENTIONS | no | **no** | You were `@`-mentioned in a chat message / channel post — cuts through mute ([details](#chat-channel--live-notifications)) |
+| `CHANNEL_NEW_POST` | SOCIAL | yes | **no** | A channel you subscribe to published a post (mute-aware fan-out) |
+| `CHANNEL_JOIN_REQUEST` | SOCIAL | yes | **no** | Someone asked to join a channel you administer |
+| `CHANNEL_JOIN_APPROVED` | SOCIAL | no | **no** | Your channel join request was approved |
+| `STREAM_STARTED` | SOCIAL | no | **no** | A user you follow went live (follower fan-out) |
 
 > Being email-*eligible* does not mean an email is always sent — the master +
 > per-category toggles and the 1-hour per-group throttle still apply. See
 > [email-preferences.md](./email-preferences.md).
+
+> **Chat, channel and live kinds are deliberately in-app only** (`Email: no`).
+> The SSE stream is the live path and the bell covers offline/backgrounded
+> users; emailing per message / channel post / go-live would flood mailboxes.
+> Full trigger + fan-out semantics for this family:
+> [Chat, channel & live notifications](#chat-channel--live-notifications).
 
 > The `NotificationType` enum also contains legacy values with no live trigger
 > (`UNFOLLOWED`, `BLOCKED`, `RESTRICTED`, `CONNECTION_REQUEST`,
@@ -172,9 +188,15 @@ inboxes, the `category` list filter, category unread counts, and
 | `POSTS` | `POST_NEW`, `POST_REACTED`, `POST_COMMENTED`, `POST_COMMENT_REPLIED`, `POST_COMMENT_REACTED`, `POST_SHARED`, `POST_MENTIONED` |
 | `QNA` | `QUESTION_NEW`, `QUESTION_ANSWERED`, `ANSWER_REPLIED`, `ANSWER_REACTED`, `ANSWER_ACCEPTED` |
 | `RESEARCH` | `PUBLICATION_LIKED`, `PUBLICATION_COMMENTED`, `PUBLICATION_CITED` |
-| `MENTIONS` | `USER_MENTIONED` (always, regardless of where the mention happened) |
-| `SOCIAL` | `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`, `CONNECTION_REQUEST`, `CONNECTION_ACCEPTED` |
+| `MENTIONS` | `USER_MENTIONED`, `MESSAGE_MENTION` (always, regardless of where the mention happened) |
+| `SOCIAL` | `NEW_FOLLOWER`, `UNFOLLOWED`, `BLOCKED`, `UNBLOCKED`, `RESTRICTED`, `CONNECTION_REQUEST`, `CONNECTION_ACCEPTED`, `STREAM_STARTED` |
+| `CHAT` | `NEW_MESSAGE`, `MESSAGE_REQUEST`, `ADDED_TO_GROUP`, `CALL_MISSED`, `CHANNEL_NEW_POST`, `CHANNEL_JOIN_REQUEST`, `CHANNEL_JOIN_APPROVED` |
 | `SYSTEM` | `SYSTEM_MESSAGE`, `SYSTEM_ANNOUNCEMENT`, `ACCOUNT_WARNING`, `TRENDING_DIGEST` |
+
+> `STREAM_STARTED` sits in `SOCIAL`, not `CHAT` — it is a follow-driven alert
+> (like `NEW_FOLLOWER`), not a conversation event. Everything that lives in the
+> messenger — messages, requests, group adds, missed calls, channel activity —
+> lands in the `CHAT` tab.
 
 > **Category** (inbox grouping, 6 buckets) is distinct from a kind's
 > **preference category** (email gate, 4 buckets: SOCIAL / MENTIONS / SYSTEM /
@@ -212,6 +234,58 @@ An X-style, server-pushed digest of tags trending in scholarly content
 - **Inbox tab:** `SYSTEM`. **Email gate:** the independent `trending` toggle
   (`emailTrendingEnabled`) — muting the digest email does not mute system
   emails, and vice versa. See [email-preferences.md](./email-preferences.md).
+
+---
+
+## Chat, channel & live notifications
+
+The messaging stack (DMs/groups, Telegram-style channels, calls, live
+streaming) plugs into the same delivery engine — self-suppression, block
+filtering, 60-minute aggregation, unread counter, SSE push all apply. The whole
+family is **in-app only** (never emailed). What differs per kind is *who* is
+fanned to and *when*:
+
+| Kind | Fires when | Receiver set | Group key | Notes |
+|---|---|---|---|---|
+| `NEW_MESSAGE` | A message is delivered in a DM/group | **Offline**, non-muted members of conversations ≤ 256 members | `NEW_MESSAGE:{conversationId}` | Online users get the SSE `message.new` instead; a burst coalesces into one "@alice: latest preview" row |
+| `MESSAGE_REQUEST` | A stranger's first message routes to your Requests inbox | The recipient | `MESSAGE_REQUEST:{conversationId}` | One row per request thread |
+| `ADDED_TO_GROUP` | Someone adds you to a group (at creation or later) | The added user | `ADDED_TO_GROUP:{conversationId}:{userId}` | |
+| `CALL_MISSED` | A call rang out unanswered (60 s ring timeout) **or** the caller hung up while still ringing | Every invitee who never joined nor declined | `CALL_MISSED:{conversationId}` | Body says voice/video + caller ("You missed a video call from @alice"); repeats coalesce into "N missed calls" |
+| `MESSAGE_MENTION` | A non-silent message/post `@`-mentions a member | Each mentioned member who can read the message | `MESSAGE_MENTION:{conversationId}:{userId}` | **Overrides mute, presence and group-size gates**; the mentioned member is excluded from `NEW_MESSAGE`/`CHANNEL_NEW_POST` for that message — see [mentions.md](../platform/mentions.md#chat--channel-mentions) |
+| `CHANNEL_NEW_POST` | A non-silent post is published in a channel | **Every active, non-muted subscriber**, any channel size | `CHANNEL_NEW_POST:{channelId}` | Body is "Channel title: post preview"; a posting burst is ONE row with a bumped count |
+| `CHANNEL_JOIN_REQUEST` | Someone asks to join a channel you can approve for | Channel owner + admins | `CHANNEL_JOIN_REQUEST:{channelId}` | "@alice and 3 others requested to join" |
+| `CHANNEL_JOIN_APPROVED` | An admin approves your join request | The requester | `CHANNEL_JOIN_APPROVED:{channelId}:{userId}` | |
+| `STREAM_STARTED` | A user you follow goes live | Every follower (keyset fan-out, capped at 50 000) | `STREAM_STARTED:{streamId}` | One row per go-live; the realtime `stream.started` SSE event rides alongside |
+
+### Semantics worth knowing
+
+- **Mute is honored everywhere — except for direct `@mentions`.** A
+  conversation/channel muted via `POST /conversations/{id}/mute` produces
+  **no bell rows** while `mutedUntil` is in the future — but unread counts
+  still accrue (mute silences push, not the count). For channels the mute
+  filter is applied **in the fan-out query itself**, so muted subscribers cost
+  nothing. The one deliberate exception is `MESSAGE_MENTION`: being
+  `@`-mentioned by name pings through mute (Telegram semantics).
+- **Silent channel posts** (`silent: true` on send — Telegram's "post without
+  notification") deliver, count as unread, and appear in realtime, but skip the
+  `CHANNEL_NEW_POST` fan-out entirely.
+- **Presence-gating applies only to `NEW_MESSAGE`.** A channel post or a
+  go-live is *content* (like `POST_NEW`), so subscribers/followers get the row
+  whether online or not; a DM bell for a user actively looking at the app would
+  be noise, so it fires only for offline recipients.
+- **Scale.** `CHANNEL_NEW_POST` and `STREAM_STARTED` fan out on the async pool
+  with a keyset scan in 500-row pages, capped at **50 000** recipients
+  (`ChannelPostFanoutService`, `LiveStreamFanoutService`) — the sending/go-live
+  request never blocks on the fan-out.
+- **Disappearing messages** never leak through the bell: the `NEW_MESSAGE`
+  preview for a disappearing message is the neutral
+  "🕓 Disappearing message" placeholder.
+- **Deep links:** `Conversation` rows navigate to `/chat/{id}`, `Channel` rows
+  to `/channels/{id}`, `LiveStream` rows to `/live/{id}`.
+
+Source of truth: `ChatNotificationService`, `ChannelPostFanoutService`,
+`LiveStreamFanoutService`, `CallService.notifyMissedInvitees`,
+`MessageService.dispatch`.
 
 ---
 
@@ -257,8 +331,8 @@ payload, which differs slightly).
 | `actorId`, `actorUsername`, `actorFullName`, `actorProfileImage` | — | Primary actor (`null` for system rows). Use for the avatar |
 | `aggregateCount` | long | `1` for a single event; `> 1` for a coalesced row ("and N others") |
 | `lastActorId`, `lastActorUsername` | — | Most recent contributor to an aggregated row (may equal `actor*`) |
-| `resourceId` / `resourceType` | — | What the notification is about: `Post`, `Comment`, `Question`, `Answer`, `Research`, `User`, `Trending`, … |
-| `deepLink` | string \| null | Ready-to-navigate client path (`/posts/{id}`, `/comments/{id}`, `/questions/{id}`, `/answers/{id}`, `/researches/{id}`, `/users/{id}`). Navigate with this; `null` for opaque resources |
+| `resourceId` / `resourceType` | — | What the notification is about: `Post`, `Comment`, `Question`, `Answer`, `Research`, `User`, `Conversation`, `Channel`, `LiveStream`, `Trending`, … |
+| `deepLink` | string \| null | Ready-to-navigate client path (`/posts/{id}`, `/comments/{id}`, `/questions/{id}`, `/answers/{id}`, `/researches/{id}`, `/users/{id}`, `/chat/{id}`, `/channels/{id}`, `/live/{id}`). Navigate with this; `null` for opaque resources |
 | `isRead` | boolean | Read state |
 | `readAt` | datetime \| null | Always `null` on the Cassandra read path (not tracked per-row) |
 | `createdAt` | datetime | UTC |

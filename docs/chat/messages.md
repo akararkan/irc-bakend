@@ -171,8 +171,15 @@ already-created message** on a nonce replay.
 
 **Side effects:** Cassandra message row written inside the send transaction;
 per-member unread bumped and `message.new` fanned out to recipients (only to the
-peer for request / restricted threads); Elasticsearch indexed async; offline
-recipients get a coalesced `NEW_MESSAGE` notification.
+peer for request / restricted threads); Elasticsearch indexed async; offline,
+**non-muted** recipients get a coalesced `NEW_MESSAGE` notification. In a
+CHANNEL, the bell is `CHANNEL_NEW_POST` instead — fanned to every active,
+non-muted subscriber at any channel size (skipped entirely for `silent` posts) —
+see [notifications](../notifications/notifications.md#chat-channel--live-notifications).
+Members `@`-mentioned in the body get a dedicated `MESSAGE_MENTION` bell instead
+of the generic one — it fires **through mute, presence and the group-size cutoff**
+(never on `silent` sends) — see
+[mentions](../platform/mentions.md#chat--channel-mentions).
 
 **Direct-message routing** is applied automatically at send time:
 `ALLOW` (write + fan-out) · `ROUTE_TO_REQUEST` (creates/advances a
@@ -618,7 +625,10 @@ through the media proxy so the client renders without extra round-trips.
   transaction; a rollback after that write leaves a harmless orphaned row
   (invisible — never referenced by the inbox pointer).
 - **Notifications** are in-app only today; `NEW_MESSAGE` fires for **offline**
-  recipients and coalesces per conversation.
+  recipients and coalesces per conversation. Members whose `mutedUntil` is in
+  the future are skipped (mute silences the bell, not the unread count).
+  Channel posts use the separate `CHANNEL_NEW_POST` fan-out — not gated on
+  presence or the 256-member cutoff.
 - **`starred` is per-viewer.** It reflects **your** star, computed at read time via a
   bulk lookup — the same row shows `starred: true` to you and `false` to everyone else.
 - **Disappearing messages** are enforced at write time: when the conversation's

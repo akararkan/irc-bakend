@@ -24,6 +24,13 @@ public interface ReplyByCommentRepository extends CassandraRepository<ReplyByCom
     List<ReplyByCommentEntity> newestPage(@Param("parentId") UUID parentId,
                                           @Param("pageSize") int pageSize);
 
+    /** Full-key point read — pre-edit text for mention delta scans. */
+    @Query("SELECT * FROM replies_by_comment " +
+           "WHERE parent_id = :parentId AND created_at = :createdAt AND reply_id = :replyId")
+    java.util.Optional<ReplyByCommentEntity> findRow(@Param("parentId") UUID parentId,
+                                                     @Param("createdAt") Instant createdAt,
+                                                     @Param("replyId") UUID replyId);
+
     @Query("UPDATE replies_by_comment SET text_content = :text, is_edited = true " +
            "WHERE parent_id = :parentId AND created_at = :createdAt AND reply_id = :replyId")
     void editText(@Param("parentId") UUID parentId,

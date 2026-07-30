@@ -33,9 +33,19 @@ public class CassandraHashtagController {
                       "postCount", hashtagService.postCountFor(tag));
     }
 
+    /**
+     * Legacy raw mention feed — owner-scoped: your mention inbox is private,
+     * so the path id must be the caller's own. Prefer the hydrated
+     * {@code GET /api/v1/mentions/me}.
+     */
     @GetMapping("/users/{userId}/mentions")
     public List<MentionByUserEntity> mentionsForUser(@PathVariable UUID userId,
                                                      @RequestParam(defaultValue = "20") int pageSize) {
+        UUID me = ak.dev.irc.app.security.SecurityUtils.getCurrentUserId().orElse(null);
+        if (me == null || !me.equals(userId)) {
+            throw new ak.dev.irc.app.common.exception.ForbiddenException(
+                    "You can only read your own mentions.", "NOT_OWNER");
+        }
         return hashtagService.mentionsForUser(userId, pageSize);
     }
 }

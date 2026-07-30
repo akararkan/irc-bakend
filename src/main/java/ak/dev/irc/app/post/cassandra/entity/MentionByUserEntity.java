@@ -10,7 +10,15 @@ import org.springframework.data.cassandra.core.mapping.Table;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Per-user mention inbox — newest first. */
+/**
+ * Per-user mention inbox — newest first. One row per direct {@code @mention}
+ * of {@code mentionedUserId}, across every mention-bearing surface.
+ *
+ * <p>Historically posts-only, hence the {@code post_id} clustering column —
+ * for non-post sources it now holds the SOURCE id (comment / research /
+ * question / answer id) and {@code source_type} says which. Legacy rows have
+ * {@code source_type = null}, which readers must treat as {@code POST}.</p>
+ */
 @Table("mentions_by_user")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class MentionByUserEntity {
@@ -27,4 +35,10 @@ public class MentionByUserEntity {
 
     @Column("author_id")    private UUID   authorId;
     @Column("text_preview") private String textPreview;
+
+    /** {@code MentionSource} name (POST_COMMENT, RESEARCH, …); null = POST (legacy rows). */
+    @Column("source_type")      private String sourceType;
+
+    /** The navigable parent for nested sources (comment → its post, answer → its question). */
+    @Column("source_parent_id") private UUID   sourceParentId;
 }

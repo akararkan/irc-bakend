@@ -44,6 +44,16 @@ public enum NotificationType {
     NEW_MESSAGE,          // a new message for an offline recipient
     MESSAGE_REQUEST,      // a stranger's first message (Requests inbox)
     ADDED_TO_GROUP,       // someone added you to a group
+    CALL_MISSED,          // a call rang out (or was cancelled) before you answered
+    MESSAGE_MENTION,      // you were @-mentioned in a chat message / channel post
+
+    // ── Channels ─────────────────────────────────────────────
+    CHANNEL_NEW_POST,     // a channel you subscribe to published a post
+    CHANNEL_JOIN_REQUEST, // someone asked to join a channel you administer
+    CHANNEL_JOIN_APPROVED,// your channel join request was approved
+
+    // ── Live streaming ───────────────────────────────────────
+    STREAM_STARTED,       // someone you follow went live
 
     // ── System ───────────────────────────────────────────────
     SYSTEM_ANNOUNCEMENT,

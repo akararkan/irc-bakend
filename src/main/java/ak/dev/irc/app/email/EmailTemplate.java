@@ -309,6 +309,12 @@ public class EmailTemplate {
             case NEW_MESSAGE      -> "sent you a message";
             case MESSAGE_REQUEST  -> "wants to send you a message";
             case ADDED_TO_GROUP   -> "added you to a group";
+            case CALL_MISSED      -> "tried to call you";
+            case MESSAGE_MENTION  -> "mentioned you in a chat";
+            case CHANNEL_NEW_POST      -> "posted in a channel you follow";
+            case CHANNEL_JOIN_REQUEST  -> "requested to join your channel";
+            case CHANNEL_JOIN_APPROVED -> "approved your channel join request";
+            case STREAM_STARTED        -> "went live";
 
             case STORY_PUBLISHED  -> "published a new story";
             case STORY_REACTED    -> "reacted to your story";

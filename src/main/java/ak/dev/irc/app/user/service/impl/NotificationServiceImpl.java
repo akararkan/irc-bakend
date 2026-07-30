@@ -358,6 +358,11 @@ public class NotificationServiceImpl implements NotificationService {
             case "Answer"   -> "/answers/"   + resourceId;
             case "Research" -> "/researches/"+ resourceId;
             case "User"     -> "/users/"     + resourceId;
+            // Chat: DMs/groups open the conversation, channels their own page,
+            // live streams the watch page (routes match the ika frontend).
+            case "Conversation" -> "/chat/"     + resourceId;
+            case "Channel"      -> "/channels/" + resourceId;
+            case "LiveStream"   -> "/live/"     + resourceId;
             default         -> null;
         };
     }

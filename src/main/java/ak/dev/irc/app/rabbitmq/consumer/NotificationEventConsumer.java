@@ -107,6 +107,7 @@ public class NotificationEventConsumer {
         private final UserRepository         userRepo;
         private final UserFollowRepository   followRepo;
         private final UserRestrictionRepository restrictionRepo;
+        private final ak.dev.irc.app.post.cassandra.repository.MentionByUserRepository mentionByUserRepo;
         private final ResearchCommentRepository researchCommentRepo;
         private final NotificationMapper     notifMapper;
         private final ApplicationEventPublisher eventPublisher;
@@ -924,12 +925,16 @@ public class NotificationEventConsumer {
         String body = buildMentionBody(actor, event.getSourceType(), event.getSnippet());
 
         // ── direct mentions ──────────────────────────────────────────────
+        // Dispatched one-by-one through the Cassandra pipeline (inbox row +
+        // unread counter + SSE + MENTIONS-gated email). Restriction is
+        // IG-style silent: the mention text stays visible, the ping doesn't.
         Set<UUID> alreadyNotified = new HashSet<>();
         if (!directIds.isEmpty()) {
             List<User> recipients = userRepo.findActiveByIdIn(directIds);
-            List<Notification> notifs = new ArrayList<>(recipients.size());
             for (User recipient : recipients) {
-                Notification n = Notification.builder()
+                alreadyNotified.add(recipient.getId());
+                if (isSilencedByRestriction(recipient.getId(), actor.getId(), "UserMentioned")) continue;
+                dispatcher.dispatch(Notification.builder()
                         .user(recipient)
                         .actor(actor)
                         .type(NotificationType.USER_MENTIONED)
@@ -937,13 +942,23 @@ public class NotificationEventConsumer {
                         .body(body)
                         .resourceId(resourceId)
                         .resourceType(resourceType)
-                        .build();
-                notifs.add(n);
-                alreadyNotified.add(recipient.getId());
-            }
-            if (!notifs.isEmpty()) {
-                notifRepo.saveAll(notifs);
-                notifs.forEach(n -> pushRealtime(n.getUser().getId(), n));
+                        .build());
+                // Mirror into the unified mentions-of-me feed. POST mentions
+                // never reach this consumer (they mirror inline in
+                // CassandraHashtagService), so this covers the other sources.
+                try {
+                    mentionByUserRepo.save(ak.dev.irc.app.post.cassandra.entity.MentionByUserEntity.builder()
+                            .mentionedUserId(recipient.getId())
+                            .createdAt(java.time.Instant.now())
+                            .postId(event.getSourceId())
+                            .authorId(actor.getId())
+                            .textPreview(event.getSnippet())
+                            .sourceType(event.getSourceType() == null ? null : event.getSourceType().name())
+                            .sourceParentId(event.getSourceParentId())
+                            .build());
+                } catch (Exception e) {
+                    log.debug("[CONSUMER] mention mirror skipped for {}: {}", recipient.getId(), e.getMessage());
+                }
             }
         }
 
@@ -1094,10 +1109,12 @@ public class NotificationEventConsumer {
                     .filter(java.util.Objects::nonNull)
                     .toList();
 
-            if (!notifications.isEmpty()) {
-                notifRepo.saveAll(notifications);
-                notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
-                totalNotifications += notifications.size();
+            // Per-row through the dispatcher: the Cassandra pipeline owns the
+            // inbox row, unread counter, SSE push and email gating (the old
+            // notifRepo.saveAll wrote a JPA table the inbox no longer reads).
+            for (Notification n : notifications) {
+                dispatcher.dispatch(n);
+                totalNotifications++;
             }
 
             if (followerIds.size() < FOLLOWER_FAN_OUT_BATCH) {
@@ -1125,10 +1142,9 @@ public class NotificationEventConsumer {
                     .map(notificationFactory)
                     .toList();
 
-            if (!notifications.isEmpty()) {
-                notifRepo.saveAll(notifications);
-                notifications.forEach(n -> pushRealtime(n.getUser().getId(), n));
-                totalNotifications += notifications.size();
+            for (Notification n : notifications) {
+                dispatcher.dispatch(n);
+                totalNotifications++;
             }
 
             if (!recipientsPage.hasNext()) {

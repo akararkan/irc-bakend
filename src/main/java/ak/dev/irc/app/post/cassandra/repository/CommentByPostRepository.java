@@ -18,6 +18,13 @@ public interface CommentByPostRepository extends CassandraRepository<CommentByPo
     List<CommentByPostEntity> firstPage(@Param("postId") UUID postId,
                                         @Param("pageSize") int pageSize);
 
+    /** Full-key point read — pre-edit text for mention delta scans. */
+    @Query("SELECT * FROM comments_by_post " +
+           "WHERE post_id = :postId AND created_at = :createdAt AND comment_id = :commentId")
+    java.util.Optional<CommentByPostEntity> findRow(@Param("postId") UUID postId,
+                                                    @Param("createdAt") Instant createdAt,
+                                                    @Param("commentId") UUID commentId);
+
     /**
      * NEWEST rows first. The table clusters ASCENDING on created_at, so a
      * plain LIMIT returns the OLDEST comments — the dedup guard needs the

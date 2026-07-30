@@ -16,4 +16,12 @@ public interface MentionByUserRepository extends CassandraRepository<MentionByUs
     @Query("SELECT * FROM mentions_by_user WHERE mentioned_user_id = :userId LIMIT :pageSize")
     List<MentionByUserEntity> firstPage(@Param("userId") UUID userId,
                                         @Param("pageSize") int pageSize);
+
+    /** Keyset page: rows strictly older than {@code cursor} (a prior page's
+     *  last {@code mentionedAt}). Clustering order is already newest-first. */
+    @Query("SELECT * FROM mentions_by_user WHERE mentioned_user_id = :userId "
+         + "AND created_at < :cursor LIMIT :pageSize")
+    List<MentionByUserEntity> pageAfter(@Param("userId") UUID userId,
+                                        @Param("cursor") java.time.Instant cursor,
+                                        @Param("pageSize") int pageSize);
 }

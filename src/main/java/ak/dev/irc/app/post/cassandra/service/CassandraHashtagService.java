@@ -50,12 +50,12 @@ import java.util.regex.Pattern;
 public class CassandraHashtagService {
 
     private static final Pattern HASHTAG = Pattern.compile("#(\\w+)");
-    private static final Pattern MENTION = Pattern.compile("@(\\w+)");
 
     private final PostByHashtagRepository  postByHashtagRepo;
     private final HashtagCounterRepository hashtagCounterRepo;
     private final MentionByUserRepository  mentionByUserRepo;
     private final UserRepository           userRepo;
+    private final ak.dev.irc.app.user.repository.UserBlockRepository userBlockRepo;
     private final CounterService           counterService;
     private final CassandraNotificationService notificationService;
     private final ContentTagService        contentTagService;
@@ -85,6 +85,19 @@ public class CassandraHashtagService {
     public ExtractedEntities indexEntitiesForPost(UUID postId, UUID authorId, String postType,
                                                   String textContent, Instant createdAt,
                                                   String mediaUrl) {
+        return indexEntitiesForPost(postId, authorId, postType, textContent, createdAt, mediaUrl,
+                Set.of());
+    }
+
+    /**
+     * @param skipNotifyHandles handles (lowercase) that must NOT be re-notified —
+     *                          the edit path passes the pre-edit mention set so
+     *                          only newly added handles get pinged; mirror rows
+     *                          are still (re)written for every current mention.
+     */
+    private ExtractedEntities indexEntitiesForPost(UUID postId, UUID authorId, String postType,
+                                                   String textContent, Instant createdAt,
+                                                   String mediaUrl, Set<String> skipNotifyHandles) {
         String preview = preview(textContent);
 
         // Hashtags
@@ -110,8 +123,11 @@ public class CassandraHashtagService {
                     postId, authorId, preview, createdAt, tags);
         }
 
-        // Mentions — single batched Postgres query for all @usernames.
-        Set<String> usernames = extractLower(MENTION, textContent);
+        // Mentions — same grammar as every other surface (MentionExtractor:
+        // dot/underscore charset, email-safe look-behind), then a single
+        // batched Postgres query for all @usernames.
+        Set<String> usernames = ak.dev.irc.app.common.util.MentionExtractor
+                .extract(textContent).getUsernames();
         List<UUID> mentionedIds = new ArrayList<>();
         if (usernames.isEmpty()) {
             return new ExtractedEntities(new ArrayList<>(tags), mentionedIds);
@@ -123,6 +139,21 @@ public class CassandraHashtagService {
         } catch (Exception e) {
             log.warn("[MENTION] batched resolve failed: {}", e.getMessage());
             return new ExtractedEntities(new ArrayList<>(tags), mentionedIds);
+        }
+
+        // Self-mentions never count, and blocked pairs are excluded up front so
+        // the mirror feed matches what the delivery engine would allow anyway.
+        resolved = new ArrayList<>(resolved);
+        resolved.removeIf(u -> u.getId().equals(authorId));
+        if (!resolved.isEmpty()) {
+            try {
+                Set<UUID> ids = new java.util.HashSet<>();
+                for (User u : resolved) ids.add(u.getId());
+                Set<UUID> blocked = new java.util.HashSet<>(userBlockRepo.findBlockedAmong(authorId, ids));
+                if (!blocked.isEmpty()) resolved.removeIf(u -> blocked.contains(u.getId()));
+            } catch (Exception e) {
+                log.debug("[MENTION] block filter skipped: {}", e.getMessage());
+            }
         }
 
         // Write the mention-mirror rows synchronously (they're per-recipient
@@ -144,15 +175,23 @@ public class CassandraHashtagService {
             }
         }
 
+        // Notify only handles NOT carried over from the pre-edit body — an
+        // edit re-pings the newly tagged, never everyone from the first save.
+        Map<UUID, String> toNotify = new HashMap<>(mentionedUsernames);
+        if (!skipNotifyHandles.isEmpty()) {
+            toNotify.entrySet().removeIf(e ->
+                    e.getValue() != null && skipNotifyHandles.contains(e.getValue().toLowerCase()));
+        }
+
         // Build + deliver all USER_MENTIONED notifications in one async task.
         // The author-label read happens on the executor thread, not here.
-        if (!mentionedUsernames.isEmpty()) {
+        if (!toNotify.isEmpty()) {
             notificationService.deliverAllAsync(() -> {
                 String authorLabel = userRepo.findById(authorId)
                         .map(User::getUsername).map(u -> "@" + u).orElse("Someone");
                 List<CassandraNotificationService.DeliverRequest> batch =
-                        new ArrayList<>(mentionedUsernames.size());
-                for (UUID mentionedId : mentionedUsernames.keySet()) {
+                        new ArrayList<>(toNotify.size());
+                for (UUID mentionedId : toNotify.keySet()) {
                     batch.add(new CassandraNotificationService.DeliverRequest(
                             mentionedId,
                             NotificationKind.USER_MENTIONED,
@@ -213,6 +252,23 @@ public class CassandraHashtagService {
                 log.warn("[HASHTAG] clear #{} for {} failed: {}", tag, postId, e.getMessage());
             }
         }
+        // Mention mirror rows for handles in the old text — one batched
+        // resolve, then per-recipient point deletes (removing a mention from
+        // the text removes the post from that user's mentions-of-me feed).
+        Set<String> oldHandles = ak.dev.irc.app.common.util.MentionExtractor
+                .extract(oldTextContent).getUsernames();
+        if (!oldHandles.isEmpty()) {
+            try {
+                for (User u : userRepo.findAllByUsernameIn(oldHandles)) {
+                    cqlOperations.execute(
+                            "DELETE FROM mentions_by_user WHERE mentioned_user_id = ? AND created_at = ? AND post_id = ?",
+                            u.getId(), createdAt, postId);
+                }
+            } catch (Exception e) {
+                log.warn("[MENTION] mirror clear for {} failed: {}", postId, e.getMessage());
+            }
+        }
+
         // Wipe the unified content_by_tag entries even if the post had no #s
         // (cheap empty call; covers schema drift where the post side missed an
         // index).
@@ -220,16 +276,20 @@ public class CassandraHashtagService {
     }
 
     /**
-     * Re-extract hashtags after a post edit. Called from {@code editPost} only
-     * when the text actually changed. The strategy is "clear-all + re-index" —
-     * simpler than a delta and Cassandra DELETE-then-INSERT on different rows
-     * doesn't trip on uniqueness.
+     * Re-extract hashtags + mentions after a post edit. Called from
+     * {@code editPost} only when the text actually changed. The strategy is
+     * "clear-all + re-index" for the structural rows — but notifications are
+     * <b>delta-only</b>: handles already present in the old body are passed as
+     * skip-list so an edit never re-pings everyone tagged the first time.
      */
     public ExtractedEntities reindexEntitiesForPost(UUID postId, UUID authorId, String postType,
                                                     String oldTextContent, String newTextContent,
                                                     Instant createdAt, String mediaUrl) {
         clearEntitiesForPost(postId, oldTextContent, createdAt);
-        return indexEntitiesForPost(postId, authorId, postType, newTextContent, createdAt, mediaUrl);
+        Set<String> previouslyMentioned = ak.dev.irc.app.common.util.MentionExtractor
+                .extract(oldTextContent).getUsernames();
+        return indexEntitiesForPost(postId, authorId, postType, newTextContent, createdAt, mediaUrl,
+                previouslyMentioned);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

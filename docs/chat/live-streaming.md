@@ -204,6 +204,11 @@ edits the title/description mid-broadcast — patch the card in place.
 (mirror images), so a follower's "following is live" rail adds the card when a
 followed host goes live and drops it when they end — no polling. `stream.ended`
 carries the already-`ENDED` `stream`; match and remove by `stream.id`.
+Alongside the realtime event, each follower also gets a persisted
+**`STREAM_STARTED`** inbox notification ("@host is live", `SOCIAL` tab, deep
+link `/live/{streamId}`, in-app only — never emailed); going offline produces
+**no** bell, only the `stream.ended` event. See
+[notifications](../notifications/notifications.md#chat-channel--live-notifications).
 `stream.viewer` is **not** fanned to followers (it fires on every join/leave — a
 per-stream fan-out storm), so a rail's viewer counts are approximate between
 refreshes by design; the exact count is live on the watch page (a participant).

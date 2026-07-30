@@ -56,14 +56,27 @@ muting a channel only silences *your* notifications.
 
 ## Notifications
 
-- Each non-silent post notifies subscribers (respecting each subscriber's mute
-  and email/push preferences). A [`silent`](posts.md#post-conversationschannelidmessages--post)
-  post delivers with **no push**.
+- **Every non-silent post** produces a persisted `CHANNEL_NEW_POST` inbox
+  notification for **every active, non-muted subscriber** — at any channel
+  size, online or not (a channel post is content, like `POST_NEW`). Posts
+  coalesce per channel: a burst within the 60-minute window is **one** row
+  ("Channel title: latest preview" with a bumped count), deep-linking to
+  `/channels/{id}`. The fan-out runs async with a keyset scan (500-row pages,
+  capped at 50 000 subscribers) and excludes muted members **in the query**.
+- A [`silent`](posts.md#post-conversationschannelidmessages--post) post
+  delivers, counts as unread, and appears in realtime — but skips the bell
+  fan-out entirely (Telegram's "post without notification").
+- Muting the channel (`POST /conversations/{id}/mute`) stops its bell rows
+  while `mutedUntil` is in the future; unread still accrues. Exception: a post
+  that `@`-mentions you by name pings through the mute as a `MESSAGE_MENTION`
+  (and replaces your `CHANNEL_NEW_POST` for that post) — see
+  [mentions](../../platform/mentions.md#chat--channel-mentions).
 - Admin-facing: `CHANNEL_JOIN_REQUEST` (a new request, aggregated per channel);
   the requester gets `CHANNEL_JOIN_APPROVED` on approval — see
   [admins.md](admins.md#join-requests).
-- Notification transport and the inbox API live in
-  [notifications/](../../notifications/notifications.md).
+- All channel kinds are **in-app only** (never emailed) and land in the `CHAT`
+  inbox tab. Transport + inbox API:
+  [notifications/](../../notifications/notifications.md#chat-channel--live-notifications).
 
 ---
 

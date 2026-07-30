@@ -54,6 +54,7 @@ public class CallService {
     private final ConversationMemberRepository memberRepo;
     private final ChatRelationshipService relationships;
     private final ChatRealtimeBroadcaster broadcaster;
+    private final ChatNotificationService chatNotifications;
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -200,6 +201,29 @@ public class CallService {
         callRepo.save(call);
         broadcaster.broadcast(memberRepo.findActiveMemberIds(call.getConversationId()),
                 event(ChatRealtimeEventType.CALL_ENDED, toResponse(call)));
+        // A ring that ended unanswered — rang out (MISSED) or the caller hung up
+        // while still ringing (CANCELLED) — leaves a "missed call" bell row for
+        // every invitee who never engaged. DECLINED/ENDED invitees saw the call.
+        if (status == CallStatus.MISSED || status == CallStatus.CANCELLED) {
+            notifyMissedInvitees(call);
+        }
+    }
+
+    /** One CALL_MISSED bell per still-INVITED participant; aggregated per
+     *  conversation downstream ("3 missed calls from @alice"). */
+    private void notifyMissedInvitees(CallSession call) {
+        boolean video = call.getType() == CallType.VIDEO;
+        for (CallParticipant p : participantRepo.findByCallId(call.getId())) {
+            if (p.getState() == CallParticipantState.INVITED
+                    && !p.getUserId().equals(call.getInitiatorId())) {
+                try {
+                    chatNotifications.notifyMissedCall(
+                            p.getUserId(), call.getInitiatorId(), call.getConversationId(), video);
+                } catch (Exception e) {
+                    log.debug("[CALL] missed-call notify {} skipped: {}", p.getUserId(), e.getMessage());
+                }
+            }
+        }
     }
 
     private boolean anyoneEngaged(CallSession call) {

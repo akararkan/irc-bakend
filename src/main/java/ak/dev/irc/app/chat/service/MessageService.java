@@ -79,6 +79,7 @@ public class MessageService {
     private final ReactionService reactionService;
     private final ChatRealtimeBroadcaster broadcaster;
     private final ChatNotificationService chatNotifications;
+    private final ChannelPostFanoutService channelPostFanout;
     private final PresenceService presence;
     private final UnreadBadgeCache unreadBadge;
     private final ChatMapper mapper;
@@ -747,11 +748,46 @@ public class MessageService {
             broadcaster.broadcast(recipients, newEvt);
         }
 
-        // Offline bell notifications (skip restricted; request → one MESSAGE_REQUEST).
+        // @mention bells first — high-signal, so they cut through mute, presence
+        // and the group-size cutoff (Telegram semantics). Only members who can
+        // read the message qualify; silent sends stay fully silent; mentioned
+        // members are excluded from the generic bells below so one message
+        // never produces two rows for the same person.
+        Set<UUID> mentionBelled = Set.of();
+        if (decision == SendDecision.ALLOW && !silent
+                && response != null && response.mentions() != null && !response.mentions().isEmpty()) {
+            Set<UUID> members = Set.copyOf(recipients);
+            Set<UUID> targets = new HashSet<>();
+            for (UUID m : response.mentions()) {
+                if (!m.equals(senderId) && members.contains(m)) targets.add(m);
+            }
+            if (!targets.isEmpty()) {
+                String label = labelOf(response);
+                for (UUID r : targets) {
+                    chatNotifications.notifyMessageMention(r, senderId, conversationId,
+                            label, preview, convo.isChannel(), convo.getTitle());
+                }
+                mentionBelled = targets;
+            }
+        }
+
+        // Bell notifications (skip restricted; request → one MESSAGE_REQUEST).
         // The sender label comes from the already-hydrated response — no extra read.
         if (decision == SendDecision.ROUTE_TO_REQUEST) {
             if (requestJustCreated) {
                 chatNotifications.notifyMessageRequest(directPeer, senderId, conversationId, labelOf(response));
+            }
+        } else if (decision == SendDecision.ALLOW && convo.isChannel()) {
+            // Channel posts bell EVERY active, non-muted subscriber at any channel
+            // size (aggregated per channel) — like POST_NEW / STREAM_STARTED, a
+            // channel post is content, not a conversation turn, so it is not
+            // gated on presence or the small-conversation cutoff. The fan-out
+            // service pages by keyset and honors mute in the query itself.
+            if (smallEnough) {
+                unreadBadge.invalidateAll(recipients.stream().filter(r -> !r.equals(senderId)).toList());
+            }
+            if (!silent) {
+                channelPostFanout.fanoutChannelPost(convo, senderId, preview, mentionBelled);
             }
         } else if (decision == SendDecision.ALLOW && smallEnough) {
             String label = labelOf(response);
@@ -759,8 +795,9 @@ public class MessageService {
             unreadBadge.invalidateAll(others);                    // one DEL, not one per member
             if (!silent) {
                 Set<UUID> online = presence.onlineAmong(others);  // one MGET, not one per member
+                Set<UUID> muted  = Set.copyOf(memberRepo.findCurrentlyMutedIds(conversationId));
                 for (UUID r : others) {
-                    if (!online.contains(r)) {
+                    if (!online.contains(r) && !muted.contains(r) && !mentionBelled.contains(r)) {
                         chatNotifications.notifyNewMessage(r, senderId, conversationId, label, preview);
                     }
                 }

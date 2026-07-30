@@ -66,3 +66,10 @@ Base path: `/api/v1`. Auth: `Authorization: Bearer <accessToken>`.
 ## Notes
 - A blocked DM cannot be called (`403 BLOCKED`).
 - Media transport (STUN/TURN/SFU) is deployment configuration, outside this API.
+- **Missed-call bell:** when a call ends `MISSED` (rang out) or `CANCELLED`
+  (caller hung up while still ringing), every invitee who never joined nor
+  declined gets a persisted `CALL_MISSED` notification — "You missed a
+  voice/video call from @caller", aggregated per conversation ("3 missed
+  calls"), deep-linking to `/chat/{conversationId}`. `DECLINED`/`ENDED` invitees
+  saw the call, so they get nothing. See
+  [notifications](../notifications/notifications.md#chat-channel--live-notifications).

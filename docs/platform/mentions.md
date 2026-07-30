@@ -2,20 +2,26 @@
 
 Base path: **`/api/v1/mentions`**
 
-Helpers for the compose box's `@`-mention experience, plus a reference for the
-server-side mention pipeline that fires when mention-bearing text is actually saved.
+The platform-wide `@`-mention system: compose-box helpers, the owner-scoped
+"everywhere I was mentioned" feed, and a reference for the server-side pipeline
+that fires when mention-bearing text is saved on **any** surface — posts,
+comments, research (+ comments), questions, answers, chat messages and channel
+posts.
 
-Three endpoints:
+Endpoints:
 
 | Endpoint | Job |
 |---|---|
 | `GET /mentions/suggest` | Ranked autocomplete candidates for a partial handle |
 | `POST /mentions/click` | Record that the user picked a candidate from the picker |
 | `POST /mentions/parse` | Extract `@username` / `@followers` tokens with offsets for highlighting |
+| `GET /mentions/me` | Unified mentions-of-me feed (hydrated, deep-linked, keyset-paged) |
+| `GET /users/{userId}/mentions` | Legacy raw feed — **self-only** (403 for anyone else); prefer `/mentions/me` |
 
-Auth is Bearer JWT platform-wide; these endpoints tolerate anonymous callers (the
-suggest endpoint just skips viewer-aware filtering and activity recording). Errors use
-the standard envelope — see [../errors/error-handling.md](../errors/error-handling.md).
+Auth is Bearer JWT platform-wide; suggest/click/parse tolerate anonymous callers
+(suggest just skips viewer-aware filtering and activity recording), while
+`/mentions/me` requires authentication. Errors use the standard envelope — see
+[../errors/error-handling.md](../errors/error-handling.md).
 
 Siblings: [tags.md](./tags.md) · [search.md](./search.md) ·
 [media-proxy.md](./media-proxy.md) · [activity.md](./activity.md) · [audit.md](./audit.md)
@@ -201,40 +207,142 @@ None beyond the standard envelope (malformed JSON → `400`).
 
 ---
 
-## 4. The @mention pipeline (server-side reference)
+## 4. Mentions-of-me feed
+
+```
+GET /api/v1/mentions/me
+```
+
+**Auth:** Bearer JWT required. Always scoped to the caller — there is no way to
+read another user's mention feed.
+
+Everywhere the caller was **directly** `@`-mentioned, newest first, across
+posts, post comments/replies, research, research comments, questions and
+answers. Backed by the Cassandra `mentions_by_user` table (one partition per
+user — a point read at any scale). Two deliberate exclusions:
+
+- **`@followers` fan-outs** are not rows here — only direct, by-name mentions.
+- **Chat mentions** surface as [`MESSAGE_MENTION` notifications](#chat--channel-mentions)
+  only, never in a browsable feed (messages can be deleted or disappearing).
+
+### Query parameters
+
+| Name | Type | Default | Notes |
+|---|---|---|---|
+| `limit` | int | `20` | Clamped to `[1, 50]`. |
+| `cursor` | ISO instant | — | Keyset cursor: pass the last row's `mentionedAt` to get the next (strictly older) page. |
+
+### Response `200`
+
+```json
+[
+  {
+    "sourceType":  "POST_COMMENT",
+    "sourceId":    "7c0d…",
+    "parentId":    "2b1a…",
+    "snippet":     "pinging @you in a comment",
+    "mentionedAt": "2026-07-30T20:41:03.512Z",
+    "deepLink":    "/posts/2b1a…",
+    "actor": {
+      "id":        "b9a7…",
+      "username":  "writer",
+      "fullName":  "Writer Test",
+      "avatarUrl": "https://cdn…/avatars/writer.jpg"
+    }
+  }
+]
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `sourceType` | enum | `POST` · `POST_COMMENT` · `RESEARCH` · `RESEARCH_COMMENT` · `QUESTION` · `QUESTION_ANSWER` (legacy rows with no stored type read as `POST`) |
+| `sourceId` | UUID | The row that contains the mention (comment id, answer id, …) |
+| `parentId` | UUID \| null | Navigable parent for nested sources (comment → its post, answer → its question) |
+| `snippet` | string | Text preview captured at mention time |
+| `mentionedAt` | instant | Feed ordering key — feed it back as `cursor` |
+| `deepLink` | string \| null | Ready-to-navigate path: `/posts/{id}`, `/researches/{id}`, `/questions/{id}` (nested sources link to the parent) |
+| `actor` | object \| null | The mentioning user, hydrated (avatar included) in one batched query |
+
+Rows are removed when a post edit drops the mention from the text; removing a
+mention elsewhere keeps the historical row (notification-time snapshot).
+
+---
+
+## 5. The @mention pipeline (server-side reference)
 
 Nothing in this section is a callable endpoint — it describes what happens
-automatically when mention-bearing text is saved (post, comment, research, research
-comment, question, answer). Useful for understanding what your users will trigger.
+automatically when mention-bearing text is saved. **One grammar everywhere:**
+every surface parses with the same `MentionExtractor` rules documented in §3
+(including the email-safe look-behind — `foo@bar.com` never pings a user named
+`bar`).
+
+### Surface matrix
+
+| Surface | Fires on | Edit behaviour | `@followers` | Notification kind |
+|---|---|---|---|---|
+| Post | create | delta-only re-scan; removed handles drop their feed row | ✅ | `USER_MENTIONED` |
+| Post comment / reply | create | delta-only | ❌ | `USER_MENTIONED` |
+| Research | create/publish | delta-only | ✅ | `USER_MENTIONED` |
+| Research comment | create | delta-only | ❌ | `USER_MENTIONED` |
+| Question | create | delta-only | ✅ | `USER_MENTIONED` |
+| Answer | create | delta-only | ❌ | `USER_MENTIONED` |
+| Chat message (DM/group) | send | send-only (edits never ping) | ❌ | `MESSAGE_MENTION` |
+| Channel post | send | send-only | ❌ | `MESSAGE_MENTION` |
+| Story | — | — | — | no text body — nothing to scan |
+
+### Steps
 
 **1. Extraction.** The saved text runs through the same parser as `POST /parse`.
 
 **2. Batched resolution — one query.** All extracted handles are resolved to user
-rows in a **single** Postgres round-trip (`findActiveByUsernameIn`), no matter how
-many handles the text carries. Unknown handles silently resolve to nothing.
+rows in a **single** Postgres round-trip, no matter how many handles the text
+carries. Unknown handles silently resolve to nothing.
 
 **3. Filtering.** Self-mentions are dropped, and every user in a block relationship
-with the author is removed via one batched block-table lookup.
+with the author is removed via one batched block-table lookup — on every surface,
+including the post fast-path (mirror rows are filtered the same way, so a blocked
+user's feed never shows the post either).
 
-**4. One event, fan-out on the consumer.** If anyone remains (or a permitted
-`@followers` was used), a single `UserMentionedEvent` is published to RabbitMQ
-*after* the database transaction commits. The consumer then:
-
-- writes one **`USER_MENTIONED` notification** per direct recipient (batch insert)
-  and pushes it over the notification SSE stream;
-- writes a `USER_MENTIONED` **activity row** per direct recipient (the incoming half;
-  the author's own `MENTION_LOOKUP` was recorded at compose time);
-- honours per-user restriction settings (a restricted author's notification is
-  silently swallowed).
+**4. Delivery — the Cassandra notification pipeline.** Direct recipients get one
+**`USER_MENTIONED`** notification each through the shared delivery engine (inbox
+row + unread counter + SSE push + `MENTIONS`-gated email; see
+[notifications](../notifications/notifications.md#notification-kinds)), one
+**`mentions_by_user` feed row** (drives `GET /mentions/me`), and one
+`USER_MENTIONED` **activity row** (the incoming half; the author's own
+`MENTION_LOOKUP` was recorded at compose time). IG-style **restriction** silently
+swallows the notification while the content stays visible. Posts deliver inline
+(no broker hop); the other surfaces publish one `UserMentionedEvent` to RabbitMQ
+after commit and a consumer fans out.
 
 **5. `@followers` fan-out — where allowed.** The `@followers` token notifies all of
 the author's followers, paged in batches, de-duplicated against the direct-mention
 recipients. It is honoured **only on top-level creates** (post, research, question) —
 never on comments/answers and never on edits, to keep it from becoming a spam vector.
-Follower fan-out deliberately does **not** write activity rows (it would flood every
-follower's feed).
+Follower fan-out writes neither activity rows nor `mentions_by_user` rows (it would
+flood every follower's feed).
 
 **6. Edits notify only the delta.** Re-saving edited text re-scans it, but only
 handles that were **not** present in the previous body get notified — editing a post
 doesn't re-ping everyone tagged the first time. `@followers` is never honoured on an
-edit.
+edit. Post edits additionally reconcile the mentions-of-me feed: handles removed
+from the text lose their row.
+
+### Chat & channel mentions
+
+Chat mentions are **higher-signal than the surrounding conversation** and get
+their own kind, **`MESSAGE_MENTION`** (`MENTIONS` inbox tab, in-app only — a
+chat-mention email would leak private message text):
+
+- **Cuts through every chat gate.** The mentioned member is belled even when
+  they muted the conversation/channel, even when online, and even in groups
+  above the 256-member bell cutoff — a ping's whole purpose is to defeat those
+  filters (Telegram semantics).
+- **Exactly one bell per message per person.** Mentioned members are excluded
+  from the generic `NEW_MESSAGE` / `CHANNEL_NEW_POST` row for that message.
+- **Membership required.** Only members who can read the message qualify —
+  `@someone` outside the conversation never notifies them.
+- **`silent: true` wins.** A silent send/post produces no bells at all,
+  mentions included.
+- **Deep links:** `/chat/{conversationId}` for DMs/groups, `/channels/{channelId}`
+  for channel posts.
+- `@followers` has no meaning in chat and is ignored; edits never re-scan.

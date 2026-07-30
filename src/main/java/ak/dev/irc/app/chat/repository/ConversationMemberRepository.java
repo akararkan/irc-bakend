@@ -217,6 +217,34 @@ public interface ConversationMemberRepository
         """)
     long sumUnread(@Param("uid") UUID userId);
 
+    /** Active members currently muting the conversation — excluded from bell
+     *  notifications (mute suppresses push but NOT the unread count). */
+    @Query("""
+        SELECT m.id.userId FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.mutedUntil IS NOT NULL AND m.mutedUntil > CURRENT_TIMESTAMP
+        """)
+    List<UUID> findCurrentlyMutedIds(@Param("cid") UUID conversationId);
+
+    /**
+     * Keyset page of bell-notifiable member ids: ACTIVE and not currently
+     * muted, ordered by user id. Same shape as
+     * {@code UserFollowRepository.findFollowerIdsAfter} — constant-time per
+     * page at any depth, so a 100k-subscriber channel post fan-out never
+     * degrades the way OFFSET paging would.
+     */
+    @Query("""
+        SELECT m.id.userId FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND (m.mutedUntil IS NULL OR m.mutedUntil <= CURRENT_TIMESTAMP)
+          AND (:afterId IS NULL OR m.id.userId > :afterId)
+        ORDER BY m.id.userId ASC
+        """)
+    List<UUID> findNotifiableMemberIdsAfter(@Param("cid") UUID conversationId,
+                                            @Param("afterId") UUID afterId,
+                                            Pageable pageable);
+
     // ── Channels ─────────────────────────────────────────────────────────────────
 
     /** Active owner + admin ids — join-request notifications and admin fan-out. */
