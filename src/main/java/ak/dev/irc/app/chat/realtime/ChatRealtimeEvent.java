@@ -47,6 +47,8 @@ public class ChatRealtimeEvent {
     private UUID userId;
     private Long lastReadMessageId;
     private Boolean isTyping;
+    /** typing only — {@code ChatAction} name (TYPING, RECORDING_VOICE, SENDING_PHOTO, …). */
+    private String activity;
     private String presenceStatus;   // "online" | "offline"
     private Long lastSeenEpochMs;
 

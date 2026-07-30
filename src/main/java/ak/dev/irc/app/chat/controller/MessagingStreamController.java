@@ -78,12 +78,14 @@ public class MessagingStreamController {
         return sseService.subscribe(userId);
     }
 
-    /** Ephemeral typing indicator to the other members of a conversation. */
+    /** Ephemeral typing/action indicator to the other members of a conversation
+     *  ("typing…", "recording a voice message…", "sending a photo…"). */
     @PostMapping("/conversations/{id}/typing")
     public ResponseEntity<Void> typing(@PathVariable UUID id,
                                        @RequestBody TypingRequest req,
                                        @AuthenticationPrincipal User user) {
-        typingService.handleTyping(id, requireId(user), req.isTyping());
+        typingService.handleTyping(id, requireId(user), req.isTyping(),
+                ak.dev.irc.app.chat.enums.ChatAction.parse(req.getActivity()));
         return ResponseEntity.ok().build();
     }
 

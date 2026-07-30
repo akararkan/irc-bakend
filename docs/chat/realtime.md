@@ -51,7 +51,7 @@ Related: [Conversations](./conversations.md) · [Messages](./messages.md) ·
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/messaging/stream?token=` | The single SSE stream for all of my chat events |
-| `POST` | `/conversations/{id}/typing` | Publish an ephemeral typing indicator |
+| `POST` | `/conversations/{id}/typing` | Publish an ephemeral typing / activity indicator ("typing…", "recording a voice message…") |
 | `GET` | `/presence?userIds=a,b,c` | Batch online/offline + last-seen for a set of users |
 | `GET` | `/messaging/unread-count` | Total unread badge across all my conversations |
 
@@ -121,7 +121,7 @@ lowercase, e.g. `message.new`), **not** the enum constant.
 | `message.reaction` | `conversationId`, `messageId`, `userId`, `emoji`, `added` | Reaction added (`added: true`) or removed (`added: false`). |
 | `receipt.read` | `conversationId`, `userId`, `lastReadMessageId` | `userId` has read up to `lastReadMessageId` — turn their ticks blue. *Suppressed for pending/restricted threads, or if either side has read receipts off.* |
 | `receipt.delivered` | `conversationId`, `userId`, `messageId` | Message reached `userId`'s device (their delivered marker advances — grey double-tick). *Same suppression as `receipt.read`.* |
-| `typing` | `conversationId`, `userId`, `isTyping` | `userId` is (`true`) / is no longer (`false`) typing. Ephemeral. *Suppressed while a request is pending, or if `userId` has typing off.* |
+| `typing` | `conversationId`, `userId`, `isTyping`, `activity` | `userId` is (`true`) / is no longer (`false`) composing. `activity` says **what** (`TYPING`, `RECORDING_VOICE`, `SENDING_PHOTO`, … — see §2). Ephemeral. *Suppressed while a request is pending, or if `userId` has typing off.* |
 | `presence` | `userId`, `presenceStatus` (`"online"`/`"offline"`), `lastSeenEpochMs` | A contact came online / went offline. *Never sent across a block; `lastSeenEpochMs` omitted when last-seen is hidden.* |
 | `conversation.updated` | `conversationId`, `conversation?`, `memberChange?` | Title/avatar/settings edited, message pinned/unpinned, group deleted (`memberChange: "DELETED"`), or a request accepted. |
 | `member.changed` | `conversationId`, `userId`, `memberChange`, `role` | Group membership change: `ADDED` / `REMOVED` / `LEFT` / `PROMOTED` / `DEMOTED` / `RESTRICTED` / `UNRESTRICTED`. Also delivered directly to the affected user. |
@@ -155,6 +155,7 @@ events; `presence` carries only `userId` + presence fields.
   "userId": "9c1f…",
   "lastReadMessageId": 172630000000000000,  // receipt.read
   "isTyping": true,                          // typing
+  "activity": "RECORDING_VOICE",             // typing — what the composer is doing (§2)
   "presenceStatus": "online",                // presence: "online" | "offline"
   "lastSeenEpochMs": 1753192800000,          // presence (offline)
 
@@ -191,7 +192,7 @@ never opens.
 
 ---
 
-## 2. `POST /conversations/{id}/typing` — typing indicator
+## 2. `POST /conversations/{id}/typing` — typing / activity indicator
 
 ```
 POST /api/v1/conversations/{id}/typing
@@ -208,11 +209,32 @@ conversation over Redis pub/sub. Purely ephemeral — never stored.
 **Request body (`TypingRequest`):**
 
 ```jsonc
-{ "isTyping": true }
+{ "isTyping": true, "activity": "RECORDING_VOICE" }
 ```
 
-`isTyping: false` is optional — a Redis TTL (~6 s) auto-clears a stale "typing" if
+- `isTyping` — both `isTyping` and `typing` spellings are accepted.
+- `activity` *(optional)* — Telegram-style: **what** the sender is doing, so
+  receivers can render "recording a voice message…" instead of a bare
+  "typing…". One of `TYPING` · `RECORDING_VOICE` · `SENDING_VOICE` ·
+  `RECORDING_VIDEO_NOTE` · `SENDING_VIDEO_NOTE` · `SENDING_PHOTO` ·
+  `SENDING_VIDEO` · `SENDING_FILE` · `SENDING_AUDIO` · `CHOOSING_STICKER` ·
+  `SENDING_LOCATION` (`ChatAction`). Parsing is lenient: `action` is accepted
+  as an alias field, `UPLOADING_*` synonyms map onto `SENDING_*`, and any
+  unknown value degrades to plain `TYPING` — an ephemeral cosmetic hint never
+  fails the request. Omitted → `TYPING`.
+
+Suggested mapping while composing each message type: voice note →
+`RECORDING_VOICE` while the mic is live, then `SENDING_VOICE` during the
+upload; video note → the two `*_VIDEO_NOTE` states; image/GIF →
+`SENDING_PHOTO`; video → `SENDING_VIDEO`; file → `SENDING_FILE`; music →
+`SENDING_AUDIO`. (Per-message upload progress bars stay client-side — the
+backend only broadcasts the composer state; the `clientNonce` on the send makes
+retries safe.)
+
+`isTyping: false` is optional — a Redis TTL (~6 s) auto-clears a stale state if
 the client simply stops sending, so you don't have to send an explicit stop.
+Re-send (throttled) while the state persists, and send the new `activity`
+immediately when it changes.
 
 **Response:** `200 OK` (empty body).
 

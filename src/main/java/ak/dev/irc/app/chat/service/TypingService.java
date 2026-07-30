@@ -35,15 +35,32 @@ public class TypingService {
     private final ChatSettingsService chatSettings;
 
     public void handleTyping(UUID conversationId, UUID senderId, boolean isTyping) {
+        handleTyping(conversationId, senderId, isTyping,
+                ak.dev.irc.app.chat.enums.ChatAction.TYPING);
+    }
+
+    /**
+     * @param action what the sender is visibly doing (typing / recording a
+     *               voice note / sending a photo, …). Null falls back to
+     *               plain {@code TYPING}. Rides the same TTL, privacy
+     *               suppression and "typing indicators off" preference as the
+     *               classic indicator — an activity state must never leak more
+     *               presence than typing itself would.
+     */
+    public void handleTyping(UUID conversationId, UUID senderId, boolean isTyping,
+                             ak.dev.irc.app.chat.enums.ChatAction action) {
         // Must be an active member to signal typing.
         var member = memberRepo.findMember(conversationId, senderId)
                 .filter(m -> m.getStatus() != null && m.isActive())
                 .orElseThrow(() -> new ForbiddenException(
                         "You are not an active member of this conversation.", "NOT_A_MEMBER"));
 
+        ak.dev.irc.app.chat.enums.ChatAction effective =
+                action == null ? ak.dev.irc.app.chat.enums.ChatAction.TYPING : action;
+
         String key = "chat:typing:" + conversationId + ":" + senderId;
         try {
-            if (isTyping) redis.opsForValue().set(key, "1", TYPING_TTL);
+            if (isTyping) redis.opsForValue().set(key, effective.name(), TYPING_TTL);
             else redis.delete(key);
         } catch (Exception e) {
             log.debug("[TYPING] redis op failed: {}", e.getMessage());
@@ -61,6 +78,7 @@ public class TypingService {
                 .conversationId(conversationId)
                 .userId(senderId)
                 .isTyping(isTyping)
+                .activity(effective.name())
                 .build();
         broadcaster.broadcastExcept(recipients, senderId, event);
     }
