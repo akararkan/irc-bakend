@@ -56,6 +56,20 @@ public class CassandraSoundController {
         return s == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(s);
     }
 
+    /**
+     * Sound-library search for the reels/stories sound picker — typo-tolerant
+     * title/artist relevance ranking with a use-count popularity boost.
+     * APPROVED sounds only; blank {@code q} returns {@code []} (use the
+     * category browser for listing). Also reachable via the global
+     * {@code /api/v1/search?types=SOUND}.
+     */
+    @GetMapping("/search")
+    public List<SoundEntity> search(@RequestParam String q,
+                                    @RequestParam(required = false) String category,
+                                    @RequestParam(defaultValue = "20") int limit) {
+        return soundService.search(q, category, Math.min(Math.max(limit, 1), 100));
+    }
+
     /** Mark a pending sound as APPROVED → publishes to the category browser. Admin/mod only. */
     @PostMapping("/{id}/approve")
     @PreAuthorize("hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')")

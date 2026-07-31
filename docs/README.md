@@ -93,15 +93,34 @@ shapes, error codes, and side effects, verified against the source.
 | [settings.md](chat/settings.md) | Chat privacy — read receipts, last-seen, typing (symmetric-gate model) |
 | [search.md](chat/search.md) | In-conversation and cross-conversation message search |
 
+### Search — `search/`
+| File | Covers |
+|---|---|
+| [README.md](search/README.md) | **The search hub** — architecture, engine split, complexity summary table |
+| [global-search.md](search/global-search.md) | `GET /api/v1/search` over 8 entity types (posts, reels, questions, answers, research, users, channels, sounds), ranking model, cursor paging, privacy filters |
+| [users.md](search/users.md) | People search (global + Postgres FTS + mention suggest) |
+| [channels.md](search/channels.md) | ES-ranked channel discovery + by-handle lookup |
+| [qna.md](search/qna.md) | Question & **answer-level** search, accepted-answer boost |
+| [sounds.md](search/sounds.md) | Sound-library search for the reels/stories picker |
+| [knowledge.md](search/knowledge.md) | Topic / madhhab taxonomy lookup |
+| [indexing-and-reindex.md](search/indexing-and-reindex.md) | The 8 ES indices, async indexing pipeline, 7 admin reindex endpoints |
+| [algorithms-and-complexity.md](search/algorithms-and-complexity.md) | BM25, function_score, fuzzy/prefix, `search_after`, FTS, trigram — with per-operation time complexity |
+| [coverage.md](search/coverage.md) | Entity-by-entity coverage matrix + deliberate exclusions |
+
 ### Platform services — `platform/`
 | File | Covers |
 |---|---|
 | [tags.md](platform/tags.md) | Trending tags, tag content feeds, autocomplete |
-| [search.md](platform/search.md) | Unified Elasticsearch search + admin reindex |
+| ~~[search.md](platform/search.md)~~ | **Moved** → the [`search/`](search/README.md) directory (pointer stub kept) |
 | [mentions.md](platform/mentions.md) | @mention suggest/click/parse pipeline |
 | [media-proxy.md](platform/media-proxy.md) | R2/S3 streaming proxy with Range support |
 | [activity.md](platform/activity.md) | Activity history, reel watch history, activity SSE |
 | [audit.md](platform/audit.md) | Admin audit log + global audit SSE |
+
+### Knowledge taxonomy — `knowledge/`
+| File | Covers |
+|---|---|
+| [taxonomy.md](knowledge/taxonomy.md) | Topics & madhhabs — trilingual vocabularies, public lookup endpoints (`GET /topics`, `GET /madhhabs`), profile specializations + madhhab selection consumers |
 
 ### Errors — `errors/`
 | File | Covers |
@@ -112,7 +131,7 @@ shapes, error codes, and side effects, verified against the source.
 ### Realtime & messaging — `realtime/`
 | File | Covers |
 |---|---|
-| [overview.md](realtime/overview.md) | All 8 SSE streams, event names, delta model, Redis channels |
+| [overview.md](realtime/overview.md) | **The master realtime reference** — all 9 SSE streams, event names per stream, the screen-by-screen frontend guide, delta model, media plane (WebRTC/WHIP/WHEP), Redis channels |
 | [messaging.md](realtime/messaging.md) | RabbitMQ exchanges, queues, routing keys, retry/DLQ policy |
 
 ## Legacy

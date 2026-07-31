@@ -11,7 +11,9 @@ Errors use the unified envelope in
 [../errors/error-handling.md](../errors/error-handling.md).
 
 Related: [auth.md](auth.md) · [users.md](users.md) · [social.md](social.md) ·
-[search.md](search.md) · [security-model.md](security-model.md)
+[search.md](search.md) · [security-model.md](security-model.md) ·
+[knowledge taxonomy](../knowledge/taxonomy.md) (topic/madhhab vocabularies
+behind `specializations` and `madhhabId`)
 
 ---
 

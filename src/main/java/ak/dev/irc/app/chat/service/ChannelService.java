@@ -35,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -67,6 +68,7 @@ public class ChannelService {
     private final ChatRealtimeBroadcaster broadcaster;
     private final S3StorageService storageService;
     private final UserRepository userRepository;
+    private final ak.dev.irc.app.chat.search.service.ChannelSearchService channelSearch;
 
     /** Web origin the share links point at (frontend routes /c/{handle}). */
     @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
@@ -102,6 +104,7 @@ public class ChannelService {
                 .memberCount(1)
                 .build());
         memberRepo.save(ConversationMember.of(c, ownerId, MemberRole.OWNER, "OWNER"));
+        channelSearch.indexAsync(c);
         return toResponse(c, memberRepo.findMember(c.getId(), ownerId).orElse(null), false);
     }
 
@@ -143,6 +146,7 @@ public class ChannelService {
             c.setChannelSettings(req.getSettings());
         }
         conversationRepo.save(c);
+        channelSearch.indexAsync(c);   // turning private de-indexes; public upserts
         broadcastChannelUpdated(channelId);
         return toResponse(c, memberRepo.findMember(channelId, actorId).orElse(null), false);
     }
@@ -208,6 +212,7 @@ public class ChannelService {
         Conversation c = requireChannel(channelId);
         c.setVerified(verified);
         conversationRepo.save(c);
+        channelSearch.indexAsync(c);
         broadcastChannelUpdated(channelId);
         return toResponse(c, null, false);
     }
@@ -316,6 +321,7 @@ public class ChannelService {
                 .memberChange("SUBSCRIBED").role(MemberRole.MEMBER.name())
                 .build());
         Conversation fresh = conversationRepo.findById(channelId).orElse(c);
+        channelSearch.indexAsync(fresh);   // keep subscriberCount ranking fresh
         return toResponse(fresh, memberRepo.findMember(channelId, userId).orElse(null), false);
     }
 
@@ -336,6 +342,7 @@ public class ChannelService {
                 .build();
         broadcaster.broadcast(memberRepo.findActiveMemberIds(channelId), evt);
         broadcaster.broadcastTo(userId, evt);
+        conversationRepo.findById(channelId).ifPresent(channelSearch::indexAsync);
     }
 
     // ── Discover / lookup ────────────────────────────────────────────────────────
@@ -343,13 +350,48 @@ public class ChannelService {
     @Transactional(readOnly = true)
     public List<ChannelResponse> discover(UUID userId, String q, String category) {
         String needle = q == null ? "" : q.trim();
-        var channels = conversationRepo.discoverChannels(
-                ConversationType.CHANNEL, needle, normalizeCategory(category),
-                PageRequest.of(0, DISCOVER_MAX));
+        List<Conversation> channels = needle.isEmpty()
+                ? null
+                : discoverViaSearchIndex(needle, normalizeCategory(category));
+        if (channels == null) {
+            // Blank query ("browse all", ordered by subscribers) — or the ES
+            // path failed / returned nothing (cold index). The bounded
+            // Postgres LIKE scan keeps discovery working either way.
+            channels = conversationRepo.discoverChannels(
+                    ConversationType.CHANNEL, needle, normalizeCategory(category),
+                    PageRequest.of(0, DISCOVER_MAX));
+        }
         // One membership query for the whole result set (previously one per channel).
         Map<UUID, ConversationMember> mine = membershipsAmong(
                 channels.stream().map(Conversation::getId).toList(), userId);
         return channels.stream().map(c -> toResponse(c, mine.get(c.getId()), false)).toList();
+    }
+
+    /**
+     * ES-ranked channel discovery (BM25 + typo tolerance + prefix typeahead
+     * × log1p subscriber boost) replacing the old sequential-scan
+     * {@code LIKE '%q%'} for non-blank queries. Ids come back best-first;
+     * hydration from Postgres re-checks public + live state so a stale index
+     * row can never leak a now-private channel. Returns {@code null} when ES
+     * is unavailable or has no hits, so the caller falls back to the scan.
+     */
+    private List<Conversation> discoverViaSearchIndex(String needle, String category) {
+        final List<UUID> ids;
+        try {
+            ids = channelSearch.searchIds(needle, category, DISCOVER_MAX);
+        } catch (Exception e) {
+            return null;    // ES down — fall back to the Postgres scan
+        }
+        if (ids.isEmpty()) return null;
+        Map<UUID, Conversation> byId = conversationRepo.findAllById(ids).stream()
+                .filter(c -> c.isChannel() && c.isPublicChannel() && c.getDeletedAt() == null)
+                .collect(java.util.stream.Collectors.toMap(Conversation::getId, c -> c));
+        List<Conversation> ordered = new ArrayList<>(ids.size());
+        for (UUID id : ids) {
+            Conversation c = byId.get(id);
+            if (c != null) ordered.add(c);
+        }
+        return ordered.isEmpty() ? null : ordered;
     }
 
     @Transactional(readOnly = true)

@@ -60,6 +60,7 @@ public class AuthServiceImpl implements AuthService {
     private final RefreshTokenRepository  refreshTokenRepository;
     private final PasswordEncoder         passwordEncoder;
     private final UserMapper              userMapper;
+    private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  REGISTER
@@ -99,6 +100,8 @@ public class AuthServiceImpl implements AuthService {
                 .build();
         profile.audit(AuditAction.CREATE, "Profile created on registration");
         profileRepository.save(profile);
+
+        userSearch.indexAsync(user.getId());
 
         log.info("User registered — id={}, email='{}'", user.getId(), user.getEmail());
 

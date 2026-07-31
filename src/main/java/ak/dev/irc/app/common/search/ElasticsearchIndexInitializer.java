@@ -1,9 +1,13 @@
 package ak.dev.irc.app.common.search;
 
+import ak.dev.irc.app.chat.search.document.ChannelSearchDocument;
 import ak.dev.irc.app.chat.search.document.ChatMessageDocument;
 import ak.dev.irc.app.post.search.document.PostSearchDocument;
+import ak.dev.irc.app.post.search.document.SoundSearchDocument;
+import ak.dev.irc.app.qna.search.document.AnswerSearchDocument;
 import ak.dev.irc.app.qna.search.document.QnaSearchDocument;
 import ak.dev.irc.app.research.search.document.ResearchSearchDocument;
+import ak.dev.irc.app.user.search.document.UserSearchDocument;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -41,8 +45,12 @@ public class ElasticsearchIndexInitializer {
     public void ensureIndicesExist() {
         ensureIndex(PostSearchDocument.class,       "irc-posts");
         ensureIndex(QnaSearchDocument.class,        "irc-qna");
+        ensureIndex(AnswerSearchDocument.class,     "irc-answers");
         ensureIndex(ResearchSearchDocument.class,   "irc-research");
         ensureIndex(ChatMessageDocument.class,      "irc-chat-messages");
+        ensureIndex(UserSearchDocument.class,       "irc-users");
+        ensureIndex(ChannelSearchDocument.class,    "irc-channels");
+        ensureIndex(SoundSearchDocument.class,      "irc-sounds");
     }
 
     private void ensureIndex(Class<?> documentClass, String label) {

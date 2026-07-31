@@ -45,6 +45,7 @@ public class UserProfileServiceImpl implements UserProfileService {
     private final TopicRepository       topicRepository;
     private final UserMapper            userMapper;
     private final S3StorageService      s3;
+    private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
 
     private static final String AVATAR_PREFIX = "users/avatars";
     private static final String COVER_PREFIX  = "users/covers";
@@ -110,6 +111,7 @@ public class UserProfileServiceImpl implements UserProfileService {
         if (changes > 0) {
             profile.audit(AuditAction.UPDATE, "Profile updated (" + changes + " field(s))");
             profileRepository.save(profile);
+            userSearch.indexAsync(myId);
             log.info("User [{}] profile updated — {} field(s)", myId, changes);
         }
 

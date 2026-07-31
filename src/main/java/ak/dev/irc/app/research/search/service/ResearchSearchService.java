@@ -118,6 +118,14 @@ public class ResearchSearchService {
                 log.warn("[SEARCH] irc-research drop best-effort failed (often harmless): {}",
                         e.getMessage());
             }
+            // Recreate from the annotated mapping immediately — relying on the
+            // first save() would dynamic-map every Keyword field back to text.
+            try {
+                EsRetry.run(() -> esOps.indexOps(ResearchSearchDocument.class).createWithMapping(),
+                        "[SEARCH] recreate irc-research mapping");
+            } catch (Exception e) {
+                log.warn("[SEARCH] irc-research mapping recreate failed: {}", e.getMessage());
+            }
         }
 
         final int PAGE_SIZE = 100;

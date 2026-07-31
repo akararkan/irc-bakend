@@ -21,14 +21,17 @@ import java.util.UUID;
  * mirror what's already in the ES document, so populating them costs zero
  * extra round-trips and avoids the typeahead N+1 on the client.</p>
  *
- * @param contentType     POST / REEL / QUESTION / RESEARCH
+ * @param contentType     POST / REEL / QUESTION / RESEARCH / ANSWER / USER / CHANNEL / SOUND
  * @param contentId       canonical UUID of the underlying entity
  * @param type            <em>deprecated alias for {@link #contentType}</em>
  * @param id              <em>deprecated alias for {@link #contentId}</em>
+ * @param parentId        ANSWER hits only: the question this answer belongs to
+ *                        (deep-link target); null for every other type
  * @param score           raw BM25 relevance score (higher = better)
  * @param titlePreview    first ~280 chars of the entity's primary text (null if unknown)
- * @param authorUsername  handle of the author/researcher (null if unknown)
- * @param authorName      display name (null if unknown)
+ * @param authorUsername  handle of the author/researcher — for USER hits the
+ *                        user's own username, for CHANNEL hits the channel @handle
+ * @param authorName      display name — for SOUND hits the artist name
  * @param createdAt       entity creation time (null if unknown)
  */
 @Builder
@@ -38,6 +41,7 @@ public record GlobalSearchHit(
         UUID    contentId,
         String  type,           // deprecated alias of contentType (see class javadoc)
         UUID    id,             // deprecated alias of contentId   (see class javadoc)
+        UUID    parentId,       // ANSWER → owning question id (see class javadoc)
         double  score,
         String  titlePreview,
         String  authorUsername,

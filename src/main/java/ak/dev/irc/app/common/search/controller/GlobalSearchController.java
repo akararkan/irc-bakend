@@ -17,8 +17,8 @@ import java.util.*;
  * per-entity {@code /search} endpoints that used to live on
  * {@code /api/v1/posts}, {@code /api/v1/researches} and
  * {@code /api/v1/questions} were retired in favour of this unified path.
- * To scope the search to one entity type, pass {@code types=POST},
- * {@code types=REEL}, {@code types=QUESTION} or {@code types=RESEARCH}
+ * To scope the search to one entity type, pass any subset of
+ * {@code types=POST,REEL,QUESTION,ANSWER,RESEARCH,USER,CHANNEL,SOUND}
  * (CSV combinations are supported, e.g. {@code types=POST,REEL}).</p>
  *
  * <h3>Response envelope</h3>
@@ -46,8 +46,9 @@ public class GlobalSearchController {
 
     /**
      * @param q      query string (required)
-     * @param types  optional CSV — any subset of {@code POST,REEL,QUESTION,RESEARCH}.
-     *               Omitted = all four.
+     * @param types  optional CSV — any subset of
+     *               {@code POST,REEL,QUESTION,ANSWER,RESEARCH,USER,CHANNEL,SOUND}.
+     *               Omitted = all eight.
      * @param cursor opaque cursor token from the previous response's
      *               {@code nextCursor}. When supplied, the {@code page} param
      *               is ignored and the result is paged via ES {@code search_after}

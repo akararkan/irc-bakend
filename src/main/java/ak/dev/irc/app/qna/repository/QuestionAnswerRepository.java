@@ -19,6 +19,9 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     Page<QuestionAnswer> findByQuestionIdAndDeletedAtIsNullOrderByCreatedAtAsc(UUID questionId, Pageable pageable);
 
+    /** All live answers, any question — feeds the {@code irc-answers} ES reindex. */
+    Page<QuestionAnswer> findByDeletedAtIsNull(Pageable pageable);
+
     /** Used by the dedup window to recover the original write on a duplicate submission. */
     @Query("""
            SELECT a FROM QuestionAnswer a

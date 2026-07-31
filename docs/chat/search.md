@@ -1,5 +1,10 @@
 # Chat Search API — In-Conversation & Cross-Conversation
 
+> Part of the platform-wide search subsystem — architecture, engines and
+> complexity: [../search/README.md](../search/README.md). Chat messages are
+> deliberately **not** part of the public `GET /api/v1/search` merge; they
+> are membership-scoped and searchable only through the endpoints below.
+
 Full-text search over chat messages, backed by the Elasticsearch `irc-chat-messages`
 index (BM25 + `AUTO` fuzziness + phrase-prefix typeahead). Two endpoints: one scoped
 to a single conversation (with a bounded Cassandra-scan fallback when the index is

@@ -38,6 +38,7 @@ public class UserSocialServiceImpl implements UserSocialService {
     private final UserEventPublisher userEventPublisher;
     private final ak.dev.irc.app.post.cassandra.service.FeedTimelineService feedTimelineService;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
+    private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  FOLLOW
@@ -89,6 +90,9 @@ public class UserSocialServiceImpl implements UserSocialService {
 
         userEventPublisher.publishFollowed(meUser, target);
 
+        // Keep the people-search popularity signal fresh.
+        userSearch.indexAsync(targetId);
+
         // Backfill the followed user's recent ~50 posts into my home feed so
         // I see content immediately instead of waiting for them to post again.
         feedTimelineService.backfillFollowerFeed(me, targetId);
@@ -126,6 +130,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         User target = userRepository.findById(targetId).orElse(null);
         followRepository.deleteById(fid);
         userEventPublisher.publishUnfollowed(me, targetId);
+        userSearch.indexAsync(targetId);
 
         log.info("User [{}] unfollowed user [{}]", me, targetId);
 

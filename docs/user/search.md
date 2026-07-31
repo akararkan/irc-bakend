@@ -1,8 +1,13 @@
 # User Search API
 
 Relevance-ranked user search over Postgres full-text indexes, with fuzzy and
-prefix fallbacks. Powers the global people search and the research co-author
-picker.
+prefix fallbacks. Powers the dedicated people picker and the research
+co-author picker.
+
+> **Also:** users are now searchable through the unified search bar —
+> `GET /api/v1/search?types=USER` (Elasticsearch, ranked against content,
+> follower-count boost). When to use which surface:
+> [../search/users.md](../search/users.md).
 
 **Base path:** `/api/v1/users`
 

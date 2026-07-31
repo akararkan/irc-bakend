@@ -42,6 +42,7 @@ public class UserServiceImpl implements UserService {
     private final UserProfileRepository  profileRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final UserMapper             userMapper;
+    private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  PROFILE READ
@@ -113,6 +114,7 @@ public class UserServiceImpl implements UserService {
         if (changes > 0) {
             user.audit(AuditAction.UPDATE, "Identity updated (" + changes + " field(s))");
             userRepository.save(user);
+            userSearch.indexAsync(myId);
         }
 
         return userMapper.toResponse(user, true);
@@ -327,6 +329,7 @@ public class UserServiceImpl implements UserService {
         user.audit(AuditAction.DELETE, "Account soft-deleted by user");
         userRepository.save(user);
         userRepository.softDelete(user.getId());
+        userSearch.deleteAsync(myId);
 
         log.warn("User [{}] ({}) account soft-deleted", myId, user.getEmail());
     }

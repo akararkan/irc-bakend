@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -42,6 +43,7 @@ public class CassandraSoundService {
     private final PostBySoundRepository     postBySoundRepo;
     private final SoundCounterRepository    soundCounterRepo;
     private final CounterService            counterService;
+    private final ak.dev.irc.app.post.search.service.SoundSearchService soundSearch;
 
     // ── Create / approve ────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ public class CassandraSoundService {
         soundRepo.save(sound);
 
         if (autoApprove) writeCategoryRow(sound);
+        soundSearch.indexAsync(sound, 0L);
         return sound;
     }
 
@@ -73,6 +76,30 @@ public class CassandraSoundService {
         s.setUpdatedAt(Instant.now());
         soundRepo.save(s);
         writeCategoryRow(s);
+        soundSearch.refreshAsync(soundId);
+    }
+
+    /**
+     * Ranked sound-library search for the reels/stories sound picker —
+     * typo-tolerant title/artist match, APPROVED-only, popularity-boosted.
+     * ES returns ranked ids; rows hydrate from {@code sounds_by_id}
+     * preserving that order (a stale id that no longer resolves is dropped).
+     */
+    public List<SoundEntity> search(String q, String category, int limit) {
+        if (q == null || q.isBlank()) return List.of();
+        List<UUID> ids;
+        try {
+            ids = soundSearch.searchIds(q.trim(), category, limit);
+        } catch (Exception e) {
+            log.warn("[SOUND] search unavailable: {}", e.getMessage());
+            return List.of();
+        }
+        List<SoundEntity> out = new ArrayList<>(ids.size());
+        for (UUID id : ids) {
+            SoundEntity s = soundRepo.findById(id).orElse(null);
+            if (s != null && "APPROVED".equals(s.getStatus())) out.add(s);
+        }
+        return out;
     }
 
     private void writeCategoryRow(SoundEntity s) {
@@ -116,6 +143,7 @@ public class CassandraSoundService {
                     .authorId(authorId)
                     .build());
             counterService.incrementSoundUse(soundId);
+            soundSearch.refreshAsync(soundId);   // keep popularity ranking fresh
         } catch (Exception e) {
             log.warn("[SOUND] usage record failed for sound {} post {}: {}",
                     soundId, postId, e.getMessage());

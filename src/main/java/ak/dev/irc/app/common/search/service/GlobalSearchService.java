@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.elasticsearch.client.elc.EntityAsMap;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -29,7 +30,8 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Multi-index global search across posts (+reels), questions and research.
+ * Multi-index global search across posts (+reels), questions, answers,
+ * research, users, public channels and the sound library.
  *
  * <p>One ES query hits N indices in parallel — same shard-level latency as
  * searching a single index but lets each entity keep its own field schema
@@ -48,11 +50,26 @@ import java.util.*;
 @RequiredArgsConstructor
 public class GlobalSearchService {
 
-    public enum EntityType { POST, REEL, QUESTION, RESEARCH }
+    public enum EntityType { POST, REEL, QUESTION, RESEARCH, ANSWER, USER, CHANNEL, SOUND }
 
     private static final String IDX_POSTS    = "irc-posts";
     private static final String IDX_QNA      = "irc-qna";
     private static final String IDX_RESEARCH = "irc-research";
+    private static final String IDX_ANSWERS  = "irc-answers";
+    private static final String IDX_USERS    = "irc-users";
+    private static final String IDX_CHANNELS = "irc-channels";
+    private static final String IDX_SOUNDS   = "irc-sounds";
+
+    /**
+     * Indices whose documents represent long-lived entities (people,
+     * channels, sounds) or evergreen knowledge (accepted answers) rather
+     * than a feed of fresh content. They get a constant weight-1 baseline
+     * in the function_score instead of relying on recency decay — without
+     * it, an account created a year ago with no followers would multiply
+     * BM25 by ~0 and vanish from results.
+     */
+    private static final List<String> ENTITY_INDICES =
+            List.of(IDX_USERS, IDX_CHANNELS, IDX_SOUNDS, IDX_ANSWERS);
 
     private final ElasticsearchOperations esOps;
     private final ObjectMapper            objectMapper = new ObjectMapper();
@@ -90,12 +107,12 @@ public class GlobalSearchService {
                 .withPageable(PageRequest.of(page, size))
                 .build();
 
-        SearchHits<Object> hits;
+        SearchHits<EntityAsMap> hits;
         try {
             // Single retry on stale-pooled-connection so a transient socket
             // recycle doesn't surface as a degraded result to the user.
             hits = EsRetry.call(
-                    () -> esOps.search(native_, Object.class,
+                    () -> esOps.search(native_, EntityAsMap.class,
                             IndexCoordinates.of(indices.toArray(String[]::new))),
                     "[SEARCH] global");
         } catch (Exception e) {
@@ -143,10 +160,10 @@ public class GlobalSearchService {
             builder.withSearchAfter(after.stream().map(this::toJavaSortValue).toList());
         }
 
-        SearchHits<Object> hits;
+        SearchHits<EntityAsMap> hits;
         try {
             hits = EsRetry.call(
-                    () -> esOps.search(builder.build(), Object.class,
+                    () -> esOps.search(builder.build(), EntityAsMap.class,
                             IndexCoordinates.of(indices.toArray(String[]::new))),
                     "[SEARCH] global cursor");
         } catch (Exception e) {
@@ -168,10 +185,14 @@ public class GlobalSearchService {
     private static List<String> pickIndices(Set<EntityType> types) {
         Set<EntityType> active = (types == null || types.isEmpty())
                 ? EnumSet.allOf(EntityType.class) : types;
-        List<String> indices = new ArrayList<>(3);
+        List<String> indices = new ArrayList<>(7);
         if (active.contains(EntityType.POST) || active.contains(EntityType.REEL)) indices.add(IDX_POSTS);
         if (active.contains(EntityType.QUESTION)) indices.add(IDX_QNA);
         if (active.contains(EntityType.RESEARCH)) indices.add(IDX_RESEARCH);
+        if (active.contains(EntityType.ANSWER))   indices.add(IDX_ANSWERS);
+        if (active.contains(EntityType.USER))     indices.add(IDX_USERS);
+        if (active.contains(EntityType.CHANNEL))  indices.add(IDX_CHANNELS);
+        if (active.contains(EntityType.SOUND))    indices.add(IDX_SOUNDS);
         return indices;
     }
 
@@ -183,7 +204,21 @@ public class GlobalSearchService {
      */
     private static final List<String> DEAD_STATUSES = List.of(
             "DELETED", "DRAFT", "ARCHIVED",
-            "RETRACTED", "REMOVED_BY_MODERATOR"
+            "RETRACTED", "REMOVED_BY_MODERATOR",
+            "REMOVED",                          // PostStatus moderation removal
+            "PENDING_REVIEW", "REJECTED"        // SoundStatus pre-approval states
+    );
+
+    /**
+     * Visibility levels that mean "not public" — never surfaced by search,
+     * not even to the owner (search is a public discovery surface; private
+     * content is reached through its own feeds). Same silent-no-op trick as
+     * {@link #DEAD_STATUSES}: indices without a {@code visibility} field
+     * (Q&amp;A, users, channels, sounds) are unaffected.
+     */
+    private static final List<String> NON_PUBLIC_VISIBILITIES = List.of(
+            "FOLLOWERS_ONLY", "ONLY_ME",        // PostVisibility
+            "PRIVATE"                           // ResearchVisibility
     );
 
     /**
@@ -226,10 +261,21 @@ public class GlobalSearchService {
                             // Strong-signal fields (titles + body text)
                             "title^4", "textContent^3",
                             "abstractText^2", "keywords^2", "body^2",
+                            // Identity handles — a handle search should nail
+                            // the account/channel it names. The *Tokens
+                            // variants carry the handle pre-split on ._- so
+                            // individual segments match too.
+                            "username^4", "handle^4", "displayName^3",
+                            "usernameTokens^3", "handleTokens^3",
                             // Tags / hashtags — useful but partial
                             "tags^2", "hashtags^2",
+                            // People-index name parts + affiliation
+                            "fname^2", "lname^2", "bio",
+                            "academicTitle", "institutionName",
+                            // Answer context + sound artist
+                            "questionTitle^2", "artistName^2",
                             "description",
-                            // People + place
+                            // People + place on content docs
                             "authorName", "authorUsername",
                             "researcherName", "researcherUsername",
                             "locationName"
@@ -244,7 +290,7 @@ public class GlobalSearchService {
             b.should(m -> m.multiMatch(mm -> mm
                     .query(query)
                     .fields("title^4", "textContent^3", "body^2",
-                            "abstractText^2", "description")
+                            "abstractText^2", "displayName^2", "description")
                     .type(TextQueryType.Phrase)
                     .boost(2.0f)));
 
@@ -252,8 +298,10 @@ public class GlobalSearchService {
             //    without a dedicated ngram field on every doc.
             b.should(m -> m.multiMatch(mm -> mm
                     .query(query)
-                    .fields("title^3", "textContent^2", "body",
-                            "abstractText", "authorName", "authorUsername",
+                    .fields("title^3", "username^3", "handle^3",
+                            "displayName^2", "textContent^2", "body",
+                            "abstractText", "artistName",
+                            "authorName", "authorUsername",
                             "researcherName", "researcherUsername")
                     .type(TextQueryType.PhrasePrefix)
                     .boost(1.5f)));
@@ -266,6 +314,14 @@ public class GlobalSearchService {
             // 5) Lifecycle filter — dead statuses never surface.
             for (String dead : DEAD_STATUSES) {
                 b.mustNot(mn -> mn.term(t -> t.field("status").value(dead)));
+            }
+
+            // 6) Privacy filter — non-public content never surfaces.
+            //    (mustNot on a field an index doesn't have is a no-op, so
+            //    this only bites posts + research, the two visibility-bearing
+            //    indices.)
+            for (String hidden : NON_PUBLIC_VISIBILITIES) {
+                b.mustNot(mn -> mn.term(t -> t.field("visibility").value(hidden)));
             }
             return b;
         }));
@@ -367,22 +423,63 @@ public class GlobalSearchService {
                                 .factor(0.5)
                                 .modifier(FieldValueFactorModifier.Log1p)
                                 .missing(0.0)))
+                // Entity-index baseline — people / channels / sounds /
+                // answers are long-lived, so they get a constant 1.0 instead
+                // of living or dying by the recency gauss. Without this, a
+                // year-old account with no followers multiplies BM25 by ~0.
+                .functions(fn -> fn
+                        .filter(f -> f.terms(t -> t.field("_index")
+                                .terms(v -> v.value(ENTITY_INDICES.stream()
+                                        .map(FieldValue::of).toList()))))
+                        .weight(1.0))
+                // Popularity signals for the entity indices — each field
+                // exists on exactly one index; missing(0.0) keeps the rest
+                // untouched. log1p keeps a 1M-follower account from
+                // drowning an exact-handle match on a small one.
+                //
+                //   users:    followerCount    — reach
+                //   channels: subscriberCount  — reach
+                //   sounds:   useCount         — adoption
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("followerCount")
+                                .factor(1.0)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("subscriberCount")
+                                .factor(1.0)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                .functions(fn -> fn
+                        .fieldValueFactor(fv -> fv
+                                .field("useCount")
+                                .factor(1.0)
+                                .modifier(FieldValueFactorModifier.Log1p)
+                                .missing(0.0)))
+                // Accepted answers — the author marked this one as THE
+                // answer; add a flat +2.0 so it outranks sibling answers of
+                // equal text relevance.
+                .functions(fn -> fn
+                        .filter(f -> f.term(t -> t.field("accepted").value(true)))
+                        .weight(2.0))
                 .scoreMode(FunctionScoreMode.Sum)
                 .boostMode(FunctionBoostMode.Multiply)));
     }
 
     // ── Hit → DTO ────────────────────────────────────────────────────────────
 
-    private List<GlobalSearchHit> toItems(SearchHits<Object> hits, boolean expand) {
+    private List<GlobalSearchHit> toItems(SearchHits<EntityAsMap> hits, boolean expand) {
         List<GlobalSearchHit> out = new ArrayList<>(hits.getSearchHits().size());
-        for (SearchHit<Object> h : hits.getSearchHits()) {
+        for (SearchHit<EntityAsMap> h : hits.getSearchHits()) {
             GlobalSearchHit hit = toHit(h, expand);
             if (hit != null) out.add(hit);
         }
         return out;
     }
 
-    private GlobalSearchHit toHit(SearchHit<Object> h, boolean expand) {
+    private GlobalSearchHit toHit(SearchHit<EntityAsMap> h, boolean expand) {
         UUID id;
         try {
             id = UUID.fromString(h.getId());
@@ -393,6 +490,10 @@ public class GlobalSearchService {
             case IDX_POSTS    -> deriveSocialType(h);
             case IDX_QNA      -> EntityType.QUESTION.name();
             case IDX_RESEARCH -> EntityType.RESEARCH.name();
+            case IDX_ANSWERS  -> EntityType.ANSWER.name();
+            case IDX_USERS    -> EntityType.USER.name();
+            case IDX_CHANNELS -> EntityType.CHANNEL.name();
+            case IDX_SOUNDS   -> EntityType.SOUND.name();
             default           -> null;
         };
         if (type == null) return null;
@@ -401,8 +502,23 @@ public class GlobalSearchService {
                 .contentType(type).contentId(id)
                 .type(type).id(id)
                 .score(h.getScore());
+        // Answers always carry their question id (regardless of expand) —
+        // it's required to deep-link the hit, not a preview nicety.
+        if (EntityType.ANSWER.name().equals(type)) {
+            b.parentId(sourceUuid(h, "questionId"));
+        }
         if (expand) inlineBrief(b, h, type);
         return b.build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static UUID sourceUuid(SearchHit<EntityAsMap> h, String field) {
+        Object src = h.getContent();
+        if (!(src instanceof Map)) return null;
+        Object v = ((Map<String, Object>) src).get(field);
+        if (v == null) return null;
+        try { return UUID.fromString(v.toString()); }
+        catch (Exception e) { return null; }
     }
 
     /**
@@ -412,23 +528,49 @@ public class GlobalSearchService {
      */
     @SuppressWarnings("unchecked")
     private void inlineBrief(GlobalSearchHit.GlobalSearchHitBuilder b,
-                             SearchHit<Object> h, String type) {
+                             SearchHit<EntityAsMap> h, String type) {
         Object src = h.getContent();
         if (!(src instanceof Map)) return;
         Map<String, Object> m = (Map<String, Object>) src;
 
-        // Each index uses its own preview field name — fall through to the next.
-        String preview = firstNonBlank(
-                str(m.get("title")),         // qna / research
-                str(m.get("textContent")));  // post
-        b.titlePreview(trimPreview(preview));
-
-        b.authorUsername(firstNonBlank(
-                str(m.get("authorUsername")),
-                str(m.get("researcherUsername"))));
-        b.authorName(firstNonBlank(
-                str(m.get("authorName")),
-                str(m.get("researcherName"))));
+        // Each type has its own natural preview + attribution fields.
+        switch (type) {
+            case "USER" -> {
+                b.titlePreview(trimPreview(firstNonBlank(
+                        str(m.get("displayName")),
+                        joinNames(str(m.get("fname")), str(m.get("lname"))))));
+                b.authorUsername(str(m.get("username")));
+                b.authorName(firstNonBlank(
+                        str(m.get("displayName")),
+                        joinNames(str(m.get("fname")), str(m.get("lname")))));
+            }
+            case "CHANNEL" -> {
+                b.titlePreview(trimPreview(str(m.get("title"))));
+                b.authorUsername(str(m.get("handle")));   // channel @handle
+            }
+            case "SOUND" -> {
+                b.titlePreview(trimPreview(str(m.get("title"))));
+                b.authorName(str(m.get("artistName")));
+            }
+            case "ANSWER" -> {
+                b.titlePreview(trimPreview(str(m.get("body"))));
+                b.authorUsername(str(m.get("authorUsername")));
+                b.authorName(str(m.get("authorName")));
+            }
+            default -> {
+                // POST / REEL / QUESTION / RESEARCH — index-specific preview
+                // field name; fall through to the next candidate.
+                b.titlePreview(trimPreview(firstNonBlank(
+                        str(m.get("title")),         // qna / research
+                        str(m.get("textContent"))))); // post
+                b.authorUsername(firstNonBlank(
+                        str(m.get("authorUsername")),
+                        str(m.get("researcherUsername"))));
+                b.authorName(firstNonBlank(
+                        str(m.get("authorName")),
+                        str(m.get("researcherName"))));
+            }
+        }
         Object createdAt = m.get("createdAt");
         if (createdAt instanceof String s && !s.isBlank()) {
             try { b.createdAt(Instant.parse(s)); }
@@ -441,6 +583,13 @@ public class GlobalSearchService {
         return s.length() > 280 ? s.substring(0, 280) : s;
     }
 
+    private static String joinNames(String fname, String lname) {
+        if (fname == null && lname == null) return null;
+        if (fname == null) return lname;
+        if (lname == null) return fname;
+        return fname + " " + lname;
+    }
+
     private static String firstNonBlank(String... candidates) {
         for (String c : candidates) if (c != null && !c.isBlank()) return c;
         return null;
@@ -450,7 +599,7 @@ public class GlobalSearchService {
 
     /** Posts and reels share an index — distinguish by the postType source field. */
     @SuppressWarnings("unchecked")
-    private String deriveSocialType(SearchHit<Object> h) {
+    private String deriveSocialType(SearchHit<EntityAsMap> h) {
         Object src = h.getContent();
         if (src instanceof Map<?, ?> m) {
             Object pt = ((Map<String, Object>) m).get("postType");
@@ -461,7 +610,7 @@ public class GlobalSearchService {
 
     // ── Cursor encoding for search_after ─────────────────────────────────────
 
-    private List<FieldValue> lastSortValues(SearchHits<Object> hits) {
+    private List<FieldValue> lastSortValues(SearchHits<EntityAsMap> hits) {
         if (hits.isEmpty()) return null;
         List<Object> sortValues = hits.getSearchHits()
                 .get(hits.getSearchHits().size() - 1).getSortValues();

@@ -78,6 +78,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
     private final ak.dev.irc.app.common.cache.RateLimiter rateLimiter;
     private final ak.dev.irc.app.qna.search.service.QnaSearchService qnaSearch;
+    private final ak.dev.irc.app.qna.search.service.AnswerSearchService answerSearch;
     private final ak.dev.irc.app.common.tag.service.ContentTagService contentTagService;
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
     private final ak.dev.irc.app.qna.repository.QuestionViewRepository questionViewRepository;
@@ -601,6 +602,8 @@ public class QuestionServiceImpl implements QuestionService {
                 .answerReplyCount(replyCount)
                 .build());
 
+        answerSearch.indexAsync(answer);   // reanswers included — they're content
+
         return mapper.toAnswerResponse(answer);
     }
 
@@ -674,6 +677,8 @@ public class QuestionServiceImpl implements QuestionService {
                 question.getId(),
                 requesterId,
                 actor != null ? actor.getUsername() : null);
+
+        answerSearch.indexAsync(answer);
 
         return mapper.toAnswerResponse(answer);
     }
@@ -805,6 +810,9 @@ public class QuestionServiceImpl implements QuestionService {
         try { qnaSearch.deleteAsync(question.getId()); }
         catch (Exception e) { log.warn("[QNA] ES delete failed for {}: {}", questionId, e.getMessage()); }
 
+        try { answerSearch.deleteByQuestionAsync(question.getId()); }
+        catch (Exception e) { log.warn("[QNA] ES answer purge failed for {}: {}", questionId, e.getMessage()); }
+
         try { contentTagService.untag(question.getId()); }
         catch (Exception e) { log.warn("[QNA] tag untag failed for {}: {}", questionId, e.getMessage()); }
 
@@ -904,6 +912,8 @@ public class QuestionServiceImpl implements QuestionService {
                 .questionAnswerCount(question.getAnswerCount())
                 .answerReplyCount(parentReplyCount)
                 .build());
+
+        answerSearch.deleteAsync(answer.getId());
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -982,6 +992,7 @@ public class QuestionServiceImpl implements QuestionService {
         eventPublisher.publishAnswerAccepted(question, answer);
 
         broadcastAnswerStatus(question, answer, requesterId, QnaRealtimeEventType.ANSWER_ACCEPTED);
+        answerSearch.indexAsync(answer);   // refresh the accepted-answer ranking boost
         return mapper.toAnswerResponse(answer);
     }
 
@@ -1004,6 +1015,7 @@ public class QuestionServiceImpl implements QuestionService {
         answer = answerRepository.save(answer);
 
         broadcastAnswerStatus(question, answer, requesterId, QnaRealtimeEventType.ANSWER_UNACCEPTED);
+        answerSearch.indexAsync(answer);   // drop the accepted-answer ranking boost
         return mapper.toAnswerResponse(answer);
     }
 

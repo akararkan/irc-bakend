@@ -2,6 +2,7 @@ package ak.dev.irc.app.chat.repository;
 
 import ak.dev.irc.app.chat.entity.Conversation;
 import ak.dev.irc.app.chat.enums.ConversationType;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
@@ -79,6 +80,10 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
 
     /** The channel a discussion group belongs to (reverse of {@code linkedGroupId}). */
     Optional<Conversation> findByLinkedGroupId(UUID linkedGroupId);
+
+    /** All live public channels — feeds the {@code irc-channels} ES reindex. */
+    Page<Conversation> findByTypeAndPublicChannelTrueAndDeletedAtIsNull(
+            ConversationType type, Pageable pageable);
 
     /** Atomic post-count delta for channel posts (send +1 / delete −1). */
     @Modifying(flushAutomatically = true, clearAutomatically = true)
