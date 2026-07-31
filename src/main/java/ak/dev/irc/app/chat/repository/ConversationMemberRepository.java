@@ -317,4 +317,36 @@ public interface ConversationMemberRepository
          GROUP BY source ORDER BY joins DESC
         """, nativeQuery = true)
     List<Object[]> joinsBySource(@Param("cid") UUID conversationId);
+
+    /**
+     * Peers across the viewer's ACTIVE 1:1 DIRECT threads — the messaging
+     * signal for friend suggestions ("people you talk to"). One round-trip.
+     */
+    @Query("""
+        SELECT DISTINCT other.id.userId FROM ConversationMember me, ConversationMember other
+        WHERE other.id.conversationId = me.id.conversationId
+          AND me.id.userId = :uid AND other.id.userId <> :uid
+          AND me.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND other.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND me.conversation.type = ak.dev.irc.app.chat.enums.ConversationType.DIRECT
+        """)
+    List<UUID> findDirectPeerIds(@Param("uid") UUID userId);
+
+    /**
+     * (coMemberId, sharedGroupCount) pairs over ACTIVE GROUP memberships,
+     * most-shared first — the shared-community signal for friend
+     * suggestions. Page it (big groups make this row set wide).
+     */
+    @Query("""
+        SELECT other.id.userId, COUNT(other.id.conversationId)
+        FROM ConversationMember me, ConversationMember other
+        WHERE other.id.conversationId = me.id.conversationId
+          AND me.id.userId = :uid AND other.id.userId <> :uid
+          AND me.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND other.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND me.conversation.type = ak.dev.irc.app.chat.enums.ConversationType.GROUP
+        GROUP BY other.id.userId
+        ORDER BY COUNT(other.id.conversationId) DESC
+        """)
+    List<Object[]> findGroupCoMemberCounts(@Param("uid") UUID userId, Pageable pageable);
 }

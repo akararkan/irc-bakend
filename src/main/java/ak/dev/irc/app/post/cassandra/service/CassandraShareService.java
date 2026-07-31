@@ -49,6 +49,7 @@ public class CassandraShareService {
     private final UserRepository        userRepo;
     private final CassandraNotificationService notificationService;
     private final FrontendUrlResolver   frontendUrlResolver;
+    private final AuthorAffinityService affinityService;
 
     public ShareByPostEntity recordShare(UUID postId, UUID sharerId, String caption) {
         UUID    shareId = UUID.randomUUID();
@@ -63,6 +64,7 @@ public class CassandraShareService {
         counterService.incrementPostShares(postId);
         broadcast(postId, sharerId);
         notifyShare(postId, sharerId);
+        affinityService.recordForPost(sharerId, postId, AuthorAffinityService.WEIGHT_SHARE);
         return row;
     }
 

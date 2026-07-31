@@ -1,5 +1,16 @@
 # Feeds & Friend Suggestions API
 
+> **⚠️ The home feed is now a ranked recommendation system — the canonical
+> feed documentation moved to [`docs/feed/`](../feed/README.md)**
+> (algorithm spec, full API analysis incl. channels-in-feed + the live
+> rail, frontend guide). **Friend suggestions were likewise rebuilt as a
+> multi-signal engine — canonical docs at
+> [`docs/suggestions/`](../suggestions/README.md).** This file remains
+> accurate for the fanout write path and the profile feed; the home-feed
+> *read* sections below describe the `?ranked=false` chronological
+> fallback, and the suggestion sections describe only the legacy raw-row
+> read shape.
+
 The profile feed, the home timeline (fanout-on-write) and the friends-of-friends
 suggestion engine. Feed reads are single Cassandra partition slices hydrated in bulk
 (counters, viewer likes/saves and author profiles are each loaded in one IN-clause

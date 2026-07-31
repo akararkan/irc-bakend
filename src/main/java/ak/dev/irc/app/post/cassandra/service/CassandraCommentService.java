@@ -70,6 +70,7 @@ public class CassandraCommentService {
     private final CassandraNotificationService notificationService;
     private final DedupGuard                   dedupGuard;
     private final ak.dev.irc.app.common.service.MentionService mentionService;
+    private final AuthorAffinityService        affinityService;
 
     // ── Create top-level comment ─────────────────────────────────────────────
 
@@ -102,6 +103,7 @@ public class CassandraCommentService {
                   PostRealtimeEventType.COMMENT_CREATED);
         notifyPostCommented(postId, commentId, authorId, text);
         scanMentions(null, text, commentId, postId, authorId);
+        affinityService.recordForPost(authorId, postId, AuthorAffinityService.WEIGHT_COMMENT);
         return row;
     }
 
@@ -147,6 +149,7 @@ public class CassandraCommentService {
 
         counterService.incrementCommentReplies(truParentId);
         counterService.incrementPostComments(postId);
+        affinityService.recordForPost(authorId, postId, AuthorAffinityService.WEIGHT_COMMENT);
 
         broadcast(postId, replyId, truParentId, authorId, text, mediaUrl, null,
                   PostRealtimeEventType.REPLY_CREATED);

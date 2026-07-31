@@ -49,6 +49,7 @@ public class CassandraViewService {
     private final CounterService        counterService;
     private final PostRealtimePublisher realtimePublisher;
     private final StringRedisTemplate   redis;
+    private final AuthorAffinityService affinityService;
 
     /**
      * Record that user U viewed post P. Bumps the unique view counter iff
@@ -67,6 +68,7 @@ public class CassandraViewService {
                     .build());
             counterService.incrementPostViews(postId);
             broadcast(postId, userId);
+            affinityService.recordForPost(userId, postId, AuthorAffinityService.WEIGHT_VIEW);
             return true;
         } catch (Exception e) {
             log.warn("[VIEW] record failed for post {} user {}: {}", postId, userId, e.getMessage());

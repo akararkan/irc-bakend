@@ -29,4 +29,18 @@ public interface UserRestrictionRepository
           AND u.deletedAt IS NULL
         """)
     Page<UserRestriction> findRestrictedUsers(@Param("userId") UUID userId, Pageable pageable);
+
+    /**
+     * The subset of :candidateIds with a restriction relationship (either
+     * direction) with :userId — bulk negative-signal filter for friend
+     * suggestions, mirroring {@code UserBlockRepository.findBlockedAmong}.
+     */
+    @Query("""
+        SELECT CASE WHEN ur.restrictor.id = :userId THEN ur.restricted.id ELSE ur.restrictor.id END
+        FROM UserRestriction ur
+        WHERE (ur.restrictor.id = :userId AND ur.restricted.id IN :candidateIds)
+           OR (ur.restricted.id = :userId AND ur.restrictor.id IN :candidateIds)
+        """)
+    java.util.List<UUID> findRestrictedAmong(@Param("userId") UUID userId,
+                                             @Param("candidateIds") java.util.Collection<UUID> candidateIds);
 }

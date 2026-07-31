@@ -39,6 +39,7 @@ public class UserSocialServiceImpl implements UserSocialService {
     private final ak.dev.irc.app.post.cassandra.service.FeedTimelineService feedTimelineService;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
     private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
+    private final ak.dev.irc.app.post.cassandra.service.FriendSuggestionService suggestionService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  FOLLOW
@@ -104,6 +105,9 @@ public class UserSocialServiceImpl implements UserSocialService {
             log.debug("[FOLLOW] activity record skipped: {}", e.getMessage());
         }
 
+        // The follow graph changed — refresh "People You May Know" (async).
+        suggestionService.recomputeFor(me);
+
         log.info("User [{}] ({}) now follows user [{}] ({})",
                 me, meUser.getUsername(), targetId, target.getUsername());
 
@@ -131,6 +135,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         followRepository.deleteById(fid);
         userEventPublisher.publishUnfollowed(me, targetId);
         userSearch.indexAsync(targetId);
+        suggestionService.recomputeFor(me);   // follow graph changed — refresh suggestions
 
         log.info("User [{}] unfollowed user [{}]", me, targetId);
 

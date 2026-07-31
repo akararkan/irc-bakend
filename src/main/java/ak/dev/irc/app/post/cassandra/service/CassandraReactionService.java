@@ -61,6 +61,7 @@ public class CassandraReactionService {
     private final UserRepository            userRepo;
     private final CassandraNotificationService notificationService;
     private final CqlOperations             cqlOperations;
+    private final AuthorAffinityService     affinityService;
 
     // ── POSTS ────────────────────────────────────────────────────────────────
 
@@ -106,6 +107,7 @@ public class CassandraReactionService {
         counterService.incrementPostReactions(postId);
         broadcastPostReaction(postId, userId, PostRealtimeEventType.REACTION_ADDED);
         notifyPostReaction(postId, userId);
+        affinityService.recordForPost(userId, postId, AuthorAffinityService.WEIGHT_REACTION);
         return true;
     }
 

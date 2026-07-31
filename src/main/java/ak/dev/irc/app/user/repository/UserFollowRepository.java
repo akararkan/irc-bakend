@@ -108,6 +108,19 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
                                     @Param("afterId") UUID afterId,
                                     Pageable pageable);
 
+    /**
+     * "Which of these users follow me?" — bulk mutual-follow probe for the
+     * feed ranker. One round-trip for a whole page of authors; intersect the
+     * result with the viewer's following set to get true mutuals.
+     */
+    @Query("""
+        SELECT uf.follower.id FROM UserFollow uf
+        WHERE uf.following.id = :userId
+          AND uf.follower.id IN :candidateIds
+        """)
+    List<UUID> findFollowerIdsAmong(@Param("userId") UUID userId,
+                                    @Param("candidateIds") java.util.Collection<UUID> candidateIds);
+
     /** Delete all follow rows between two users in both directions */
     @Modifying
     @Query("""

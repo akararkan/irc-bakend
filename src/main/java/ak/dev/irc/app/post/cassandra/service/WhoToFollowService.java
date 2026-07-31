@@ -45,6 +45,7 @@ public class WhoToFollowService {
     private final UserRepository             userRepo;
     private final UserProfileRepository      profileRepo;
     private final UserFollowRepository       followRepo;
+    private final ak.dev.irc.app.user.repository.SuggestionDismissalRepository dismissalRepo;
 
     // ── Friends-of-friends ───────────────────────────────────────────────────
 
@@ -129,9 +130,28 @@ public class WhoToFollowService {
 
     // ── Dismiss ──────────────────────────────────────────────────────────────
 
-    /** Remove a candidate from the viewer's suggestion partition. */
+    /**
+     * Remove a candidate from the viewer's suggestion partition. Cassandra
+     * requires the FULL primary key (incl. the score clustering column) for
+     * the delete — the old two-arg call failed at runtime — so read the
+     * row(s) first to learn the score.
+     */
     public void dismiss(UUID viewerId, UUID candidateId) {
-        suggestionRepo.deleteSuggestion(viewerId, candidateId);
+        // Persist the negative signal so the candidate stays gone after the
+        // next recompute — not just until it.
+        try {
+            dismissalRepo.save(ak.dev.irc.app.user.entity.SuggestionDismissal.builder()
+                    .id(new ak.dev.irc.app.user.entity.SuggestionDismissal.Key(viewerId, candidateId))
+                    .dismissedAt(java.time.Instant.now())
+                    .build());
+        } catch (Exception e) {
+            log.debug("[WHO-TO-FOLLOW] dismissal persist skipped: {}", e.getMessage());
+        }
+        for (FriendSuggestionEntity row : suggestionRepo.topSuggestions(viewerId, 100)) {
+            if (candidateId.equals(row.getCandidateId()) && row.getScore() != null) {
+                suggestionRepo.deleteSuggestion(viewerId, row.getScore(), candidateId);
+            }
+        }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

@@ -48,6 +48,7 @@ public class CassandraSaveService {
     private final PostRealtimePublisher realtimePublisher;
     private final CqlOperations         cqlOperations;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
+    private final AuthorAffinityService affinityService;
 
     /**
      * Toggle a user's save on a post. LWT-guarded via {@code IF NOT EXISTS} /
@@ -91,6 +92,7 @@ public class CassandraSaveService {
                 .build());
         counterService.incrementPostSaves(postId);
         broadcast(postId, userId, true);
+        affinityService.recordForPost(userId, postId, AuthorAffinityService.WEIGHT_SAVE);
 
         // Activity feed: record the save on the saver's history (only when
         // the toggle goes ON — unsaves are not logged).

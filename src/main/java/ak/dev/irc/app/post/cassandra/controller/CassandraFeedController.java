@@ -21,6 +21,7 @@ import ak.dev.irc.app.post.cassandra.service.CassandraShareService;
 import ak.dev.irc.app.post.cassandra.service.CassandraViewService;
 import ak.dev.irc.app.post.cassandra.service.FeedTimelineService;
 import ak.dev.irc.app.post.cassandra.service.FriendSuggestionService;
+import ak.dev.irc.app.post.cassandra.service.HomeFeedService;
 import ak.dev.irc.app.post.cassandra.service.ReelFeedService;
 import ak.dev.irc.app.post.cassandra.service.PostHydrator;
 import ak.dev.irc.app.post.dto.FeedItemResponse;
@@ -66,6 +67,7 @@ public class CassandraFeedController {
 
     private final CassandraPostService     postService;
     private final FeedTimelineService      feedService;
+    private final ak.dev.irc.app.post.cassandra.service.HomeFeedService homeFeedService;
     private final ReelFeedService          reelFeedService;
     private final FriendSuggestionService  suggestionService;
     private final CassandraReactionService reactionService;
@@ -337,24 +339,81 @@ public class CassandraFeedController {
     }
 
     /**
-     * Home timeline (fanout-on-write).
-     * Path aliases: {@code /feed} (canonical) and {@code /feed/cursor} (legacy
-     * URL preserved from the pre-Cassandra controller so the frontend works
-     * without changes). Both accept the same params.
+     * Home timeline — ranked by default (multi-stage pipeline: candidate
+     * generation → safety filter → engagement/affinity/freshness scoring →
+     * diversity re-rank). {@code ?ranked=false} restores the pure
+     * chronological fanout read.
+     *
+     * <p>Path aliases: {@code /feed} (canonical) and {@code /feed/cursor}
+     * (legacy URL preserved from the pre-Cassandra controller so the
+     * frontend works without changes). Both accept the same params and both
+     * keep the bare-array response shape. Ranked pages are tail-pinned
+     * (oldest timeline item last) so legacy clients that derive
+     * {@code ?cursor=} from the last element keep paginating correctly.
+     * New clients should prefer {@code GET /feed/home}, which adds the
+     * live rail and an explicit {@code nextCursor}.</p>
      */
     @GetMapping({"/feed", "/feed/cursor"})
     public List<FeedItemResponse> homeFeed(@RequestParam(required = false) UUID userId,
                                            @RequestParam(defaultValue = "20") int pageSize,
                                            @RequestParam(defaultValue = "20") int limit,
                                            @RequestParam(required = false) Instant cursor,
+                                           @RequestParam(defaultValue = "true") boolean ranked,
                                            @AuthenticationPrincipal User user) {
         int size = Pages.clamp(limit > 0 ? limit : pageSize);
         // Prefer the JWT principal; fall back to ?userId= for legacy clients.
         UUID viewer = user != null ? user.getId() : userId;
         if (viewer == null) return List.of();
-        return hydrator.hydrateHomeFeed(cursor == null
-                ? feedService.homeFeed(viewer, size)
-                : feedService.homeFeedAfter(viewer, cursor, size));
+        if (!ranked) {
+            return hydrator.hydrateHomeFeed(cursor == null
+                    ? feedService.homeFeed(viewer, size)
+                    : feedService.homeFeedAfter(viewer, cursor, size));
+        }
+        return HomeFeedService.pinOldestTimelineLast(
+                homeFeedService.rankedHomeFeed(viewer, size, cursor).items());
+    }
+
+    /**
+     * Composite home feed (v2, canonical for new clients): ranked items +
+     * the "live now" rail + an explicit {@code nextCursor} — one request
+     * renders the whole home screen. Auth required (a home feed is
+     * inherently personal); anonymous callers get an empty page.
+     */
+    @GetMapping("/feed/home")
+    public ak.dev.irc.app.post.dto.HomeFeedResponse homeFeedComposite(
+            @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(required = false) Instant cursor,
+            @RequestParam(defaultValue = "true") boolean ranked,
+            @AuthenticationPrincipal User user) {
+        if (user == null) {
+            return new ak.dev.irc.app.post.dto.HomeFeedResponse(List.of(), List.of(), null, ranked);
+        }
+        int size = Pages.clamp(pageSize);
+        if (!ranked) {
+            List<FeedByUserEntity> rows = cursor == null
+                    ? feedService.homeFeed(user.getId(), size)
+                    : feedService.homeFeedAfter(user.getId(), cursor, size);
+            Instant next = rows.isEmpty() ? null : rows.get(rows.size() - 1).getCreatedAt();
+            return new ak.dev.irc.app.post.dto.HomeFeedResponse(
+                    hydrator.hydrateHomeFeed(rows),
+                    cursor == null ? homeFeedService.liveRail(user.getId()) : List.of(),
+                    next, false);
+        }
+        HomeFeedService.RankedFeed feed = homeFeedService.rankedHomeFeed(user.getId(), size, cursor);
+        return new ak.dev.irc.app.post.dto.HomeFeedResponse(
+                feed.items(), feed.liveNow(), feed.nextCursor(), true);
+    }
+
+    /**
+     * The "live now" rail alone — followed hosts first, filled with the
+     * most-watched public streams, blocked hosts removed. For clients that
+     * refresh the rail more often than the feed body.
+     */
+    @GetMapping("/feed/live-now")
+    public List<ak.dev.irc.app.chat.dto.response.LiveStreamResponse> liveNow(
+            @AuthenticationPrincipal User user) {
+        if (user == null) return List.of();
+        return homeFeedService.liveRail(user.getId());
     }
 
     /**
@@ -433,6 +492,32 @@ public class CassandraFeedController {
         if (user == null) throw new UnauthorizedException("Authentication required");
         suggestionService.recomputeFor(user.getId());
         return ResponseEntity.accepted().build();
+    }
+
+    /**
+     * Hydrated "People You May Know": candidate identity (username, name,
+     * avatar) + composite score + human-readable reason — renderable without
+     * a second fetch, unlike the raw {@code GET /suggestions} rows.
+     */
+    @GetMapping("/suggestions/detailed")
+    public List<ak.dev.irc.app.post.dto.SuggestionResponse> detailedSuggestions(
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        return suggestionService.detailedSuggestionsFor(user.getId(), Pages.clamp(limit));
+    }
+
+    /**
+     * Dismiss a suggestion ("don't show me this person") — removed now and
+     * excluded from every future recompute. Explicit negative feedback per
+     * the friend-suggestion pipeline.
+     */
+    @PostMapping("/suggestions/{candidateId}/dismiss")
+    public ResponseEntity<Void> dismissSuggestion(@PathVariable UUID candidateId,
+                                                  @AuthenticationPrincipal User user) {
+        if (user == null) throw new UnauthorizedException("Authentication required");
+        suggestionService.dismiss(user.getId(), candidateId);
+        return ResponseEntity.noContent().build();
     }
 
     // ── Reactions ────────────────────────────────────────────────────────────

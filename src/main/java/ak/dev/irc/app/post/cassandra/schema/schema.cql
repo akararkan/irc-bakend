@@ -724,3 +724,18 @@ CREATE TABLE IF NOT EXISTS friend_suggestions_by_user (
     computed_at  timestamp,
     PRIMARY KEY (user_id, score, candidate_id)
 ) WITH CLUSTERING ORDER BY (score DESC, candidate_id ASC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 19. USER↔AUTHOR AFFINITY — interest-graph signal for home-feed ranking.
+--     One weighted counter per (viewer, author) pair; bumped on every positive
+--     engagement (view +1, like +3, save +4, comment +5, share +5 — weights
+--     applied at write time by AuthorAffinityService). The feed ranker reads
+--     one single-partition slice with a clustering IN per page. Never
+--     decremented: affinity models long-term demonstrated interest.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_author_affinity (
+    user_id      uuid,
+    author_id    uuid,
+    interactions counter,
+    PRIMARY KEY (user_id, author_id)
+);

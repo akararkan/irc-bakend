@@ -22,8 +22,15 @@ public interface FriendSuggestionRepository extends CassandraRepository<FriendSu
     @Query("DELETE FROM friend_suggestions_by_user WHERE user_id = :userId")
     void clearForUser(@Param("userId") UUID userId);
 
-    /** Remove a single suggestion (dismiss action). */
-    @Query("DELETE FROM friend_suggestions_by_user WHERE user_id = :userId AND candidate_id = :candidateId")
+    /**
+     * Remove a single suggestion (dismiss action). The full primary key —
+     * partition + BOTH clustering columns (score, candidate_id) — is
+     * required: Cassandra rejects a DELETE that skips a clustering column,
+     * so the caller reads the row first to learn its score.
+     */
+    @Query("DELETE FROM friend_suggestions_by_user " +
+           "WHERE user_id = :userId AND score = :score AND candidate_id = :candidateId")
     void deleteSuggestion(@Param("userId")      UUID userId,
+                          @Param("score")       int  score,
                           @Param("candidateId") UUID candidateId);
 }
