@@ -55,6 +55,24 @@ shapes, error codes, and side effects, verified against the source.
 | [realtime.md](notifications/realtime.md) | Notification SSE stream + payload contract |
 | [email-preferences.md](notifications/email-preferences.md) | Email toggles, test send, unsubscribe-all |
 
+### Admin Documentation — `admin/`
+| File | Covers |
+|------|--------|
+| [README.md](admin/README.md) | Admin Dashboard plan — partition map, EXISTS/PARTIAL/PLANNED tagging rules |
+| [architecture.md](admin/architecture.md) | Access model, API conventions, existing-admin inventory, RBAC evolution |
+| [users-roles.md](admin/users-roles.md) | User directory/inspection, roles, account controls, growth analytics |
+| [content-moderation.md](admin/content-moderation.md) | Moderation queues, post/story/reel takedown, **sound approval**, keyword blocklist |
+| [research-qna.md](admin/research-qna.md) | Research pipeline/downloads, QnA oversight, tags & trending admin |
+| [chat-channels-live.md](admin/chat-channels-live.md) | Privacy boundaries, channel verification/stats, live-stream control, gifts |
+| [safety-reports.md](admin/safety-reports.md) | Report triage, strikes, appeals, consent viewer, privacy posture |
+| [media-storage.md](admin/media-storage.md) | Pipeline status board, failed queues, storage usage, R2 lifecycle |
+| [notifications-email.md](admin/notifications-email.md) | Volume dashboards, email health, digest monitor, announcement composer |
+| [search-feed-trending.md](admin/search-feed-trending.md) | ES health/reindexes, trending controls, feed ranking + fan-out observability |
+| [logs-audit.md](admin/logs-audit.md) | **The complete log catalog** + unified Log Explorer plan |
+| [analytics-kpis.md](admin/analytics-kpis.md) | KPI tree, per-module metrics, event-collection proposal |
+| [operations.md](admin/operations.md) | Dependency health, jobs inventory, queue/SSE/Redis ops, backup/DR |
+| [admin-api-blueprint.md](admin/admin-api-blueprint.md) | Every admin endpoint (existing + proposed) + phased build order |
+
 ### Settings — `settings/`
 | File | Covers |
 |------|--------|
