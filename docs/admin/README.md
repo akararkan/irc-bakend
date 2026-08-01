@@ -25,7 +25,7 @@ today versus what the dashboard build will add.
 
 ## Dashboard partition map
 
-The dashboard is partitioned into 12 sections + the API blueprint. One document
+The dashboard is partitioned into 13 sections + the API blueprint. One document
 per section — each contains: the on-screen views/widgets, exact data sources,
 admin actions (with proposed endpoints), the logs surfaced there, KPIs & chart
 specs, alerts, and permissions notes.
@@ -34,7 +34,7 @@ specs, alerts, and permissions notes.
 |---|---------|-----|-------|
 | 0 | **Architecture & access** | [architecture.md](architecture.md) | Access model, API conventions, existing-admin inventory, RBAC evolution, impersonation policy |
 | 1 | **Users & roles** | [users-roles.md](users-roles.md) | Directory, user inspection, roles/badges, account controls, sessions/2FA, deletion pipeline, growth analytics |
-| 2 | **Content moderation** | [content-moderation.md](content-moderation.md) | Posts/comments/stories/reels moderation queues, **sound library approval**, platform keyword blocklist, bulk actions |
+| 2 | **Content moderation** | [content-moderation.md](content-moderation.md) | Posts/comments/stories/reels moderation queues, sound-approval queue slice, platform keyword blocklist, bulk actions |
 | 3 | **Research & Q&A** | [research-qna.md](research-qna.md) | Research pipeline/DOI/downloads, QnA oversight, tags & trending admin |
 | 4 | **Chat, channels & live** | [chat-channels-live.md](chat-channels-live.md) | Privacy boundaries, channel verification & stats, invite abuse, live-stream control (force-stop, keys, recordings), gift economy |
 | 5 | **Safety & reports** | [safety-reports.md](safety-reports.md) | Report triage queue, strikes ledger, appeals, moderation records, consent viewer, SLAs |
@@ -45,6 +45,7 @@ specs, alerts, and permissions notes.
 | 10 | **Analytics & KPIs** | [analytics-kpis.md](analytics-kpis.md) | KPI tree, per-module metrics (honest EXISTS/PLANNED sourcing), event-collection proposal, overview-page layout |
 | 11 | **Operations** | [operations.md](operations.md) | Dependency health, scheduled-jobs inventory, queue/DLQ ops, SSE & Redis ops, env-var registry, backup/DR, runbooks |
 | 12 | **API blueprint** | [admin-api-blueprint.md](admin-api-blueprint.md) | Every admin endpoint (existing + proposed) in one place, with danger levels and the phased build order |
+| 13 | **Sound library** | [sound-library.md](sound-library.md) | **The TikTok/Facebook-style audio library** — catalog & category curation, approval queue (canonical spec), full state machine, official/platform sounds, trending oversight, uploader reputation, rights/DMCA takedown, `irc-sounds` index health |
 
 ## Where to start
 
@@ -59,6 +60,11 @@ specs, alerts, and permissions notes.
 3. **The two flagship docs** for what you asked: [logs-audit.md](logs-audit.md)
    (every log on the platform, catalogued) and
    [analytics-kpis.md](analytics-kpis.md) (the full measurement plan).
+4. **The sound library** ([sound-library.md](sound-library.md)) is the
+   TikTok/Facebook-style audio catalog, documented as its own section: the
+   approval queue, curation, official/platform sounds, trending, uploader
+   reputation, and rights/DMCA takedown — grounded in the real
+   `app/post/cassandra` + `irc-sounds` implementation.
 
 ## Relationship to the rest of `docs/`
 

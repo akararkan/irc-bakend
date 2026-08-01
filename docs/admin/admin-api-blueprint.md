@@ -98,7 +98,7 @@ Views/KPIs: [content-moderation.md](content-moderation.md). No admin content end
 
 ### 3.3 Sound library
 
-Views/KPIs: [content-moderation.md](content-moderation.md) (sound approval queue). State machine `PENDING_REVIEW → APPROVED | REJECTED | ARCHIVED`; only the approve transition exists, and it lives **outside the prefix**.
+Views/KPIs: [sound-library.md](sound-library.md) (the whole subsystem — Section 13) and [content-moderation.md](content-moderation.md) §2.6 (the approval-queue slice). State machine `PENDING_REVIEW → APPROVED | REJECTED | ARCHIVED`; only the approve transition exists, and it lives **outside the prefix**. The dedicated doc adds the planned reject/archive/**takedown**/restore/re-categorize/edit/delete + official bulk-seed + trending-exclude endpoints — see its §6.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|

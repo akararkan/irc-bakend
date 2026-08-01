@@ -132,6 +132,13 @@ NOT taken") and a highlight badge when the story is pinned somewhere.
 
 ### 2.6 Sound library — approval queue (flagship of this section)
 
+> **The whole sound subsystem now has its own section:**
+> [sound-library.md](sound-library.md) (Section 13) — catalog & category
+> curation, official/platform sounds, trending oversight, uploader reputation,
+> rights/DMCA takedown, the full state machine, and index health. This
+> subsection stays as the **moderation-queue view**; the dedicated doc is the
+> canonical reference and the two are kept in sync.
+
 The real flow today, end to end:
 
 | Step | Status | Detail |
