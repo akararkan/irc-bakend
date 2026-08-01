@@ -95,6 +95,18 @@ public class RabbitMQConfig {
                 .build();
     }
 
+    // ── Media pipeline queues (spec §20) ──────────────────────────────────────
+
+    @Bean
+    public Queue mediaProcessQueue() {
+        return QueueBuilder.durable(MEDIA_PROCESS_QUEUE).withArguments(queueArgs()).build();
+    }
+
+    @Bean
+    public Queue mediaDeleteQueue() {
+        return QueueBuilder.durable(MEDIA_DELETE_QUEUE).withArguments(queueArgs()).build();
+    }
+
     // ── Bindings — notification queue ────────────────────────────────────────
 
     /** All user-social events (follow, unfollow, block, unblock) */
@@ -173,6 +185,18 @@ public class RabbitMQConfig {
                 .with("research.analytics.#");
     }
 
+    // ── Bindings — media pipeline ─────────────────────────────────────────────
+
+    @Bean
+    public Binding mediaProcessBinding(Queue mediaProcessQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(mediaProcessQueue).to(ircExchange).with(MEDIA_PROCESS_PATTERN);
+    }
+
+    @Bean
+    public Binding mediaDeleteBinding(Queue mediaDeleteQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(mediaDeleteQueue).to(ircExchange).with(MEDIA_DELETE_PATTERN);
+    }
+
     // ── DLX binding ───────────────────────────────────────────────────────────
 
     @Bean
@@ -202,7 +226,8 @@ public class RabbitMQConfig {
                 "ak.dev.irc.app.rabbitmq.event.user",
                 "ak.dev.irc.app.rabbitmq.event.research",
             "ak.dev.irc.app.rabbitmq.event.post",
-            "ak.dev.irc.app.rabbitmq.event.qna"
+            "ak.dev.irc.app.rabbitmq.event.qna",
+            "ak.dev.irc.app.media.event"
         );
 
         converter.setJavaTypeMapper(typeMapper);

@@ -55,6 +55,27 @@ shapes, error codes, and side effects, verified against the source.
 | [realtime.md](notifications/realtime.md) | Notification SSE stream + payload contract |
 | [email-preferences.md](notifications/email-preferences.md) | Email toggles, test send, unsubscribe-all |
 
+### Settings — `settings/`
+| File | Covers |
+|------|--------|
+| [README.md](settings/README.md) | Module overview, ownership model [B]/[C]/[B+C], section → package map |
+| [architecture.md](settings/architecture.md) | Storage tiers, the two enforcement layers, caching, audit, step-up |
+| [api-reference.md](settings/api-reference.md) | Every settings/security/media endpoint |
+| [data-model.md](settings/data-model.md) | Every new table + additive columns on `users`/`refresh_tokens` |
+| [config.md](settings/config.md) | New `application.yaml` keys + env vars (prod secrets) |
+| [privacy.md](settings/privacy.md) | §5/§13 Visibility Resolver, lists, mute, hidden keywords, blocks |
+| [auth-sessions.md](settings/auth-sessions.md) | §2/§4/§12 phone+OTP, 2FA/TOTP, recovery, sessions, login history, step-up |
+| [notifications.md](settings/notifications.md) | §8 preference matrix, DND, push tokens |
+| [messaging-media.md](settings/messaging-media.md) | §9/§15/§20 media pipeline (1080 cap), storage usage |
+| [data-export-deletion.md](settings/data-export-deletion.md) | §16 export + account-deletion state machine |
+| [safety-center.md](settings/safety-center.md) | §18 reports, strikes, derived security score |
+| [discovery-contacts.md](settings/discovery-contacts.md) | §3/§6/§14 contacts, discoverability, QR, consent |
+| [presence.md](settings/presence.md) | §7 three-way presence policy + reciprocity |
+| [core-settings.md](settings/core-settings.md) | §10/§11/§22 cosmetic JSONB, cache, audit |
+| [about-policy.md](settings/about-policy.md) | §19 app-config + policy acceptance |
+| [community.md](settings/community.md) | §17 communities reuse existing channel roles |
+| [implementation-notes.md](settings/implementation-notes.md) | Real vs stand-in, divergences, follow-up seams |
+
 ### Research — `research/`
 | File | Covers |
 |---|---|

@@ -74,6 +74,24 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Column(name = "password", length = 255)
     private String password;
 
+    // ── Phone (spec §2 — phone registration / OTP; additive, populated only
+    //    once a user verifies a phone number) ──────────────────────────────────
+
+    /** Normalised E.164 phone, e.g. {@code +9647501234567}. Nullable until verified. */
+    @Column(name = "phone_e164", length = 20)
+    private String phoneE164;
+
+    /**
+     * Keyed hash of the E.164 phone ({@code HMAC-SHA256(e164, SERVER_PEPPER)}) —
+     * lets contact-sync match on phone without ever storing the raw number in a
+     * form a DB dump could reverse. Indexed for the matching join.
+     */
+    @Column(name = "phone_hmac", length = 64)
+    private String phoneHmac;
+
+    @Column(name = "phone_verified_at")
+    private LocalDateTime phoneVerifiedAt;
+
     // ── Authorization ─────────────────────────────────────────────────────────
 
     @Enumerated(EnumType.STRING)
@@ -118,8 +136,25 @@ public class User extends BaseAuditEntity implements UserDetails {
     @Builder.Default
     private boolean twoFactorEnabled = false;
 
+    /** AES-GCM-encrypted TOTP secret (spec §12). Decryptable to verify codes. */
     @Column(name = "two_factor_secret", length = 255)
     private String twoFactorSecret;
+
+    /**
+     * Last accepted TOTP step index (spec §12 replay guard). A code cannot be
+     * used twice: verification requires the presented step to be strictly
+     * greater than this value.
+     */
+    @Column(name = "two_factor_last_step")
+    private Long twoFactorLastStep;
+
+    /**
+     * IANA timezone for Do-Not-Disturb evaluation (spec §8), e.g.
+     * {@code Asia/Baghdad}. Stored as a zone id, never a UTC offset — offsets
+     * break on DST changes. Nullable → DND evaluation falls back to UTC.
+     */
+    @Column(name = "timezone", length = 40)
+    private String timezone;
 
     // ── Email notification preferences ────────────────────────────────────────
 

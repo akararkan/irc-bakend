@@ -213,6 +213,50 @@ public class CloudflareR2StorageService implements S3StorageService {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  PRE-SIGNED PUT  (direct-to-R2 upload — spec §20.4)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public String presignPut(String s3Key, String contentType, int expiryMinutes) {
+        PutObjectRequest.Builder put = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(s3Key);
+        if (contentType != null && !contentType.isBlank()) {
+            put.contentType(contentType);
+        }
+        var presign = software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofMinutes(expiryMinutes))
+                .putObjectRequest(put.build())
+                .build();
+        return s3Presigner.presignPutObject(presign).url().toString();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  PUT BYTES  (worker-produced renditions — spec §20.4)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public String putBytes(byte[] data, String s3Key, String contentType) {
+        try {
+            PutObjectRequest.Builder put = PutObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(s3Key)
+                    .contentLength((long) (data == null ? 0 : data.length));
+            if (contentType != null && !contentType.isBlank()) {
+                put.contentType(contentType);
+            }
+            s3Client.putObject(put.build(), RequestBody.fromBytes(data == null ? new byte[0] : data));
+            log.info("Uploaded {} bytes to R2: {}", data == null ? 0 : data.length, s3Key);
+            return s3Key;
+        } catch (SdkClientException e) {
+            log.error("R2 storage is unreachable — putBytes failed for '{}': {}", s3Key, e.getMessage(), e);
+            throw new AppException(
+                    "File storage service is currently unavailable. Please try again later.",
+                    HttpStatus.SERVICE_UNAVAILABLE, "STORAGE_UNAVAILABLE");
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
 
     private String extractExtension(String filename) {
         if (filename != null && filename.contains(".")) {

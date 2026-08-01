@@ -52,6 +52,34 @@ public interface S3StorageService {
     S3ObjectStream getObject(String s3Key);
 
     /**
+     * Pre-signed <b>PUT</b> URL for direct-to-storage uploads (spec §20.4) — a
+     * 512 MB video must never stream through the app server. The client PUTs the
+     * bytes straight to R2/S3 using this URL.
+     *
+     * <p>Default throws {@link UnsupportedOperationException}; the real R2 impl
+     * overrides it. Callers behind the No-op (storage unconfigured) will surface
+     * the error, which is the intended dev behaviour.</p>
+     *
+     * @param s3Key         the object key the client will PUT to
+     * @param contentType   the declared content type (bound into the signature)
+     * @param expiryMinutes minutes until the URL expires
+     */
+    default String presignPut(String s3Key, String contentType, int expiryMinutes) {
+        throw new UnsupportedOperationException("presignPut is not supported by this storage backend");
+    }
+
+    /**
+     * Upload raw bytes at a specific key (spec §20.4) — used by the media worker
+     * to write re-encoded renditions it produced in memory. Returns the key.
+     *
+     * <p>Default throws {@link UnsupportedOperationException}; the real R2 impl
+     * overrides it.</p>
+     */
+    default String putBytes(byte[] data, String s3Key, String contentType) {
+        throw new UnsupportedOperationException("putBytes is not supported by this storage backend");
+    }
+
+    /**
      * Ranged fetch for HTTP {@code 206 Partial Content} (video/audio seeking).
      *
      * @param s3Key       the object key

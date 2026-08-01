@@ -1,0 +1,63 @@
+package ak.dev.irc.app.security.login.service;
+
+import ak.dev.irc.app.security.login.entity.LoginEvent;
+import ak.dev.irc.app.security.login.repository.LoginEventRepository;
+import ak.dev.irc.app.user.service.NotificationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Records login history and raises new-device alerts (spec §12). The alert path
+ * uses {@link NotificationService#sendSystemNotification} — a security alert must
+ * always reach the user (it deliberately bypasses DND and channel preferences).
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class LoginEventService {
+
+    private final LoginEventRepository repo;
+    private final NotificationService notificationService;
+
+    @Transactional
+    public LoginEvent record(UUID userId, String ip, String userAgent, String method, String outcome) {
+        return repo.save(LoginEvent.builder()
+                .userId(userId).ip(ip).userAgent(userAgent)
+                .method(method).outcome(outcome).build());
+    }
+
+    /**
+     * Record a successful login and, if it comes from an IP never seen before
+     * for this user, emit a security alert. The "new device" heuristic is
+     * intentionally IP-based-plus-first-seen; a real impl would fold in the
+     * device fingerprint from the session row.
+     */
+    @Transactional
+    public void recordSuccessAndAlertIfNew(UUID userId, String ip, String userAgent, String method) {
+        List<String> known = repo.distinctSuccessfulIps(userId);
+        boolean isNew = ip != null && !known.contains(ip) && !known.isEmpty();
+        record(userId, ip, userAgent, method, "SUCCESS");
+        if (isNew) {
+            try {
+                notificationService.sendSystemNotification(userId,
+                        "New sign-in to your account",
+                        "A new device signed in" + (ip != null ? " from " + ip : "")
+                                + ". If this wasn't you, secure your account now.");
+            } catch (Exception ex) {
+                log.warn("[LOGIN-ALERT] failed to send new-device alert to {}: {}", userId, ex.getMessage());
+            }
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public Page<LoginEvent> history(UUID userId, Pageable pageable) {
+        return repo.findByUserIdOrderByTsDesc(userId, pageable);
+    }
+}

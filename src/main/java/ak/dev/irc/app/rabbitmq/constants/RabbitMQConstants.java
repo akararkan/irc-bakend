@@ -27,6 +27,12 @@ public final class RabbitMQConstants {
     /** Parking lot for messages that exhausted their retry attempts */
     public static final String DEAD_LETTER_QUEUE   = "irc.queue.dead-letter";
 
+    /** Media pipeline (spec §20): transcode / rendition worker. */
+    public static final String MEDIA_PROCESS_QUEUE = "irc.queue.media.process";
+
+    /** Media pipeline: delete-all-renditions worker. */
+    public static final String MEDIA_DELETE_QUEUE  = "irc.queue.media.delete";
+
     // ── Routing keys — User Social ────────────────────────────────────────────
 
     public static final String USER_FOLLOWED   = "user.social.followed";
@@ -81,4 +87,15 @@ public final class RabbitMQConstants {
     public static final String QNA_LIFECYCLE_PATTERN = "qna.lifecycle.#";
     /** Catches qna.social.* */
     public static final String QNA_SOCIAL_PATTERN    = "qna.social.#";
+
+    // ════════════════════════════════════════════════════════════
+    //  Media pipeline events  (spec §20)
+    // ════════════════════════════════════════════════════════════
+    public static final String MEDIA_PROCESS_REQUESTED = "media.process.requested";
+    public static final String MEDIA_DELETE_REQUESTED  = "media.delete.requested";
+
+    /** Catches media.process.* */
+    public static final String MEDIA_PROCESS_PATTERN = "media.process.#";
+    /** Catches media.delete.* */
+    public static final String MEDIA_DELETE_PATTERN  = "media.delete.#";
 }

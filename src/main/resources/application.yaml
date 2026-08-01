@@ -235,6 +235,50 @@ app:
     # is enforced. Set SECURITY_PERMIT_ALL=true ONLY for throwaway local
     # testing where you want annotations ignored — never in production.
     permit-all: ${SECURITY_PERMIT_ALL:false}
+    # Step-up authentication window (Settings §22.3) — how long a fresh
+    # password/OTP re-auth stays valid for sensitive actions.
+    step-up:
+      ttl-seconds: ${STEP_UP_TTL_SECONDS:300}
+    # TOTP two-factor (Settings §12). secret-key encrypts the TOTP secret at
+    # rest (AES-GCM); MUST be set in production or enrolled secrets do not
+    # survive a restart.
+    twofa:
+      issuer: ${TWOFA_ISSUER:IRC}
+      secret-key: ${TWOFA_AES_KEY:}
+      recovery-code-count: 10
+      allowed-drift-steps: 1
+    # Server pepper for the phone-number HMAC (Settings §3). Lives only in the
+    # environment, never in the mobile app, never in the database.
+    contact:
+      pepper: ${CONTACT_PEPPER:}
+
+  # One-Time Password / phone verification (Settings §2). The pepper is used to
+  # HMAC the code — the plaintext code is never stored.
+  otp:
+    code-length: 6
+    ttl-seconds: ${OTP_TTL_SECONDS:300}
+    max-attempts: 5
+    pepper: ${OTP_PEPPER:}
+    resend-per-number-per-hour: 3
+    resend-per-ip-per-hour: 10
+
+  # Default country calling code for E.164 normalization (Settings §2). Iraq = 964.
+  phone:
+    default-calling-code: ${PHONE_DEFAULT_CALLING_CODE:964}
+
+  # Resolved-settings cache TTL (Settings §22.2).
+  settings:
+    cache-ttl-seconds: ${SETTINGS_CACHE_TTL_SECONDS:600}
+
+  # About / app-config + policy versions (Settings §19). minSupportedVersion +
+  # forceUpdate drive the client version gate served at GET /api/v1/app/config.
+  about:
+    min-supported-version: ${APP_MIN_VERSION:1.0.0}
+    force-update: ${APP_FORCE_UPDATE:false}
+    latest-version: ${APP_LATEST_VERSION:1.0.0}
+    privacy-policy-version: "2026-08-01"
+    terms-version: "2026-08-01"
+    guidelines-version: "2026-08-01"
 
   # Live-streaming media plane. The app never proxies audio/video — it only hands
   # clients these origins and authorizes the media server's publish/read calls.
@@ -294,6 +338,40 @@ app:
     bucket-name: ${R2_BUCKET_NAME:irc}
     public-url-base: ${R2_PUBLIC_URL:https://pub-55dce88e6a5db45662dc27ef50d83c2a.r2.dev}
     region: ${R2_REGION:auto}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MEDIA UPLOAD, QUALITY & COMPRESSION POLICY  (Settings §20)
+# ═══════════════════════════════════════════════════════════════════════════════
+# The user chooses their preferred upload tier; the BACKEND enforces the maximum.
+# Every uploaded asset is re-encoded and reduced in size on the server.
+#   VIDEO  → short edge hard-capped at 1080 px (do NOT raise max-short-edge).
+#   IMAGE  → long edge capped at HD class (1920 px), metadata stripped.
+# All caps live here (not in code) so they can be tuned without a release.
+media:
+  image:
+    max-long-edge: 1920          # HD / Full-HD class cap
+    chat-max-long-edge: 1280
+    profile-edge: 512
+    avif-quality: 55
+    webp-quality: 80
+    jpeg-quality: 82             # progressive JPEG (pure-JDK guaranteed output)
+  video:
+    max-short-edge: 1080         # HARD CAP — do not raise
+    max-fps: 30
+    crf: 23
+    audio-bitrate: 128k
+  limits:
+    image-max-bytes: 26214400    # 25 MB
+    video-max-bytes: 536870912   # 512 MB
+    max-input-megapixels: 100    # decompression-bomb guard (rejected before decode)
+  processing:
+    # Video transcode uses these binaries when enabled=true; otherwise the
+    # passthrough transcoder stores the validated original (self-contained dev).
+    ffmpeg-bin: ${MEDIA_FFMPEG_BIN:${app.streaming.ffmpeg-bin:ffmpeg}}
+    ffprobe-bin: ${MEDIA_FFPROBE_BIN:ffprobe}
+    enabled: ${MEDIA_TRANSCODE_ENABLED:false}
+    timeout-seconds: 600
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -39,6 +39,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     boolean existsByUsernameAndDeletedAtIsNull(String username);
 
+    /** Cheap "owner is a live account" probe — used by the privacy VisibilityResolver. */
+    boolean existsByIdAndDeletedAtIsNull(UUID id);
+
     @Query("""
         SELECT u FROM User u
         WHERE u.deletedAt IS NULL
