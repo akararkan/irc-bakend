@@ -28,16 +28,43 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
 
     // ── Feed queries ─────────────────────────────────────────────────────────
 
+    /**
+     * Public research feed. Author + author profile are fetch-joined: the
+     * card mapper reads {@code researcher.getProfileImage()}, and without the
+     * fetch every card fires a researcher SELECT + a profile SELECT
+     * ({@code User.profile} is a non-proxyable mappedBy 1:1). Explicit
+     * countQuery — Spring Data cannot derive counts from fetch joins.
+     */
+    @Query(value = """
+        SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE r.status = :status
+          AND r.deletedAt IS NULL
+        ORDER BY r.publishedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
+        WHERE r.status = :status AND r.deletedAt IS NULL
+        """)
     Page<Research> findByStatusAndDeletedAtIsNullOrderByPublishedAtDesc(
-            ResearchStatus status, Pageable pageable);
+            @Param("status") ResearchStatus status, Pageable pageable);
 
     /** Block-aware feed: hides researches whose author is in a block edge with the viewer. */
-    @Query("""
+    @Query(value = """
         SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE r.status = :status
+          AND r.deletedAt IS NULL
+          AND res.id NOT IN :blockedIds
+        ORDER BY r.publishedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
         WHERE r.status = :status
           AND r.deletedAt IS NULL
           AND r.researcher.id NOT IN :blockedIds
-        ORDER BY r.publishedAt DESC
         """)
     Page<Research> findFeedExcluding(@Param("status") ResearchStatus status,
                                      @Param("blockedIds") List<UUID> blockedIds,
@@ -66,13 +93,22 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     List<Research> findDueForScheduledPublish(@Param("status") ResearchStatus status,
                                               @Param("now") LocalDateTime now);
 
-    // Following feed: published research from followed researchers
-    @Query("""
+    // Following feed: published research from followed researchers.
+    // Author + profile fetch-joined — same rationale as the public feed above.
+    @Query(value = """
         SELECT r FROM Research r
-        WHERE r.researcher.id IN :researcherIds
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE res.id IN :researcherIds
           AND r.status = 'PUBLISHED'
           AND r.deletedAt IS NULL
         ORDER BY r.publishedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
+        WHERE r.researcher.id IN :researcherIds
+          AND r.status = 'PUBLISHED'
+          AND r.deletedAt IS NULL
         """)
     Page<Research> findFollowingFeed(@Param("researcherIds") List<UUID> researcherIds, Pageable pageable);
 

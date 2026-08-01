@@ -19,11 +19,17 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     Page<Question> findByDeletedAtIsNullOrderByCreatedAtDesc(Pageable pageable);
 
-    // Cursor-paginated feed — O(log n) deep paging that does not degrade as
+    // Cursor-paginated feed. Author + profile are fetch-joined on every feed
+    // variant: the card mapper reads author.getProfileImage(), and User.profile
+    // is a non-proxyable mappedBy 1:1 — without the fetch each card costs an
+    // author SELECT + a profile SELECT.
+    // O(log n) deep paging that does not degrade as
     // the user scrolls. Split into two methods so :cursor has a concrete type
     // bound on Postgres.
     @Query("""
         SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
         ORDER BY q.createdAt DESC
         """)
@@ -31,6 +37,8 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     @Query("""
         SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
           AND q.createdAt < :cursor
         ORDER BY q.createdAt DESC
@@ -41,27 +49,38 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     // Drop questions whose author is in any block-relationship with the
     // viewer in the same query — no per-row scan, single index hit.
 
-    @Query("""
+    @Query(value = """
         SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
+        WHERE q.deletedAt IS NULL
+          AND a.id NOT IN :blockedIds
+        ORDER BY q.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(q) FROM Question q
         WHERE q.deletedAt IS NULL
           AND q.author.id NOT IN :blockedIds
-        ORDER BY q.createdAt DESC
         """)
     Page<Question> findFeedExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
 
     @Query("""
         SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
-          AND q.author.id NOT IN :blockedIds
+          AND a.id NOT IN :blockedIds
         ORDER BY q.createdAt DESC
         """)
     List<Question> findFeedFirstPageExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
 
     @Query("""
         SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
           AND q.createdAt < :cursor
-          AND q.author.id NOT IN :blockedIds
+          AND a.id NOT IN :blockedIds
         ORDER BY q.createdAt DESC
         """)
     List<Question> findFeedAfterExcluding(@Param("cursor") java.time.LocalDateTime cursor,
@@ -69,11 +88,18 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
                                           Pageable pageable);
 
     // Following feed: questions from followed users
-    @Query("""
+    @Query(value = """
         SELECT q FROM Question q
-        WHERE q.author.id IN :authorIds
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
+        WHERE a.id IN :authorIds
           AND q.deletedAt IS NULL
         ORDER BY q.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(q) FROM Question q
+        WHERE q.author.id IN :authorIds
+          AND q.deletedAt IS NULL
         """)
     Page<Question> findFollowingFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
 

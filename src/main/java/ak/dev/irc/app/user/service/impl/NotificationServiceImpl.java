@@ -303,9 +303,11 @@ public class NotificationServiceImpl implements NotificationService {
             if (n.getActorId() != null)     actorIds.add(n.getActorId());
             if (n.getLastActorId() != null) actorIds.add(n.getLastActorId());
         }
+        // Profile is JOIN FETCHed — actor.getProfileImage() below delegates to
+        // the LAZY profile; plain findAllById would fire one SELECT per actor.
         Map<UUID, User> users = actorIds.isEmpty()
                 ? Map.of()
-                : indexById(userRepository.findAllById(actorIds));
+                : indexById(userRepository.findActiveWithProfileByIdIn(actorIds));
 
         List<NotificationResponse> mapped = slice.stream()
                 .map(n -> toResponse(n, users))

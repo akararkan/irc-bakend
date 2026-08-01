@@ -97,7 +97,12 @@ public class RedisCacheConfig {
                         // Chat ephemeral-suppression gate (typing/receipts) — runs
                         // at keystroke cadence, ~5 queries cold; 10s staleness on
                         // an ephemeral signal is invisible.
-                        Map.entry("chat-suppress-ephemeral", defaults.entryTtl(Duration.ofSeconds(10)))
+                        Map.entry("chat-suppress-ephemeral", defaults.entryTtl(Duration.ofSeconds(10))),
+                        // Knowledge taxonomy (topics / madhhabs) — tiny static
+                        // vocabularies hit by every profile editor; they change
+                        // only via migrations, so an hour of staleness is free.
+                        Map.entry("knowledge-topics",   defaults.entryTtl(Duration.ofHours(1))),
+                        Map.entry("knowledge-madhhabs", defaults.entryTtl(Duration.ofHours(1)))
                 ))
                 .build();
     }

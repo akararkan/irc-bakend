@@ -29,13 +29,12 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class KnowledgeController {
 
-    private final TopicRepository   topicRepository;
-    private final MadhhabRepository madhhabRepository;
+    private final ak.dev.irc.app.knowledge.service.KnowledgeVocabularyService vocabulary;
 
     /** List / search topics across nameEn / nameAr / nameCkb. */
     @GetMapping("/topics")
     public List<Topic> topics(@RequestParam(required = false) String q) {
-        List<Topic> all = topicRepository.findAll();
+        List<Topic> all = vocabulary.allTopics();
         if (q == null || q.isBlank()) return all;
         String needle = q.trim().toLowerCase(Locale.ROOT);
         return all.stream()
@@ -46,7 +45,7 @@ public class KnowledgeController {
     /** List / search madhhabs across nameEn / nameAr / nameCkb. */
     @GetMapping("/madhhabs")
     public List<Madhhab> madhhabs(@RequestParam(required = false) String q) {
-        List<Madhhab> all = madhhabRepository.findAll();
+        List<Madhhab> all = vocabulary.allMadhhabs();
         if (q == null || q.isBlank()) return all;
         String needle = q.trim().toLowerCase(Locale.ROOT);
         return all.stream()

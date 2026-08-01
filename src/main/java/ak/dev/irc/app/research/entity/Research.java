@@ -234,6 +234,7 @@ public class Research extends BaseAuditEntity {
     @Builder.Default
     private List<ResearchContributor> contributors = new ArrayList<>();
 
+    @org.hibernate.annotations.BatchSize(size = 50)   // feed page: one IN query for all cards' tags
     @OneToMany(mappedBy = "research", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default

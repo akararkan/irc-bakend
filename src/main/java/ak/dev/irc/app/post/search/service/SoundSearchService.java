@@ -180,15 +180,16 @@ public class SoundSearchService {
         }
 
         long indexed = 0;
+        List<SoundEntity> pending = new ArrayList<>(100);
         List<SoundSearchDocument> batch = new ArrayList<>(100);
         for (SoundEntity s : soundRepo.findAll()) {
-            long uses = soundCounterRepo.findBySoundId(s.getId())
-                    .map(c -> c.getUseCount() == null ? 0L : c.getUseCount()).orElse(0L);
-            batch.add(buildDoc(s, uses));
-            if (batch.size() == 100) {
+            pending.add(s);
+            if (pending.size() == 100) {
+                buildDocsBulk(pending, batch);
                 indexed += flush(batch);
             }
         }
+        buildDocsBulk(pending, batch);
         indexed += flush(batch);
 
         long ms = Duration.between(start, Instant.now()).toMillis();
@@ -196,6 +197,28 @@ public class SoundSearchService {
                 indexed, dropped ? " (index was dropped first)" : "");
         log.info("[SEARCH] {} ({}ms)", note, ms);
         return new ReindexSummary(dropped, indexed, (int) ((indexed + 99) / 100), ms, note);
+    }
+
+    /**
+     * Resolve use-counts for a batch of sounds with ONE counter IN-query
+     * (the old loop point-read sound_counters once per sound) and drain the
+     * batch into ES documents.
+     */
+    private void buildDocsBulk(List<SoundEntity> pending, List<SoundSearchDocument> out) {
+        if (pending.isEmpty()) return;
+        java.util.Map<java.util.UUID, Long> uses = new java.util.HashMap<>(pending.size());
+        try {
+            java.util.Set<java.util.UUID> ids = new java.util.HashSet<>();
+            pending.forEach(s -> ids.add(s.getId()));
+            soundCounterRepo.findAllBySoundIdIn(ids).forEach(c ->
+                    uses.put(c.getSoundId(), c.getUseCount() == null ? 0L : c.getUseCount()));
+        } catch (Exception e) {
+            log.debug("[SEARCH] bulk sound-counter read failed, defaulting to 0: {}", e.getMessage());
+        }
+        for (SoundEntity s : pending) {
+            out.add(buildDoc(s, uses.getOrDefault(s.getId(), 0L)));
+        }
+        pending.clear();
     }
 
     private long flush(List<SoundSearchDocument> batch) {

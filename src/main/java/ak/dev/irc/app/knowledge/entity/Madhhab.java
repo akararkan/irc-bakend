@@ -2,8 +2,10 @@ package ak.dev.irc.app.knowledge.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 
 @Entity
+@BatchSize(size = 50)
 @Table(name = "madhhabs")
 @Getter
 @Setter

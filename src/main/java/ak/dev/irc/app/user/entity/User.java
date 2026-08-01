@@ -5,6 +5,7 @@ import ak.dev.irc.app.common.enums.Language;
 import ak.dev.irc.app.user.enums.Role;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -45,6 +46,9 @@ import java.util.*;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+// Batch-init User proxies (feed authors, comment users, notification actors):
+// a page of rows resolves its lazy to-one User references in one IN query.
+@BatchSize(size = 50)
 public class User extends BaseAuditEntity implements UserDetails {
 
     @Id

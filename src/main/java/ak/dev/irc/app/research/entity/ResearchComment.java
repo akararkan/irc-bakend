@@ -49,6 +49,7 @@ public class ResearchComment extends BaseAuditEntity {
             foreignKey = @ForeignKey(name = "fk_rcomment_parent"))
     private ResearchComment parent;
 
+    @org.hibernate.annotations.BatchSize(size = 50)   // comment page: replies load in IN batches, not per row
     @OneToMany(mappedBy = "parent", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("createdAt ASC")

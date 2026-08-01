@@ -74,7 +74,9 @@ public class MentionSuggestionService {
                 ? Set.of()
                 : Set.copyOf(socialGuard.findRelatedBlockedIds(viewerId));
 
-        List<User> users = userRepo.findAllById(scoreById.keySet());
+        // JOIN FETCH profile — Suggestion.from reads getProfileImage(), which
+        // delegates to the LAZY profile (one SELECT per user with findAllById).
+        List<User> users = userRepo.findActiveWithProfileByIdIn(scoreById.keySet());
 
         return users.stream()
                 .filter(u -> u.getDeletedAt() == null)

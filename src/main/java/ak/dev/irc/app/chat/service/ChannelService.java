@@ -223,9 +223,9 @@ public class ChannelService {
     public List<ChannelAdminResponse> listAdmins(UUID channelId, UUID actorId) {
         requireChannel(channelId);
         requireMember(channelId, actorId); // any subscriber may see who runs the channel
-        List<ConversationMember> staff = memberRepo.findAllByConversation(channelId).stream()
-                .filter(m -> m.isActive() && m.isAdminOrOwner())
-                .toList();
+        // Targeted role query — the old findAllByConversation loaded EVERY
+        // subscriber row into memory just to keep the handful of staff.
+        List<ConversationMember> staff = memberRepo.findActiveStaff(channelId);
         Set<UUID> ids = staff.stream().map(m -> m.getId().getUserId()).collect(Collectors.toSet());
         Map<UUID, User> users = ids.isEmpty() ? Map.of()
                 : userRepository.findActiveByIdIn(ids).stream().collect(Collectors.toMap(User::getId, u -> u));

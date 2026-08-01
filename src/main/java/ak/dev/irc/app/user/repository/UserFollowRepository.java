@@ -14,23 +14,42 @@ import java.util.UUID;
 @Repository
 public interface UserFollowRepository extends JpaRepository<UserFollow, UserFollowId> {
 
-    /** All followers of a given user (with their User entity fetched) */
-    @Query("""
+    /**
+     * All followers of a given user — User AND profile fetched in the same
+     * query. The profile join matters: {@code User.profile} is a non-owning
+     * (mappedBy) 1:1 that Hibernate cannot proxy, so without the fetch every
+     * row on the followers page fires its own profile SELECT when the mapper
+     * reads the avatar. Explicit countQuery: Spring Data cannot derive a
+     * count from a fetch-join query.
+     */
+    @Query(value = """
         SELECT uf FROM UserFollow uf
         JOIN FETCH uf.follower f
+        LEFT JOIN FETCH f.profile
         WHERE uf.following.id = :userId
           AND f.deletedAt IS NULL
         ORDER BY uf.followedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(uf) FROM UserFollow uf
+        WHERE uf.following.id = :userId
+          AND uf.follower.deletedAt IS NULL
         """)
     Page<UserFollow> findFollowers(@Param("userId") UUID userId, Pageable pageable);
 
-    /** All users that a given user follows (with their User entity fetched) */
-    @Query("""
+    /** All users that a given user follows — User + profile fetched (see findFollowers). */
+    @Query(value = """
         SELECT uf FROM UserFollow uf
         JOIN FETCH uf.following f
+        LEFT JOIN FETCH f.profile
         WHERE uf.follower.id = :userId
           AND f.deletedAt IS NULL
         ORDER BY uf.followedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(uf) FROM UserFollow uf
+        WHERE uf.follower.id = :userId
+          AND uf.following.deletedAt IS NULL
         """)
     Page<UserFollow> findFollowing(@Param("userId") UUID userId, Pageable pageable);
 

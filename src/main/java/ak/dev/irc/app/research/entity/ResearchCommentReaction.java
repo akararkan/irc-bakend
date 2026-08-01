@@ -20,7 +20,8 @@ import java.time.LocalDateTime;
  * {@code LIKE} by the service layer for back-compat.</p>
  */
 @Entity
-@Table(name = "research_comment_likes")
+@Table(name = "research_comment_likes",
+       indexes = @Index(name = "idx_rcomment_like_user", columnList = "user_id"))
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class ResearchCommentReaction {
 

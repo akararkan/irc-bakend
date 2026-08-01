@@ -6,6 +6,7 @@ import org.springframework.data.cassandra.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -14,4 +15,8 @@ public interface SoundCounterRepository extends CassandraRepository<SoundCounter
 
     @Query("SELECT * FROM sound_counters WHERE sound_id = :soundId")
     Optional<SoundCounterEntity> findBySoundId(@Param("soundId") UUID soundId);
+
+    /** Bulk counter read — one IN query per reindex batch instead of one point read per sound. */
+    @Query("SELECT * FROM sound_counters WHERE sound_id IN :soundIds")
+    List<SoundCounterEntity> findAllBySoundIdIn(@Param("soundIds") java.util.Collection<UUID> soundIds);
 }

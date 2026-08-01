@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.BaseAuditEntity;
 import ak.dev.irc.app.common.enums.Language;
 import ak.dev.irc.app.knowledge.entity.Madhhab;
 import jakarta.persistence.*;
+import org.hibernate.annotations.BatchSize;
 import lombok.*;
 
 import java.util.ArrayList;
@@ -124,23 +125,27 @@ public class UserProfile extends BaseAuditEntity {
 
     // ── Relationships ─────────────────────────────────────────────────────────
 
+    @BatchSize(size = 100)   // page-of-profiles mapper walk -> one IN query, not one per profile
     @OneToMany(mappedBy = "profile", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
     @Builder.Default
     private List<UserTopicSpecialization> specializations = new ArrayList<>();
 
+    @BatchSize(size = 100)   // page-of-profiles mapper walk -> one IN query, not one per profile
     @OneToMany(mappedBy = "profile", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
     @Builder.Default
     private List<UserLink> links = new ArrayList<>();
 
+    @BatchSize(size = 100)   // page-of-profiles mapper walk -> one IN query, not one per profile
     @OneToMany(mappedBy = "profile", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private List<UserContact> contacts = new ArrayList<>();
 
+    @BatchSize(size = 100)   // page-of-profiles mapper walk -> one IN query, not one per profile
     @OneToMany(mappedBy = "profile", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default

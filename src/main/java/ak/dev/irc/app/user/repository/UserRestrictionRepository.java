@@ -22,11 +22,17 @@ public interface UserRestrictionRepository
     boolean isRestricting(@Param("restrictorId") UUID restrictorId,
                           @Param("restrictedId")  UUID restrictedId);
 
-    @Query("""
+    @Query(value = """
         SELECT ur FROM UserRestriction ur
         JOIN FETCH ur.restricted u
+        LEFT JOIN FETCH u.profile
         WHERE ur.restrictor.id = :userId
           AND u.deletedAt IS NULL
+        """,
+        countQuery = """
+        SELECT COUNT(ur) FROM UserRestriction ur
+        WHERE ur.restrictor.id = :userId
+          AND ur.restricted.deletedAt IS NULL
         """)
     Page<UserRestriction> findRestrictedUsers(@Param("userId") UUID userId, Pageable pageable);
 

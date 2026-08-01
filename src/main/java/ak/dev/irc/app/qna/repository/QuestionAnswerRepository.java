@@ -36,12 +36,12 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
                                                    @Param("body") String body);
 
     /** Top-level answers only (no reanswers). */
-    @EntityGraph(attributePaths = {"author", "parentAnswer"})
+    @EntityGraph(attributePaths = {"author", "author.profile", "parentAnswer"})
     Page<QuestionAnswer> findByQuestionIdAndParentAnswerIsNullAndDeletedAtIsNullOrderByCreatedAtAsc(
             UUID questionId, Pageable pageable);
 
     /** Reanswers (replies) under a given parent answer. */
-    @EntityGraph(attributePaths = {"author", "parentAnswer"})
+    @EntityGraph(attributePaths = {"author", "author.profile", "parentAnswer"})
     Page<QuestionAnswer> findByParentAnswerIdAndDeletedAtIsNullOrderByCreatedAtAsc(
             UUID parentAnswerId, Pageable pageable);
 
@@ -67,7 +67,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
      * sees every answer, regardless of restriction. Block is enforced even on
      * the question author when the answer author has them in a block edge.
      */
-    @EntityGraph(attributePaths = {"author", "parentAnswer"})
+    @EntityGraph(attributePaths = {"author", "author.profile", "parentAnswer"})
     @Query("""
         SELECT a FROM QuestionAnswer a
         WHERE a.question.id = :questionId
@@ -90,7 +90,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
                                                     @Param("blockedIds") List<UUID> blockedIds,
                                                     Pageable pageable);
 
-    @EntityGraph(attributePaths = {"author", "parentAnswer"})
+    @EntityGraph(attributePaths = {"author", "author.profile", "parentAnswer"})
     @Query("""
         SELECT a FROM QuestionAnswer a
         WHERE a.parentAnswer.id = :parentAnswerId

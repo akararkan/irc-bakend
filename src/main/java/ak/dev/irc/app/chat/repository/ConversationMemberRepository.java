@@ -318,6 +318,17 @@ public interface ConversationMemberRepository
         """, nativeQuery = true)
     List<Object[]> joinsBySource(@Param("cid") UUID conversationId);
 
+    /** ACTIVE OWNER/ADMIN rows of a conversation — the staff list, without
+     *  loading the (possibly million-row) full membership. */
+    @Query("""
+        SELECT m FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND m.role IN (ak.dev.irc.app.chat.enums.MemberRole.OWNER,
+                         ak.dev.irc.app.chat.enums.MemberRole.ADMIN)
+        """)
+    List<ConversationMember> findActiveStaff(@Param("cid") UUID conversationId);
+
     /**
      * Peers across the viewer's ACTIVE 1:1 DIRECT threads — the messaging
      * signal for friend suggestions ("people you talk to"). One round-trip.

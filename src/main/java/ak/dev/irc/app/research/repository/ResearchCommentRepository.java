@@ -15,13 +15,47 @@ import java.util.UUID;
 @Repository
 public interface ResearchCommentRepository extends JpaRepository<ResearchComment, UUID> {
 
-    /** Top-level comments for a research (parent IS NULL) — hidden comments are excluded */
+    /**
+     * Top-level comments for a research (parent IS NULL) — hidden comments are
+     * excluded. Comment author + profile are fetch-joined: the mapper reads
+     * {@code c.getUser().getProfileImage()} per row, and {@code User.profile}
+     * is a non-proxyable mappedBy 1:1. Explicit countQuery (fetch join).
+     */
+    @Query(value = """
+        SELECT c FROM ResearchComment c
+        JOIN FETCH c.user u
+        LEFT JOIN FETCH u.profile
+        WHERE c.research.id = :researchId
+          AND c.parent IS NULL
+          AND c.deletedAt IS NULL
+          AND c.isHidden = false
+        ORDER BY c.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(c) FROM ResearchComment c
+        WHERE c.research.id = :researchId
+          AND c.parent IS NULL AND c.deletedAt IS NULL AND c.isHidden = false
+        """)
     Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(
-            UUID researchId, Pageable pageable);
+            @Param("researchId") UUID researchId, Pageable pageable);
 
-    /** Top-level comments for a research (parent IS NULL) — includes hidden comments */
+    /** Top-level comments for a research (parent IS NULL) — includes hidden comments. */
+    @Query(value = """
+        SELECT c FROM ResearchComment c
+        JOIN FETCH c.user u
+        LEFT JOIN FETCH u.profile
+        WHERE c.research.id = :researchId
+          AND c.parent IS NULL
+          AND c.deletedAt IS NULL
+        ORDER BY c.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(c) FROM ResearchComment c
+        WHERE c.research.id = :researchId
+          AND c.parent IS NULL AND c.deletedAt IS NULL
+        """)
     Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(
-            UUID researchId, Pageable pageable);
+            @Param("researchId") UUID researchId, Pageable pageable);
 
     long countByResearchIdAndDeletedAtIsNull(UUID researchId);
 

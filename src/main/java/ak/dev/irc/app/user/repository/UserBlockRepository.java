@@ -31,11 +31,17 @@ public interface UserBlockRepository extends JpaRepository<UserBlock, UserBlockI
         """)
     boolean isBlockedBetween(@Param("a") UUID a, @Param("b") UUID b);
 
-    @Query("""
+    @Query(value = """
         SELECT ub FROM UserBlock ub
         JOIN FETCH ub.blocked u
+        LEFT JOIN FETCH u.profile
         WHERE ub.blocker.id = :userId
           AND u.deletedAt IS NULL
+        """,
+        countQuery = """
+        SELECT COUNT(ub) FROM UserBlock ub
+        WHERE ub.blocker.id = :userId
+          AND ub.blocked.deletedAt IS NULL
         """)
     Page<UserBlock> findBlockedUsers(@Param("userId") UUID userId, Pageable pageable);
 
