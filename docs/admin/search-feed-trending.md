@@ -82,6 +82,13 @@ configurable at runtime today; only trending/digest cadence is YAML-driven.
 
 ### 2.4 Tab "Suggestions (PYMK)"
 
+> This tab is the PYMK **health widget** (source-mix, dismissal rate). The whole
+> subsystem — the algorithm knob registry, **contact-sync privacy** (hashing, 5k
+> cap, identity-hash backfill, consent), the discoverability flags and **QR-discovery
+> tokens**, and the enumeration/scraping abuse surface — is now documented as its own
+> section: [discovery-pymk-privacy.md](discovery-pymk-privacy.md) (§15). Where the two
+> overlap (PYMK health), that doc defers here; for privacy/consent/abuse, defer there.
+
 | Widget | Layout / content | Status |
 |--------|------------------|--------|
 | **Source-mix donut** | Share of served suggestions by primary source: FoF graph / contacts / DM / shared groups / affinity / institution (the 6 sources, `FriendSuggestionService`) | **[PLANNED]** — `primarySource` is computed per candidate but never aggregated |

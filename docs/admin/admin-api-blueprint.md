@@ -6,6 +6,11 @@ proposed surface — one table per dashboard section, each row carrying its dang
 step-up requirement, and audit action. Section docs own the views/widgets/KPIs; this doc
 owns the complete HTTP contract and the build sequence.
 
+> **Companion:** [api-controllers.md](api-controllers.md) is the **controller-level**
+> reference — the same surface organized by `@RestController` class (exact mappings,
+> DTO shapes, security annotations, the two strays, and the one-controller-per-domain
+> build map). This doc = *what endpoints*; that doc = *what controllers*.
+
 | Tag | Meaning |
 |-----|---------|
 | **[EXISTS]** | Implemented today — real class or `METHOD /path` cited |
@@ -55,7 +60,7 @@ Defined in [architecture.md §4](architecture.md); summarized here because this 
 
 ### 3.1 Users & roles
 
-Views/KPIs: [users-roles.md](users-roles.md) (rows below = its A-series). Base: `/api/v1/admin/users`.
+Views/KPIs: [users-roles.md](users-roles.md) (inspection/analytics) + **[user-administration.md](user-administration.md) (§14 — the create/add & full-control action canon; C/E/S/X rows below)**. Base: `/api/v1/admin/users`. The provisioning rows (create/bulk/invite/edit/credentials) reuse the extracted `provision(...)` split out of `AuthServiceImpl.register` **[EXISTS]**.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
@@ -77,8 +82,17 @@ Views/KPIs: [users-roles.md](users-roles.md) (rows below = its A-series). Base: 
 | GET | `/api/v1/admin/users/{userId}/moderation` | — | strikes + reports by/against (`user_strikes`, `reports`) | **[PLANNED]** | read / no | interceptor |
 | GET | `/api/v1/admin/users/{userId}/data` | — | `export_jobs` + `account_deletion_requests` + tombstone check | **[PLANNED]** | read / no | interceptor |
 | GET | `/api/v1/admin/users/analytics` | `window` | growth aggregates (signups/day, role mix, verification funnel, deletion pipeline) | **[PLANNED]** queries | read / no | interceptor |
-| POST | `/api/v1/admin/users/{userId}/impersonate` | body `{reason}` (min 10 chars) | short-TTL read-only token | **[PLANNED]** ([architecture.md §7](architecture.md)) | critical / **yes** | `ADMIN_IMPERSONATE_START` |
+| POST | `/api/v1/admin/users/{userId}/impersonate` | body `{reason}` (min 10 chars) | short-TTL read-only token | **[PLANNED]** ([architecture.md §7](architecture.md), [user-administration.md §5](user-administration.md)) | critical / **yes** | `ADMIN_IMPERSONATE_START` |
 | DELETE | `/api/v1/admin/impersonation` | — | 204 | **[PLANNED]** | low / no | `ADMIN_IMPERSONATE_END` |
+| POST | `/api/v1/admin/users` | body `{fname,lname,username,email,role,temporaryPassword?,sendInvite?,markEmailVerified?}` | created `AdminUserDetail` | **[PLANNED]** — reuses `provision(...)` ex-`register` **[EXISTS]**; ⚠️ register hardcodes `role=SCHOLAR`, form defaults to `USER` | high / **yes** | `ADMIN_USER_CREATE` |
+| POST | `/api/v1/admin/users/bulk` | CSV/JSON `{rows[]}` | per-row `{created\|skipped\|error}` | **[PLANNED]** — loop over `provision(...)`, cap 1000, per-row audit | high / **yes** | `ADMIN_USER_BULK_CREATE` |
+| POST | `/api/v1/admin/users/invite` | body `{email,role}` | invite id | **[PLANNED]** — needs a new `UserInvite`/`TokenType.INVITE` (no user-onboarding invite exists; only channel invites) | medium / yes | `ADMIN_USER_INVITE` |
+| PATCH | `/api/v1/admin/users/{userId}` | body `{fname?,lname?,username?,email?}` | updated user | **[PLANNED]** — direct setters + `existsBy*` guards; email edit resets `email_verified_at` | high / **yes** | `ADMIN_USER_EDIT` |
+| POST | `/api/v1/admin/users/{userId}/password/reset` | body `{temp?\|sendLink}` | 204 (+ revoke-all + notify) | **[PLANNED]** — no admin set-password primitive; **forgot-password intentionally absent** | critical / **yes** | `ADMIN_PASSWORD_RESET` |
+| POST | `/api/v1/admin/users/{userId}/email/verify` | — | 204 | **[PLANNED]** — the **only intended writer** of `email_verified_at` (verify scaffolding is dead: `VerificationToken` has zero injectors) | medium / yes | `ADMIN_EMAIL_VERIFY` |
+| POST | `/api/v1/admin/users/{userId}/purge/{now\|hold}` | — | deletion state | **[PLANNED]** — manual expedite/hold over the nightly purge cron `0 30 3 * * *` | critical / **yes** | `ADMIN_PURGE_NOW` / `_HOLD` |
+| POST | `/api/v1/admin/users/{userId}/strikes` | body `{reportId?,reason}` | strike row | **[PLANNED]** — **first caller** of `StrikeService.issueStrike` (zero callers today); see [safety-reports.md](safety-reports.md) | high / yes | `ADMIN_STRIKE_ISSUE` |
+| POST | `/api/v1/admin/users/bulk-action` | body `{ids[],action,reason}` | per-id result | **[PLANNED]** — batch role/disable/delete over the singular primitives | critical / **yes** | `ADMIN_BULK_ACTION` |
 
 ### 3.2 Content moderation (posts / comments / stories / reels)
 
@@ -252,6 +266,48 @@ Jobs/queues/env registry/runbooks: [operations.md](operations.md).
 | GET | `/api/v1/admin/ops/media-plane` | — | MediaMTX status: active paths/sessions via `MediaControlClient` **[EXISTS]** primitive against `:9997` | **[PLANNED]** endpoint | read / no | interceptor |
 | POST | `/api/v1/admin/ops/streams/sweep-orphans` | — | count of LIVE rows with no publisher session, ended | **[PLANNED]** — no cleanup exists for streams orphaned by a crash; pairs `MediaControlClient` session list with `live_streams` | medium / yes | `ADMIN_STREAM_SWEEP` |
 
+### 3.13 Discovery, PYMK & contact-sync
+
+Knobs/privacy/abuse: [discovery-pymk-privacy.md](discovery-pymk-privacy.md) (§15). PYMK weights are `static final` in `FriendSuggestionService` (recompile-only — no runtime tuning endpoint proposed).
+
+| Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
+|--------|------|--------|---------|--------|------------------|--------------|
+| GET | `/api/v1/admin/suggestions/knobs` | — | the 6 sources + ~12 weight constants + gates (`MIN_SCORE`, cap 50, `DIVERSITY_HEAD`), each "recompile-only" | **[PLANNED]** — reflects `FriendSuggestionService` constants | read / no | interceptor |
+| POST | `/api/v1/admin/users/{userId}/suggestions/recompute` | — | 202 | **[PARTIAL]** — `FriendSuggestionService.recomputeFor` **[EXISTS]**, no admin trigger | low / no | `ADMIN_PYMK_RECOMPUTE` |
+| GET | `/api/v1/admin/users/{userId}/suggestions` | — | suggestion rows + `SuggestionDismissal`s | **[PLANNED]** | read (PII) / **yes** | interceptor |
+| GET | `/api/v1/admin/discovery/contact-sync/stats` | `window` | syncs/day, avg hashes/sync, near-5k-cap, `contact:sync` rejections | **[PLANNED]** — data in `UserContactHash` | read / no | interceptor |
+| GET | `/api/v1/admin/discovery/contact-sync/compliance` | — | synced-hashes ∧ CONTACTS-consent mismatch report | **[PLANNED]** — joins `UserContactHash` × `ConsentEvent` | read (PII) / **yes** | interceptor |
+| POST | `/api/v1/admin/users/{userId}/contact-hashes/purge` | — | count | **[PLANNED]** — GDPR erasure of `UserContactHash` | high / **yes** | `ADMIN_CONTACT_HASH_PURGE` |
+| GET | `/api/v1/admin/users/{userId}/discovery` | — | byUsername/byPhone/byEmail flags + QR-token status | **[PLANNED]** | read / no | interceptor |
+| POST | `/api/v1/admin/users/{userId}/qr/rotate` | — | new opaque token | **[PLANNED]** — ⚠️ QR-resolve ignores `discover.byQr` today (`QrDiscoveryController` seam) | medium / yes | `ADMIN_QR_ROTATE` |
+
+### 3.14 Knowledge vocabulary
+
+Curation console: [knowledge-vocabulary.md](knowledge-vocabulary.md) (§16). Today the `topics`/`madhhabs` tables are **read-only from the app** (migration-managed; repos have no `save`/`delete` callers). Base: `/api/v1/admin/knowledge`.
+
+| Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
+|--------|------|--------|---------|--------|------------------|--------------|
+| GET | `/api/v1/admin/knowledge/{topics\|madhhabs}` | — | rows (trilingual labels) + usage counts | **[PLANNED]** | read / no | interceptor |
+| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}` | body `{nameEn,nameAr,nameCkb}` | created row | **[PLANNED]** — must evict `@Cacheable` region | medium / **yes** | `ADMIN_VOCAB_ADD` |
+| PATCH | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}` | body labels | updated row | **[PLANNED]** — must evict cache | medium / **yes** | `ADMIN_VOCAB_EDIT` |
+| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}/retire` | — | 204 | **[PLANNED]** — soft-retire (hard-delete would fail `findById` profile validation) | high / **yes** | `ADMIN_VOCAB_RETIRE` |
+| POST | `/api/v1/admin/knowledge/cache/evict` | — | 204 | **[PLANNED]** — manual evict of `knowledge-topics`/`knowledge-madhhabs` | low / no | `ADMIN_VOCAB_CACHE_EVICT` |
+
+### 3.15 Activity & engagement
+
+Per-user ledger + reel analytics: [activity-engagement.md](activity-engagement.md) (§17). All data **[EXISTS]** in Cassandra (`activity_by_user*`, `reel_views_by_user`); the module is `me`-scoped today with **no admin surface**, so every row is **[PLANNED]**.
+
+Per the **privacy contract** ([analytics-kpis.md §12](analytics-kpis.md), [logs-audit.md §3.14](logs-audit.md)), the per-user reads are **break-glass** — an open authorized case + dual-control + step-up, else 403; population metrics use the parallel collector, never the private store.
+
+| Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
+|--------|------|--------|---------|--------|------------------|--------------|
+| GET | `/api/v1/admin/users/{userId}/activity` | `type,types,from,to` + pageable | activity timeline (30 `UserActivityType`s) | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_ACTIVITY_BREAKGLASS_VIEW` |
+| GET | `/api/v1/admin/users/{userId}/activity/summary` | `window` | per-type histogram (corroborates a case: scraper/stalking) | **[PLANNED]** | high / **break-glass** | `ADMIN_ACTIVITY_SUMMARY_VIEW` |
+| GET | `/api/v1/admin/users/{userId}/reels/watched` | pageable | reel-watch history + `watched_seconds` | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_REELVIEWS_BREAKGLASS_VIEW` |
+| POST | `/api/v1/admin/users/{userId}/activity/erase` | body `{type?,reason}` | `{deleted:N}` | **[PLANNED]** — wraps existing batched clear-all (200×≤50); honors user-deletable | high / **yes** | `ADMIN_ACTIVITY_ERASE` |
+| GET | `/api/v1/admin/users/{userId}/activity/export` | `from,to,format` | JSON/CSV | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_ACTIVITY_EXPORT` |
+| GET | `/api/v1/admin/analytics/engagement` | `window` | population engagement rollup | **[PLANNED]** — collector-sourced ([analytics-kpis.md §6](analytics-kpis.md)); never reads the private store | read / no | interceptor |
+
 ## 4. Admin SSE streams
 
 | Stream | Events | Status | Notes |
@@ -296,7 +352,7 @@ Rows above, by section (re-home aliases counted; SSE stream counted once):
 
 | Section | [EXISTS] | [PARTIAL]* | [PLANNED] | Total |
 |---------|----------|-----------|-----------|-------|
-| 3.1 Users & roles | 1 | 0 | 19 | 20 |
+| 3.1 Users & roles | 1 | 0 | 28 | 29 |
 | 3.2 Content moderation | 0 | 0 | 9 | 9 |
 | 3.3 Sounds | 1 | 0 | 5 | 6 |
 | 3.4 Research / QnA / tags | 1 | 4 | 9 | 14 |
@@ -308,10 +364,13 @@ Rows above, by section (re-home aliases counted; SSE stream counted once):
 | 3.10 Logs & audit | 3 | 1 | 0 | 4 |
 | 3.11 Analytics | 0 | 0 | 5 | 5 |
 | 3.12 Operations | 0 | 0 | 8 | 8 |
-| **Total** | **14** | **7** | **92** | **113** |
+| 3.13 Discovery / PYMK | 0 | 1 | 7 | 8 |
+| 3.14 Knowledge vocabulary | 0 | 0 | 5 | 5 |
+| 3.15 Activity & engagement | 0 | 0 | 6 | 6 |
+| **Total** | **14** | **8** | **119** | **141** |
 
 \* [PARTIAL] = endpoint row whose core primitive exists (service bypass, repo query, or member-gated variant) but the admin endpoint does not.
-The 14 **[EXISTS]** = role change (1) + reindexes (7) + tag backfill (1) + audit (3) + the two strays (channel verify, sound approve). Roughly **~99 new endpoints** to build (92 planned + 7 partial completions), of which **~51 are read-only** — just over half of the new surface ships in the zero-risk phase 1.
+The 14 **[EXISTS]** = role change (1) + reindexes (7) + tag backfill (1) + audit (3) + the two strays (channel verify, sound approve). Roughly **~127 new endpoints** to build (119 planned + 8 partial completions), of which **well over half are read-only** — shipping in the zero-risk phase 1. §3.1 grew with the full **add-users & full-control** action set ([user-administration.md](user-administration.md)); §§3.13–3.15 are the newly-documented subsystems (discovery/PYMK privacy, knowledge vocabulary, activity ledger).
 
 ## 10. Phased build order
 

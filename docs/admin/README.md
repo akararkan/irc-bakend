@@ -25,10 +25,11 @@ today versus what the dashboard build will add.
 
 ## Dashboard partition map
 
-The dashboard is partitioned into 13 sections + the API blueprint. One document
-per section — each contains: the on-screen views/widgets, exact data sources,
-admin actions (with proposed endpoints), the logs surfaced there, KPIs & chart
-specs, alerts, and permissions notes.
+The dashboard is partitioned into 17 sections + two API references (the endpoint
+**blueprint** and the **controller reference**). One document per section — each
+contains: the on-screen views/widgets, exact data sources, admin actions (with
+proposed endpoints), the logs surfaced there, KPIs & chart specs, alerts, and
+permissions notes.
 
 | # | Section | Doc | Scope |
 |---|---------|-----|-------|
@@ -45,7 +46,12 @@ specs, alerts, and permissions notes.
 | 10 | **Analytics & KPIs** | [analytics-kpis.md](analytics-kpis.md) | KPI tree, per-module metrics (honest EXISTS/PLANNED sourcing), event-collection proposal, overview-page layout |
 | 11 | **Operations** | [operations.md](operations.md) | Dependency health, scheduled-jobs inventory, queue/DLQ ops, SSE & Redis ops, env-var registry, backup/DR, runbooks |
 | 12 | **API blueprint** | [admin-api-blueprint.md](admin-api-blueprint.md) | Every admin endpoint (existing + proposed) in one place, with danger levels and the phased build order |
+| 12b | **API controllers** | [api-controllers.md](api-controllers.md) | The controller-level reference — the 4 real admin `@RestController`s (exact mappings/DTOs/security), the 2 strays, the controller-layer security model, and the proposed one-controller-per-domain build map |
 | 13 | **Sound library** | [sound-library.md](sound-library.md) | **The TikTok/Facebook-style audio library** — catalog & category curation, approval queue (canonical spec), full state machine, official/platform sounds, trending oversight, uploader reputation, rights/DMCA takedown, `irc-sounds` index health |
+| 14 | **User administration — add & full control** | [user-administration.md](user-administration.md) | **Companion to §1** — the *action* surface: **adding users** (single/bulk/invite/pre-verified), identity edits, password/2FA reset, enable/disable/lock/ban, kill-sessions, admin delete/restore, **impersonation**, bulk ops, the full editable-field inventory |
+| 15 | **Discovery, PYMK & contact-sync privacy** | [discovery-pymk-privacy.md](discovery-pymk-privacy.md) | PYMK algorithm knob registry (6 sources, ~12 weights), **contact-sync privacy** (hashing, 5k cap, identity-hash backfill, consent), discoverability flags + **QR-discovery** tokens, enumeration/scraping abuse |
+| 16 | **Knowledge vocabulary** | [knowledge-vocabulary.md](knowledge-vocabulary.md) | Curated **Topics** & **Madhhabs** taxonomy (trilingual) — today migration-only; the admin curation console (add/edit/retire, usage impact, cache invalidation) |
+| 17 | **Activity & engagement history** | [activity-engagement.md](activity-engagement.md) | Per-user activity ledger (30 types) + reel-view analytics, GDPR erasure, and the ledger as the platform's cheapest **engagement-telemetry** source; SSE activity-stream health |
 
 ## Where to start
 
@@ -65,6 +71,15 @@ specs, alerts, and permissions notes.
    approval queue, curation, official/platform sounds, trending, uploader
    reputation, and rights/DMCA takedown — grounded in the real
    `app/post/cassandra` + `irc-sounds` implementation.
+5. **Full control over users** ([user-administration.md](user-administration.md),
+   §14) is the companion to §1: **adding users** (single / bulk / invite /
+   pre-verified), identity & credential edits, disable/lock/ban, kill-sessions,
+   admin delete/restore, and impersonation. It documents the sharp recon facts —
+   registration hardcodes `role = SCHOLAR`, email-verification scaffolding is
+   dead, the lock columns are never mutated — so the build knows exactly what is
+   wiring vs. greenfield. The other new sections cover the previously-undocumented
+   subsystems: discovery/PYMK privacy (§15), the knowledge vocabulary (§16), and
+   the per-user activity ledger (§17).
 
 ## Relationship to the rest of `docs/`
 
