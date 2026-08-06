@@ -3,9 +3,16 @@
 The complete plan and documentation for the IRC platform's **Admin Dashboard**:
 every subsystem the platform has — from the **sound library** to the **privacy
 engine** — mapped to a dashboard section, with the data sources, admin actions,
-**logs**, and **analytics plans** for each. This is a *plan*, not an
-implementation: every capability is tagged so you always know what is real
-today versus what the dashboard build will add.
+**logs**, and **analytics plans** for each. This started as a *plan*; the
+backend it describes is now **implemented** (see [TODO.md](TODO.md) status),
+and every capability is tagged so you always know what is real versus still
+proposed.
+
+> **Building against the API?** Two companion sets exist:
+> **[api/](api/README.md)** — the full endpoint reference with
+> request/response JSON bodies for all ~247 admin endpoints — and
+> **[frontend-dashboard-guide.md](frontend-dashboard-guide.md)** — the UI
+> build guide (auth, roles→nav, step-up flow, page-by-page map).
 
 | Tag | Meaning |
 |-----|---------|

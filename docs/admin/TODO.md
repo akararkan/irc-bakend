@@ -98,7 +98,13 @@ every previously-deferred block:
   `media_renditions(object_key)`, `user_strikes(expires_at)`).
 - **Messages catalog** — every user-facing note/warning/error/notification/
   email/header documented in
-  [`../errors/user-facing-messages.md`](../errors/user-facing-messages.md).
+  [`../errors/user-facing-messages.md`](../errors/user-facing-messages.md)
+  — and now implemented as centralized constants in
+  `ak.dev.irc.app.common.messages.*`.
+- **API wire reference** — request/response JSON for all ~247 admin endpoints
+  in [api/](api/README.md) (9 per-domain files, every key traced to code);
+  frontend build guides: [frontend-dashboard-guide.md](frontend-dashboard-guide.md)
+  + [`../errors/frontend-error-handling.md`](../errors/frontend-error-handling.md).
 
 Remaining deliberate debts (rationales in [known-issues.md](known-issues.md)):
 Micrometer/actuator metrics (needs new dependency — build is offline), real

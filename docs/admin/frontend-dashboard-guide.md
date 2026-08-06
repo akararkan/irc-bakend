@@ -12,7 +12,9 @@ each table links its section doc.
 
 Companions: [architecture.md](architecture.md) (access model) ·
 [admin-api-blueprint.md](admin-api-blueprint.md) (endpoint catalog with danger
-levels) · [api-controllers.md](api-controllers.md) (controller-level reference) ·
+levels) · [api/](api/README.md) (**request/response JSON for every endpoint** — the
+per-domain wire reference; use it alongside the page maps below) ·
+[api-controllers.md](api-controllers.md) (controller-level reference) ·
 [known-issues.md](known-issues.md) (freshness overlay) ·
 [../errors/error-handling.md](../errors/error-handling.md) (the error envelope) ·
 [../errors/frontend-error-handling.md](../errors/frontend-error-handling.md)
