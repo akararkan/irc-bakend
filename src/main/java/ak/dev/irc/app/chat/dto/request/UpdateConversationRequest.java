@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.dto.request;
 
 import ak.dev.irc.app.chat.dto.GroupSettings;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -8,10 +9,10 @@ import lombok.Data;
 @Data
 public class UpdateConversationRequest {
 
-    @Size(max = 120, message = "group title must not exceed 120 characters")
+    @Size(max = 120, message = ChatMessages.VAL_GROUP_TITLE_MAX)
     private String title;
 
-    @Size(max = 500, message = "group description must not exceed 500 characters")
+    @Size(max = 500, message = ChatMessages.VAL_GROUP_DESCRIPTION_MAX)
     private String description;
 
     @Size(max = 255)

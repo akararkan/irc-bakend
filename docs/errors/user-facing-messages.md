@@ -25,6 +25,23 @@
 Generated from a full-source sweep on 2026-08-06 plus the same-day admin-build
 additions. When adding a message, add it here.
 
+> **Implemented in code (2026-08-06).** These strings are no longer scattered
+> inline literals — they live as named constants in
+> `ak.dev.irc.app.common.messages.*`, one final class per module:
+> `AuthMessages`, `UserMessages`, `SecurityMessages`, `SettingsMessages`,
+> `ResearchMessages`, `QnaMessages`, `ChatMessages`, `ChannelStreamMessages`,
+> `PostMessages`, `MediaMessages`, `AdminContentMessages`, `AdminOpsMessages`,
+> `CommonMessages`, `EmailMessages`. Convention (see the package javadoc):
+> constant name = the error code; message text carries an `_MSG` suffix;
+> `VAL_`/`NOTE_`/`WARN_`/`NOTIF_` prefixes for validation, response notes,
+> warnings and notification copy; interpolated messages are `%s` templates
+> rendered with `.formatted(...)`. The 3-arg
+> `ResourceNotFoundException(resource, field, value)` /
+> `DuplicateResourceException(...)` constructors keep their copy inside the
+> exception classes, and a handful of dynamically-assembled messages
+> (conditional fragments) remain at their call sites by design — this file
+> and those classes are maintained as a pair: change one, change the other.
+
 ---
 
 ## 1. HTTP error & validation messages
@@ -416,6 +433,8 @@ Everything below arrives inside the standard error envelope with the listed stat
 |---|---|---|---|---|
 | 403 | `ACCESS_FORBIDDEN` | You do not have permission to perform this action | editing a post you don't own (SecurityException remapped) or deleting a post whose authorId != caller | PATCH /api/v1/posts/{id}, DELETE /api/v1/posts/{id} |
 | 403 | `ACCESS_FORBIDDEN` | order list is required | PATCH highlight reorder with null/empty order list (note: thrown as ForbiddenException though semantically a 400) | PATCH /api/v1/highlights/order |
+| 403 | `ACCESS_FORBIDDEN` | Only the poll's author can list voters | requesting a poll's voter list as a non-author | poll voters endpoint under /api/v1/posts/** |
+| 403 | `NOT_OWNER` | You can only read your own mentions. | reading another user's mentions feed | GET /api/v1/mentions/me (userId mismatch) |
 | 403 | `FORBIDDEN` | Not the author | editing/deleting a comment you didn't write (CassandraCommentService:175,236) or mutating a post you don't own (CassandraPostService:211) | comment edit/delete + post mutation endpoints under /api/v1/posts/** |
 | 400 | `ILLEGAL_ARGUMENT` | Comment not found: {commentId} | replying to / operating on a nonexistent comment (CassandraCommentService:125,277) — surfaces as 400 not 404 | POST /api/v1/posts/{id}/comments (reply path) and comment lookups |
 | 404 | `POST_NOT_FOUND` | Post not found with id: {postId} | share/media op against missing post (CassandraShareService:103,115; CassandraMediaService:41) | POST /api/v1/posts/{id}/share, /api/v1/posts/{postId}/media |
@@ -569,7 +588,7 @@ Everything below arrives inside the standard error envelope with the listed stat
 | 500 | `URL_GENERATION_ERROR` | Failed to generate file URL | public-URL generation failure | media/source upload endpoints |
 | 404 | `USER_NOT_FOUND` | User not found with id: {userId} | unknown user id (contributor lookup, researcher lookup) | multiple endpoints under /api/v1/researches |
 | 500 | `VIDEO_UPLOAD_ERROR` | Failed to upload video promo | video promo upload failure | POST /api/v1/researches/{id}/video-promo |
-| 503 | `VIDEO_UPLOAD_ERROR / COVER_UPLOAD_ERROR / SOURCE_UPLOAD_ERROR / MEDIA_ADD_ERROR (per call-site)` | Failed to upload file to storage | any other storage upload failure | research file-upload endpoints |
+| 503 | `MEDIA_UPLOAD_FAILED / VIDEO_UPLOAD_FAILED / THUMBNAIL_UPLOAD_FAILED / COVER_UPLOAD_FAILED / SOURCE_UPLOAD_FAILED (per call-site)` | Failed to upload file to storage | any other storage upload failure | research file-upload endpoints |
 
 ### 1.58 `research (cross-cutting)`
 
@@ -1019,8 +1038,8 @@ Everything below arrives inside the standard error envelope with the listed stat
 
 | HTTP | Code | Message | Trigger | Surface |
 |---|---|---|---|---|
-| 400 | `INVALID_RULE_KIND` | Unknown rule kind. Allowed: FAILED_LOGIN_PER_ACCOUNT, FAILED_LOGIN_PER_IP, REPORT_PILE_ON, DLQ_ARRIVALS, OTP_ABUSE, PURGE_JOB_SILENCE | alert-rule create/update with bad kind | POST/PATCH /api/v1/admin/logs/alerts |
-| 400 | `INVALID_SEVERITY` | Severity must be INFO, WARN or CRITICAL. | alert-rule with bad severity | POST/PATCH /api/v1/admin/logs/alerts |
+| 400 | `INVALID_RULE_KIND` | Unknown rule kind. Allowed: [FAILED_LOGIN_PER_ACCOUNT, FAILED_LOGIN_PER_IP, REPORT_PILE_ON, DLQ_ARRIVALS, OTP_ABUSE, PURGE_JOB_SILENCE] | alert-rule create/update with bad kind | POST/PATCH /api/v1/admin/logs/alerts |
+| 400 | `INVALID_SEVERITY` | Unknown severity. Allowed: INFO, MEDIUM, HIGH. | alert-rule with bad severity | POST/PATCH /api/v1/admin/logs/alerts |
 
 ### 1.101 `admin/media`
 
@@ -1196,7 +1215,7 @@ Successful (2xx) responses that still carry a caveat the client should surface o
 | NOTE | per-row note: "no NotificationKind — legacy/relational-only type" | NotificationType with no matching NotificationKind in the types registry | GET /api/v1/admin/notifications/types |
 | NOTE | If the consumer still can't process it, it will re-park as a NEW row. / Row kept for the audit trail; the retention sweep prunes it at 90 days. | requeue / discard responses | DLQ requeue + discard |
 | WARNING | Scheduled runs are suppressed until resumed — pausing retention/GDPR sweeps defers legally-relevant deletion work. | every successful pause | POST /api/v1/admin/ops/jobs/{jobKey}/pause |
-| NOTE | queues note: "DLQ is drain-to-log: the consumer ACKs and discards after one ERROR line, so a nonzero dead-letter depth means the drain itself is down." — degraded variant: note: "RabbitAdmin unavailable" | Always in queues body / when RabbitAdmin bean absent | GET /api/v1/admin/ops/queues |
+| NOTE | queues note: "Dead letters park in the dead_letters table (browse via GET /queues/dlq) — a nonzero dead-letter QUEUE depth means the drain consumer itself is down." — degraded variant: note: "RabbitAdmin unavailable" | Always in queues body / when RabbitAdmin bean absent | GET /api/v1/admin/ops/queues |
 | WARNING | ⚠ CRITICAL: permit-all is ON — every gate incl. /api/v1/admin/** is open | app.security.permit-all=true; field is null otherwise | GET /api/v1/admin/ops/config |
 | NOTE | Per-dependency {status: UP\|DOWN\|DEGRADED\|UNKNOWN\|DISABLED, latencyMs, error?}. rabbitmq degraded: {status:"UNKNOWN", note:"RabbitAdmin unavailable"}; r2 unconfigured: {status:"DISABLED", note:"R2 credentials not configured"}; mail: {status: UP\|DISABLED}; queue errors render as "error: {message}" / "missing". | Composite dependency probe | GET /api/v1/admin/ops/health |
 | NOTE | Per-swept-stream reason: "LIVE beyond {maxAgeHours}h" or "no publisher session past grace"; media-plane fields render "unreachable" when MediaMTX is down. | Orphaned-LIVE sweep / media-plane view | POST /api/v1/admin/ops/streams/sweep-orphans, GET /api/v1/admin/ops/media-plane |
@@ -1247,7 +1266,7 @@ Rows in the notification inbox (and their SSE push). Title/body templates; `{bra
 | `MESSAGE_REQUEST` | title: "Message request" — body: "{requester} wants to send you a message" | a stranger's first message lands as a request | in-app bell + notification SSE |
 | `NEW_MESSAGE` | title: "New message" — body: "{sender}: {preview}" (truncated to 160 chars with …) | message sent to an offline/backgrounded recipient; honors mute; aggregates per conversation via groupKey NEW_MESSAGE:{conversationId} | in-app bell + notification SSE ({event:"notification"} envelope); in-app only (emailEligible=false) |
 | `STREAM_STARTED` | title: "{hostLabel} is live" — body: {stream title} or "Tap to watch the stream." | user goes live; fanned out to followers (keyset-paged, capped) by LiveStreamFanoutService; groupKey STREAM_STARTED:{streamId}; also emits stream.started realtime event | in-app bell + notification SSE + chat SSE stream.started |
-| `ADMIN_ANOMALY` | Title: 'Metric anomaly: {metric}'. Body: '{WARN\|ALERT}: metric X was N on DATE vs a 28d mean of M.' or 'Metric X flatlined at 0 on DATE (28d mean M) — pipeline-dead detector.' | nightly AnomalyScanJob z-score breach or zero-flatline; one per (day, metric) via ANOMALY:{day}:{metric} group key | in-app + email to every active ADMIN |
+| `ADMIN_ANOMALY` | Title: 'Metric anomaly: {metric}'. Body: "{WARN\|ALERT}: metric '{metric}' was {value} on {date} vs a 28d mean of {mean}." or "Metric '{metric}' flatlined at 0 on {date} (28d mean {mean}) — pipeline-dead detector." | nightly AnomalyScanJob z-score breach or zero-flatline; one per (day, metric) via ANOMALY:{day}:{metric} group key | in-app + email to every active ADMIN |
 | `SYSTEM_MESSAGE` | Takedown — Title: "Your channel was taken down", Body: "Your channel \"{title}\" was removed by platform moderation[ ({reason})]." Restore — Title: "Your channel was restored", Body: "Your channel \"{title}\" has been restored." | Admin channel takedown/restore → channel owner | POST /api/v1/admin/channels/{id}/takedown\|restore → in-app notification |
 | `SYSTEM_MESSAGE` | Force-stop — Title: "Your live stream was ended by moderation", Body: "Your live stream \"{title}\" was ended by platform moderation[ ({reason})]." Key rotation — Title: "Your stream key was rotated", Body: "For security, the stream key of \"{title}\" was rotated. Your new key: {newKey}" (the new key is delivered ONLY via this notification; the API returns 204 with no body) | Admin force-stop / rotate-key → stream host | POST /api/v1/admin/streams/{id}/force-stop\|rotate-key → in-app notification |
 | `SYSTEM_MESSAGE` | Post removed — Title: "Your post was removed", Body: "A post of yours was removed for a policy violation[ ({reason})]." Post restored — Title: "Your post was restored", Body: "A previously removed post of yours has been restored." Comment — Title: "Your comment was removed", Body: "A comment of yours was removed for a policy violation[ ({reason})]." Story — Title: "Your story was removed", Body: "A story of yours was removed for a policy violation[ ({reason})]." | Admin content moderation → author (best-effort) | POST /api/v1/admin/content/posts/{id}/remove\|restore, DELETE /api/v1/admin/content/comments/{id}, DELETE /api/v1/admin/content/stories/{id} → in-app notification |

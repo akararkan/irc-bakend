@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.discovery.qr.controller;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.settings.discovery.qr.dto.QrDtos.QrResolveResponse;
 import ak.dev.irc.app.settings.discovery.qr.dto.QrDtos.QrTokenResponse;
@@ -50,7 +51,7 @@ public class QrDiscoveryController {
         // SEAM: once the discoverability-flags service (settings.discovery) lands,
         // additionally reject here when the target user has disabled discover.byQr.
         User user = userRepository.findActiveById(targetId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found for this QR code."));
+                .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.QR_USER_NOT_FOUND_MSG));
         return ResponseEntity.ok(new QrResolveResponse(
                 user.getId(), user.getUsername(), user.getFullName(), user.getProfileImage()));
     }

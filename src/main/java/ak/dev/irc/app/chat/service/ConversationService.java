@@ -24,6 +24,7 @@ import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -69,12 +70,13 @@ public class ConversationService {
 
     /** Race-safe get-or-create for a 1:1 DM. */
     public ConversationResponse createDirect(UUID creatorId, UUID recipientId) {
-        if (creatorId.equals(recipientId)) throw new BadRequestException("You cannot start a conversation with yourself.");
+        if (creatorId.equals(recipientId)) throw new BadRequestException(ChatMessages.SELF_CONVERSATION_MSG);
         userRepository.findById(recipientId)
                 .filter(u -> u.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", recipientId));
         if (relationships.isBlockedEitherWay(creatorId, recipientId)) {
-            throw new ForbiddenException("This interaction is not allowed.", "BLOCKED");
+            throw new ForbiddenException(
+                    ChatMessages.INTERACTION_NOT_ALLOWED_MSG, ChatMessages.BLOCKED);
         }
 
         String key = DirectKeys.of(creatorId, recipientId);
@@ -85,7 +87,7 @@ public class ConversationService {
             } catch (DataIntegrityViolationException race) {
                 convId = conversationRepo.findByDirectKey(key)
                         .map(Conversation::getId)
-                        .orElseThrow(() -> new BadRequestException("Could not create the conversation."));
+                        .orElseThrow(() -> new BadRequestException(ChatMessages.CONVERSATION_CREATE_FAILED_MSG));
             }
         }
         return get(convId, creatorId);
@@ -94,14 +96,15 @@ public class ConversationService {
     @Transactional
     public ConversationResponse createGroup(UUID creatorId, CreateConversationRequest req) {
         if (!StringUtils.hasText(req.getTitle())) {
-            throw new BadRequestException("A group requires a title.");
+            throw new BadRequestException(ChatMessages.GROUP_TITLE_REQUIRED_MSG);
         }
         // De-dupe, drop the creator, drop non-existent / blocked users.
         List<UUID> requested = req.getMemberIds() == null ? List.of() : req.getMemberIds();
         LinkedHashSet<UUID> candidates = new LinkedHashSet<>(requested);
         candidates.remove(creatorId);
         if (candidates.size() > MAX_GROUP_INITIAL_MEMBERS) {
-            throw new BadRequestException("A group can start with at most " + MAX_GROUP_INITIAL_MEMBERS + " members.");
+            throw new BadRequestException(
+                    ChatMessages.GROUP_MAX_INITIAL_MEMBERS_MSG.formatted(MAX_GROUP_INITIAL_MEMBERS));
         }
         Map<UUID, User> users = candidates.isEmpty() ? Map.of()
                 : userRepository.findActiveByIdIn(candidates).stream().collect(Collectors.toMap(User::getId, u -> u));
@@ -153,7 +156,8 @@ public class ConversationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         ConversationMember me = memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         ParticipantSummary peer = null;
         Long peerLastRead = null, peerLastDelivered = null;
         if (c.isDirect()) {
@@ -224,7 +228,8 @@ public class ConversationService {
         boolean touchedInfo = false;
         if (req.getTitle() != null || req.getAvatarKey() != null || req.getDescription() != null) {
             if (!GroupPermissions.can(me.getRole(), GroupAction.EDIT_INFO, null, c.getGroupSettings())) {
-                throw new ForbiddenException("You cannot edit this group's info.", "ADMINS_ONLY");
+                throw new ForbiddenException(
+                        ChatMessages.EDIT_GROUP_INFO_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
             }
             if (req.getTitle() != null && !req.getTitle().equals(c.getTitle())) {
                 c.setTitle(req.getTitle().trim());
@@ -247,7 +252,8 @@ public class ConversationService {
         }
         if (req.getSettings() != null) {
             if (!GroupPermissions.can(me.getRole(), GroupAction.CHANGE_SETTINGS, null, c.getGroupSettings())) {
-                throw new ForbiddenException("You cannot change this group's settings.", "ADMINS_ONLY");
+                throw new ForbiddenException(
+                        ChatMessages.CHANGE_GROUP_SETTINGS_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
             }
             c.setGroupSettings(req.getSettings());
             touchedInfo = true;
@@ -270,7 +276,8 @@ public class ConversationService {
     @Transactional
     public void markRead(UUID conversationId, UUID userId, long lastReadMessageId) {
         ConversationMember me = memberRepo.findMember(conversationId, userId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         boolean advanced = lastReadMessageId > me.getLastReadMessageId();
         if (advanced) {
             me.setLastReadMessageId(lastReadMessageId);
@@ -313,14 +320,15 @@ public class ConversationService {
      *  {@code CHANGE_SETTINGS}; DM: either participant. Writes a system message. */
     @Transactional
     public void setDisappearing(UUID conversationId, UUID userId, int seconds) {
-        if (seconds < 0) throw new BadRequestException("seconds must be >= 0.");
+        if (seconds < 0) throw new BadRequestException(ChatMessages.SECONDS_NON_NEGATIVE_MSG);
         Conversation c = conversationRepo.findById(conversationId)
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         ConversationMember me = requireActiveMember(conversationId, userId);
         if (c.isGroup()
                 && !GroupPermissions.can(me.getRole(), GroupAction.CHANGE_SETTINGS, null, c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot change this group's settings.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.CHANGE_GROUP_SETTINGS_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         c.setDisappearingSeconds(seconds);
         conversationRepo.save(c);
@@ -430,19 +438,21 @@ public class ConversationService {
         Conversation c = conversationRepo.findById(conversationId)
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
-        if (!c.isGroup()) throw new BadRequestException("This action applies only to group conversations.");
+        if (!c.isGroup()) throw new BadRequestException(ChatMessages.GROUP_ONLY_ACTION_MSG);
         return c;
     }
 
     private ConversationMember requireMember(UUID conversationId, UUID userId) {
         return memberRepo.findMember(conversationId, userId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     private ConversationMember requireActiveMember(UUID conversationId, UUID userId) {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
-                .orElseThrow(() -> new ForbiddenException("You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     private String label(UUID userId, Map<UUID, User> known) {

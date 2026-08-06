@@ -1,5 +1,6 @@
 package ak.dev.irc.app.config;
 
+import ak.dev.irc.app.common.messages.CommonMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -84,9 +85,7 @@ public class EnumCheckConstraintReconciler {
         java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
         out.put("lastRunAt", lastRunAt);
         out.put("constraints", new java.util.LinkedHashMap<>(lastOutcome));
-        out.put("note", "Runs once per boot; DROP CONSTRAINT IF EXISTS is idempotent. "
-                + "When widening an @Enumerated(STRING) enum on an existing table, add its "
-                + "(table, <table>_<column>_check) pair to STALE_ENUM_CHECKS.");
+        out.put("note", CommonMessages.NOTE_ENUM_CHECK_RECONCILER);
         return out;
     }
 }

@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.dto.request;
 
 import ak.dev.irc.app.chat.enums.MessageType;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -18,22 +19,22 @@ import java.util.List;
 public class SendMessageRequest {
 
     /** Idempotency key — a client-generated UUID reused on every retry of THIS message. */
-    @NotBlank(message = "clientNonce is required for idempotent send")
+    @NotBlank(message = ChatMessages.VAL_CLIENT_NONCE_IDEMPOTENT)
     @Size(max = 64)
     private String clientNonce;
 
-    @NotNull(message = "type is required")
+    @NotNull(message = ChatMessages.VAL_TYPE_REQUIRED)
     private MessageType type;
 
     /** Text body — null for pure-media messages. */
-    @Size(max = 8000, message = "a message may not exceed 8000 characters")
+    @Size(max = 8000, message = ChatMessages.VAL_MESSAGE_MAX)
     private String body;
 
     /** Snowflake id of the message being replied to (optional). */
     private Long replyToId;
 
     @Valid
-    @Size(max = 10, message = "at most 10 attachments per message")
+    @Size(max = 10, message = ChatMessages.VAL_ATTACHMENTS_MAX)
     private List<MediaRefDto> media;
 
     /** Telegram "silent post" — delivered normally but with no push notification. */

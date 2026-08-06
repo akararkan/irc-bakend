@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.Positive;
 import lombok.Data;
 
@@ -7,10 +8,10 @@ import lombok.Data;
 @Data
 public class CreateInviteLinkRequest {
 
-    @Positive(message = "expiresInHours must be positive")
+    @Positive(message = ChatMessages.VAL_EXPIRES_IN_HOURS_POSITIVE)
     private Integer expiresInHours;
 
-    @Positive(message = "maxUses must be positive")
+    @Positive(message = ChatMessages.VAL_MAX_USES_POSITIVE)
     private Integer maxUses;
 
     /** When true, using the link files a join request an admin must approve. */

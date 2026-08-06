@@ -2,6 +2,7 @@ package ak.dev.irc.app.settings.data.service;
 
 import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.data.entity.AccountDeletionRequest;
 import ak.dev.irc.app.settings.data.entity.DeletedAccount;
 import ak.dev.irc.app.settings.data.enums.DeletionStatus;
@@ -70,7 +71,7 @@ public class AccountLifecycleService {
     public AccountDeletionRequest requestDeletion(UUID userId) {
         deletionRepo.findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
                 .ifPresent(r -> {
-                    throw new ConflictException("Deletion already requested.", "DELETION_PENDING");
+                    throw new ConflictException(SettingsMessages.DELETION_PENDING_MSG, SettingsMessages.DELETION_PENDING);
                 });
         User user = userRepo.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
@@ -92,7 +93,7 @@ public class AccountLifecycleService {
     public AccountDeletionRequest cancelDeletion(UUID userId) {
         AccountDeletionRequest req = deletionRepo
                 .findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
-                .orElseThrow(() -> new ResourceNotFoundException("No pending deletion to cancel."));
+                .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.NO_PENDING_DELETION_CANCEL_MSG));
         userRepo.findById(userId).ifPresent(u -> {
             u.setDeletedAt(null);                  // restore visibility
             userRepo.save(u);
@@ -218,7 +219,7 @@ public class AccountLifecycleService {
     public AccountDeletionRequest purgeNow(UUID userId) {
         AccountDeletionRequest req = deletionRepo
                 .findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
-                .orElseThrow(() -> new ResourceNotFoundException("No pending deletion to purge."));
+                .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.NO_PENDING_DELETION_PURGE_MSG));
         anonymizeAndPurge(req);
         return req;
     }
@@ -228,7 +229,7 @@ public class AccountLifecycleService {
     public AccountDeletionRequest holdPurge(UUID userId, int days) {
         AccountDeletionRequest req = deletionRepo
                 .findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
-                .orElseThrow(() -> new ResourceNotFoundException("No pending deletion to hold."));
+                .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.NO_PENDING_DELETION_HOLD_MSG));
         int extension = Math.max(1, Math.min(days, 365));
         LocalDateTime base = req.getPurgeAfter().isAfter(LocalDateTime.now())
                 ? req.getPurgeAfter() : LocalDateTime.now();

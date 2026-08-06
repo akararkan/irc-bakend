@@ -1,6 +1,7 @@
 package ak.dev.irc.app.admin.analytics;
 
 import ak.dev.irc.app.admin.ops.JobRunRecorder;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.user.enums.Role;
@@ -234,16 +235,16 @@ public class AnalyticsJobs {
     private void notifyAdmins(String metric, LocalDate day, long value, double mean,
                               String severity, boolean pipelineDead) {
         String body = pipelineDead
-                ? "Metric '" + metric + "' flatlined at 0 on " + day + " (28d mean "
-                        + Math.round(mean) + ") — pipeline-dead detector."
-                : severity + ": metric '" + metric + "' was " + value + " on " + day
-                        + " vs a 28d mean of " + Math.round(mean) + ".";
+                ? AdminOpsMessages.NOTIF_ANOMALY_FLATLINE_BODY
+                        .formatted(metric, day, Math.round(mean))
+                : AdminOpsMessages.NOTIF_ANOMALY_DEVIATION_BODY
+                        .formatted(severity, metric, value, day, Math.round(mean));
         try {
             var admins = userRepository.findActiveByRoles(List.of(Role.ADMIN), PageRequest.of(0, 50));
             for (var admin : admins.getContent()) {
                 notifications.deliverAsync(new CassandraNotificationService.DeliverRequest(
                         admin.getId(), NotificationKind.ADMIN_ANOMALY,
-                        "Metric anomaly: " + metric, body,
+                        AdminOpsMessages.NOTIF_ANOMALY_TITLE.formatted(metric), body,
                         null, "Metric", null, "ANOMALY:" + day + ":" + metric));
             }
         } catch (Exception e) {

@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.activity.service.UserActivityService;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.CommentByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
@@ -208,7 +209,7 @@ public class CassandraPostService {
         PostByIdEntity existing = postByIdRepo.findById(postId).orElse(null);
         if (existing == null) return null;
         if (!actorId.equals(existing.getAuthorId())) {
-            throw new SecurityException("Not the author");
+            throw new SecurityException(PostMessages.NOT_AUTHOR_MSG);
         }
 
         boolean changed = false;

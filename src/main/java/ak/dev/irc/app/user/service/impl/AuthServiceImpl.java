@@ -3,6 +3,7 @@ package ak.dev.irc.app.user.service.impl;
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.AuthMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtCookieUtil;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
@@ -146,16 +147,16 @@ public class AuthServiceImpl implements AuthService {
         if (rawToken == null || rawToken.isBlank()) {
             log.warn("Token refresh rejected — no refresh token provided");
             throw new UnauthorizedException(
-                    "No refresh token provided. Include it in the request body or as a cookie.",
-                    "AUTH_REFRESH_TOKEN_MISSING");
+                    AuthMessages.AUTH_REFRESH_TOKEN_MISSING_MSG,
+                    AuthMessages.AUTH_REFRESH_TOKEN_MISSING);
         }
 
         // ── Validate JWT structure ──
         if (!jwtTokenProvider.validateToken(rawToken)) {
             log.warn("Token refresh rejected — JWT validation failed");
             throw new UnauthorizedException(
-                    "Refresh token is invalid or has expired. Please log in again.",
-                    "AUTH_REFRESH_TOKEN_INVALID");
+                    AuthMessages.AUTH_REFRESH_TOKEN_INVALID_MSG,
+                    AuthMessages.AUTH_REFRESH_TOKEN_INVALID);
         }
 
         // ── Ensure it's a REFRESH token ──
@@ -163,8 +164,8 @@ public class AuthServiceImpl implements AuthService {
         if (!"REFRESH".equals(tokenType)) {
             log.warn("Token refresh rejected — wrong token type '{}'", tokenType);
             throw new UnauthorizedException(
-                    "The provided token is not a refresh token.",
-                    "AUTH_WRONG_TOKEN_TYPE",
+                    AuthMessages.AUTH_WRONG_TOKEN_TYPE_MSG,
+                    AuthMessages.AUTH_WRONG_TOKEN_TYPE,
                     Map.of("providedType", String.valueOf(tokenType), "expectedType", "REFRESH"));
         }
 
@@ -173,8 +174,8 @@ public class AuthServiceImpl implements AuthService {
                 .orElseThrow(() -> {
                     log.warn("Token refresh rejected — not found in database");
                     return new UnauthorizedException(
-                            "Refresh token not recognised. It may have been revoked.",
-                            "AUTH_REFRESH_TOKEN_NOT_FOUND");
+                            AuthMessages.AUTH_REFRESH_TOKEN_NOT_FOUND_MSG,
+                            AuthMessages.AUTH_REFRESH_TOKEN_NOT_FOUND);
                 });
 
         // ── Reuse detection ──
@@ -184,17 +185,16 @@ public class AuthServiceImpl implements AuthService {
             refreshTokenRepository.revokeAllForUser(storedToken.getUser().getId());
             jwtCookieUtil.clearAllTokenCookies(httpResponse);
             throw new UnauthorizedException(
-                    "This refresh token has been revoked. All sessions terminated for security. " +
-                    "Please log in again.",
-                    "AUTH_REFRESH_TOKEN_REUSED");
+                    AuthMessages.AUTH_REFRESH_TOKEN_REUSED_MSG,
+                    AuthMessages.AUTH_REFRESH_TOKEN_REUSED);
         }
 
         if (storedToken.isExpired()) {
             log.warn("Token refresh rejected — stored token expired for user [{}]",
                     storedToken.getUser().getId());
             throw new UnauthorizedException(
-                    "Refresh token has expired. Please log in again.",
-                    "AUTH_REFRESH_TOKEN_EXPIRED");
+                    AuthMessages.AUTH_REFRESH_TOKEN_EXPIRED_MSG,
+                    AuthMessages.AUTH_REFRESH_TOKEN_EXPIRED);
         }
 
         // ── Rotate: revoke old, issue new pair ──
@@ -258,7 +258,7 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public void logoutAll(HttpServletResponse httpResponse) {
         UUID userId = SecurityUtils.getCurrentUserId()
-                .orElseThrow(() -> new UnauthorizedException("Not authenticated"));
+                .orElseThrow(() -> new UnauthorizedException(AuthMessages.AUTH_NOT_AUTHENTICATED_MSG));
 
         log.info("Logout-all — revoking ALL refresh tokens for user [{}]", userId);
         refreshTokenRepository.revokeAllForUser(userId);
@@ -276,25 +276,25 @@ public class AuthServiceImpl implements AuthService {
                                         HttpServletResponse response) {
         UUID userId = SecurityUtils.getCurrentUserId()
                 .orElseThrow(() -> new UnauthorizedException(
-                        "Not authenticated.", "AUTH_REQUIRED"));
+                        AuthMessages.AUTH_REQUIRED_MSG, AuthMessages.AUTH_REQUIRED));
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UnauthorizedException(
-                        "User no longer exists.", "USER_NOT_FOUND"));
+                        AuthMessages.USER_NOT_FOUND_MSG, AuthMessages.USER_NOT_FOUND));
 
         // 1) Re-verify the CURRENT password — defends against session hijack.
         if (!passwordEncoder.matches(request.currentPassword(), user.getPassword())) {
             log.warn("Change-password rejected — wrong current password for user [{}]", userId);
             throw new UnauthorizedException(
-                    "Current password is incorrect.",
-                    "AUTH_CURRENT_PASSWORD_INVALID");
+                    AuthMessages.AUTH_CURRENT_PASSWORD_INVALID_MSG,
+                    AuthMessages.AUTH_CURRENT_PASSWORD_INVALID);
         }
 
         // 2) Block obvious no-op (encoded compare, not raw — avoids matching by chance).
         if (passwordEncoder.matches(request.newPassword(), user.getPassword())) {
             throw new ak.dev.irc.app.common.exception.BadRequestException(
-                    "New password must be different from the current password.",
-                    "AUTH_NEW_PASSWORD_SAME_AS_CURRENT");
+                    AuthMessages.AUTH_NEW_PASSWORD_SAME_AS_CURRENT_MSG,
+                    AuthMessages.AUTH_NEW_PASSWORD_SAME_AS_CURRENT);
         }
 
         // 3) Persist the new hash.

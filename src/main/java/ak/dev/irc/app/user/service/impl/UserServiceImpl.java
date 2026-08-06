@@ -5,6 +5,7 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.dto.request.AddContactRequest;
 import ak.dev.irc.app.user.dto.request.AddLinkRequest;
@@ -351,20 +352,20 @@ public class UserServiceImpl implements UserService {
     private UUID authenticatedUserId() {
         return SecurityUtils.getCurrentUserId()
             .orElseThrow(() -> new UnauthorizedException(
-                "You must be authenticated to perform this action."));
+                UserMessages.MUST_BE_AUTHENTICATED_MSG));
     }
 
     private void validateProfileImage(org.springframework.web.multipart.MultipartFile image) {
         if (image == null || image.isEmpty())
-            throw new BadRequestException("Profile image file is required and cannot be empty.", "EMPTY_FILE");
+            throw new BadRequestException(UserMessages.EMPTY_FILE_PROFILE_MSG, UserMessages.EMPTY_FILE);
         String ct = image.getContentType();
         if (ct == null || !java.util.Arrays.asList(
                 "image/jpeg", "image/png", "image/webp", "image/gif").contains(ct.toLowerCase()))
-            throw new BadRequestException("Invalid image type. Allowed: jpeg, png, webp, gif.", "INVALID_FILE_TYPE");
+            throw new BadRequestException(UserMessages.INVALID_FILE_TYPE_MSG, UserMessages.INVALID_FILE_TYPE);
         String fn = image.getOriginalFilename();
         if (fn == null || fn.isBlank())
-            throw new BadRequestException("File name is required.", "MISSING_FILENAME");
+            throw new BadRequestException(UserMessages.MISSING_FILENAME_MSG, UserMessages.MISSING_FILENAME);
         if (fn.contains("..") || fn.contains("/") || fn.contains("\\"))
-            throw new BadRequestException("Invalid file name.", "INVALID_FILENAME");
+            throw new BadRequestException(UserMessages.INVALID_FILENAME_MSG, UserMessages.INVALID_FILENAME);
     }
 }

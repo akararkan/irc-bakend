@@ -4,6 +4,7 @@ import ak.dev.irc.app.admin.ops.JobRunRecorder;
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -125,7 +126,7 @@ public class AdminSearchOpsController {
         return ResponseEntity.accepted().body(Map.of(
                 "jobId", run.getId(),
                 "jobName", "search-reindex-all",
-                "note", "sequential; poll GET /api/v1/admin/ops/jobs/search-reindex-all/runs"));
+                "note", AdminOpsMessages.NOTE_REINDEX_ALL_SEQUENTIAL));
     }
 
     // ── query analytics (anonymous collector, search-ops.md §7) ─────────
@@ -156,8 +157,7 @@ public class AdminSearchOpsController {
         body.put("scope", scope);
         body.put("days", Math.max(1, Math.min(days, 7)));
         body.put("queries", queryLogService.topQueries(scope, days, limit, true));
-        body.put("note", "Degraded searches (ES down) are excluded — a zero here means ES "
-                + "answered and genuinely had nothing.");
+        body.put("note", AdminOpsMessages.NOTE_ZERO_RESULTS_DEGRADED_EXCLUDED);
         return ResponseEntity.ok(body);
     }
 
@@ -202,7 +202,7 @@ public class AdminSearchOpsController {
                 if (esCount != null) row.put("drift", esCount - canonical);
             } else {
                 row.put("canonicalCount", null);
-                row.put("driftNote", "canonical store is Cassandra — no cheap full count");
+                row.put("driftNote", AdminOpsMessages.NOTE_DRIFT_CASSANDRA_CANONICAL);
             }
             rows.add(row);
         }

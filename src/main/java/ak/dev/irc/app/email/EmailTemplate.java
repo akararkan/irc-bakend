@@ -1,5 +1,6 @@
 package ak.dev.irc.app.email;
 
+import ak.dev.irc.app.common.messages.EmailMessages;
 import ak.dev.irc.app.user.dto.response.NotificationResponse;
 import ak.dev.irc.app.user.enums.NotificationType;
 import lombok.RequiredArgsConstructor;
@@ -271,60 +272,60 @@ public class EmailTemplate {
     // ── Copy helpers ──────────────────────────────────────────────────────
 
     private String actionVerb(NotificationType type, long aggregate) {
-        if (type == null) return "sent you an update about";
+        if (type == null) return EmailMessages.NOTIF_VERB_DEFAULT;
         boolean many = aggregate > 1;
         return switch (type) {
-            case NEW_FOLLOWER         -> many ? "started following you" : "started following you";
-            case UNFOLLOWED           -> "unfollowed you";
-            case BLOCKED              -> "blocked you";
-            case UNBLOCKED            -> "unblocked you";
-            case RESTRICTED           -> "restricted your account";
-            case CONNECTION_REQUEST   -> "sent you a connection request";
-            case CONNECTION_ACCEPTED  -> "accepted your connection request";
+            case NEW_FOLLOWER         -> many ? EmailMessages.NOTIF_VERB_NEW_FOLLOWER : EmailMessages.NOTIF_VERB_NEW_FOLLOWER;
+            case UNFOLLOWED           -> EmailMessages.NOTIF_VERB_UNFOLLOWED;
+            case BLOCKED              -> EmailMessages.NOTIF_VERB_BLOCKED;
+            case UNBLOCKED            -> EmailMessages.NOTIF_VERB_UNBLOCKED;
+            case RESTRICTED           -> EmailMessages.NOTIF_VERB_RESTRICTED;
+            case CONNECTION_REQUEST   -> EmailMessages.NOTIF_VERB_CONNECTION_REQUEST;
+            case CONNECTION_ACCEPTED  -> EmailMessages.NOTIF_VERB_CONNECTION_ACCEPTED;
 
-            case POST_NEW             -> "published a new post";
-            case POST_REACTED         -> many ? "reacted to your post" : "reacted to your post";
-            case POST_COMMENTED       -> "commented on your post";
-            case POST_COMMENT_REPLIED -> "replied to your comment";
-            case POST_COMMENT_REACTED -> "reacted to your comment";
-            case POST_SHARED          -> "shared your post";
-            case POST_MENTIONED, USER_MENTIONED -> "mentioned you";
+            case POST_NEW             -> EmailMessages.NOTIF_VERB_POST_NEW;
+            case POST_REACTED         -> many ? EmailMessages.NOTIF_VERB_POST_REACTED : EmailMessages.NOTIF_VERB_POST_REACTED;
+            case POST_COMMENTED       -> EmailMessages.NOTIF_VERB_POST_COMMENTED;
+            case POST_COMMENT_REPLIED -> EmailMessages.NOTIF_VERB_POST_COMMENT_REPLIED;
+            case POST_COMMENT_REACTED -> EmailMessages.NOTIF_VERB_POST_COMMENT_REACTED;
+            case POST_SHARED          -> EmailMessages.NOTIF_VERB_POST_SHARED;
+            case POST_MENTIONED, USER_MENTIONED -> EmailMessages.NOTIF_VERB_POST_MENTIONED;
 
-            case PUBLICATION_LIKED            -> "reacted to your research";
-            case PUBLICATION_COMMENTED        -> "commented on your research";
-            case PUBLICATION_COMMENT_REACTED  -> "reacted to your comment on a research";
-            case PUBLICATION_CITED            -> "cited your research";
-            case RESEARCH_CONTRIBUTOR_ADDED   -> "added you as a contributor on their research";
+            case PUBLICATION_LIKED            -> EmailMessages.NOTIF_VERB_PUBLICATION_LIKED;
+            case PUBLICATION_COMMENTED        -> EmailMessages.NOTIF_VERB_PUBLICATION_COMMENTED;
+            case PUBLICATION_COMMENT_REACTED  -> EmailMessages.NOTIF_VERB_PUBLICATION_COMMENT_REACTED;
+            case PUBLICATION_CITED            -> EmailMessages.NOTIF_VERB_PUBLICATION_CITED;
+            case RESEARCH_CONTRIBUTOR_ADDED   -> EmailMessages.NOTIF_VERB_RESEARCH_CONTRIBUTOR_ADDED;
 
-            case QUESTION_NEW              -> "posted a new question";
-            case QUESTION_ANSWERED         -> "answered your question";
-            case ANSWER_REPLIED            -> "replied to your answer";
-            case ANSWER_REACTED            -> "reacted to your answer";
-            case ANSWER_ACCEPTED           -> "marked your answer as the best answer";
+            case QUESTION_NEW              -> EmailMessages.NOTIF_VERB_QUESTION_NEW;
+            case QUESTION_ANSWERED         -> EmailMessages.NOTIF_VERB_QUESTION_ANSWERED;
+            case ANSWER_REPLIED            -> EmailMessages.NOTIF_VERB_ANSWER_REPLIED;
+            case ANSWER_REACTED            -> EmailMessages.NOTIF_VERB_ANSWER_REACTED;
+            case ANSWER_ACCEPTED           -> EmailMessages.NOTIF_VERB_ANSWER_ACCEPTED;
 
-            case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT -> "sent you a system message";
-            case ACCOUNT_WARNING                     -> "issued an account warning";
+            case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT -> EmailMessages.NOTIF_VERB_SYSTEM_MESSAGE;
+            case ACCOUNT_WARNING                     -> EmailMessages.NOTIF_VERB_ACCOUNT_WARNING;
 
             // Chat kinds are in-app only (never emailed) but must be covered here.
-            case NEW_MESSAGE      -> "sent you a message";
-            case MESSAGE_REQUEST  -> "wants to send you a message";
-            case ADDED_TO_GROUP   -> "added you to a group";
-            case CALL_MISSED      -> "tried to call you";
-            case MESSAGE_MENTION  -> "mentioned you in a chat";
-            case CHANNEL_NEW_POST      -> "posted in a channel you follow";
-            case CHANNEL_JOIN_REQUEST  -> "requested to join your channel";
-            case CHANNEL_JOIN_APPROVED -> "approved your channel join request";
-            case STREAM_STARTED        -> "went live";
+            case NEW_MESSAGE      -> EmailMessages.NOTIF_VERB_NEW_MESSAGE;
+            case MESSAGE_REQUEST  -> EmailMessages.NOTIF_VERB_MESSAGE_REQUEST;
+            case ADDED_TO_GROUP   -> EmailMessages.NOTIF_VERB_ADDED_TO_GROUP;
+            case CALL_MISSED      -> EmailMessages.NOTIF_VERB_CALL_MISSED;
+            case MESSAGE_MENTION  -> EmailMessages.NOTIF_VERB_MESSAGE_MENTION;
+            case CHANNEL_NEW_POST      -> EmailMessages.NOTIF_VERB_CHANNEL_NEW_POST;
+            case CHANNEL_JOIN_REQUEST  -> EmailMessages.NOTIF_VERB_CHANNEL_JOIN_REQUEST;
+            case CHANNEL_JOIN_APPROVED -> EmailMessages.NOTIF_VERB_CHANNEL_JOIN_APPROVED;
+            case STREAM_STARTED        -> EmailMessages.NOTIF_VERB_STREAM_STARTED;
 
-            case STORY_PUBLISHED  -> "published a new story";
-            case STORY_REACTED    -> "reacted to your story";
-            case STORY_REPLIED    -> "replied to your story";
-            case SOUND_APPROVED   -> "approved your uploaded sound";
-            case SOUND_REJECTED   -> "reviewed your uploaded sound";
+            case STORY_PUBLISHED  -> EmailMessages.NOTIF_VERB_STORY_PUBLISHED;
+            case STORY_REACTED    -> EmailMessages.NOTIF_VERB_STORY_REACTED;
+            case STORY_REPLIED    -> EmailMessages.NOTIF_VERB_STORY_REPLIED;
+            case SOUND_APPROVED   -> EmailMessages.NOTIF_VERB_SOUND_APPROVED;
+            case SOUND_REJECTED   -> EmailMessages.NOTIF_VERB_SOUND_REJECTED;
 
-            case TRENDING_DIGEST  -> "shared today's trending in scholarship";
+            case TRENDING_DIGEST  -> EmailMessages.NOTIF_VERB_TRENDING_DIGEST;
 
-            case ADMIN_ANOMALY    -> "flagged a metric anomaly";
+            case ADMIN_ANOMALY    -> EmailMessages.NOTIF_VERB_ADMIN_ANOMALY;
         };
     }
 
@@ -343,20 +344,20 @@ public class EmailTemplate {
     }
 
     private String ctaLabel(NotificationType type) {
-        if (type == null) return "Open on IRC";
+        if (type == null) return EmailMessages.NOTIF_CTA_DEFAULT;
         return switch (type) {
-            case NEW_FOLLOWER, CONNECTION_REQUEST, CONNECTION_ACCEPTED -> "View profile";
-            case POST_NEW                                              -> "Read the post";
+            case NEW_FOLLOWER, CONNECTION_REQUEST, CONNECTION_ACCEPTED -> EmailMessages.NOTIF_CTA_NEW_FOLLOWER;
+            case POST_NEW                                              -> EmailMessages.NOTIF_CTA_POST_NEW;
             case POST_REACTED, POST_COMMENTED, POST_COMMENT_REPLIED,
                  POST_COMMENT_REACTED, POST_SHARED,
-                 POST_MENTIONED, USER_MENTIONED                        -> "Open post";
+                 POST_MENTIONED, USER_MENTIONED                        -> EmailMessages.NOTIF_CTA_POST_REACTED;
             case PUBLICATION_LIKED, PUBLICATION_COMMENTED,
-                 PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED        -> "Open research";
+                 PUBLICATION_COMMENT_REACTED, PUBLICATION_CITED        -> EmailMessages.NOTIF_CTA_PUBLICATION_LIKED;
             case QUESTION_NEW, QUESTION_ANSWERED, ANSWER_REPLIED,
-                 ANSWER_REACTED, ANSWER_ACCEPTED                       -> "Open question";
-            case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT, ACCOUNT_WARNING  -> "View details";
-            case TRENDING_DIGEST                                       -> "Explore trending tags";
-            default                                                    -> "Open on IRC";
+                 ANSWER_REACTED, ANSWER_ACCEPTED                       -> EmailMessages.NOTIF_CTA_QUESTION_NEW;
+            case SYSTEM_MESSAGE, SYSTEM_ANNOUNCEMENT, ACCOUNT_WARNING  -> EmailMessages.NOTIF_CTA_SYSTEM_MESSAGE;
+            case TRENDING_DIGEST                                       -> EmailMessages.NOTIF_CTA_TRENDING_DIGEST;
+            default                                                    -> EmailMessages.NOTIF_CTA_DEFAULT;
         };
     }
 

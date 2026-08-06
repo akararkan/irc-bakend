@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -8,7 +9,7 @@ import lombok.Data;
 @Data
 public class EditMessageRequest {
 
-    @NotBlank(message = "body is required")
-    @Size(max = 8000, message = "a message may not exceed 8000 characters")
+    @NotBlank(message = ChatMessages.VAL_BODY_REQUIRED)
+    @Size(max = 8000, message = ChatMessages.VAL_MESSAGE_MAX)
     private String body;
 }

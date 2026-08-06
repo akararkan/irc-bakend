@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.dto.request;
 
 import ak.dev.irc.app.chat.enums.ConversationType;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -18,18 +19,18 @@ import java.util.UUID;
 @Data
 public class CreateConversationRequest {
 
-    @NotNull(message = "type is required (DIRECT | GROUP)")
+    @NotNull(message = ChatMessages.VAL_CONVERSATION_TYPE_REQUIRED)
     private ConversationType type;
 
     /** DIRECT only. */
     private UUID recipientId;
 
     /** GROUP only. */
-    @Size(max = 120, message = "group title must not exceed 120 characters")
+    @Size(max = 120, message = ChatMessages.VAL_GROUP_TITLE_MAX)
     private String title;
 
     /** GROUP only — optional description/topic. */
-    @Size(max = 500, message = "group description must not exceed 500 characters")
+    @Size(max = 500, message = ChatMessages.VAL_GROUP_DESCRIPTION_MAX)
     private String description;
 
     /** GROUP only — R2/S3 key for the avatar. */
@@ -37,6 +38,6 @@ public class CreateConversationRequest {
     private String avatarKey;
 
     /** GROUP only — initial members (excluding the creator). */
-    @Size(max = 256, message = "a group can start with at most 256 members")
+    @Size(max = 256, message = ChatMessages.VAL_GROUP_MEMBERS_MAX)
     private List<UUID> memberIds;
 }

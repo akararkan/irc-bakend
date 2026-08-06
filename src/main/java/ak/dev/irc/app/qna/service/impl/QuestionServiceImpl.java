@@ -6,6 +6,7 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.QnaMessages;
 import ak.dev.irc.app.common.service.FollowingIdsCache;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
@@ -155,7 +156,7 @@ public class QuestionServiceImpl implements QuestionService {
         Question question = findQuestionOrThrow(questionId);
 
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("You can only edit your own question");
+            throw new ForbiddenException(QnaMessages.EDIT_OWN_QUESTION_MSG);
         }
 
         // Capture the prior text (title + body) so the mention delta scan
@@ -165,7 +166,7 @@ public class QuestionServiceImpl implements QuestionService {
         boolean titleChanged = false;
         if (request.getTitle() != null) {
             if (request.getTitle().isBlank()) {
-                throw new BadRequestException("Question title cannot be empty", "EMPTY_TITLE");
+                throw new BadRequestException(QnaMessages.EMPTY_TITLE_MSG, QnaMessages.EMPTY_TITLE);
             }
             String newTitle = request.getTitle().trim();
             if (!newTitle.equals(question.getTitle())) titleChanged = true;
@@ -173,7 +174,7 @@ public class QuestionServiceImpl implements QuestionService {
         }
         if (request.getBody() != null) {
             if (request.getBody().isBlank()) {
-                throw new BadRequestException("Question body cannot be empty", "EMPTY_BODY");
+                throw new BadRequestException(QnaMessages.EMPTY_BODY_MSG, QnaMessages.EMPTY_BODY);
             }
             question.setBody(request.getBody().trim());
         }
@@ -465,17 +466,17 @@ public class QuestionServiceImpl implements QuestionService {
 
         if (question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.CLOSED
                 || question.getStatus() == ak.dev.irc.app.qna.enums.QuestionStatus.ARCHIVED) {
-            throw new BadRequestException("Question is closed", "QUESTION_CLOSED");
+            throw new BadRequestException(QnaMessages.QUESTION_CLOSED_MSG, QnaMessages.QUESTION_CLOSED);
         }
 
         if (question.isAnswersLocked()) {
-            throw new BadRequestException("Answers are locked for this question", "ANSWERS_LOCKED");
+            throw new BadRequestException(QnaMessages.ANSWERS_LOCKED_MSG, QnaMessages.ANSWERS_LOCKED);
         }
 
         // Block guard — refuse answers / reanswers across any block edge with
         // the question author (and, for reanswers, the parent answer author).
         socialGuard.requireNotBlockedBetween(
-                authorId, question.getAuthor().getId(), "ANSWER_BLOCKED_RELATIONSHIP");
+                authorId, question.getAuthor().getId(), QnaMessages.ANSWER_BLOCKED_RELATIONSHIP);
 
         // Resolve parent if this is a reanswer (reply to another answer) —
         // mirrors the post-comment top-level-vs-reply branching.
@@ -497,7 +498,7 @@ public class QuestionServiceImpl implements QuestionService {
             // and prevents a misbehaving client from producing depth-2 trees.
             if (parent.getParentAnswer() != null) parent = parent.getParentAnswer();
             socialGuard.requireNotBlockedBetween(
-                    authorId, parent.getAuthor().getId(), "REANSWER_BLOCKED_RELATIONSHIP");
+                    authorId, parent.getAuthor().getId(), QnaMessages.REANSWER_BLOCKED_RELATIONSHIP);
             // Bump the parent's denormalised replyCount up front so it's
             // visible immediately on the parent's row in the listing query.
             answerRepository.updateReplyCount(parent.getId(), 1);
@@ -505,8 +506,8 @@ public class QuestionServiceImpl implements QuestionService {
         } else {
             if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
                 throw new BadRequestException(
-                        "Maximum number of answers (" + question.getMaxAnswers() + ") reached",
-                        "ANSWER_LIMIT_REACHED");
+                        QnaMessages.ANSWER_LIMIT_REACHED_MSG.formatted(question.getMaxAnswers()),
+                        QnaMessages.ANSWER_LIMIT_REACHED);
             }
         }
 
@@ -642,11 +643,11 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only edit your own answer or answers on your question");
+            throw new ForbiddenException(QnaMessages.EDIT_OWN_ANSWER_MSG);
         }
 
         if (request.getBody() == null || request.getBody().isBlank()) {
-            throw new BadRequestException("Answer body cannot be empty", "EMPTY_ANSWER");
+            throw new BadRequestException(QnaMessages.EMPTY_ANSWER_MSG, QnaMessages.EMPTY_ANSWER);
         }
 
         String previousBody = answer.getBody();
@@ -765,7 +766,7 @@ public class QuestionServiceImpl implements QuestionService {
     public void closeQuestion(UUID questionId, UUID requesterId, String reason) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("You cannot close this question");
+            throw new ForbiddenException(QnaMessages.CLOSE_QUESTION_FORBIDDEN_MSG);
         }
         question.setStatus(QuestionStatus.CLOSED);
         question.audit(AuditAction.UPDATE, reason == null || reason.isBlank()
@@ -779,7 +780,7 @@ public class QuestionServiceImpl implements QuestionService {
     public void reopenQuestion(UUID questionId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("You cannot reopen this question");
+            throw new ForbiddenException(QnaMessages.REOPEN_QUESTION_FORBIDDEN_MSG);
         }
         // Same revert rule the delete-answer path uses: answered questions
         // reopen to ANSWERED, empty ones to OPEN.
@@ -795,7 +796,7 @@ public class QuestionServiceImpl implements QuestionService {
     public void archiveQuestion(UUID questionId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("You cannot archive this question");
+            throw new ForbiddenException(QnaMessages.ARCHIVE_QUESTION_FORBIDDEN_MSG);
         }
         question.setStatus(QuestionStatus.ARCHIVED);
         question.audit(AuditAction.UPDATE, "Question archived");
@@ -808,7 +809,7 @@ public class QuestionServiceImpl implements QuestionService {
     public void deleteQuestion(UUID questionId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("You can only delete your own question");
+            throw new ForbiddenException(QnaMessages.DELETE_OWN_QUESTION_MSG);
         }
 
         // ── S3 cleanup (best-effort, before the rows go) ──────────────────
@@ -896,7 +897,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only delete your own answer or answers on your question");
+            throw new ForbiddenException(QnaMessages.DELETE_OWN_ANSWER_MSG);
         }
 
         // Counter cleanup — purge dependent rows BEFORE the soft-delete flips
@@ -969,7 +970,7 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionResponse lockAnswers(UUID questionId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can lock answers");
+            throw new ForbiddenException(QnaMessages.LOCK_ANSWERS_AUTHOR_ONLY_MSG);
         }
         question.setAnswersLocked(true);
         question.audit(AuditAction.UPDATE, "Answers locked");
@@ -984,7 +985,7 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionResponse unlockAnswers(UUID questionId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can unlock answers");
+            throw new ForbiddenException(QnaMessages.UNLOCK_ANSWERS_AUTHOR_ONLY_MSG);
         }
         question.setAnswersLocked(false);
         question.audit(AuditAction.UPDATE, "Answers unlocked");
@@ -999,7 +1000,7 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionResponse setAnswerLimit(UUID questionId, Integer maxAnswers, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can set the answer limit");
+            throw new ForbiddenException(QnaMessages.ANSWER_LIMIT_AUTHOR_ONLY_MSG);
         }
         question.setMaxAnswers(maxAnswers != null && maxAnswers <= 0 ? null : maxAnswers);
         question.audit(AuditAction.UPDATE, "Answer limit set to " + (maxAnswers == null ? "unlimited" : maxAnswers));
@@ -1016,14 +1017,14 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionAnswerResponse acceptAnswer(UUID questionId, UUID answerId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can accept answers");
+            throw new ForbiddenException(QnaMessages.ACCEPT_AUTHOR_ONLY_MSG);
         }
 
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (answer.getParentAnswer() != null) {
-            throw new BadRequestException("Reanswers cannot be accepted as best answer", "REANSWER_NOT_ACCEPTABLE");
+            throw new BadRequestException(QnaMessages.REANSWER_NOT_ACCEPTABLE_MSG, QnaMessages.REANSWER_NOT_ACCEPTABLE);
         }
 
         if (!answer.isAccepted()) {
@@ -1045,7 +1046,7 @@ public class QuestionServiceImpl implements QuestionService {
     public QuestionAnswerResponse unacceptAnswer(UUID questionId, UUID answerId, UUID requesterId) {
         Question question = findQuestionOrThrow(questionId);
         if (!canManageQuestion(question, requesterId)) {
-            throw new ForbiddenException("Only the question author can unaccept answers");
+            throw new ForbiddenException(QnaMessages.UNACCEPT_AUTHOR_ONLY_MSG);
         }
 
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
@@ -1076,7 +1077,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only upload attachments to your own answer");
+            throw new ForbiddenException(QnaMessages.ATTACHMENT_UPLOAD_OWN_ANSWER_MSG);
         }
 
         String prefix = "qna/" + questionId + "/answers/" + answerId + "/attachments";
@@ -1120,14 +1121,14 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only edit attachments on your own answer");
+            throw new ForbiddenException(QnaMessages.ATTACHMENT_EDIT_OWN_ANSWER_MSG);
         }
 
         AnswerAttachment attachment = attachmentRepository.findById(attachmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Attachment", "id", attachmentId));
 
         if (!attachment.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Attachment does not belong to this answer", "ATTACHMENT_MISMATCH");
+            throw new BadRequestException(QnaMessages.ATTACHMENT_MISMATCH_MSG, QnaMessages.ATTACHMENT_MISMATCH);
         }
 
         if (request.getCaption() != null) {
@@ -1150,14 +1151,14 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only delete attachments from your own answer");
+            throw new ForbiddenException(QnaMessages.ATTACHMENT_DELETE_OWN_ANSWER_MSG);
         }
 
         AnswerAttachment attachment = attachmentRepository.findById(attachmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Attachment", "id", attachmentId));
 
         if (!attachment.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Attachment does not belong to this answer", "ATTACHMENT_MISMATCH");
+            throw new BadRequestException(QnaMessages.ATTACHMENT_MISMATCH_MSG, QnaMessages.ATTACHMENT_MISMATCH);
         }
 
         storageService.delete(attachment.getS3Key());
@@ -1177,7 +1178,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only add sources to your own answer");
+            throw new ForbiddenException(QnaMessages.SOURCE_ADD_OWN_ANSWER_MSG);
         }
 
         int nextOrder = answer.getSources() != null ? answer.getSources().size() : 0;
@@ -1201,18 +1202,18 @@ public class QuestionServiceImpl implements QuestionService {
     public AnswerSourceResponse uploadSourceFile(UUID questionId, UUID answerId, UUID sourceId,
                                                  MultipartFile file, UUID requesterId) {
         if (file == null || file.isEmpty()) {
-            throw new BadRequestException("File is required", "MISSING_FILE");
+            throw new BadRequestException(QnaMessages.MISSING_FILE_MSG, QnaMessages.MISSING_FILE);
         }
         Question question = findQuestionOrThrow(questionId);
         QuestionAnswer answer = answerRepository.findByIdAndQuestionIdAndDeletedAtIsNull(answerId, questionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only attach files to sources on your own answer");
+            throw new ForbiddenException(QnaMessages.SOURCE_FILE_OWN_ANSWER_MSG);
         }
         AnswerSource source = sourceRepository.findById(sourceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
         if (source.getAnswer() == null || !source.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+            throw new BadRequestException(QnaMessages.SOURCE_MISMATCH_MSG, QnaMessages.SOURCE_MISMATCH);
         }
 
         // Replace any previously-uploaded file for this source.
@@ -1243,20 +1244,20 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only edit sources on your own answer");
+            throw new ForbiddenException(QnaMessages.SOURCE_EDIT_OWN_ANSWER_MSG);
         }
 
         AnswerSource source = sourceRepository.findById(sourceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
 
         if (!source.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+            throw new BadRequestException(QnaMessages.SOURCE_MISMATCH_MSG, QnaMessages.SOURCE_MISMATCH);
         }
 
         if (request.getSourceType() != null) source.setSourceType(request.getSourceType());
         if (request.getTitle() != null) {
             if (request.getTitle().isBlank()) {
-                throw new BadRequestException("Source title cannot be empty", "EMPTY_TITLE");
+                throw new BadRequestException(QnaMessages.EMPTY_TITLE_SOURCE_MSG, QnaMessages.EMPTY_TITLE);
             }
             source.setTitle(request.getTitle().trim());
         }
@@ -1289,14 +1290,14 @@ public class QuestionServiceImpl implements QuestionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Answer", "id", answerId));
 
         if (!canManageAnswer(question, answer, requesterId)) {
-            throw new ForbiddenException("You can only delete sources from your own answer");
+            throw new ForbiddenException(QnaMessages.SOURCE_DELETE_OWN_ANSWER_MSG);
         }
 
         AnswerSource source = sourceRepository.findById(sourceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
 
         if (!source.getAnswer().getId().equals(answerId)) {
-            throw new BadRequestException("Source does not belong to this answer", "SOURCE_MISMATCH");
+            throw new BadRequestException(QnaMessages.SOURCE_MISMATCH_MSG, QnaMessages.SOURCE_MISMATCH);
         }
 
         // If the source has an uploaded file, delete it from S3
@@ -1323,9 +1324,9 @@ public class QuestionServiceImpl implements QuestionService {
         // Block guards — refuse to react across any block edge with either the
         // answer author or the question author.
         socialGuard.requireNotBlockedBetween(
-                requesterId, answer.getAuthor().getId(), "ANSWER_REACTION_BLOCKED_RELATIONSHIP");
+                requesterId, answer.getAuthor().getId(), QnaMessages.ANSWER_REACTION_BLOCKED_RELATIONSHIP);
         socialGuard.requireNotBlockedBetween(
-                requesterId, question.getAuthor().getId(), "ANSWER_REACTION_BLOCKED_RELATIONSHIP");
+                requesterId, question.getAuthor().getId(), QnaMessages.ANSWER_REACTION_BLOCKED_RELATIONSHIP);
 
         User user = userRepository.findById(requesterId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", requesterId));
@@ -1460,7 +1461,7 @@ public class QuestionServiceImpl implements QuestionService {
 
         // Block guard — refuse to save across a block edge with the question author.
         socialGuard.requireNotBlockedBetween(
-                userId, question.getAuthor().getId(), "QNA_SAVE_BLOCKED_RELATIONSHIP");
+                userId, question.getAuthor().getId(), QnaMessages.QNA_SAVE_BLOCKED_RELATIONSHIP);
 
         User actor = userRepository.findById(userId).orElse(null);
         QuestionSaveId sid = new QuestionSaveId();
@@ -1573,7 +1574,7 @@ public class QuestionServiceImpl implements QuestionService {
     public Page<QuestionResponse> getSavedQuestionsByCollection(UUID userId, String collectionName,
                                                                 Pageable pageable) {
         if (collectionName == null || collectionName.isBlank()) {
-            throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
+            throw new BadRequestException(QnaMessages.MISSING_COLLECTION_NAME_MSG, QnaMessages.MISSING_COLLECTION_NAME);
         }
         return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
                         userId, collectionName.trim(), pageable)
@@ -1590,9 +1591,9 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional
     public void renameSavedQuestionCollection(UUID userId, String oldName, String newName) {
         if (oldName == null || oldName.isBlank())
-            throw new BadRequestException("Old collection name is required", "MISSING_OLD_NAME");
+            throw new BadRequestException(QnaMessages.MISSING_OLD_NAME_MSG, QnaMessages.MISSING_OLD_NAME);
         if (newName == null || newName.isBlank())
-            throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
+            throw new BadRequestException(QnaMessages.MISSING_NEW_NAME_MSG, QnaMessages.MISSING_NEW_NAME);
         saveRepository.renameCollection(userId, oldName, newName.trim());
     }
 
@@ -1659,7 +1660,7 @@ public class QuestionServiceImpl implements QuestionService {
 
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.ADMIN) {
-            throw new ForbiddenException("Only scholars can post questions");
+            throw new ForbiddenException(QnaMessages.ONLY_SCHOLARS_POST_MSG);
         }
 
         return user;
@@ -1677,7 +1678,7 @@ public class QuestionServiceImpl implements QuestionService {
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.RESEARCHER
                 && user.getRole() != Role.ADMIN) {
-            throw new ForbiddenException("Only scholars and researchers can answer questions");
+            throw new ForbiddenException(QnaMessages.ONLY_SCHOLARS_RESEARCHERS_ANSWER_MSG);
         }
 
         return user;

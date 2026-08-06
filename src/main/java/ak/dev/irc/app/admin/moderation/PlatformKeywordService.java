@@ -4,6 +4,7 @@ import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.settings.privacy.service.KeywordNormalizer;
 import lombok.RequiredArgsConstructor;
@@ -48,13 +49,15 @@ public class PlatformKeywordService {
     @Transactional
     public PlatformKeyword add(String keyword, PlatformKeyword.Severity severity, String note) {
         if (keyword == null || keyword.isBlank()) {
-            throw new BadRequestException("keyword is required", "INVALID_INPUT");
+            throw new BadRequestException(AdminContentMessages.INVALID_INPUT_KEYWORD_MSG,
+                    AdminContentMessages.INVALID_INPUT);
         }
         String display = keyword.trim();
         if (display.length() > 100) display = display.substring(0, 100);
         String norm = normalizer.normalize(display);
         if (norm.isBlank()) {
-            throw new BadRequestException("Keyword normalizes to nothing.", "INVALID_KEYWORD");
+            throw new BadRequestException(AdminContentMessages.INVALID_KEYWORD_MSG,
+                    AdminContentMessages.INVALID_KEYWORD);
         }
         PlatformKeyword existing = keywordRepository.findByKeywordNormalized(norm).orElse(null);
         if (existing != null) {
@@ -126,8 +129,8 @@ public class PlatformKeywordService {
             String blocked = firstMatch(text, cached(CACHE_KEY_BLOCK, PlatformKeyword.Severity.BLOCK));
             if (blocked != null) {
                 throw new BadRequestException(
-                        "This content violates platform policy and cannot be published.",
-                        "CONTENT_BLOCKED_BY_POLICY");
+                        AdminContentMessages.CONTENT_BLOCKED_BY_POLICY_MSG,
+                        AdminContentMessages.CONTENT_BLOCKED_BY_POLICY);
             }
             return firstMatch(text, cached(CACHE_KEY_FLAG, PlatformKeyword.Severity.FLAG));
         } catch (BadRequestException policy) {

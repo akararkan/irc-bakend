@@ -5,6 +5,7 @@ import ak.dev.irc.app.chat.dto.response.InviteLinkResponse;
 import ak.dev.irc.app.chat.dto.response.MemberResponse;
 import ak.dev.irc.app.chat.service.GroupMemberService;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -138,7 +139,7 @@ public class GroupMemberController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChatMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

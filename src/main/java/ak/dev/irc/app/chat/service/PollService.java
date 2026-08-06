@@ -28,6 +28,7 @@ import org.springframework.util.StringUtils;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 
 import java.time.Instant;
 import java.util.*;
@@ -78,15 +79,15 @@ public class PollService {
     public String validateAndSerialize(PollCreateDto dto) {
         if (dto.isQuiz()) {
             if (dto.isAllowsMultipleAnswers()) {
-                throw new BadRequestException("A quiz cannot allow multiple answers.");
+                throw new BadRequestException(ChatMessages.QUIZ_MULTIPLE_ANSWERS_MSG);
             }
             if (dto.getCorrectOptionIndex() == null
                     || dto.getCorrectOptionIndex() < 0
                     || dto.getCorrectOptionIndex() >= dto.getOptions().size()) {
-                throw new BadRequestException("A quiz requires a valid correctOptionIndex.");
+                throw new BadRequestException(ChatMessages.QUIZ_CORRECT_OPTION_REQUIRED_MSG);
             }
         } else if (dto.getCorrectOptionIndex() != null) {
-            throw new BadRequestException("correctOptionIndex applies only to quizzes.");
+            throw new BadRequestException(ChatMessages.CORRECT_OPTION_QUIZ_ONLY_MSG);
         }
         PollPayload payload = new PollPayload(
                 dto.getQuestion().trim(), List.copyOf(dto.getOptions()),
@@ -101,21 +102,21 @@ public class PollService {
         MessageByIdEntity m = requirePollMessage(messageId);
         requireActiveMember(m.getConversationId(), userId);
         PollPayload p = parse(m.getPoll());
-        if (p.closed()) throw new BadRequestException("This poll is closed.");
+        if (p.closed()) throw new BadRequestException(ChatMessages.POLL_CLOSED_MSG);
 
         Set<Integer> picks = new LinkedHashSet<>(req.getOptionIndexes());
         for (Integer i : picks) {
             if (i == null || i < 0 || i >= p.options().size()) {
-                throw new BadRequestException("Option index out of range.");
+                throw new BadRequestException(ChatMessages.POLL_OPTION_OUT_OF_RANGE_MSG);
             }
         }
         if (picks.size() > 1 && !p.allowsMultipleAnswers()) {
-            throw new BadRequestException("This poll allows only one answer.");
+            throw new BadRequestException(ChatMessages.POLL_SINGLE_ANSWER_MSG);
         }
 
         PollVoteByMessageEntity prior = voteRepo.findOne(messageId, userId);
         if (prior != null && p.quiz()) {
-            throw new BadRequestException("Quiz answers are final.");
+            throw new BadRequestException(ChatMessages.QUIZ_ANSWERS_FINAL_MSG);
         }
         if (prior != null && picks.equals(prior.getOptions())) {
             return renderFor(m, userId); // idempotent
@@ -138,8 +139,8 @@ public class PollService {
         MessageByIdEntity m = requirePollMessage(messageId);
         requireActiveMember(m.getConversationId(), userId);
         PollPayload p = parse(m.getPoll());
-        if (p.closed()) throw new BadRequestException("This poll is closed.");
-        if (p.quiz()) throw new BadRequestException("Quiz answers are final.");
+        if (p.closed()) throw new BadRequestException(ChatMessages.POLL_CLOSED_MSG);
+        if (p.quiz()) throw new BadRequestException(ChatMessages.QUIZ_ANSWERS_FINAL_MSG);
         PollVoteByMessageEntity prior = voteRepo.findOne(messageId, userId);
         if (prior != null) {
             voteRepo.deleteOne(messageId, userId);
@@ -160,7 +161,8 @@ public class PollService {
             boolean adminClose = convo != null && convo.isChannel()
                     && ChannelRights.can(me, AdminRights::isCanEditMessages);
             if (!adminClose) {
-                throw new ForbiddenException("You cannot close this poll.", "ACCESS_FORBIDDEN");
+                throw new ForbiddenException(ChatMessages.POLL_CLOSE_FORBIDDEN_MSG,
+                        ChatMessages.ACCESS_FORBIDDEN);
             }
         }
         PollPayload p = parse(m.getPoll());
@@ -343,7 +345,7 @@ public class PollService {
                 .filter(x -> !Boolean.TRUE.equals(x.getDeleted()))
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         if (!StringUtils.hasText(m.getPoll())) {
-            throw new BadRequestException("This message is not a poll.");
+            throw new BadRequestException(ChatMessages.NOT_A_POLL_MSG);
         }
         return m;
     }
@@ -352,14 +354,14 @@ public class PollService {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
                 .orElseThrow(() -> new ForbiddenException(
-                        "You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     private String serialize(PollPayload p) {
         try {
             return objectMapper.writeValueAsString(p);
         } catch (Exception e) {
-            throw new BadRequestException("Could not store the poll payload.");
+            throw new BadRequestException(ChatMessages.POLL_STORE_FAILED_MSG);
         }
     }
 
@@ -367,7 +369,7 @@ public class PollService {
         try {
             return objectMapper.readValue(json, PollPayload.class);
         } catch (Exception e) {
-            throw new BadRequestException("Corrupt poll payload.");
+            throw new BadRequestException(ChatMessages.POLL_CORRUPT_MSG);
         }
     }
 

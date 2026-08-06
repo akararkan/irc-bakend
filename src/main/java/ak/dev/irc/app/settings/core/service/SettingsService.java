@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.core.service;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.audit.service.SettingsAuditService;
 import ak.dev.irc.app.settings.core.dto.SettingsResponse;
 import ak.dev.irc.app.settings.core.entity.*;
@@ -154,7 +155,7 @@ public class SettingsService {
             return updater.readValue(objectMapper.writeValueAsString(patch));
         } catch (Exception ex) {
             throw new BadRequestException(
-                    "Invalid settings patch for " + type.getSimpleName() + ": " + ex.getMessage());
+                    SettingsMessages.SETTINGS_PATCH_INVALID_MSG.formatted(type.getSimpleName(), ex.getMessage()));
         }
     }
 
@@ -163,7 +164,7 @@ public class SettingsService {
             return objectMapper.convertValue(body, type);
         } catch (Exception ex) {
             throw new BadRequestException(
-                    "Invalid settings body for " + type.getSimpleName() + ": " + ex.getMessage());
+                    SettingsMessages.SETTINGS_BODY_INVALID_MSG.formatted(type.getSimpleName(), ex.getMessage()));
         }
     }
 
@@ -190,6 +191,6 @@ public class SettingsService {
     }
 
     private BadRequestException unknownSection(String section) {
-        return new BadRequestException("Unknown or non-cosmetic settings section: " + section);
+        return new BadRequestException(SettingsMessages.SETTINGS_SECTION_UNKNOWN_MSG.formatted(section));
     }
 }

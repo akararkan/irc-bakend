@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.dto.request;
 
 import ak.dev.irc.app.chat.dto.ChannelSettings;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -8,10 +9,10 @@ import lombok.Data;
 @Data
 public class UpdateChannelRequest {
 
-    @Size(max = 120, message = "channel title must not exceed 120 characters")
+    @Size(max = 120, message = ChannelStreamMessages.VAL_CHANNEL_TITLE_MAX)
     private String title;
 
-    @Size(max = 500, message = "channel description must not exceed 500 characters")
+    @Size(max = 500, message = ChannelStreamMessages.VAL_CHANNEL_DESCRIPTION_MAX)
     private String description;
 
     /** New public @handle. Ignored unless the channel is (or becomes) public. */

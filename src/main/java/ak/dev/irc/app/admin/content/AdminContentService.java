@@ -5,6 +5,7 @@ import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.post.cassandra.entity.CommentByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.CommentLookupEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
@@ -83,9 +84,8 @@ public class AdminContentService {
     public List<AdminPostRow> postsByAuthor(UUID authorId, String status, Instant cursor, int pageSize) {
         if (authorId == null) {
             throw new BadRequestException(
-                    "authorId is required — posts are partitioned by author. "
-                            + "Use search or reports to locate a post id directly.",
-                    "AUTHOR_SCOPE_REQUIRED");
+                    AdminContentMessages.AUTHOR_SCOPE_REQUIRED_MSG,
+                    AdminContentMessages.AUTHOR_SCOPE_REQUIRED);
         }
         var rows = cursor == null
                 ? postByAuthorRepo.firstPage(authorId, pageSize)
@@ -130,7 +130,7 @@ public class AdminContentService {
         moderationRecorder.decision("POST", postId.toString(), "ADMIN_POST_REMOVE",
                 reason, reportId, "type=" + post.getPostType());
         adminAuditor.record(AuditOperation.UPDATE, "Post", postId, "ADMIN_POST_REMOVE", reason);
-        notifyAuthor(post.getAuthorId(), "Your post was removed",
+        notifyAuthor(post.getAuthorId(), AdminContentMessages.NOTIF_POST_REMOVED_TITLE,
                 "A post of yours was removed for a policy violation"
                         + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "") + ".");
     }
@@ -138,7 +138,8 @@ public class AdminContentService {
     public void restorePost(UUID postId) {
         PostByIdEntity post = requirePost(postId);
         if (!"REMOVED".equalsIgnoreCase(post.getStatus())) {
-            throw new BadRequestException("Only REMOVED posts can be restored.", "POST_NOT_REMOVED");
+            throw new BadRequestException(AdminContentMessages.POST_NOT_REMOVED_MSG,
+                    AdminContentMessages.POST_NOT_REMOVED);
         }
         post.setStatus("PUBLISHED");
         post.setUpdatedAt(Instant.now());
@@ -167,8 +168,8 @@ public class AdminContentService {
 
         moderationRecorder.decision("POST", postId.toString(), "ADMIN_POST_RESTORE", null, null, null);
         adminAuditor.record(AuditOperation.UPDATE, "Post", postId, "ADMIN_POST_RESTORE");
-        notifyAuthor(post.getAuthorId(), "Your post was restored",
-                "A previously removed post of yours has been restored.");
+        notifyAuthor(post.getAuthorId(), AdminContentMessages.NOTIF_POST_RESTORED_TITLE,
+                AdminContentMessages.NOTIF_POST_RESTORED_BODY);
     }
 
     // ── comment / story deletion (irreversible — snapshot first) ────────
@@ -200,7 +201,7 @@ public class AdminContentService {
                 reason, reportId, null);
         adminAuditor.record(AuditOperation.DELETE, "PostComment", commentId,
                 "ADMIN_COMMENT_DELETE", reason);
-        notifyAuthor(meta.getAuthorId(), "Your comment was removed",
+        notifyAuthor(meta.getAuthorId(), AdminContentMessages.NOTIF_COMMENT_REMOVED_TITLE,
                 "A comment of yours was removed for a policy violation"
                         + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "") + ".");
     }
@@ -238,7 +239,7 @@ public class AdminContentService {
         moderationRecorder.decision("STORY", storyId.toString(), "ADMIN_STORY_DELETE",
                 reason, reportId, "highlightPinsRemoved=" + pinsRemoved);
         adminAuditor.record(AuditOperation.DELETE, "Story", storyId, "ADMIN_STORY_DELETE", reason);
-        notifyAuthor(authorId, "Your story was removed",
+        notifyAuthor(authorId, AdminContentMessages.NOTIF_STORY_REMOVED_TITLE,
                 "A story of yours was removed for a policy violation"
                         + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "") + ".");
     }

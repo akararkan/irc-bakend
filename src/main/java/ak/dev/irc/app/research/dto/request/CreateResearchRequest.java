@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.dto.request;
 
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import ak.dev.irc.app.common.text.BodyFormat;
 import ak.dev.irc.app.research.enums.ResearchVisibility;
 import jakarta.validation.Valid;
@@ -31,16 +32,16 @@ public record CreateResearchRequest(
 
         // ── Core ─────────────────────────────────────────────────────────────
 
-        @NotBlank(message = "Title is required")
-        @Size(max = 500, message = "Title must not exceed 500 characters")
+        @NotBlank(message = ResearchMessages.VAL_TITLE_REQUIRED)
+        @Size(max = 500, message = ResearchMessages.VAL_TITLE_MAX_500)
         String title,
 
-        @NotBlank(message = "Description is required")
-        @Size(max = 50000, message = "Description must not exceed 50 000 characters")
+        @NotBlank(message = ResearchMessages.VAL_DESCRIPTION_REQUIRED)
+        @Size(max = 50000, message = ResearchMessages.VAL_DESCRIPTION_MAX_50000)
         String description,
 
-        @NotBlank(message = "Abstract is required")
-        @Size(max = 5000, message = "Abstract must not exceed 5 000 characters")
+        @NotBlank(message = ResearchMessages.VAL_ABSTRACT_REQUIRED)
+        @Size(max = 5000, message = ResearchMessages.VAL_ABSTRACT_MAX_5000)
         String abstractText,
 
         /**
@@ -53,10 +54,10 @@ public record CreateResearchRequest(
          */
         BodyFormat bodyFormat,
 
-        @Size(max = 2000, message = "Keywords must not exceed 2 000 characters")
+        @Size(max = 2000, message = ResearchMessages.VAL_KEYWORDS_MAX_2000)
         String keywords,
 
-        @Size(max = 5000, message = "Citation must not exceed 5 000 characters")
+        @Size(max = 5000, message = ResearchMessages.VAL_CITATION_MAX_5000)
         String citation,
 
         // ── Publication settings ──────────────────────────────────────────────
@@ -72,8 +73,8 @@ public record CreateResearchRequest(
 
         // ── Tags ─────────────────────────────────────────────────────────────
 
-        @NotEmpty(message = "At least one tag is required")
-        @Size(max = 30, message = "Maximum 30 tags allowed")
+        @NotEmpty(message = ResearchMessages.VAL_TAGS_REQUIRED)
+        @Size(max = 30, message = ResearchMessages.VAL_TAGS_MAX_30)
         List<@NotBlank @Size(max = 100) String> tags,
 
         // ── Inline sources ────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ package ak.dev.irc.app.admin.discovery;
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.post.cassandra.service.FriendSuggestionService;
 import ak.dev.irc.app.settings.consent.service.ConsentService;
 import ak.dev.irc.app.settings.discovery.qr.repository.QrTokenRepository;
@@ -94,10 +95,9 @@ public class AdminDiscoveryController {
         body.put("ownersNearCap", nearCap);
         body.put("capPerSync", 5000);
         body.put("notes", List.of(
-                "Hashes are SHA-256 of phone/email — the server never sees raw contacts.",
-                "Identity-hash backfill makes every active account matchable-by-default; "
-                        + "discovery flags gate whether a match is surfaced.",
-                "The contact:sync rate limit (3/24h) FAILS OPEN if Redis is down."));
+                AdminContentMessages.NOTE_CONTACT_HASHES_SHA256,
+                AdminContentMessages.NOTE_IDENTITY_HASH_BACKFILL,
+                AdminContentMessages.NOTE_CONTACT_SYNC_RATE_LIMIT));
         return ResponseEntity.ok(body);
     }
 
@@ -156,8 +156,7 @@ public class AdminDiscoveryController {
             body.put("qrTokenActive", true);
             body.put("qrRotatedAt", qr.getRotatedAt());
         }, () -> body.put("qrTokenActive", false));
-        body.put("knownSeam", "QR-resolve does not yet consult discover.byQr — "
-                + "a rotated flag does not invalidate resolves; rotation (below) does.");
+        body.put("knownSeam", AdminContentMessages.WARN_QR_RESOLVE_SEAM);
         return ResponseEntity.ok(body);
     }
 

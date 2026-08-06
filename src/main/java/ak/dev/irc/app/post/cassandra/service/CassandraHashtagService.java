@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.common.tag.ContentType;
 import ak.dev.irc.app.common.tag.service.ContentTagService;
@@ -195,9 +196,9 @@ public class CassandraHashtagService {
                     batch.add(new CassandraNotificationService.DeliverRequest(
                             mentionedId,
                             NotificationKind.USER_MENTIONED,
-                            "You were mentioned",
-                            authorLabel + " mentioned you: \""
-                                    + (preview == null ? "" : preview) + "\"",
+                            PostMessages.NOTIF_USER_MENTIONED_TITLE,
+                            PostMessages.NOTIF_USER_MENTIONED_BODY.formatted(
+                                    authorLabel, preview == null ? "" : preview),
                             authorId,
                             "Post", postId,
                             "USER_MENTIONED:" + postId + ":" + mentionedId

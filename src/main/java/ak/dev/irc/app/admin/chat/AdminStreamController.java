@@ -18,6 +18,7 @@ import ak.dev.irc.app.chat.service.RecordingStorageService;
 import ak.dev.irc.app.chat.service.StreamStageService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.user.service.NotificationService;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -176,8 +177,8 @@ public class AdminStreamController {
         body.put("fleetBytes", fleetBytes);
         body.put("rows", rows);
         if (ids.size() > cap) {
-            body.put("note", "Detailed rows capped at " + cap + " of " + ids.size()
-                    + " recordings; fleetBytes still covers everything.");
+            body.put("note", AdminOpsMessages.NOTE_RECORDINGS_DETAIL_CAPPED
+                    .formatted(cap, ids.size()));
         }
         return ResponseEntity.ok(body);
     }
@@ -212,7 +213,8 @@ public class AdminStreamController {
                                           @RequestBody(required = false) ReasonBody body) {
         LiveStream s = require(id);
         if (s.getStatus() != LiveStreamStatus.LIVE) {
-            throw new BadRequestException("Stream is not live.", "STREAM_NOT_LIVE");
+            throw new BadRequestException(AdminOpsMessages.STREAM_NOT_LIVE_MSG,
+                    AdminOpsMessages.STREAM_NOT_LIVE);
         }
         mediaControlClient.kickPublisher(id.toString());
         for (StreamGuest g : guestRepository.findByStreamIdAndStatusOrderByJoinedAtAsc(
@@ -229,7 +231,7 @@ public class AdminStreamController {
                 "peakViewers=" + s.getPeakViewerCount());
         adminAuditor.record(AuditOperation.UPDATE, "LiveStream", id,
                 "ADMIN_STREAM_FORCE_STOP", reason);
-        notifyHost(s, "Your live stream was ended by moderation",
+        notifyHost(s, AdminOpsMessages.NOTIF_STREAM_FORCE_STOP_TITLE,
                 "Your live stream \"" + s.getTitle() + "\" was ended by platform moderation"
                         + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "") + ".");
         return ResponseEntity.noContent().build();
@@ -252,9 +254,8 @@ public class AdminStreamController {
         mediaControlClient.kickPublisher(id.toString());
         adminAuditor.record(AuditOperation.UPDATE, "LiveStream", id,
                 "ADMIN_STREAM_KEY_ROTATE", body != null ? body.reason() : null);
-        notifyHost(s, "Your stream key was rotated",
-                "For security, the stream key of \"" + s.getTitle() + "\" was rotated. "
-                        + "Your new key: " + newKey);
+        notifyHost(s, AdminOpsMessages.NOTIF_STREAM_KEY_ROTATED_TITLE,
+                AdminOpsMessages.NOTIF_STREAM_KEY_ROTATED_BODY.formatted(s.getTitle(), newKey));
         return ResponseEntity.noContent().build();
     }
 
@@ -312,7 +313,8 @@ public class AdminStreamController {
         try {
             return LiveStreamStatus.valueOf(raw.trim().toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new BadRequestException("Unknown status. Allowed: LIVE, ENDED.", "INVALID_STATUS");
+            throw new BadRequestException(AdminOpsMessages.INVALID_STATUS_STREAM_MSG,
+                    AdminOpsMessages.INVALID_STATUS);
         }
     }
 }

@@ -3,6 +3,7 @@ package ak.dev.irc.app.admin.notification;
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService.DeliverRequest;
@@ -57,12 +58,13 @@ public class AnnouncementService {
     public ComposeResult compose(ComposeRequest req) {
         if (req.title() == null || req.title().isBlank()
                 || req.body() == null || req.body().isBlank()) {
-            throw new BadRequestException("title and body are required.", "INVALID_INPUT");
+            throw new BadRequestException(AdminOpsMessages.INVALID_INPUT_TITLE_BODY_MSG,
+                    AdminOpsMessages.INVALID_INPUT);
         }
         if (req.scheduledAt() != null && req.scheduledAt().isBefore(LocalDateTime.now())) {
             throw new BadRequestException(
-                    "scheduledAt is in the past — omit it to send immediately.",
-                    "INVALID_SCHEDULE");
+                    AdminOpsMessages.INVALID_SCHEDULE_PAST_MSG,
+                    AdminOpsMessages.INVALID_SCHEDULE);
         }
         long audience = countAudience(req);
         if (req.dryRun()) {
@@ -71,9 +73,9 @@ public class AnnouncementService {
         long total = Math.max(1, userRepository.countByDeletedAtIsNull());
         if (audience * 2 >= total && !req.confirmLargeAudience()) {
             throw new BadRequestException(
-                    "This announcement targets " + audience + " of " + total
-                            + " users — set confirmLargeAudience=true to proceed.",
-                    "LARGE_AUDIENCE_CONFIRMATION_REQUIRED");
+                    AdminOpsMessages.LARGE_AUDIENCE_CONFIRMATION_REQUIRED_MSG
+                            .formatted(audience, total),
+                    AdminOpsMessages.LARGE_AUDIENCE_CONFIRMATION_REQUIRED);
         }
 
         boolean scheduled = req.scheduledAt() != null;
@@ -106,8 +108,9 @@ public class AnnouncementService {
                 .orElseThrow(() -> new ak.dev.irc.app.common.exception.ResourceNotFoundException(
                         "Announcement", "id", announcementId));
         if (a.getStatus() != PlatformAnnouncement.Status.SCHEDULED) {
-            throw new BadRequestException("Only SCHEDULED announcements can be cancelled "
-                    + "(this one is " + a.getStatus() + ").", "ANNOUNCEMENT_NOT_SCHEDULED");
+            throw new BadRequestException(
+                    AdminOpsMessages.ANNOUNCEMENT_NOT_SCHEDULED_MSG.formatted(a.getStatus()),
+                    AdminOpsMessages.ANNOUNCEMENT_NOT_SCHEDULED);
         }
         a.setStatus(PlatformAnnouncement.Status.CANCELLED);
         a.setCompletedAt(LocalDateTime.now());

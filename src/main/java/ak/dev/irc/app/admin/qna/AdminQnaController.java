@@ -6,6 +6,7 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.qna.entity.Question;
 import ak.dev.irc.app.qna.entity.QuestionAnswer;
@@ -144,8 +145,9 @@ public class AdminQnaController {
         try {
             return QuestionStatus.valueOf(raw.trim().toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new BadRequestException("Unknown status. Allowed: "
-                    + java.util.Arrays.toString(QuestionStatus.values()), "INVALID_STATUS");
+            throw new BadRequestException(AdminContentMessages.INVALID_STATUS_MSG.formatted(
+                    java.util.Arrays.toString(QuestionStatus.values())),
+                    AdminContentMessages.INVALID_STATUS);
         }
     }
 }

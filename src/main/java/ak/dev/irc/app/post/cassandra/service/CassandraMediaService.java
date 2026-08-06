@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.MediaByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.repository.MediaByPostRepository;
@@ -40,7 +41,7 @@ public class CassandraMediaService {
         PostByIdEntity post = postByIdRepo.findById(postId)
                 .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
         if (actorId == null || !actorId.equals(post.getAuthorId())) {
-            throw new SecurityException("Not the post author");
+            throw new SecurityException(PostMessages.NOT_POST_AUTHOR_MSG);
         }
     }
 

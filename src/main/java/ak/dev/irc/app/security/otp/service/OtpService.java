@@ -2,6 +2,7 @@ package ak.dev.irc.app.security.otp.service;
 
 import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.crypto.Hashing;
 import ak.dev.irc.app.security.otp.OtpProperties;
 import ak.dev.irc.app.security.otp.entity.OtpChallenge;
@@ -88,8 +89,8 @@ public class OtpService {
                 .deviceId(deviceId)
                 .build());
 
-        smsSender.send(e164, "Your IRC verification code is " + code
-                + ". It expires in " + (props.getTtlSeconds() / 60) + " minutes.");
+        smsSender.send(e164, SecurityMessages.NOTIF_OTP_SMS
+                .formatted(code, props.getTtlSeconds() / 60));
         log.debug("[OTP] issued purpose={} destHash={}…", p, destHash.substring(0, 8));
         return e164;
     }
@@ -148,6 +149,6 @@ public class OtpService {
     }
 
     private BadRequestException invalid() {
-        return new BadRequestException("Invalid or expired verification code.", "OTP_INVALID");
+        return new BadRequestException(SecurityMessages.OTP_INVALID_MSG, SecurityMessages.OTP_INVALID);
     }
 }

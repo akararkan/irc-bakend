@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.dto.request;
 
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -17,10 +18,10 @@ import jakarta.validation.constraints.Size;
  */
 public record MediaUploadMetadata(
 
-        @Size(max = 500, message = "Caption must not exceed 500 characters")
+        @Size(max = 500, message = ResearchMessages.VAL_CAPTION_MAX_500)
         String caption,
 
-        @Size(max = 300, message = "Alt text must not exceed 300 characters")
+        @Size(max = 300, message = ResearchMessages.VAL_ALT_TEXT_MAX_300)
         String altText,
 
         /**

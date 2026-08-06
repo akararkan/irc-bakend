@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.privacy.service;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.privacy.entity.HiddenKeyword;
 import ak.dev.irc.app.settings.privacy.repository.HiddenKeywordRepository;
 import lombok.RequiredArgsConstructor;
@@ -37,19 +38,19 @@ public class HiddenKeywordService {
     @Transactional
     public HiddenKeyword add(UUID userId, String keyword) {
         if (keyword == null || keyword.isBlank()) {
-            throw new BadRequestException("Keyword must not be blank.");
+            throw new BadRequestException(SettingsMessages.KEYWORD_BLANK_MSG);
         }
         String display = keyword.trim();
         if (display.length() > 100) display = display.substring(0, 100);
         String norm = normalizer.normalize(display);
-        if (norm.isEmpty()) throw new BadRequestException("Keyword normalizes to empty.");
+        if (norm.isEmpty()) throw new BadRequestException(SettingsMessages.KEYWORD_NORMALIZES_EMPTY_MSG);
         if (repo.existsByUserIdAndKeywordNormalized(userId, norm)) {
             return repo.findByUserIdOrderByCreatedAtDesc(userId).stream()
                     .filter(k -> k.getKeywordNormalized().equals(norm))
                     .findFirst().orElseThrow();
         }
         if (repo.findByUserIdOrderByCreatedAtDesc(userId).size() >= MAX_KEYWORDS) {
-            throw new BadRequestException("Hidden-keyword limit reached (" + MAX_KEYWORDS + ").");
+            throw new BadRequestException(SettingsMessages.KEYWORD_LIMIT_REACHED_MSG.formatted(MAX_KEYWORDS));
         }
         return repo.save(HiddenKeyword.builder()
                 .userId(userId)

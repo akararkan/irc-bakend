@@ -7,6 +7,7 @@ import ak.dev.irc.app.chat.service.PresenceService;
 import ak.dev.irc.app.chat.service.TypingService;
 import ak.dev.irc.app.chat.service.UnreadBadgeCache;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import ak.dev.irc.app.user.entity.User;
@@ -66,7 +67,7 @@ public class MessagingStreamController {
             try {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType(MediaType.TEXT_PLAIN_VALUE);
-                response.getWriter().write("Authentication required. Pass access token as ?token=<jwt>.");
+                response.getWriter().write(ChatMessages.SSE_TOKEN_REQUIRED_MSG);
                 response.flushBuffer();
             } catch (Exception ignored) { /* connection closing anyway */ }
             return null;
@@ -128,7 +129,7 @@ public class MessagingStreamController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChatMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

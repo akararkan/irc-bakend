@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ShareByPostEntity;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.repository.PostByIdRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
@@ -77,8 +78,8 @@ public class CassandraShareService {
             notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
                     post.getAuthorId(),
                     NotificationKind.POST_SHARED,
-                    "Your post was shared",
-                    actor + " shared your post",
+                    PostMessages.NOTIF_POST_SHARED_TITLE,
+                    PostMessages.NOTIF_POST_SHARED_BODY.formatted(actor),
                     actorId,
                     "Post", postId,
                     "POST_SHARED:" + postId

@@ -16,6 +16,7 @@ import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -63,7 +64,7 @@ public class CassandraStoryController {
     @PostMapping(value = "/stories", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<StoryByAuthorEntity> create(@RequestBody CreateStoryRequest req,
                                                       @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkSocial(user.getId());
         return ResponseEntity.ok(storyService.createStory(
                 user.getId(), req.storyType(), req.visibility(),
@@ -86,7 +87,7 @@ public class CassandraStoryController {
             @RequestPart(value = "thumbnail", required = false) MultipartFile thumbnail,
             @AuthenticationPrincipal User user) {
 
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         // Throttle BEFORE uploading to R2 so a banned user can't burn storage bandwidth.
         rateLimiter.checkSocial(user.getId());
 
@@ -119,7 +120,7 @@ public class CassandraStoryController {
     @DeleteMapping("/stories/{storyId}")
     public ResponseEntity<Void> delete(@PathVariable UUID storyId,
                                        @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         storyService.deleteStory(storyId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -128,7 +129,7 @@ public class CassandraStoryController {
     @PostMapping("/stories/{storyId}/views")
     public ResponseEntity<Void> recordView(@PathVariable UUID storyId,
                                            @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         storyService.recordView(storyId, user.getId());
         return ResponseEntity.accepted().build();
     }
@@ -138,7 +139,7 @@ public class CassandraStoryController {
     public List<StoryViewEntity> viewers(@PathVariable UUID storyId,
                                          @RequestParam(defaultValue = "50") int pageSize,
                                          @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return storyService.viewersFor(storyId, user.getId(), pageSize);
     }
 
@@ -171,7 +172,7 @@ public class CassandraStoryController {
             } catch (Exception ignored) { /* treated as anonymous below */ }
         }
         if (viewerId == null) throw new UnauthorizedException(
-                "Authentication required. Pass access token as ?token=<jwt>.");
+                PostMessages.AUTH_REQUIRED_SSE_MSG);
 
         // Disable proxy buffering so events stream immediately.
         response.setHeader("X-Accel-Buffering", "no");
@@ -184,14 +185,14 @@ public class CassandraStoryController {
     /** Owner = the authenticated user. The close-friends list is always "mine". */
     @GetMapping("/close-friends")
     public ResponseEntity<List<CloseFriendEntity>> list(@AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return ResponseEntity.ok(closeFriendsService.listFor(user.getId()));
     }
 
     @PostMapping("/close-friends")
     public ResponseEntity<Void> add(@RequestParam UUID friendId,
                                     @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         closeFriendsService.add(user.getId(), friendId);
         return ResponseEntity.noContent().build();
     }
@@ -199,7 +200,7 @@ public class CassandraStoryController {
     @DeleteMapping("/close-friends")
     public ResponseEntity<Void> remove(@RequestParam UUID friendId,
                                        @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         closeFriendsService.remove(user.getId(), friendId);
         return ResponseEntity.noContent().build();
     }
@@ -221,7 +222,7 @@ public class CassandraStoryController {
     public ResponseEntity<StoryPollEntity> createPoll(@PathVariable UUID storyId,
                                                       @RequestBody CreatePollRequest req,
                                                       @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return ResponseEntity.ok(pollService.createPoll(storyId, user.getId(),
                 req.question(), req.optionA(), req.optionB()));
     }
@@ -239,7 +240,7 @@ public class CassandraStoryController {
     public ResponseEntity<CassandraStoryPollService.CastVoteResult> vote(@PathVariable UUID pollId,
                                                                          @RequestParam String choice,
                                                                          @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return ResponseEntity.ok(pollService.castVote(pollId, user.getId(), choice));
     }
 
@@ -283,12 +284,12 @@ public class CassandraStoryController {
                                                 @PathVariable String choice,
                                                 @RequestParam(defaultValue = "50") int pageSize,
                                                 @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         UUID expectedAuthor = pollService.findOwnership(pollId)
                 .map(p -> p.getAuthorId()).orElse(null);
         if (expectedAuthor == null || !expectedAuthor.equals(user.getId())) {
             throw new ak.dev.irc.app.common.exception.ForbiddenException(
-                    "Only the poll's author can list voters");
+                    PostMessages.POLL_VOTERS_AUTHOR_ONLY_MSG);
         }
         return pollService.votersFor(pollId, choice, pageSize);
     }

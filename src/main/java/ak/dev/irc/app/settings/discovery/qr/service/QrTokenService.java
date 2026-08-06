@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.discovery.qr.service;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.discovery.qr.entity.QrToken;
 import ak.dev.irc.app.settings.discovery.qr.repository.QrTokenRepository;
 import lombok.RequiredArgsConstructor;
@@ -53,7 +54,7 @@ public class QrTokenService {
     public UUID resolve(String opaque) {
         return repo.findByOpaqueToken(opaque)
                 .map(QrToken::getUserId)
-                .orElseThrow(() -> new ResourceNotFoundException("QR code is invalid or has been rotated."));
+                .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.QR_CODE_INVALID_MSG));
     }
 
     /** Generate a token guaranteed unique against the current table. */

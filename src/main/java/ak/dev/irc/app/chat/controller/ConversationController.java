@@ -6,6 +6,7 @@ import ak.dev.irc.app.chat.enums.ConversationType;
 import ak.dev.irc.app.chat.service.ConversationService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -88,7 +89,7 @@ public class ConversationController {
                     .body(conversationService.createGroup(me, req));
         }
         if (req.getRecipientId() == null) {
-            throw new BadRequestException("recipientId is required for a DIRECT conversation.");
+            throw new BadRequestException(ChatMessages.DIRECT_RECIPIENT_REQUIRED_MSG);
         }
         return ResponseEntity.ok(conversationService.createDirect(me, req.getRecipientId()));
     }
@@ -161,7 +162,7 @@ public class ConversationController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChatMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

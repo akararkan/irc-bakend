@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -11,7 +12,7 @@ import java.util.UUID;
 @Data
 public class AddMembersRequest {
 
-    @NotEmpty(message = "userIds must not be empty")
-    @Size(max = 100, message = "add at most 100 members per request")
+    @NotEmpty(message = ChatMessages.VAL_USER_IDS_REQUIRED)
+    @Size(max = 100, message = ChatMessages.VAL_ADD_MEMBERS_MAX)
     private List<UUID> userIds;
 }

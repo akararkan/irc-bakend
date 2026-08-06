@@ -4,6 +4,7 @@ import ak.dev.irc.app.post.cassandra.entity.CommentByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.CommentLookupEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReplyByCommentEntity;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.repository.CommentByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentCounterRepository;
@@ -122,7 +123,7 @@ public class CassandraCommentService {
         }
         CommentLookupEntity target = lookupRepo.findById(targetCommentId).orElse(null);
         if (target == null) {
-            throw new IllegalArgumentException("Comment not found: " + targetCommentId);
+            throw new IllegalArgumentException(PostMessages.COMMENT_NOT_FOUND_MSG.formatted(targetCommentId));
         }
 
         if (dedupGuard.isDuplicate("post-reply", targetCommentId, authorId, text)) {
@@ -172,7 +173,7 @@ public class CassandraCommentService {
     public void editComment(UUID commentId, UUID authorId, String newText) {
         CommentLookupEntity meta = requireLookup(commentId);
         if (!meta.getAuthorId().equals(authorId)) {
-            throw new SecurityException("Not the author");
+            throw new SecurityException(PostMessages.NOT_AUTHOR_MSG);
         }
         // Pre-edit text so the mention scan only pings NEWLY added handles.
         String oldText;
@@ -233,7 +234,7 @@ public class CassandraCommentService {
     public void deleteComment(UUID commentId, UUID authorId) {
         CommentLookupEntity meta = requireLookup(commentId);
         if (!meta.getAuthorId().equals(authorId)) {
-            throw new SecurityException("Not the author");
+            throw new SecurityException(PostMessages.NOT_AUTHOR_MSG);
         }
 
         if (Boolean.TRUE.equals(meta.getReply())) {
@@ -274,7 +275,7 @@ public class CassandraCommentService {
 
     private CommentLookupEntity requireLookup(UUID commentId) {
         return lookupRepo.findById(commentId)
-                .orElseThrow(() -> new IllegalArgumentException("Comment not found: " + commentId));
+                .orElseThrow(() -> new IllegalArgumentException(PostMessages.COMMENT_NOT_FOUND_MSG.formatted(commentId)));
     }
 
     // Both dedup helpers scan the NEWEST rows — the duplicate we're trying to
@@ -313,8 +314,8 @@ public class CassandraCommentService {
             return new CassandraNotificationService.DeliverRequest(
                     post.getAuthorId(),
                     NotificationKind.POST_COMMENTED,
-                    "New comment on your post",
-                    actor + " commented: \"" + previewSnap + "\"",
+                    PostMessages.NOTIF_POST_COMMENTED_TITLE,
+                    PostMessages.NOTIF_POST_COMMENTED_BODY.formatted(actor, previewSnap),
                     actorId,
                     "Post", postId,
                     "POST_COMMENTED:" + postId
@@ -332,8 +333,8 @@ public class CassandraCommentService {
             return new CassandraNotificationService.DeliverRequest(
                     parent.getAuthorId(),
                     NotificationKind.POST_COMMENT_REPLIED,
-                    "Someone replied to your comment",
-                    actor + " replied: \"" + previewSnap + "\"",
+                    PostMessages.NOTIF_POST_COMMENT_REPLIED_TITLE,
+                    PostMessages.NOTIF_POST_COMMENT_REPLIED_BODY.formatted(actor, previewSnap),
                     actorId,
                     "Comment", replyId,
                     "POST_COMMENT_REPLIED:" + parentCommentId

@@ -25,6 +25,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -78,11 +79,11 @@ public class ChannelService {
 
     @Transactional
     public ChannelResponse create(UUID ownerId, CreateChannelRequest req) {
-        if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException("A channel requires a title.");
+        if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.CHANNEL_TITLE_REQUIRED_MSG);
         String handle = normalizeHandle(req.getHandle());
         if (req.isPublicChannel()) {
-            if (handle == null) throw new BadRequestException("A public channel requires a @handle.");
-            if (conversationRepo.existsByHandle(handle)) throw new BadRequestException("That @handle is already taken.");
+            if (handle == null) throw new BadRequestException(ChannelStreamMessages.CHANNEL_HANDLE_REQUIRED_MSG);
+            if (conversationRepo.existsByHandle(handle)) throw new BadRequestException(ChannelStreamMessages.CHANNEL_HANDLE_TAKEN_MSG);
         }
         GroupSettings settings = GroupSettings.builder()
                 .sendMode(MemberScope.ADMINS_ONLY)            // broadcast: only admins post
@@ -114,10 +115,10 @@ public class ChannelService {
     public ChannelResponse update(UUID channelId, UUID actorId, UpdateChannelRequest req) {
         Conversation c = requireChannel(channelId);
         requireRight(channelId, actorId, AdminRights::isCanChangeInfo,
-                "You cannot edit this channel's info.");
+                ChannelStreamMessages.CHANNEL_EDIT_INFO_FORBIDDEN_MSG);
 
         if (req.getTitle() != null) {
-            if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException("Title cannot be blank.");
+            if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.TITLE_BLANK_MSG);
             c.setTitle(req.getTitle().trim());
         }
         if (req.getDescription() != null) {
@@ -130,9 +131,9 @@ public class ChannelService {
             boolean toPublic = req.getPublicChannel() != null ? req.getPublicChannel() : c.isPublicChannel();
             if (toPublic) {
                 String handle = req.getHandle() != null ? normalizeHandle(req.getHandle()) : c.getHandle();
-                if (handle == null) throw new BadRequestException("A public channel requires a @handle.");
+                if (handle == null) throw new BadRequestException(ChannelStreamMessages.CHANNEL_HANDLE_REQUIRED_MSG);
                 if (!handle.equals(c.getHandle()) && conversationRepo.existsByHandle(handle)) {
-                    throw new BadRequestException("That @handle is already taken.");
+                    throw new BadRequestException(ChannelStreamMessages.CHANNEL_HANDLE_TAKEN_MSG);
                 }
                 c.setHandle(handle);
                 c.setPublicChannel(true);
@@ -177,7 +178,7 @@ public class ChannelService {
         Conversation c = requireChannel(channelId);
         requireRight(channelId, actorId, AdminRights::isCanChangeInfo,
                 "You cannot change this channel's " + (avatar ? "photo." : "cover."));
-        if (file == null || file.isEmpty()) throw new BadRequestException("Provide an image file.");
+        if (file == null || file.isEmpty()) throw new BadRequestException(ChannelStreamMessages.CHANNEL_IMAGE_FILE_REQUIRED_MSG);
         String mime = file.getContentType();
         if (mime == null || !mime.startsWith("image/")) {
             throw new BadRequestException("The channel " + (avatar ? "photo" : "cover") + " must be an image.");
@@ -250,11 +251,12 @@ public class ChannelService {
     public ChannelAdminResponse putAdmin(UUID channelId, UUID actorId, UUID targetId, ChannelAdminRequest req) {
         requireChannel(channelId);
         ConversationMember actor = requireRight(channelId, actorId, AdminRights::isCanAddAdmins,
-                "You cannot manage admins in this channel.");
+                ChannelStreamMessages.CHANNEL_MANAGE_ADMINS_FORBIDDEN_MSG);
         ConversationMember target = memberRepo.findMember(channelId, targetId)
                 .filter(ConversationMember::isActive)
                 .orElseThrow(() -> new ResourceNotFoundException("Subscriber", "userId", targetId));
-        if (target.isOwner()) throw new ForbiddenException("The owner's rights cannot be edited.", "NOT_OWNER");
+        if (target.isOwner()) throw new ForbiddenException(
+                ChannelStreamMessages.OWNER_RIGHTS_IMMUTABLE_MSG, ChannelStreamMessages.NOT_OWNER);
         if (!actor.isOwner() && target.getRole() == MemberRole.ADMIN && !actorId.equals(targetId)) {
             // Admins with canAddAdmins may promote members and edit non-owner
             // admins; they can never touch the owner (handled above).
@@ -278,10 +280,11 @@ public class ChannelService {
     public void removeAdmin(UUID channelId, UUID actorId, UUID targetId) {
         requireChannel(channelId);
         requireRight(channelId, actorId, AdminRights::isCanAddAdmins,
-                "You cannot manage admins in this channel.");
+                ChannelStreamMessages.CHANNEL_MANAGE_ADMINS_FORBIDDEN_MSG);
         ConversationMember target = memberRepo.findMember(channelId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
-        if (target.isOwner()) throw new ForbiddenException("The owner cannot be demoted.", "NOT_OWNER");
+        if (target.isOwner()) throw new ForbiddenException(
+                ChannelStreamMessages.OWNER_NOT_DEMOTABLE_MSG, ChannelStreamMessages.NOT_OWNER);
         if (target.getRole() != MemberRole.ADMIN) return; // idempotent
         target.setRole(MemberRole.MEMBER);
         target.setAdminRights(null);
@@ -294,7 +297,8 @@ public class ChannelService {
     @Transactional
     public ChannelResponse subscribe(UUID channelId, UUID userId) {
         Conversation c = requireChannel(channelId);
-        if (!c.isPublicChannel()) throw new ForbiddenException("This channel is private.", "ACCESS_FORBIDDEN");
+        if (!c.isPublicChannel()) throw new ForbiddenException(
+                ChannelStreamMessages.CHANNEL_PRIVATE_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         ConversationMember existing = memberRepo.findMember(channelId, userId).orElse(null);
         if (existing != null && existing.isActive()) return toResponse(c, existing, false); // idempotent
 
@@ -330,7 +334,8 @@ public class ChannelService {
         requireChannel(channelId);
         ConversationMember m = memberRepo.findMember(channelId, userId).orElse(null);
         if (m == null || !m.isActive()) return; // idempotent
-        if (m.isOwner()) throw new ForbiddenException("The owner cannot unsubscribe from their own channel.", "ACCESS_FORBIDDEN");
+        if (m.isOwner()) throw new ForbiddenException(
+                ChannelStreamMessages.OWNER_CANNOT_UNSUBSCRIBE_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         memberRepo.delete(m);
         conversationRepo.adjustMemberCount(channelId, -1);
         // Remaining members apply −1; the leaver's own tabs get it explicitly
@@ -430,7 +435,8 @@ public class ChannelService {
     private ConversationMember requireMember(UUID channelId, UUID userId) {
         return memberRepo.findMember(channelId, userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this channel.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChannelStreamMessages.NOT_CHANNEL_MEMBER_MSG, ChannelStreamMessages.NOT_A_MEMBER));
     }
 
     /** Owner, or an active admin holding {@code right}. */
@@ -438,7 +444,7 @@ public class ChannelService {
                                             Predicate<AdminRights> right, String message) {
         ConversationMember actor = memberRepo.findMember(channelId, actorId).orElse(null);
         if (!ChannelRights.can(actor, right)) {
-            throw new ForbiddenException(message, "ADMINS_ONLY");
+            throw new ForbiddenException(message, ChannelStreamMessages.ADMINS_ONLY);
         }
         return actor;
     }
@@ -506,7 +512,7 @@ public class ChannelService {
         if (h.startsWith("@")) h = h.substring(1);
         h = h.toLowerCase(Locale.ROOT);
         if (!h.matches("[a-z0-9_]{3,32}")) {
-            throw new BadRequestException("Handle must be 3–32 characters of a–z, 0–9 or underscore.");
+            throw new BadRequestException(ChannelStreamMessages.CHANNEL_HANDLE_INVALID_MSG);
         }
         return h;
     }

@@ -5,6 +5,7 @@ import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import ak.dev.irc.app.security.session.SessionDenylist;
 import ak.dev.irc.app.user.entity.User;
@@ -58,16 +59,18 @@ public class ImpersonationService {
     public ImpersonationGrant start(User admin, UUID targetUserId, String reason) {
         if (reason == null || reason.trim().length() < 10) {
             throw new BadRequestException(
-                    "A reason of at least 10 characters is required to impersonate.",
-                    "IMPERSONATION_REASON_REQUIRED");
+                    AdminOpsMessages.IMPERSONATION_REASON_REQUIRED_MSG,
+                    AdminOpsMessages.IMPERSONATION_REASON_REQUIRED);
         }
         if (admin.getId().equals(targetUserId)) {
-            throw new BadRequestException("You cannot impersonate yourself.", "SELF_ACTION_FORBIDDEN");
+            throw new BadRequestException(AdminOpsMessages.SELF_ACTION_FORBIDDEN_MSG,
+                    AdminOpsMessages.SELF_ACTION_FORBIDDEN);
         }
         User target = userRepository.findActiveById(targetUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", targetUserId));
         if (target.getRole() == Role.ADMIN) {
-            throw new ForbiddenException("Admins cannot be impersonated.", "IMPERSONATION_TARGET_ADMIN");
+            throw new ForbiddenException(AdminOpsMessages.IMPERSONATION_TARGET_ADMIN_MSG,
+                    AdminOpsMessages.IMPERSONATION_TARGET_ADMIN);
         }
 
         // One active impersonation per admin: starting a new one revokes the old.

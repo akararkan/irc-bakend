@@ -2,6 +2,7 @@ package ak.dev.irc.app.settings.privacy.service;
 
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.privacy.entity.PrivacyList;
 import ak.dev.irc.app.settings.privacy.entity.PrivacyListMember;
 import ak.dev.irc.app.settings.privacy.enums.PrivacyListType;
@@ -73,7 +74,7 @@ public class PrivacyListService {
         PrivacyList list = listRepo.findById(listId)
                 .orElseThrow(() -> new ResourceNotFoundException("PrivacyList", "id", listId));
         if (!list.getOwnerId().equals(ownerId)) {
-            throw new ForbiddenException("You do not own this list.", "NOT_LIST_OWNER");
+            throw new ForbiddenException(SettingsMessages.NOT_LIST_OWNER_MSG, SettingsMessages.NOT_LIST_OWNER);
         }
         return list;
     }

@@ -2,6 +2,7 @@ package ak.dev.irc.app.research.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.*;
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.rabbitmq.publisher.ResearchEventPublisher;
@@ -134,7 +135,7 @@ public class ResearchServiceImpl implements ResearchService {
                                    List<MultipartFile> files,
                                    UUID researcherId) {
 
-        if (req == null) throw new BadRequestException("Request body cannot be null", "NULL_REQUEST_BODY");
+        if (req == null) throw new BadRequestException(ResearchMessages.NULL_REQUEST_BODY_MSG, ResearchMessages.NULL_REQUEST_BODY);
 
         User researcher = findResearcherOrThrow(researcherId);
 
@@ -218,7 +219,7 @@ public class ResearchServiceImpl implements ResearchService {
                     String s3Key = uploadFileToS3(
                             file,
                             "research/" + research.getId() + "/media",
-                            "MEDIA_UPLOAD_FAILED");
+                            ResearchMessages.MEDIA_UPLOAD_FAILED);
                     uploadedS3Keys.add(s3Key);
 
                     String publicUrl = getPublicUrlFromS3(s3Key);
@@ -262,14 +263,14 @@ public class ResearchServiceImpl implements ResearchService {
 
         } catch (DataAccessException e) {
             rollbackS3Uploads(uploadedS3Keys);
-            throw new AppException("Failed to create research due to a database error",
-                    HttpStatus.INTERNAL_SERVER_ERROR, "DB_ERROR");
+            throw new AppException(ResearchMessages.DB_ERROR_MSG,
+                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.DB_ERROR);
 
         } catch (Exception e) {
             rollbackS3Uploads(uploadedS3Keys);
             log.error("Unexpected error during research creation: {}", e.getMessage(), e);
-            throw new AppException("An unexpected error occurred while creating the research",
-                    HttpStatus.INTERNAL_SERVER_ERROR, "UNEXPECTED_ERROR");
+            throw new AppException(ResearchMessages.UNEXPECTED_ERROR_MSG,
+                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.UNEXPECTED_ERROR);
         }
     }
 
@@ -302,7 +303,7 @@ public class ResearchServiceImpl implements ResearchService {
     })
     public ResearchResponse update(UUID researchId, UpdateResearchRequest req, UUID researcherId) {
         if (researchId == null || req == null)
-            throw new BadRequestException("Research ID and request body are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_RESEARCH_ID_AND_BODY_MSG, ResearchMessages.INVALID_INPUT);
 
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
 
@@ -372,11 +373,11 @@ public class ResearchServiceImpl implements ResearchService {
             return mapper.toResponse(research, researcherId);
 
         } catch (OptimisticLockingFailureException e) {
-            throw new ConflictException("Research was modified by another user. Please refresh and try again.");
+            throw new ConflictException(ResearchMessages.RESEARCH_MODIFIED_CONFLICT_MSG);
         } catch (DataIntegrityViolationException e) {
             String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
             if (msg.contains("slug")) throw new DuplicateResourceException("Research", "slug", "conflict");
-            throw new BadRequestException("Update violates data constraints", "CONSTRAINT_VIOLATION");
+            throw new BadRequestException(ResearchMessages.CONSTRAINT_VIOLATION_MSG, ResearchMessages.CONSTRAINT_VIOLATION);
         }
     }
 
@@ -426,7 +427,7 @@ public class ResearchServiceImpl implements ResearchService {
         if (req.visibility() != null)     research.setVisibility(req.visibility());
         if (req.scheduledPublishAt() != null) {
             if (req.scheduledPublishAt().isBefore(LocalDateTime.now()))
-                throw new BadRequestException("Scheduled publish time must be in the future", "INVALID_SCHEDULE");
+                throw new BadRequestException(ResearchMessages.INVALID_SCHEDULE_MSG, ResearchMessages.INVALID_SCHEDULE);
             research.setScheduledPublishAt(req.scheduledPublishAt());
         }
         if (req.commentsEnabled() != null)  research.setCommentsEnabled(req.commentsEnabled());
@@ -611,11 +612,11 @@ public class ResearchServiceImpl implements ResearchService {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
 
         if (research.isPublished())
-            throw new BadRequestException("Research is already published", "ALREADY_PUBLISHED");
+            throw new BadRequestException(ResearchMessages.ALREADY_PUBLISHED_MSG, ResearchMessages.ALREADY_PUBLISHED);
         if (research.getTitle() == null || research.getTitle().isBlank())
-            throw new BadRequestException("Cannot publish research without a title", "MISSING_TITLE");
+            throw new BadRequestException(ResearchMessages.MISSING_TITLE_PUBLISH_MSG, ResearchMessages.MISSING_TITLE);
         if (research.getAbstractText() == null || research.getAbstractText().isBlank())
-            throw new BadRequestException("Cannot publish research without an abstract", "MISSING_ABSTRACT");
+            throw new BadRequestException(ResearchMessages.MISSING_ABSTRACT_MSG, ResearchMessages.MISSING_ABSTRACT);
 
         research.setStatus(ResearchStatus.PUBLISHED);
         research.setPublishedAt(LocalDateTime.now());
@@ -667,7 +668,7 @@ public class ResearchServiceImpl implements ResearchService {
     public ResearchResponse archive(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         if (research.getStatus() == ResearchStatus.ARCHIVED)
-            throw new BadRequestException("Research is already archived", "ALREADY_ARCHIVED");
+            throw new BadRequestException(ResearchMessages.ALREADY_ARCHIVED_MSG, ResearchMessages.ALREADY_ARCHIVED);
         research.setStatus(ResearchStatus.ARCHIVED);
         research = researchRepo.save(research);
         researchSearch.deleteAsync(research.getId());
@@ -686,7 +687,7 @@ public class ResearchServiceImpl implements ResearchService {
     public ResearchResponse retract(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         if (!research.isPublished())
-            throw new BadRequestException("Only published research can be retracted", "NOT_PUBLISHED");
+            throw new BadRequestException(ResearchMessages.NOT_PUBLISHED_RETRACT_MSG, ResearchMessages.NOT_PUBLISHED);
         research.setStatus(ResearchStatus.RETRACTED);
         research = researchRepo.save(research);
         researchSearch.deleteAsync(research.getId());
@@ -705,7 +706,7 @@ public class ResearchServiceImpl implements ResearchService {
     public ResearchResponse unpublish(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         if (!research.isPublished())
-            throw new BadRequestException("Research is not published", "NOT_PUBLISHED");
+            throw new BadRequestException(ResearchMessages.NOT_PUBLISHED_UNPUBLISH_MSG, ResearchMessages.NOT_PUBLISHED);
         research.setStatus(ResearchStatus.DRAFT);
         research.setPublishedAt(null);
         research = researchRepo.save(research);
@@ -757,14 +758,14 @@ public class ResearchServiceImpl implements ResearchService {
             }
 
             // Upload video
-            String videoS3Key = uploadFileToS3(video, "research/" + researchId + "/promo", "VIDEO_UPLOAD_FAILED");
+            String videoS3Key = uploadFileToS3(video, "research/" + researchId + "/promo", ResearchMessages.VIDEO_UPLOAD_FAILED);
             research.setVideoPromoS3Key(videoS3Key);
             research.setVideoPromoUrl(getPublicUrlFromS3(videoS3Key));
             research.setVideoPromoDurationSeconds(durationSeconds);
 
             // Upload thumbnail if provided
             if (thumbnail != null && !thumbnail.isEmpty()) {
-                String thumbS3Key = uploadFileToS3(thumbnail, "research/" + researchId + "/promo-thumb", "THUMBNAIL_UPLOAD_FAILED");
+                String thumbS3Key = uploadFileToS3(thumbnail, "research/" + researchId + "/promo-thumb", ResearchMessages.THUMBNAIL_UPLOAD_FAILED);
                 research.setVideoPromoThumbnailS3Key(thumbS3Key);
                 research.setVideoPromoThumbnailUrl(getPublicUrlFromS3(thumbS3Key));
             } else {
@@ -778,7 +779,7 @@ public class ResearchServiceImpl implements ResearchService {
             return mapper.toResponse(research, researcherId);
         } catch (AppException e) { throw e; }
         catch (Exception e) {
-            throw new AppException("Failed to upload video promo", HttpStatus.INTERNAL_SERVER_ERROR, "VIDEO_UPLOAD_ERROR");
+            throw new AppException(ResearchMessages.VIDEO_UPLOAD_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.VIDEO_UPLOAD_ERROR);
         }
     }
 
@@ -810,14 +811,14 @@ public class ResearchServiceImpl implements ResearchService {
             if (research.getCoverImageS3Key() != null) {
                 try { s3.delete(research.getCoverImageS3Key()); } catch (Exception e) { log.warn("Old cover image delete failed: {}", e.getMessage()); }
             }
-            String s3Key = uploadFileToS3(image, "research/" + researchId + "/cover", "COVER_UPLOAD_FAILED");
+            String s3Key = uploadFileToS3(image, "research/" + researchId + "/cover", ResearchMessages.COVER_UPLOAD_FAILED);
             research.setCoverImageS3Key(s3Key);
             research.setCoverImageUrl(getPublicUrlFromS3(s3Key));
             researchRepo.save(research);
             return mapper.toResponse(research, researcherId);
         } catch (AppException e) { throw e; }
         catch (Exception e) {
-            throw new AppException("Failed to upload cover image", HttpStatus.INTERNAL_SERVER_ERROR, "COVER_UPLOAD_ERROR");
+            throw new AppException(ResearchMessages.COVER_UPLOAD_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.COVER_UPLOAD_ERROR);
         }
     }
 
@@ -840,7 +841,7 @@ public class ResearchServiceImpl implements ResearchService {
         validateFile(file, "file", null);
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         try {
-            String s3Key     = uploadFileToS3(file, "research/" + researchId + "/media", "MEDIA_UPLOAD_FAILED");
+            String s3Key     = uploadFileToS3(file, "research/" + researchId + "/media", ResearchMessages.MEDIA_UPLOAD_FAILED);
             String publicUrl = getPublicUrlFromS3(s3Key);
             ResearchMedia media = ResearchMedia.builder()
                     .research(research).fileUrl(publicUrl).s3Key(s3Key)
@@ -852,9 +853,9 @@ public class ResearchServiceImpl implements ResearchService {
                     .caption(caption).altText(altText).build();
             return mapper.toMediaResponse(mediaRepo.save(media));
         } catch (DataIntegrityViolationException e) {
-            throw new BadRequestException("Invalid media metadata", "MEDIA_METADATA_ERROR");
+            throw new BadRequestException(ResearchMessages.MEDIA_METADATA_ERROR_MSG, ResearchMessages.MEDIA_METADATA_ERROR);
         } catch (Exception e) {
-            throw new AppException("Failed to add media file", HttpStatus.INTERNAL_SERVER_ERROR, "MEDIA_ADD_ERROR");
+            throw new AppException(ResearchMessages.MEDIA_ADD_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.MEDIA_ADD_ERROR);
         }
     }
 
@@ -862,12 +863,12 @@ public class ResearchServiceImpl implements ResearchService {
     public MediaResponse updateMediaMetadata(UUID researchId, UUID mediaId,
                                              UpdateMediaRequest request, UUID researcherId) {
         if (mediaId == null || request == null)
-            throw new BadRequestException("Media ID and request body are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_MEDIA_ID_AND_BODY_MSG, ResearchMessages.INVALID_INPUT);
         findResearchOwnedByOrThrow(researchId, researcherId);
         ResearchMedia media = mediaRepo.findById(mediaId)
                 .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
         if (!media.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Media does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.MEDIA_NOT_IN_RESEARCH_MSG);
         if (request.caption() != null)         media.setCaption(request.caption());
         if (request.altText() != null)         media.setAltText(request.altText());
         if (request.displayOrder() != null)    media.setDisplayOrder(request.displayOrder());
@@ -879,17 +880,17 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public void removeMediaFile(UUID researchId, UUID mediaId, UUID researcherId) {
-        if (mediaId == null) throw new BadRequestException("Media ID is required", "MISSING_MEDIA_ID");
+        if (mediaId == null) throw new BadRequestException(ResearchMessages.MISSING_MEDIA_ID_MSG, ResearchMessages.MISSING_MEDIA_ID);
         findResearchOwnedByOrThrow(researchId, researcherId);
         ResearchMedia media = mediaRepo.findById(mediaId)
                 .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
         if (!media.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Media does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.MEDIA_NOT_IN_RESEARCH_MSG);
         try {
             if (media.getS3Key() != null) s3.delete(media.getS3Key());
             mediaRepo.delete(media);
         } catch (DataAccessException e) {
-            throw new AppException("Failed to remove media file", HttpStatus.INTERNAL_SERVER_ERROR, "MEDIA_DELETE_ERROR");
+            throw new AppException(ResearchMessages.MEDIA_DELETE_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.MEDIA_DELETE_ERROR);
         }
     }
 
@@ -900,7 +901,7 @@ public class ResearchServiceImpl implements ResearchService {
         ResearchSource source = sourceRepo.findById(sourceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
         if (!source.getResearch().getId().equals(researchId)) {
-            throw new BadRequestException("Source does not belong to this research", "SOURCE_MISMATCH");
+            throw new BadRequestException(ResearchMessages.SOURCE_MISMATCH_MSG, ResearchMessages.SOURCE_MISMATCH);
         }
 
         if (req.sourceType() != null)    source.setSourceType(req.sourceType());
@@ -917,7 +918,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public SourceResponse uploadSourceFile(UUID researchId, UUID sourceId,
                                            MultipartFile file, UUID researcherId) {
-        if (sourceId == null) throw new BadRequestException("Source ID is required", "MISSING_SOURCE_ID");
+        if (sourceId == null) throw new BadRequestException(ResearchMessages.MISSING_SOURCE_ID_MSG, ResearchMessages.MISSING_SOURCE_ID);
         validateFile(file, "document", Arrays.asList(
                 "application/pdf", "application/msword",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"));
@@ -925,12 +926,12 @@ public class ResearchServiceImpl implements ResearchService {
         ResearchSource source = sourceRepo.findById(sourceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source", "id", sourceId));
         if (!source.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Source does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.SOURCE_MISMATCH_MSG);
         try {
             if (source.getS3Key() != null) {
                 try { s3.delete(source.getS3Key()); } catch (Exception e) { log.warn("Old source file delete failed: {}", e.getMessage()); }
             }
-            String s3Key = uploadFileToS3(file, "research/" + researchId + "/sources", "SOURCE_UPLOAD_FAILED");
+            String s3Key = uploadFileToS3(file, "research/" + researchId + "/sources", ResearchMessages.SOURCE_UPLOAD_FAILED);
             source.setS3Key(s3Key);
             source.setFileUrl(getPublicUrlFromS3(s3Key));
             source.setOriginalFileName(sanitizeFileName(file.getOriginalFilename()));
@@ -940,14 +941,14 @@ public class ResearchServiceImpl implements ResearchService {
             return mapper.toSourceResponse(sourceRepo.save(source));
         } catch (AppException e) { throw e; }
         catch (Exception e) {
-            throw new AppException("Failed to upload source file", HttpStatus.INTERNAL_SERVER_ERROR, "SOURCE_UPLOAD_ERROR");
+            throw new AppException(ResearchMessages.SOURCE_UPLOAD_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.SOURCE_UPLOAD_ERROR);
         }
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SourceResponse> listSources(UUID researchId, UUID currentUserId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         Research research = researchRepo.findByIdAndDeletedAtIsNull(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
         if (currentUserId != null
@@ -968,7 +969,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     @Cacheable(value = "research-by-id", key = "#researchId", condition = "#currentUserId == null")
     public ResearchResponse getById(UUID researchId, UUID currentUserId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         Research research = researchRepo.findByIdAndDeletedAtIsNull(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
         // Block-aware: hide existence from a viewer in a block edge with the researcher.
@@ -987,7 +988,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Cacheable(value = "research-by-slug", key = "#slug", condition = "#currentUserId == null")
     public ResearchResponse getBySlug(String slug, UUID currentUserId) {
         if (slug == null || slug.isBlank())
-            throw new BadRequestException("Slug is required", "MISSING_SLUG");
+            throw new BadRequestException(ResearchMessages.MISSING_SLUG_MSG, ResearchMessages.MISSING_SLUG);
         Research research = researchRepo.findBySlugAndDeletedAtIsNull(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "slug", slug));
         if (currentUserId != null
@@ -1005,7 +1006,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public ResearchResponse getByShareToken(String shareToken, UUID currentUserId) {
         if (shareToken == null || shareToken.isBlank())
-            throw new BadRequestException("Share token is required", "MISSING_TOKEN");
+            throw new BadRequestException(ResearchMessages.MISSING_TOKEN_MSG, ResearchMessages.MISSING_TOKEN);
         Research research = researchRepo.findByShareTokenAndDeletedAtIsNull(shareToken)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "token", shareToken));
         UUID researchId = research.getId();
@@ -1049,7 +1050,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getByResearcher(UUID researcherId, Pageable pageable, UUID currentUserId) {
-        if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
+        if (researcherId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCHER_ID_MSG, ResearchMessages.MISSING_RESEARCHER_ID);
         return mapSummariesWithSaves(researchRepo
                 .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.PUBLISHED, pageable),
                 currentUserId);
@@ -1059,7 +1060,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> search(String query, Pageable pageable, UUID currentUserId) {
         if (query == null || query.trim().length() < 2)
-            throw new BadRequestException("Search query must be at least 2 characters", "INVALID_QUERY");
+            throw new BadRequestException(ResearchMessages.INVALID_QUERY_MSG, ResearchMessages.INVALID_QUERY);
         return mapSummariesWithSaves(researchRepo.searchPublished(query, pageable), currentUserId);
     }
 
@@ -1067,7 +1068,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> fullTextSearch(String query, Pageable pageable, UUID currentUserId) {
         if (query == null || query.trim().length() < 2)
-            throw new BadRequestException("Search query must be at least 2 characters", "INVALID_QUERY");
+            throw new BadRequestException(ResearchMessages.INVALID_QUERY_MSG, ResearchMessages.INVALID_QUERY);
         String tsQuery = Arrays.stream(query.trim().split("\\s+"))
                 .filter(w -> !w.isBlank())
                 .map(w -> w + ":*")
@@ -1079,18 +1080,18 @@ public class ResearchServiceImpl implements ResearchService {
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> searchByTags(List<String> tags, Pageable pageable, UUID currentUserId) {
         if (tags == null || tags.isEmpty())
-            throw new BadRequestException("At least one tag is required", "MISSING_TAGS");
+            throw new BadRequestException(ResearchMessages.MISSING_TAGS_MSG, ResearchMessages.MISSING_TAGS);
         List<String> normalised = tags.stream()
                 .map(t -> t != null ? t.trim().toLowerCase() : "")
                 .filter(t -> !t.isEmpty()).distinct().toList();
-        if (normalised.isEmpty()) throw new BadRequestException("Tags cannot be empty", "INVALID_TAGS");
+        if (normalised.isEmpty()) throw new BadRequestException(ResearchMessages.INVALID_TAGS_MSG, ResearchMessages.INVALID_TAGS);
         return mapSummariesWithSaves(researchRepo.findByTags(normalised, pageable), currentUserId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getMyDrafts(UUID researcherId, Pageable pageable) {
-        if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
+        if (researcherId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCHER_ID_MSG, ResearchMessages.MISSING_RESEARCHER_ID);
         return mapSummariesWithSaves(researchRepo
                 .findByResearcherIdAndStatusAndDeletedAtIsNull(researcherId, ResearchStatus.DRAFT, pageable),
                 researcherId);
@@ -1099,7 +1100,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getMyResearches(UUID researcherId, Pageable pageable) {
-        if (researcherId == null) throw new BadRequestException("Researcher ID is required", "MISSING_RESEARCHER_ID");
+        if (researcherId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCHER_ID_MSG, ResearchMessages.MISSING_RESEARCHER_ID);
         return mapSummariesWithSaves(researchRepo
                 .findByResearcherIdAndDeletedAtIsNull(researcherId, pageable),
                 researcherId);
@@ -1147,7 +1148,7 @@ public class ResearchServiceImpl implements ResearchService {
     public void react(UUID researchId, ReactRequest request, UUID userId) {
         rateLimiter.checkReaction(userId);
         if (researchId == null)
-            throw new BadRequestException("Research ID is required", "INVALID_REACTION");
+            throw new BadRequestException(ResearchMessages.INVALID_REACTION_MSG, ResearchMessages.INVALID_REACTION);
         Research research = findPublishedOrThrow(researchId);
         User user = findUserOrThrow(userId);
         // Block guard — refuse to react across any block edge with the researcher.
@@ -1155,7 +1156,7 @@ public class ResearchServiceImpl implements ResearchService {
         if (research.getResearcher() != null) {
             socialGuard.requireNotBlockedBetween(
                     userId, research.getResearcher().getId(),
-                    "RESEARCH_REACTION_BLOCKED_RELATIONSHIP");
+                    ResearchMessages.RESEARCH_REACTION_BLOCKED_RELATIONSHIP);
         }
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
         try {
@@ -1187,14 +1188,14 @@ public class ResearchServiceImpl implements ResearchService {
                     ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REACTION_ADDED,
                     user);
         } catch (OptimisticLockingFailureException e) {
-            throw new ConflictException("Reaction update conflict. Please retry.");
+            throw new ConflictException(ResearchMessages.REACTION_CONFLICT_MSG);
         }
     }
 
     @Override
     public ResearchResponse removeReaction(UUID researchId, UUID userId) {
         if (researchId == null || userId == null)
-            throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_RESEARCH_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchReactionId rId = new ResearchReactionId(researchId, userId);
         User actor = userRepo.findById(userId).orElse(null);
         if (reactionRepo.existsById(rId)) {
@@ -1215,7 +1216,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Map<ReactionType, Long> getReactionBreakdown(UUID researchId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         List<Object[]> rows = reactionRepo.countByResearchGroupedByType(researchId);
         Map<ReactionType, Long> breakdown = new EnumMap<>(ReactionType.class);
         for (Object[] row : rows) breakdown.put((ReactionType) row[0], (Long) row[1]);
@@ -1230,25 +1231,25 @@ public class ResearchServiceImpl implements ResearchService {
     public CommentResponse addComment(UUID researchId, AddCommentRequest request, UUID userId) {
         rateLimiter.checkComment(userId);
         if (researchId == null || request == null)
-            throw new BadRequestException("Research ID and comment data are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_RESEARCH_AND_COMMENT_MSG, ResearchMessages.INVALID_INPUT);
 
         // At least one of: text, media, or voice must be present
         boolean hasContent = request.content() != null && !request.content().isBlank();
         boolean hasMedia   = request.mediaUrl() != null && !request.mediaUrl().isBlank();
         boolean hasVoice   = request.voiceUrl() != null && !request.voiceUrl().isBlank();
         if (!hasContent && !hasMedia && !hasVoice)
-            throw new BadRequestException("Comment must have text, media, or voice content", "EMPTY_COMMENT");
+            throw new BadRequestException(ResearchMessages.EMPTY_COMMENT_NO_CONTENT_MSG, ResearchMessages.EMPTY_COMMENT);
         if (hasContent && request.content().length() > 5000)
-            throw new BadRequestException("Comment exceeds maximum length of 5000 characters", "COMMENT_TOO_LONG");
+            throw new BadRequestException(ResearchMessages.COMMENT_TOO_LONG_MSG, ResearchMessages.COMMENT_TOO_LONG);
 
         Research research = findPublishedOrThrow(researchId);
         if (!research.isCommentsEnabled())
-            throw new BadRequestException("Comments are disabled for this research", "COMMENTS_DISABLED");
+            throw new BadRequestException(ResearchMessages.COMMENTS_DISABLED_MSG, ResearchMessages.COMMENTS_DISABLED);
         // Block guard — can't comment on a researcher who has blocked you (or vice versa).
         if (research.getResearcher() != null) {
             socialGuard.requireNotBlockedBetween(
                     userId, research.getResearcher().getId(),
-                    "RESEARCH_COMMENT_BLOCKED_RELATIONSHIP");
+                    ResearchMessages.RESEARCH_COMMENT_BLOCKED_RELATIONSHIP);
         }
         User user = findUserOrThrow(userId);
 
@@ -1281,9 +1282,9 @@ public class ResearchServiceImpl implements ResearchService {
                 ResearchComment parent = commentRepo.findById(request.parentId())
                         .orElseThrow(() -> new ResourceNotFoundException("Parent comment", "id", request.parentId()));
                 if (!parent.getResearch().getId().equals(researchId))
-                    throw new BadRequestException("Parent comment does not belong to this research", "INVALID_PARENT");
+                    throw new BadRequestException(ResearchMessages.INVALID_PARENT_MSG, ResearchMessages.INVALID_PARENT);
                 if (parent.getDeletedAt() != null)
-                    throw new BadRequestException("Cannot reply to a deleted comment", "PARENT_DELETED");
+                    throw new BadRequestException(ResearchMessages.PARENT_DELETED_MSG, ResearchMessages.PARENT_DELETED);
                 // Flat-at-1 server-side guard — if the caller passes the id of a
                 // depth-1 reply, hoist the parent up to the top-level comment so
                 // every reply is a sibling under the root. Mirrors the UI rule
@@ -1351,7 +1352,7 @@ public class ResearchServiceImpl implements ResearchService {
 
         } catch (ResourceNotFoundException | BadRequestException e) { throw e; }
         catch (DataIntegrityViolationException e) {
-            throw new BadRequestException("Invalid comment data", "COMMENT_DATA_ERROR");
+            throw new BadRequestException(ResearchMessages.COMMENT_DATA_ERROR_MSG, ResearchMessages.COMMENT_DATA_ERROR);
         }
     }
 
@@ -1400,20 +1401,20 @@ public class ResearchServiceImpl implements ResearchService {
     public CommentResponse editComment(UUID researchId, UUID commentId,
                                        EditCommentRequest request, UUID userId) {
         if (commentId == null || request == null)
-            throw new BadRequestException("Comment ID and request body are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_ID_AND_BODY_MSG, ResearchMessages.INVALID_INPUT);
         if (request.content() == null || request.content().isBlank())
-            throw new BadRequestException("Comment content cannot be empty", "EMPTY_COMMENT");
+            throw new BadRequestException(ResearchMessages.EMPTY_COMMENT_BLANK_MSG, ResearchMessages.EMPTY_COMMENT);
         if (request.content().length() > 5000)
-            throw new BadRequestException("Comment exceeds maximum length of 5000 characters", "COMMENT_TOO_LONG");
+            throw new BadRequestException(ResearchMessages.COMMENT_TOO_LONG_MSG, ResearchMessages.COMMENT_TOO_LONG);
 
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
         if (!comment.getUser().getId().equals(userId))
-            throw new ForbiddenException("You can only edit your own comments");
+            throw new ForbiddenException(ResearchMessages.EDIT_OWN_COMMENTS_ONLY_MSG);
         if (comment.getDeletedAt() != null)
-            throw new BadRequestException("Cannot edit a deleted comment", "COMMENT_DELETED");
+            throw new BadRequestException(ResearchMessages.COMMENT_DELETED_EDIT_MSG, ResearchMessages.COMMENT_DELETED);
 
         String previousContent = comment.getContent();
         comment.setContent(request.content().trim());
@@ -1458,19 +1459,19 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public void deleteComment(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
-            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
         // Allow either the comment owner or the research owner to delete
         boolean isCommentOwner = comment.getUser().getId().equals(userId);
         boolean isResearchOwner = comment.getResearch().getResearcher() != null
                 && comment.getResearch().getResearcher().getId().equals(userId);
         if (!isCommentOwner && !isResearchOwner)
-            throw new ForbiddenException("You can only delete your own comments or comments on your research");
+            throw new ForbiddenException(ResearchMessages.DELETE_OWN_COMMENTS_ONLY_MSG);
         if (comment.getDeletedAt() != null)
-            throw new BadRequestException("Comment is already deleted", "ALREADY_DELETED");
+            throw new BadRequestException(ResearchMessages.ALREADY_DELETED_MSG, ResearchMessages.ALREADY_DELETED);
 
         // Counter cleanup — drop every reaction on this comment so the soft-
         // deleted row reports likeCount=0 if ever re-rendered, and the per-user
@@ -1529,20 +1530,20 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public void hideComment(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
-            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
         if (comment.getDeletedAt() != null)
-            throw new BadRequestException("Cannot hide a deleted comment", "COMMENT_DELETED");
+            throw new BadRequestException(ResearchMessages.COMMENT_DELETED_HIDE_MSG, ResearchMessages.COMMENT_DELETED);
 
         // Allow research owner or the commenter to hide the comment
         boolean isCommentOwner = comment.getUser().getId().equals(userId);
         boolean isResearchOwner = comment.getResearch().getResearcher() != null
                 && comment.getResearch().getResearcher().getId().equals(userId);
         if (!isCommentOwner && !isResearchOwner)
-            throw new ForbiddenException("You can only hide your own comments or comments on your research");
+            throw new ForbiddenException(ResearchMessages.HIDE_OWN_COMMENTS_ONLY_MSG);
 
         // set hidden metadata
         if (!comment.isHidden()) {
@@ -1557,20 +1558,20 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public void unhideComment(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
-            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
         if (!comment.isHidden())
-            throw new BadRequestException("Comment is not hidden", "NOT_HIDDEN");
+            throw new BadRequestException(ResearchMessages.NOT_HIDDEN_MSG, ResearchMessages.NOT_HIDDEN);
 
         // Allow research owner or the commenter to unhide
         boolean isCommentOwner = comment.getUser().getId().equals(userId);
         boolean isResearchOwner = comment.getResearch().getResearcher() != null
                 && comment.getResearch().getResearcher().getId().equals(userId);
         if (!isCommentOwner && !isResearchOwner)
-            throw new ForbiddenException("You can only unhide your own comments or comments on your research");
+            throw new ForbiddenException(ResearchMessages.UNHIDE_OWN_COMMENTS_ONLY_MSG);
 
         comment.setHidden(false);
         comment.setHiddenAt(null);
@@ -1582,7 +1583,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<CommentResponse> getComments(UUID researchId, Pageable pageable, UUID currentUserId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
 
         // Determine if the requester is the research owner — owners can view hidden comments
         boolean isResearchOwner = false;
@@ -1630,26 +1631,26 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public void reactToComment(UUID researchId, UUID commentId, ReactRequest request, UUID userId) {
         if (commentId == null || userId == null)
-            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         rateLimiter.checkReaction(userId);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
         if (comment.getDeletedAt() != null)
-            throw new BadRequestException("Cannot react to a deleted comment", "COMMENT_DELETED");
+            throw new BadRequestException(ResearchMessages.COMMENT_DELETED_REACT_MSG, ResearchMessages.COMMENT_DELETED);
 
         // Block guards — refuse to react across a block edge with either the
         // comment author or the researcher. Mirrors PostCommentService.reactToComment.
         if (comment.getUser() != null) {
             socialGuard.requireNotBlockedBetween(
                     userId, comment.getUser().getId(),
-                    "RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+                    ResearchMessages.RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP);
         }
         if (comment.getResearch().getResearcher() != null) {
             socialGuard.requireNotBlockedBetween(
                     userId, comment.getResearch().getResearcher().getId(),
-                    "RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP");
+                    ResearchMessages.RESEARCH_COMMENT_REACTION_BLOCKED_RELATIONSHIP);
         }
 
         User actor = userRepo.findById(userId).orElse(null);
@@ -1719,11 +1720,11 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public CommentResponse removeCommentReaction(UUID researchId, UUID commentId, UUID userId) {
         if (commentId == null || userId == null)
-            throw new BadRequestException("Comment ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_COMMENT_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchComment comment = commentRepo.findById(commentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Comment", "id", commentId));
         if (!comment.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Comment does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.COMMENT_NOT_IN_RESEARCH_MSG);
 
         var existingOpt = commentReactionRepo.findByCommentIdAndUserId(commentId, userId);
         User actor = userRepo.findById(userId).orElse(null);
@@ -1780,7 +1781,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public ResearchResponse saveResearch(UUID researchId, String collectionName, UUID userId) {
         if (researchId == null || userId == null)
-            throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_RESEARCH_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         rateLimiter.checkSocial(userId);
         Research research = findPublishedOrThrow(researchId);
         User user = findUserOrThrow(userId);
@@ -1790,7 +1791,7 @@ public class ResearchServiceImpl implements ResearchService {
         if (research.getResearcher() != null) {
             socialGuard.requireNotBlockedBetween(
                     userId, research.getResearcher().getId(),
-                    "RESEARCH_SAVE_BLOCKED_RELATIONSHIP");
+                    ResearchMessages.RESEARCH_SAVE_BLOCKED_RELATIONSHIP);
         }
 
         ResearchSaveId sId = new ResearchSaveId(researchId, userId);
@@ -1840,7 +1841,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     public ResearchResponse unsaveResearch(UUID researchId, UUID userId) {
         if (researchId == null || userId == null)
-            throw new BadRequestException("Research ID and User ID are required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_RESEARCH_AND_USER_MSG, ResearchMessages.INVALID_INPUT);
         ResearchSaveId sId = new ResearchSaveId(researchId, userId);
         User actor = userRepo.findById(userId).orElse(null);
 
@@ -1866,7 +1867,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getSavedResearches(UUID userId, Pageable pageable) {
-        if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
+        if (userId == null) throw new BadRequestException(ResearchMessages.MISSING_USER_ID_MSG, ResearchMessages.MISSING_USER_ID);
         // Keep the ResearchSave row through the mapping so we can carry the
         // save's createdAt onto the response as `savedAt` (the bookmark time
         // — distinct from the paper's own publishedAt / createdAt).
@@ -1877,9 +1878,9 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public Page<ResearchSummaryResponse> getSavedByCollection(UUID userId, String collectionName, Pageable pageable) {
-        if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
+        if (userId == null) throw new BadRequestException(ResearchMessages.MISSING_USER_ID_MSG, ResearchMessages.MISSING_USER_ID);
         if (collectionName == null || collectionName.isBlank())
-            throw new BadRequestException("Collection name is required", "MISSING_COLLECTION_NAME");
+            throw new BadRequestException(ResearchMessages.MISSING_COLLECTION_NAME_MSG, ResearchMessages.MISSING_COLLECTION_NAME);
         Page<ResearchSave> page =
                 saveRepo.findByUserIdAndCollectionNameOrderByCreatedAtDesc(userId, collectionName.trim(), pageable);
         return mapSavedSummaries(page, userId);
@@ -1902,16 +1903,16 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public List<String> getUserCollections(UUID userId) {
-        if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
+        if (userId == null) throw new BadRequestException(ResearchMessages.MISSING_USER_ID_MSG, ResearchMessages.MISSING_USER_ID);
         return saveRepo.findDistinctCollectionNamesByUserId(userId);
     }
 
     @Override
     @Transactional
     public void renameCollection(UUID userId, String oldName, String newName) {
-        if (userId == null) throw new BadRequestException("User ID is required", "MISSING_USER_ID");
-        if (oldName == null || oldName.isBlank()) throw new BadRequestException("Old collection name is required", "MISSING_OLD_NAME");
-        if (newName == null || newName.isBlank()) throw new BadRequestException("New collection name is required", "MISSING_NEW_NAME");
+        if (userId == null) throw new BadRequestException(ResearchMessages.MISSING_USER_ID_MSG, ResearchMessages.MISSING_USER_ID);
+        if (oldName == null || oldName.isBlank()) throw new BadRequestException(ResearchMessages.MISSING_OLD_NAME_MSG, ResearchMessages.MISSING_OLD_NAME);
+        if (newName == null || newName.isBlank()) throw new BadRequestException(ResearchMessages.MISSING_NEW_NAME_MSG, ResearchMessages.MISSING_NEW_NAME);
         int updated = saveRepo.renameCollection(userId, oldName, newName.trim());
         log.info("Renamed collection '{}' → '{}' for user {} ({} saves updated)", oldName, newName, userId, updated);
     }
@@ -1923,7 +1924,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordView(UUID researchId, UUID viewerId, String viewerKey) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         try {
             // Authed viewer → count once per (research, user) FOREVER (durable
             // research_views ledger). Anonymous viewer → 1h Redis dedupe on the
@@ -1977,21 +1978,21 @@ public class ResearchServiceImpl implements ResearchService {
      */
     @Override
     public String recordDownload(UUID researchId, UUID mediaId, UUID userId, String ipAddress) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         if (mediaId == null)    throw new BadRequestException(
-                "mediaId is required — downloads are tracked per physical file (PDF/video/audio/zip).",
-                "MISSING_MEDIA_ID");
+                ResearchMessages.MISSING_MEDIA_ID_DOWNLOAD_MSG,
+                ResearchMessages.MISSING_MEDIA_ID);
 
         Research research = findPublishedOrThrow(researchId);
         if (!research.isDownloadsEnabled())
-            throw new BadRequestException("Downloads are disabled for this research", "DOWNLOADS_DISABLED");
+            throw new BadRequestException(ResearchMessages.DOWNLOADS_DISABLED_MSG, ResearchMessages.DOWNLOADS_DISABLED);
 
         ResearchMedia media = mediaRepo.findById(mediaId)
                 .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
         if (!media.getResearch().getId().equals(researchId))
-            throw new ForbiddenException("Media does not belong to this research");
+            throw new ForbiddenException(ResearchMessages.MEDIA_NOT_IN_RESEARCH_MSG);
         if (media.getS3Key() == null || media.getS3Key().isBlank())
-            throw new BadRequestException("Media file not available for download", "FILE_NOT_AVAILABLE");
+            throw new BadRequestException(ResearchMessages.FILE_NOT_AVAILABLE_MSG, ResearchMessages.FILE_NOT_AVAILABLE);
 
         // Dedupe BEFORE publishing the event. shouldCount==false means a
         // re-download within the dedupe window — we still hand the user a
@@ -2010,8 +2011,8 @@ public class ResearchServiceImpl implements ResearchService {
         try { return s3.getPreSignedUrl(media.getS3Key(), 30); }
         catch (Exception e) {
             log.error("Error generating pre-signed URL for {}: {}", media.getS3Key(), e.getMessage());
-            throw new AppException("Failed to generate download link",
-                    HttpStatus.INTERNAL_SERVER_ERROR, "URL_GENERATION_ERROR");
+            throw new AppException(ResearchMessages.URL_GENERATION_ERROR_DOWNLOAD_MSG,
+                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.URL_GENERATION_ERROR);
         }
     }
 
@@ -2021,7 +2022,7 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public String getShareLink(UUID researchId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         Research research = findPublishedOrThrow(researchId);
         try {
             researchRepo.incrementShareCount(researchId);
@@ -2036,7 +2037,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional(readOnly = true)
     public ShareLinkInfo previewShareLink(UUID researchId, String baseUrl) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         Research research = findPublishedOrThrow(researchId);
         return buildShareInfo(research, baseUrl,
                 research.getShareCount() == null ? 0L : research.getShareCount());
@@ -2045,7 +2046,7 @@ public class ResearchServiceImpl implements ResearchService {
     @Override
     @Transactional
     public ShareLinkInfo recordShare(UUID researchId, UUID requesterId, String baseUrl) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         Research research = findPublishedOrThrow(researchId);
         long fresh = research.getShareCount() == null ? 0L : research.getShareCount();
         User actor = requesterId != null
@@ -2081,7 +2082,7 @@ public class ResearchServiceImpl implements ResearchService {
 
     @Override
     public void incrementCitationCount(UUID researchId, UUID citerId) {
-        if (researchId == null) throw new BadRequestException("Research ID is required", "MISSING_RESEARCH_ID");
+        if (researchId == null) throw new BadRequestException(ResearchMessages.MISSING_RESEARCH_ID_MSG, ResearchMessages.MISSING_RESEARCH_ID);
         findPublishedOrThrow(researchId);
         // Dedup per (research, citer) within a 30-day window so the public
         // counter can't be looped by a single caller (E3).
@@ -2107,7 +2108,7 @@ public class ResearchServiceImpl implements ResearchService {
             return new ArrayList<>(tagRepo.findTrendingTags(PageRequest.of(0, limit))
                     .stream().map(row -> (String) row[0]).filter(Objects::nonNull).toList());
         } catch (DataAccessException e) {
-            throw new AppException("Failed to fetch trending tags", HttpStatus.INTERNAL_SERVER_ERROR, "TAG_FETCH_ERROR");
+            throw new AppException(ResearchMessages.TAG_FETCH_ERROR_MSG, HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.TAG_FETCH_ERROR);
         }
     }
 
@@ -2121,7 +2122,7 @@ public class ResearchServiceImpl implements ResearchService {
         if (user.getRole() != Role.SCHOLAR
                 && user.getRole() != Role.RESEARCHER
                 && user.getRole() != Role.ADMIN)
-            throw new ForbiddenException("Only researchers can manage researches");
+            throw new ForbiddenException(ResearchMessages.ONLY_RESEARCHERS_MANAGE_MSG);
         return user;
     }
 
@@ -2133,7 +2134,7 @@ public class ResearchServiceImpl implements ResearchService {
     private Research findPublishedOrThrow(UUID researchId) {
         Research r = researchRepo.findByIdAndDeletedAtIsNull(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
-        if (!r.isPublished()) throw new BadRequestException("Research is not published yet", "NOT_PUBLISHED");
+        if (!r.isPublished()) throw new BadRequestException(ResearchMessages.NOT_PUBLISHED_YET_MSG, ResearchMessages.NOT_PUBLISHED);
         return r;
     }
 
@@ -2141,13 +2142,13 @@ public class ResearchServiceImpl implements ResearchService {
         Research r = researchRepo.findByIdAndDeletedAtIsNull(researchId)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "id", researchId));
         if (!r.getResearcher().getId().equals(researcherId))
-            throw new ForbiddenException("You do not own this research");
+            throw new ForbiddenException(ResearchMessages.NOT_RESEARCH_OWNER_MSG);
         return r;
     }
 
     private String generateSlug(String title) {
         if (title == null || title.isBlank())
-            throw new BadRequestException("Title is required to generate slug", "MISSING_TITLE");
+            throw new BadRequestException(ResearchMessages.MISSING_TITLE_SLUG_MSG, ResearchMessages.MISSING_TITLE);
         try {
             String base = title.toLowerCase()
                     .replaceAll("[^a-z0-9\\s-]", "")
@@ -2239,13 +2240,13 @@ public class ResearchServiceImpl implements ResearchService {
             if (cr == null || cr.userId() == null) return;
             if (cr.userId().equals(ownerId)) {
                 throw new BadRequestException(
-                        "The corresponding researcher cannot also be listed as a contributor",
-                        "CONTRIBUTOR_IS_OWNER");
+                        ResearchMessages.CONTRIBUTOR_IS_OWNER_LISTED_MSG,
+                        ResearchMessages.CONTRIBUTOR_IS_OWNER);
             }
             if (!seenUserIds.add(cr.userId())) {
                 throw new BadRequestException(
-                        "Duplicate contributor in request: " + cr.userId(),
-                        "DUPLICATE_CONTRIBUTOR");
+                        ResearchMessages.DUPLICATE_CONTRIBUTOR_MSG.formatted(cr.userId()),
+                        ResearchMessages.DUPLICATE_CONTRIBUTOR);
             }
             User contributor = findContributorCandidateOrThrow(cr.userId());
             ResearchContributor row = ResearchContributor.builder()
@@ -2268,13 +2269,13 @@ public class ResearchServiceImpl implements ResearchService {
         User u = userRepo.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
         if (u.isDeleted())
-            throw new BadRequestException("Contributor account is deactivated", "CONTRIBUTOR_DELETED");
+            throw new BadRequestException(ResearchMessages.CONTRIBUTOR_DELETED_MSG, ResearchMessages.CONTRIBUTOR_DELETED);
         Role r = u.getRole();
         if (r != Role.RESEARCHER && r != Role.SCHOLAR
                 && r != Role.ADMIN) {
             throw new BadRequestException(
-                    "Contributors must be a researcher or scholar (user " + userId + ")",
-                    "CONTRIBUTOR_NOT_ELIGIBLE");
+                    ResearchMessages.CONTRIBUTOR_NOT_ELIGIBLE_MSG.formatted(userId),
+                    ResearchMessages.CONTRIBUTOR_NOT_ELIGIBLE);
         }
         return u;
     }
@@ -2289,17 +2290,17 @@ public class ResearchServiceImpl implements ResearchService {
                                               ContributorRequest request,
                                               UUID researcherId) {
         if (request == null || request.userId() == null)
-            throw new BadRequestException("Contributor userId is required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_CONTRIBUTOR_USER_ID_MSG, ResearchMessages.INVALID_INPUT);
 
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
 
         if (request.userId().equals(researcherId))
             throw new BadRequestException(
-                    "The corresponding researcher cannot be added as a contributor",
-                    "CONTRIBUTOR_IS_OWNER");
+                    ResearchMessages.CONTRIBUTOR_IS_OWNER_ADDED_MSG,
+                    ResearchMessages.CONTRIBUTOR_IS_OWNER);
 
         if (contributorRepo.existsByResearchIdAndUserId(researchId, request.userId()))
-            throw new ConflictException("User is already a contributor on this research");
+            throw new ConflictException(ResearchMessages.CONTRIBUTOR_ALREADY_EXISTS_MSG);
 
         User contributor = findContributorCandidateOrThrow(request.userId());
 
@@ -2318,7 +2319,7 @@ public class ResearchServiceImpl implements ResearchService {
         try {
             row = contributorRepo.save(row);
         } catch (DataIntegrityViolationException e) {
-            throw new ConflictException("User is already a contributor on this research");
+            throw new ConflictException(ResearchMessages.CONTRIBUTOR_ALREADY_EXISTS_MSG);
         }
 
         log.info("Contributor added: research={} user={} role={} by={}",
@@ -2366,7 +2367,7 @@ public class ResearchServiceImpl implements ResearchService {
                                                  UpdateContributorRequest request,
                                                  UUID researcherId) {
         if (request == null)
-            throw new BadRequestException("Request body is required", "INVALID_INPUT");
+            throw new BadRequestException(ResearchMessages.INVALID_INPUT_BODY_REQUIRED_MSG, ResearchMessages.INVALID_INPUT);
 
         // Ownership check on the parent research
         findResearchOwnedByOrThrow(researchId, researcherId);
@@ -2374,8 +2375,8 @@ public class ResearchServiceImpl implements ResearchService {
         ResearchContributor row = contributorRepo.findById(contributorId)
                 .orElseThrow(() -> new ResourceNotFoundException("Contributor", "id", contributorId));
         if (!row.getResearch().getId().equals(researchId))
-            throw new BadRequestException("Contributor does not belong to this research",
-                    "CONTRIBUTOR_RESEARCH_MISMATCH");
+            throw new BadRequestException(ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH_MSG,
+                    ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH);
 
         if (request.role() != null)             row.setRole(request.role());
         if (request.displayOrder() != null)     row.setDisplayOrder(request.displayOrder());
@@ -2393,8 +2394,8 @@ public class ResearchServiceImpl implements ResearchService {
         ResearchContributor row = contributorRepo.findById(contributorId)
                 .orElseThrow(() -> new ResourceNotFoundException("Contributor", "id", contributorId));
         if (!row.getResearch().getId().equals(researchId))
-            throw new BadRequestException("Contributor does not belong to this research",
-                    "CONTRIBUTOR_RESEARCH_MISMATCH");
+            throw new BadRequestException(ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH_MSG,
+                    ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH);
 
         contributorRepo.delete(row);
         log.info("Contributor removed: research={} contributor={} by={}",
@@ -2431,10 +2432,9 @@ public class ResearchServiceImpl implements ResearchService {
                     .user(contributor)
                     .actor(owner)
                     .type(NotificationType.RESEARCH_CONTRIBUTOR_ADDED)
-                    .title("You were added to a research paper")
-                    .body(owner.getFullName() + " (@" + owner.getUsername()
-                            + ") added you as a " + roleLabel
-                            + " on \"" + paperTitle + "\".")
+                    .title(ResearchMessages.NOTIF_CONTRIBUTOR_ADDED_TITLE)
+                    .body(ResearchMessages.NOTIF_CONTRIBUTOR_ADDED_BODY.formatted(
+                            owner.getFullName(), owner.getUsername(), roleLabel, paperTitle))
                     .resourceId(research.getId())
                     .resourceType("Research")
                     .build();
@@ -2504,22 +2504,22 @@ public class ResearchServiceImpl implements ResearchService {
 
     private void validateFile(MultipartFile file, String fileType, List<String> allowedTypes) {
         if (file == null || file.isEmpty())
-            throw new BadRequestException(fileType + " file is required and cannot be empty", "EMPTY_FILE");
+            throw new BadRequestException(ResearchMessages.EMPTY_FILE_REQUIRED_MSG.formatted(fileType), ResearchMessages.EMPTY_FILE);
         if (file.getOriginalFilename() == null || file.getOriginalFilename().isBlank())
-            throw new BadRequestException("File name is required", "MISSING_FILENAME");
+            throw new BadRequestException(ResearchMessages.MISSING_FILENAME_MSG, ResearchMessages.MISSING_FILENAME);
         if (file.getSize() == 0)
-            throw new BadRequestException("File cannot be empty (0 bytes)", "EMPTY_FILE");
+            throw new BadRequestException(ResearchMessages.EMPTY_FILE_ZERO_BYTES_MSG, ResearchMessages.EMPTY_FILE);
         if (allowedTypes != null && !allowedTypes.isEmpty()) {
             String ct = file.getContentType();
             if (ct == null || !allowedTypes.contains(ct.toLowerCase()))
                 throw new BadRequestException(
-                        "Invalid file type. Allowed: " + String.join(", ", allowedTypes),
-                        "INVALID_FILE_TYPE",
+                        ResearchMessages.INVALID_FILE_TYPE_MSG.formatted(String.join(", ", allowedTypes)),
+                        ResearchMessages.INVALID_FILE_TYPE,
                         Map.of("receivedType", ct != null ? ct : "unknown", "allowedTypes", allowedTypes));
         }
         String fn = file.getOriginalFilename();
         if (fn.contains("..") || fn.contains("/") || fn.contains("\\"))
-            throw new BadRequestException("Invalid file name", "INVALID_FILENAME");
+            throw new BadRequestException(ResearchMessages.INVALID_FILENAME_MSG, ResearchMessages.INVALID_FILENAME);
     }
 
     private String sanitizeFileName(String originalFilename) {
@@ -2530,9 +2530,9 @@ public class ResearchServiceImpl implements ResearchService {
     private String uploadFileToS3(MultipartFile file, String prefix, String errorCode) {
         try { return s3.upload(file, prefix); }
         catch (MaxUploadSizeExceededException e) {
-            throw new BadRequestException("File size exceeds maximum allowed limit", "FILE_TOO_LARGE");
+            throw new BadRequestException(ResearchMessages.FILE_TOO_LARGE_MSG, ResearchMessages.FILE_TOO_LARGE);
         } catch (Exception e) {
-            throw new AppException("Failed to upload file to storage",
+            throw new AppException(ResearchMessages.UPLOAD_TO_STORAGE_FAILED_MSG,
                     HttpStatus.SERVICE_UNAVAILABLE, errorCode);
         }
     }
@@ -2587,8 +2587,8 @@ public class ResearchServiceImpl implements ResearchService {
     private String getPublicUrlFromS3(String s3Key) {
         try { return s3.getPublicUrl(s3Key); }
         catch (Exception e) {
-            throw new AppException("Failed to generate file URL",
-                    HttpStatus.INTERNAL_SERVER_ERROR, "URL_GENERATION_ERROR");
+            throw new AppException(ResearchMessages.URL_GENERATION_ERROR_FILE_MSG,
+                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.URL_GENERATION_ERROR);
         }
     }
 

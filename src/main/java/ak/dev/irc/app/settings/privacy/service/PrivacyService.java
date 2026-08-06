@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.privacy.service;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.audit.service.SettingsAuditService;
 import ak.dev.irc.app.settings.privacy.entity.UserPrivacy;
 import ak.dev.irc.app.settings.privacy.enums.FieldKey;
@@ -51,9 +52,9 @@ public class PrivacyService {
     @Transactional
     public Map<String, String> setFieldPolicy(UUID userId, String fieldRaw, String levelRaw) {
         FieldKey field = FieldKey.parse(fieldRaw);
-        if (field == null) throw new BadRequestException("Unknown privacy field: " + fieldRaw);
+        if (field == null) throw new BadRequestException(SettingsMessages.PRIVACY_FIELD_UNKNOWN_MSG.formatted(fieldRaw));
         VisibilityLevel level = VisibilityLevel.parse(levelRaw, null);
-        if (level == null) throw new BadRequestException("Unknown visibility level: " + levelRaw);
+        if (level == null) throw new BadRequestException(SettingsMessages.VISIBILITY_LEVEL_UNKNOWN_MSG.formatted(levelRaw));
 
         UserPrivacy up = repo.findById(userId).orElseGet(() -> UserPrivacy.emptyFor(userId));
         if (up.getPolicy() == null) up.setPolicy(new HashMap<>());

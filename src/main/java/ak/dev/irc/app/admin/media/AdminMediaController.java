@@ -6,6 +6,8 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
+import ak.dev.irc.app.common.messages.MediaMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.media.entity.MediaAsset;
 import ak.dev.irc.app.media.entity.MediaRendition;
@@ -137,16 +139,16 @@ public class AdminMediaController {
         if (status != MediaStatus.FAILED_PROCESSING && status != MediaStatus.FAILED_VALIDATION
                 && status != MediaStatus.FAILED_MODERATION && status != MediaStatus.PROCESSING) {
             throw new BadRequestException(
-                    "Only failed (or stuck PROCESSING) assets can be reprocessed.",
-                    "ASSET_NOT_RETRYABLE");
+                    AdminOpsMessages.ASSET_NOT_RETRYABLE_MSG,
+                    AdminOpsMessages.ASSET_NOT_RETRYABLE);
         }
         byte[] original;
         try (var stream = storage.getObject("raw/" + assetId).inputStream()) {
             original = stream.readAllBytes();
         } catch (Exception e) {
             throw new BadRequestException(
-                    "The raw original is gone — this asset can no longer be reprocessed.",
-                    "MEDIA_RAW_MISSING");
+                    AdminOpsMessages.MEDIA_RAW_MISSING_MSG,
+                    AdminOpsMessages.MEDIA_RAW_MISSING);
         }
         asset.setStatus(MediaStatus.PROCESSING);
         asset.setErrorMessage(null);
@@ -218,7 +220,7 @@ public class AdminMediaController {
                     asset.setPurgeOriginalAt(null);
                     if (asset.getStatus() == MediaStatus.PENDING) {
                         asset.setStatus(MediaStatus.FAILED_VALIDATION);
-                        asset.setErrorMessage("Abandoned upload intent purged by admin sweep.");
+                        asset.setErrorMessage(AdminOpsMessages.NOTE_ABANDONED_INTENT_PURGED);
                     }
                     assetRepository.save(asset);
                     purged++;
@@ -273,7 +275,7 @@ public class AdminMediaController {
             listed = storage.list(prefix, cap);
         } catch (UnsupportedOperationException e) {
             throw new BadRequestException(
-                    "Media storage is not configured on this server.", "STORAGE_UNAVAILABLE");
+                    MediaMessages.STORAGE_UNAVAILABLE_MSG, MediaMessages.STORAGE_UNAVAILABLE);
         }
 
         // Membership in ONE batched IN-query per 1000 keys, not a read per object.
@@ -316,9 +318,7 @@ public class AdminMediaController {
         body.put("orphanBytes", orphanBytes);
         body.put("orphanKeys", orphans.size() > 200 ? orphans.subList(0, 200) : orphans);
         if (!dryRun) body.put("deleted", deleted);
-        body.put("note", "An orphan is a bucket object with no media_renditions.object_key row "
-                + "and no parseable raw/{assetId}. raw/ objects inside their 7-day retention "
-                + "are never flagged.");
+        body.put("note", AdminOpsMessages.NOTE_MEDIA_ORPHAN_DEFINITION);
         return ResponseEntity.ok(body);
     }
 
@@ -363,15 +363,15 @@ public class AdminMediaController {
         try {
             parsed = ak.dev.irc.app.user.enums.Role.valueOf(role.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown role. Allowed: "
-                    + java.util.Arrays.toString(ak.dev.irc.app.user.enums.Role.values()),
-                    "INVALID_ROLE");
+            throw new BadRequestException(AdminOpsMessages.INVALID_ROLE_MSG.formatted(
+                    java.util.Arrays.toString(ak.dev.irc.app.user.enums.Role.values())),
+                    AdminOpsMessages.INVALID_ROLE);
         }
         if ((req.dailyUploads() != null && req.dailyUploads() < 1)
                 || (req.dailyBytes() != null && req.dailyBytes() < 1)) {
             throw new BadRequestException(
-                    "Quota values must be positive — use enabled=false to lift a quota.",
-                    "INVALID_QUOTA");
+                    AdminOpsMessages.INVALID_QUOTA_MSG,
+                    AdminOpsMessages.INVALID_QUOTA);
         }
         var quota = quotaRepository.findById(parsed)
                 .orElseGet(() -> ak.dev.irc.app.media.entity.MediaQuota.builder()
@@ -421,8 +421,9 @@ public class AdminMediaController {
         try {
             return MediaStatus.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown status. Allowed: "
-                    + java.util.Arrays.toString(MediaStatus.values()), "INVALID_STATUS");
+            throw new BadRequestException(AdminOpsMessages.INVALID_STATUS_MSG.formatted(
+                    java.util.Arrays.toString(MediaStatus.values())),
+                    AdminOpsMessages.INVALID_STATUS);
         }
     }
 
@@ -431,8 +432,9 @@ public class AdminMediaController {
         try {
             return MediaAssetType.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown type. Allowed: "
-                    + java.util.Arrays.toString(MediaAssetType.values()), "INVALID_TYPE");
+            throw new BadRequestException(AdminOpsMessages.INVALID_TYPE_MSG.formatted(
+                    java.util.Arrays.toString(MediaAssetType.values())),
+                    AdminOpsMessages.INVALID_TYPE);
         }
     }
 }

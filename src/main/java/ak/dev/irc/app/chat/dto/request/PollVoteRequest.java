@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotEmpty;
 import lombok.Data;
 
@@ -9,6 +10,6 @@ import java.util.List;
 @Data
 public class PollVoteRequest {
 
-    @NotEmpty(message = "pick at least one option")
+    @NotEmpty(message = ChatMessages.VAL_POLL_VOTE_PICK_ONE)
     private List<Integer> optionIndexes;
 }

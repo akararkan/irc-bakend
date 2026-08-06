@@ -15,6 +15,7 @@ import ak.dev.irc.app.chat.repository.ScheduledMessageRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -55,9 +56,10 @@ public class ScheduledMessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
-                .orElseThrow(() -> new ForbiddenException("You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         if (req.getScheduledAt() == null || req.getScheduledAt().isBefore(LocalDateTime.now())) {
-            throw new BadRequestException("scheduledAt must be in the future.");
+            throw new BadRequestException(ChatMessages.SCHEDULED_AT_FUTURE_MSG);
         }
         ScheduledMessage s = repo.save(ScheduledMessage.builder()
                 .conversationId(conversationId)
@@ -86,7 +88,8 @@ public class ScheduledMessageService {
         ScheduledMessage s = repo.findById(scheduledId)
                 .orElseThrow(() -> new ResourceNotFoundException("ScheduledMessage", "id", scheduledId));
         if (!s.getSenderId().equals(userId)) {
-            throw new ForbiddenException("This scheduled message is not yours.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChatMessages.SCHEDULED_NOT_YOURS_MSG, ChatMessages.ACCESS_FORBIDDEN);
         }
         if (s.getStatus() == ScheduledMessageStatus.PENDING) {
             s.setStatus(ScheduledMessageStatus.CANCELLED);

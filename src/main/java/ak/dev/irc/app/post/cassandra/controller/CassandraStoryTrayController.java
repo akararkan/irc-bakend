@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.controller;
 
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.realtime.StoryTrayRealtimeService;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
@@ -85,7 +86,7 @@ public class CassandraStoryTrayController {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType(MediaType.TEXT_PLAIN_VALUE);
                 response.getWriter().write(
-                        "Authentication required. Pass access token as ?token=<jwt>.");
+                        PostMessages.AUTH_REQUIRED_SSE_MSG);
                 response.flushBuffer();
             } catch (Exception ignored) { /* connection closing anyway */ }
             return null;

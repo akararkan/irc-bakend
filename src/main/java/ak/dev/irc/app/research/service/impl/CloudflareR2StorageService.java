@@ -1,6 +1,7 @@
 package ak.dev.irc.app.research.service.impl;
 
 import ak.dev.irc.app.common.exception.AppException;
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import ak.dev.irc.app.research.service.S3StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -81,17 +82,17 @@ public class CloudflareR2StorageService implements S3StorageService {
             log.error("R2 storage is unreachable — upload failed for '{}': {}",
                     file.getOriginalFilename(), e.getMessage(), e);
             throw new AppException(
-                    "File storage service is currently unavailable. Please try again later.",
+                    ResearchMessages.STORAGE_UNAVAILABLE_MSG,
                     HttpStatus.SERVICE_UNAVAILABLE,
-                    "STORAGE_UNAVAILABLE",
+                    ResearchMessages.STORAGE_UNAVAILABLE,
                     e,
                     Map.of("filename", file.getOriginalFilename() != null
                             ? file.getOriginalFilename() : "unknown"));
         } catch (IOException e) {
             log.error("Failed to read upload file '{}'", file.getOriginalFilename(), e);
-            throw new AppException("File upload failed",
+            throw new AppException(ResearchMessages.FILE_UPLOAD_ERROR_MSG,
                     HttpStatus.INTERNAL_SERVER_ERROR,
-                    "FILE_UPLOAD_ERROR",
+                    ResearchMessages.FILE_UPLOAD_ERROR,
                     e,
                     Map.of("filename", file.getOriginalFilename() != null
                             ? file.getOriginalFilename() : "unknown"));
@@ -174,12 +175,12 @@ public class CloudflareR2StorageService implements S3StorageService {
             log.error("R2 storage is unreachable — cannot retrieve object '{}': {}",
                     s3Key, e.getMessage(), e);
             throw new AppException(
-                    "File storage service is currently unavailable. Please try again later.",
-                    HttpStatus.SERVICE_UNAVAILABLE, "STORAGE_UNAVAILABLE");
+                    ResearchMessages.STORAGE_UNAVAILABLE_MSG,
+                    HttpStatus.SERVICE_UNAVAILABLE, ResearchMessages.STORAGE_UNAVAILABLE);
         } catch (Exception e) {
             log.error("Failed to get object from R2: {}", s3Key, e);
-            throw new AppException("Failed to retrieve media file",
-                    HttpStatus.NOT_FOUND, "MEDIA_NOT_FOUND");
+            throw new AppException(ResearchMessages.MEDIA_NOT_FOUND_MSG,
+                    HttpStatus.NOT_FOUND, ResearchMessages.MEDIA_NOT_FOUND);
         }
     }
 
@@ -251,8 +252,8 @@ public class CloudflareR2StorageService implements S3StorageService {
         } catch (SdkClientException e) {
             log.error("R2 storage is unreachable — putBytes failed for '{}': {}", s3Key, e.getMessage(), e);
             throw new AppException(
-                    "File storage service is currently unavailable. Please try again later.",
-                    HttpStatus.SERVICE_UNAVAILABLE, "STORAGE_UNAVAILABLE");
+                    ResearchMessages.STORAGE_UNAVAILABLE_MSG,
+                    HttpStatus.SERVICE_UNAVAILABLE, ResearchMessages.STORAGE_UNAVAILABLE);
         }
     }
 
@@ -281,8 +282,8 @@ public class CloudflareR2StorageService implements S3StorageService {
         } catch (SdkClientException e) {
             log.error("R2 storage is unreachable — list failed for prefix '{}': {}", prefix, e.getMessage());
             throw new AppException(
-                    "File storage service is currently unavailable. Please try again later.",
-                    HttpStatus.SERVICE_UNAVAILABLE, "STORAGE_UNAVAILABLE");
+                    ResearchMessages.STORAGE_UNAVAILABLE_MSG,
+                    HttpStatus.SERVICE_UNAVAILABLE, ResearchMessages.STORAGE_UNAVAILABLE);
         }
     }
 

@@ -7,6 +7,7 @@ import ak.dev.irc.app.chat.dto.response.LiveStreamResponse;
 import ak.dev.irc.app.chat.dto.response.RecordingInfo;
 import ak.dev.irc.app.chat.service.LiveStreamService;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -169,7 +170,7 @@ public class LiveStreamController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChannelStreamMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

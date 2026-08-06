@@ -8,6 +8,7 @@ import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
@@ -189,8 +190,8 @@ public class AdminUserServiceImpl implements AdminUserService {
                 case "DISABLED" -> { enabled = Boolean.FALSE; deleted = Boolean.FALSE; }
                 case "DELETED"  -> deleted = Boolean.TRUE;
                 default -> throw new BadRequestException(
-                        "Unknown status filter. Allowed: ACTIVE, DISABLED, DELETED.",
-                        "INVALID_STATUS_FILTER");
+                        UserMessages.INVALID_STATUS_FILTER_MSG,
+                        UserMessages.INVALID_STATUS_FILTER);
             }
         }
         Page<User> page = userRepository.adminDirectory(role, enabled, deleted, verified, from, to, clamped);
@@ -385,7 +386,7 @@ public class AdminUserServiceImpl implements AdminUserService {
     @Override
     public UserResponse changeRole(UUID targetUserId, AdminChangeRoleRequest req) {
         if (req == null || req.role() == null)
-            throw new BadRequestException("role is required", "INVALID_INPUT");
+            throw new BadRequestException(UserMessages.ROLE_REQUIRED_MSG, UserMessages.INVALID_INPUT);
         requireNotSelf(targetUserId, "change your own role");
 
         User target = requireUser(targetUserId);
@@ -396,7 +397,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         }
         if (previous == Role.ADMIN
                 && userRepository.countByRoleAndDeletedAtIsNull(Role.ADMIN) <= 1) {
-            throw new ConflictException("Cannot demote the last ADMIN.", "LAST_ADMIN");
+            throw new ConflictException(UserMessages.LAST_ADMIN_MSG, UserMessages.LAST_ADMIN);
         }
 
         target.setRole(req.role());
@@ -424,8 +425,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         userRepository.save(user);
         revokeAllSessionsInternal(userId);
         adminAuditor.record(AuditOperation.UPDATE, RESOURCE, userId, "ADMIN_USER_DISABLE", reason);
-        notifyQuietly(userId, "Your account has been disabled",
-                "Your account was disabled by an administrator. Contact support if you believe this is a mistake.");
+        notifyQuietly(userId, UserMessages.NOTIF_ACCOUNT_DISABLED_TITLE,
+                UserMessages.NOTIF_ACCOUNT_DISABLED_BODY);
     }
 
     @Override
@@ -435,8 +436,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         user.audit(AuditAction.UPDATE, "Account re-enabled by admin");
         userRepository.save(user);
         adminAuditor.record(AuditOperation.UPDATE, RESOURCE, userId, "ADMIN_USER_ENABLE");
-        notifyQuietly(userId, "Your account has been re-enabled",
-                "Your account was re-enabled by an administrator. You can log in again.");
+        notifyQuietly(userId, UserMessages.NOTIF_ACCOUNT_ENABLED_TITLE,
+                UserMessages.NOTIF_ACCOUNT_ENABLED_BODY);
     }
 
     @Override
@@ -517,9 +518,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         int revoked = revokeAllSessionsInternal(userId);
         adminAuditor.record(AuditOperation.UPDATE, RESOURCE, userId,
                 "ADMIN_PASSWORD_RESET", "sessions revoked=" + revoked);
-        notifyQuietly(userId, "Your password was reset",
-                "An administrator reset your password and signed out all devices. "
-                        + "If you did not expect this, contact support immediately.");
+        notifyQuietly(userId, UserMessages.NOTIF_PASSWORD_RESET_TITLE,
+                UserMessages.NOTIF_PASSWORD_RESET_BODY);
         return new AdminPasswordResetResponse(temp, revoked);
     }
 
@@ -532,9 +532,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         int revoked = revokeAllSessionsInternal(userId);
         adminAuditor.record(AuditOperation.UPDATE, RESOURCE, userId,
                 "ADMIN_2FA_RESET", note("sessions revoked=" + revoked, reason));
-        notifyQuietly(userId, "Two-factor authentication was reset",
-                "An administrator reset the two-factor authentication on your account. "
-                        + "If you did not request this, contact support immediately.");
+        notifyQuietly(userId, UserMessages.NOTIF_TWO_FA_RESET_TITLE,
+                UserMessages.NOTIF_TWO_FA_RESET_BODY);
     }
 
     @Override
@@ -557,8 +556,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         boolean sendInvite = Boolean.TRUE.equals(request.sendInvite());
         if (request.temporaryPassword() == null && !sendInvite) {
             throw new BadRequestException(
-                    "Provide temporaryPassword or set sendInvite=true — otherwise the account has no way to log in.",
-                    "PASSWORD_OR_INVITE_REQUIRED");
+                    UserMessages.PASSWORD_OR_INVITE_REQUIRED_MSG,
+                    UserMessages.PASSWORD_OR_INVITE_REQUIRED);
         }
         // The admin form's documented default is USER — never inherit the
         // register path's SCHOLAR fallback.
@@ -575,8 +574,8 @@ public class AdminUserServiceImpl implements AdminUserService {
 
         if (sendInvite) {
             UserInvite invite = saveInvite(user.getEmail(), role);
-            mailInvite(invite, "You have been invited to IRC",
-                    "An administrator created an account for you. Set your password to get started: ");
+            mailInvite(invite, UserMessages.NOTIF_INVITE_SUBJECT,
+                    UserMessages.NOTIF_INVITE_ADMIN_CREATED_INTRO);
         }
         return detail(user.getId());
     }
@@ -618,8 +617,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         }
         Role role = request.role() != null ? request.role() : Role.USER;
         UserInvite invite = saveInvite(request.email(), role);
-        mailInvite(invite, "You have been invited to IRC",
-                "You have been invited to join IRC. Create your account here: ");
+        mailInvite(invite, UserMessages.NOTIF_INVITE_SUBJECT,
+                UserMessages.NOTIF_INVITE_JOIN_INTRO);
         adminAuditor.record(AuditOperation.CREATE, "UserInvite", invite.getId(),
                 "ADMIN_USER_INVITE", request.email() + " as " + role);
         return toInviteResponse(invite);
@@ -630,13 +629,13 @@ public class AdminUserServiceImpl implements AdminUserService {
         UserInvite invite = inviteRepository.findById(inviteId)
                 .orElseThrow(() -> new ResourceNotFoundException("UserInvite", "id", inviteId));
         if (invite.getUsedAt() != null) {
-            throw new ConflictException("Invite already used.", "INVITE_USED");
+            throw new ConflictException(UserMessages.INVITE_USED_MSG, UserMessages.INVITE_USED);
         }
         invite.setRevokedAt(null);
         invite.setExpiresAt(LocalDateTime.now().plusDays(7));
         inviteRepository.save(invite);
-        mailInvite(invite, "Your IRC invitation (reminder)",
-                "You have been invited to join IRC. Create your account here: ");
+        mailInvite(invite, UserMessages.NOTIF_INVITE_RESEND_SUBJECT,
+                UserMessages.NOTIF_INVITE_JOIN_INTRO);
         adminAuditor.record(AuditOperation.UPDATE, "UserInvite", inviteId, "ADMIN_INVITE_RESEND");
         return toInviteResponse(invite);
     }
@@ -655,7 +654,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         UserInvite invite = inviteRepository.findByToken(request.token())
                 .filter(UserInvite::isUsable)
                 .orElseThrow(() -> new BadRequestException(
-                        "Invite is invalid, revoked, used, or expired.", "INVITE_INVALID"));
+                        UserMessages.INVITE_INVALID_MSG, UserMessages.INVITE_INVALID));
 
         User user = userRepository.findByEmailAndDeletedAtIsNull(invite.getEmail()).orElse(null);
         if (user != null) {
@@ -759,9 +758,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         var strike = strikeService.issueStrike(userId, request.reportId(), request.reason());
         adminAuditor.record(AuditOperation.CREATE, RESOURCE, userId,
                 "ADMIN_STRIKE_ISSUE", request.reason());
-        notifyQuietly(userId, "Account warning",
-                "A moderation strike was recorded on your account: " + request.reason()
-                        + ". Strikes expire automatically after 90 days.");
+        notifyQuietly(userId, UserMessages.NOTIF_STRIKE_TITLE,
+                UserMessages.NOTIF_STRIKE_BODY.formatted(request.reason()));
         return toStrikeRow(strike);
     }
 
@@ -779,14 +777,14 @@ public class AdminUserServiceImpl implements AdminUserService {
                     case "REQUEST_DELETION" -> requestDeletion(id, request.reason());
                     case "CHANGE_ROLE" -> {
                         if (request.role() == null) {
-                            throw new BadRequestException("role is required for CHANGE_ROLE",
-                                    "INVALID_INPUT");
+                            throw new BadRequestException(UserMessages.ROLE_REQUIRED_FOR_CHANGE_ROLE_MSG,
+                                    UserMessages.INVALID_INPUT);
                         }
                         changeRole(id, new AdminChangeRoleRequest(request.role(), request.reason()));
                     }
                     default -> throw new BadRequestException(
-                            "Unknown action. Allowed: DISABLE, ENABLE, LOCK, UNLOCK, REQUEST_DELETION, CHANGE_ROLE.",
-                            "INVALID_BULK_ACTION");
+                            UserMessages.INVALID_BULK_ACTION_MSG,
+                            UserMessages.INVALID_BULK_ACTION);
                 }
                 results.add(new AdminBulkActionResult(id, "ok", null));
             } catch (Exception exd) {
@@ -811,7 +809,8 @@ public class AdminUserServiceImpl implements AdminUserService {
     private void requireNotSelf(UUID targetUserId, String what) {
         UUID adminId = SecurityUtils.getCurrentUserId().orElse(null);
         if (adminId != null && adminId.equals(targetUserId)) {
-            throw new ForbiddenException("You cannot " + what + ".", "SELF_ACTION_FORBIDDEN");
+            throw new ForbiddenException(UserMessages.SELF_ACTION_FORBIDDEN_MSG.formatted(what),
+                    UserMessages.SELF_ACTION_FORBIDDEN);
         }
     }
 
@@ -878,8 +877,8 @@ public class AdminUserServiceImpl implements AdminUserService {
             case "DELETED"  -> u.getDeletedAt() != null;
             case "LOCKED"   -> !u.isAccountNonLocked();
             default -> throw new BadRequestException(
-                    "Unknown status filter. Allowed: ACTIVE, DISABLED, DELETED, LOCKED.",
-                    "INVALID_STATUS_FILTER");
+                    UserMessages.INVALID_STATUS_FILTER_WITH_LOCKED_MSG,
+                    UserMessages.INVALID_STATUS_FILTER);
         };
     }
 

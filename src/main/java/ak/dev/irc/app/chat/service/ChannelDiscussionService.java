@@ -17,6 +17,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,10 +58,10 @@ public class ChannelDiscussionService {
         ConversationMember inGroup = memberRepo.findMember(groupId, actorId)
                 .filter(m -> m.isActive() && m.isAdminOrOwner())
                 .orElseThrow(() -> new ForbiddenException(
-                        "You must be an admin of the discussion group to link it.", "ADMINS_ONLY"));
+                        ChannelStreamMessages.DISCUSSION_LINK_ADMIN_REQUIRED_MSG, ChannelStreamMessages.ADMINS_ONLY));
         if (conversationRepo.findByLinkedGroupId(groupId)
                 .filter(c -> !c.getId().equals(channelId)).isPresent()) {
-            throw new BadRequestException("That group is already another channel's discussion group.");
+            throw new BadRequestException(ChannelStreamMessages.DISCUSSION_GROUP_TAKEN_MSG);
         }
         channel.setLinkedGroupId(groupId);
         conversationRepo.save(channel);
@@ -103,11 +104,11 @@ public class ChannelDiscussionService {
         requirePostOf(channelId, postId);
         UUID groupId = channel.getLinkedGroupId();
         if (groupId == null) {
-            throw new BadRequestException("This channel has no discussion group — comments are disabled.");
+            throw new BadRequestException(ChannelStreamMessages.DISCUSSION_GROUP_MISSING_MSG);
         }
         Conversation group = conversationRepo.findById(groupId)
                 .filter(c -> c.getDeletedAt() == null && c.isGroup())
-                .orElseThrow(() -> new BadRequestException("The discussion group is gone."));
+                .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.DISCUSSION_GROUP_GONE_MSG));
         autoJoin(group, userId);
         req.setReplyToId(postId);
         return messageService.send(groupId, userId, req);
@@ -119,7 +120,8 @@ public class ChannelDiscussionService {
         ConversationMember existing = memberRepo.findMember(group.getId(), userId).orElse(null);
         if (existing != null && existing.isActive()) return;
         if (existing != null && existing.getStatus() == MemberStatus.RESTRICTED) {
-            throw new ForbiddenException("You are restricted in the discussion group.", "READ_ONLY");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.DISCUSSION_RESTRICTED_MSG, ChannelStreamMessages.READ_ONLY);
         }
         if (existing != null) {
             existing.setStatus(MemberStatus.ACTIVE);
@@ -136,7 +138,7 @@ public class ChannelDiscussionService {
                 .filter(m -> !Boolean.TRUE.equals(m.getDeleted()))
                 .orElseThrow(() -> new ResourceNotFoundException("Post", "id", postId));
         if (!channelId.equals(post.getConversationId())) {
-            throw new BadRequestException("That message is not a post of this channel.");
+            throw new BadRequestException(ChannelStreamMessages.NOT_CHANNEL_POST_MSG);
         }
     }
 
@@ -149,13 +151,15 @@ public class ChannelDiscussionService {
     private void requireSubscriber(UUID channelId, UUID userId) {
         memberRepo.findMember(channelId, userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this channel.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChannelStreamMessages.NOT_CHANNEL_MEMBER_MSG, ChannelStreamMessages.NOT_A_MEMBER));
     }
 
     private void requireChangeInfo(UUID channelId, UUID actorId) {
         ConversationMember actor = memberRepo.findMember(channelId, actorId).orElse(null);
         if (!ChannelRights.can(actor, AdminRights::isCanChangeInfo)) {
-            throw new ForbiddenException("You cannot manage this channel's discussion group.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.DISCUSSION_MANAGE_FORBIDDEN_MSG, ChannelStreamMessages.ADMINS_ONLY);
         }
     }
 }

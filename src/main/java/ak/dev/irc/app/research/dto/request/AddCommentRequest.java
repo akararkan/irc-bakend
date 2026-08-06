@@ -1,12 +1,13 @@
 package ak.dev.irc.app.research.dto.request;
 
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import jakarta.validation.constraints.Size;
 
 import java.util.UUID;
 
 public record AddCommentRequest(
 
-    @Size(max = 5000, message = "Comment must not exceed 5 000 characters")
+    @Size(max = 5000, message = ResearchMessages.VAL_COMMENT_MAX_5000)
     String content,
 
     /** Null for top-level comments; set for replies */

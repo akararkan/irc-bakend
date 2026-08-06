@@ -5,6 +5,7 @@ import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.settings.consent.service.ConsentService;
 import ak.dev.irc.app.settings.safety.entity.Report;
@@ -206,9 +207,9 @@ public class AdminSafetyController {
         adminAuditor.record(AuditOperation.CREATE, "User", userId,
                 "ADMIN_STRIKE_ISSUE", body.reason());
         try {
-            notificationService.sendSystemNotification(userId, "Account warning",
-                    "A moderation strike was recorded on your account: " + body.reason()
-                            + ". Strikes expire automatically after 90 days.");
+            notificationService.sendSystemNotification(userId,
+                    AdminOpsMessages.NOTIF_STRIKE_TITLE,
+                    AdminOpsMessages.NOTIF_STRIKE_BODY.formatted(body.reason()));
         } catch (Exception e) {
             log.debug("[ADMIN-SAFETY] strike notification skipped: {}", e.getMessage());
         }
@@ -357,8 +358,9 @@ public class AdminSafetyController {
         try {
             return ReportState.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown state. Allowed: "
-                    + java.util.Arrays.toString(ReportState.values()), "INVALID_STATE");
+            throw new BadRequestException(AdminOpsMessages.INVALID_STATE_MSG.formatted(
+                    java.util.Arrays.toString(ReportState.values())),
+                    AdminOpsMessages.INVALID_STATE);
         }
     }
 
@@ -366,8 +368,9 @@ public class AdminSafetyController {
         try {
             return Resolution.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown resolution. Allowed: "
-                    + java.util.Arrays.toString(Resolution.values()), "INVALID_RESOLUTION");
+            throw new BadRequestException(AdminOpsMessages.INVALID_RESOLUTION_PARSE_MSG.formatted(
+                    java.util.Arrays.toString(Resolution.values())),
+                    AdminOpsMessages.INVALID_RESOLUTION);
         }
     }
 }

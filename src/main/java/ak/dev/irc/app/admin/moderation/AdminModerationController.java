@@ -6,6 +6,7 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.media.enums.MediaStatus;
 import ak.dev.irc.app.media.repository.MediaAssetRepository;
@@ -144,7 +145,8 @@ public class AdminModerationController {
                             case "COMMENT" -> adminContentService.deleteComment(id, request.reason(), null);
                             case "STORY" -> adminContentService.deleteStory(id, request.reason(), null);
                             default -> throw new BadRequestException(
-                                    "DELETE supports COMMENT and STORY targets.", "INVALID_BULK_TARGET");
+                                    AdminContentMessages.INVALID_BULK_TARGET_DELETE_MSG,
+                                    AdminContentMessages.INVALID_BULK_TARGET);
                         }
                     }
                     case "SOUND_APPROVE" -> {
@@ -156,8 +158,8 @@ public class AdminModerationController {
                         adminSoundService.reject(id, request.reason(), null);
                     }
                     default -> throw new BadRequestException(
-                            "Unknown action. Allowed: TAKEDOWN, RESTORE, DELETE, SOUND_APPROVE, SOUND_REJECT.",
-                            "INVALID_BULK_ACTION");
+                            AdminContentMessages.INVALID_BULK_ACTION_MSG,
+                            AdminContentMessages.INVALID_BULK_ACTION);
                 }
                 results.add(new BulkResult(target.type(), target.id(), "ok", null));
             } catch (Exception ex) {
@@ -172,8 +174,9 @@ public class AdminModerationController {
 
     private static void requireType(String actual, String expected) {
         if (!expected.equals(actual)) {
-            throw new BadRequestException("This action needs a " + expected + " target.",
-                    "INVALID_BULK_TARGET");
+            throw new BadRequestException(
+                    AdminContentMessages.INVALID_BULK_TARGET_NEEDS_MSG.formatted(expected),
+                    AdminContentMessages.INVALID_BULK_TARGET);
         }
     }
 

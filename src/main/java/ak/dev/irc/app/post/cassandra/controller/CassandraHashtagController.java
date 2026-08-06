@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.controller;
 
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.MentionByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByHashtagEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraHashtagService;
@@ -44,7 +45,7 @@ public class CassandraHashtagController {
         UUID me = ak.dev.irc.app.security.SecurityUtils.getCurrentUserId().orElse(null);
         if (me == null || !me.equals(userId)) {
             throw new ak.dev.irc.app.common.exception.ForbiddenException(
-                    "You can only read your own mentions.", "NOT_OWNER");
+                    PostMessages.NOT_OWNER_MSG, PostMessages.NOT_OWNER);
         }
         return hashtagService.mentionsForUser(userId, pageSize);
     }

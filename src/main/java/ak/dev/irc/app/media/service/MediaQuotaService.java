@@ -90,10 +90,10 @@ public class MediaQuotaService {
 
     private AppException quotaError(String dimension, String budget, Role role) {
         return new AppException(
-                "Daily upload quota reached (" + budget + " per day for your account tier). "
-                        + "The quota resets at midnight UTC.",
+                ak.dev.irc.app.common.messages.MediaMessages.MEDIA_QUOTA_EXCEEDED_MSG
+                        .formatted(budget),
                 HttpStatus.TOO_MANY_REQUESTS,
-                "MEDIA_QUOTA_EXCEEDED",
+                ak.dev.irc.app.common.messages.MediaMessages.MEDIA_QUOTA_EXCEEDED,
                 Map.of("dimension", dimension, "role", role.name(), "resetsAt", "00:00 UTC"));
     }
 }

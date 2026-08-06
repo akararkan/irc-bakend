@@ -11,6 +11,7 @@ import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.entity.User;
@@ -76,8 +77,9 @@ public class AdminActivityController {
         try {
             kind = BreakGlassCase.CaseKind.valueOf(body.kind().trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown kind. Allowed: "
-                    + java.util.Arrays.toString(BreakGlassCase.CaseKind.values()), "INVALID_KIND");
+            throw new BadRequestException(AdminContentMessages.INVALID_KIND_MSG.formatted(
+                    java.util.Arrays.toString(BreakGlassCase.CaseKind.values())),
+                    AdminContentMessages.INVALID_KIND);
         }
         BreakGlassCase saved = caseRepository.save(BreakGlassCase.builder()
                 .targetUserId(targetUserId)
@@ -99,12 +101,13 @@ public class AdminActivityController {
         BreakGlassCase bgCase = caseRepository.findById(caseId)
                 .orElseThrow(() -> new ResourceNotFoundException("BreakGlassCase", "id", caseId));
         if (bgCase.getStatus() != BreakGlassCase.Status.PENDING_APPROVAL) {
-            throw new BadRequestException("Case is not pending approval.", "CASE_NOT_PENDING");
+            throw new BadRequestException(AdminContentMessages.CASE_NOT_PENDING_MSG,
+                    AdminContentMessages.CASE_NOT_PENDING);
         }
         if (admin.getId().equals(bgCase.getOpenedBy())) {
             throw new ForbiddenException(
-                    "Dual control: a break-glass case cannot be approved by the admin who opened it.",
-                    "DUAL_CONTROL_REQUIRED");
+                    AdminContentMessages.DUAL_CONTROL_REQUIRED_MSG,
+                    AdminContentMessages.DUAL_CONTROL_REQUIRED);
         }
         bgCase.setStatus(BreakGlassCase.Status.OPEN);
         bgCase.setApprovedBy(admin.getId());
@@ -234,7 +237,8 @@ public class AdminActivityController {
             try {
                 type = UserActivityType.valueOf(body.type().trim().toUpperCase());
             } catch (Exception e) {
-                throw new BadRequestException("Unknown activity type.", "INVALID_TYPE");
+                throw new BadRequestException(AdminContentMessages.INVALID_TYPE_ACTIVITY_MSG,
+                        AdminContentMessages.INVALID_TYPE);
             }
         }
         int deleted = userActivityService.deleteAll(userId, type);
@@ -242,7 +246,7 @@ public class AdminActivityController {
                 (type == null ? "all types" : type.name()) + ", rows=" + deleted
                         + (body != null && body.reason() != null ? " — " + body.reason() : ""));
         return ResponseEntity.ok(Map.of("deleted", deleted,
-                "note", "hard cap 10k rows per call — repeat for heavier histories"));
+                "note", AdminContentMessages.NOTE_ACTIVITY_ERASE_CAP));
     }
 
     // ── the gate ────────────────────────────────────────────────────────
@@ -253,10 +257,8 @@ public class AdminActivityController {
                 .stream().anyMatch(BreakGlassCase::isOpenNow);
         if (!open) {
             throw new ForbiddenException(
-                    "Break-glass access requires an OPEN dual-control case for this user "
-                            + "(POST /api/v1/admin/breakglass/{userId}, approved by a second admin). "
-                            + "The default is no access.",
-                    "BREAKGLASS_CASE_REQUIRED");
+                    AdminContentMessages.BREAKGLASS_CASE_REQUIRED_MSG,
+                    AdminContentMessages.BREAKGLASS_CASE_REQUIRED);
         }
         UUID adminId = SecurityUtils.getCurrentUserId().orElse(null);
         adminAuditor.record(AuditOperation.READ, "User", targetUserId, auditAction,

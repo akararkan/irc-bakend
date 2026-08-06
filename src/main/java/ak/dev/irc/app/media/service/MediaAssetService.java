@@ -3,6 +3,7 @@ package ak.dev.irc.app.media.service;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.MediaMessages;
 import ak.dev.irc.app.media.config.MediaProperties;
 import ak.dev.irc.app.media.dto.MediaDtos.*;
 import ak.dev.irc.app.media.entity.MediaAsset;
@@ -57,8 +58,8 @@ public class MediaAssetService {
                                   : props.getLimits().getImageMaxBytes();
         if (req.sizeBytes() > cap) {
             throw new BadRequestException(
-                    "File exceeds the maximum size for " + type + " (" + cap + " bytes).",
-                    "MEDIA_TOO_LARGE");
+                    MediaMessages.MEDIA_TOO_LARGE_MSG.formatted(type, cap),
+                    MediaMessages.MEDIA_TOO_LARGE);
         }
 
         // Per-role daily quota (§8) — checked before dedup so a capped user
@@ -92,7 +93,7 @@ public class MediaAssetService {
         } catch (UnsupportedOperationException ex) {
             // No-op storage (unconfigured) — surface a clear error.
             throw new BadRequestException(
-                    "Media storage is not configured on this server.", "STORAGE_UNAVAILABLE");
+                    MediaMessages.STORAGE_UNAVAILABLE_MSG, MediaMessages.STORAGE_UNAVAILABLE);
         }
         return new UploadIntentResponse(asset.getId(), presignedPutUrl, false, asset.getStatus().name());
     }
@@ -148,8 +149,8 @@ public class MediaAssetService {
             asset.setStatus(MediaStatus.FAILED_VALIDATION);
             asset.setErrorMessage("Raw upload not found or unreadable.");
             assetRepo.save(asset);
-            throw new BadRequestException("Uploaded file was not found. Re-upload and retry.",
-                    "MEDIA_RAW_MISSING");
+            throw new BadRequestException(MediaMessages.MEDIA_RAW_MISSING_MSG,
+                    MediaMessages.MEDIA_RAW_MISSING);
         }
         processingService.submit(assetId, bytes, asset.getType(), asset.getRequestedTier());
     }
@@ -185,7 +186,8 @@ public class MediaAssetService {
         MediaAsset asset = assetRepo.findById(assetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Media", "id", assetId));
         if (!asset.getOwnerId().equals(ownerId)) {
-            throw new ForbiddenException("You do not own this media.", "NOT_MEDIA_OWNER");
+            throw new ForbiddenException(MediaMessages.NOT_MEDIA_OWNER_MSG,
+                    MediaMessages.NOT_MEDIA_OWNER);
         }
         return asset;
     }

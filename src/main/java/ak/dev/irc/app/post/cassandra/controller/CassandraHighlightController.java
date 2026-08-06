@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.cassandra.controller;
 
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.HighlightByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryInHighlightEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraHighlightService;
@@ -30,7 +31,7 @@ public class CassandraHighlightController {
     @PostMapping
     public HighlightByAuthorEntity create(@RequestBody CreateHighlightRequest req,
                                           @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return highlightService.createHighlight(user.getId(), req.title(),
                                                 req.coverUrl(), req.displayOrder());
     }
@@ -44,7 +45,7 @@ public class CassandraHighlightController {
     public ResponseEntity<StoryInHighlightEntity> addStory(@PathVariable UUID highlightId,
                                                            @PathVariable UUID storyId,
                                                            @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         // Actor comes from the JWT — a client-supplied requesterId would defeat
         // the service's author check entirely.
         return highlightService.addStoryToHighlight(highlightId, storyId, user.getId())
@@ -62,7 +63,7 @@ public class CassandraHighlightController {
                                             @PathVariable UUID storyId,
                                             @RequestParam Instant createdAt,
                                             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         highlightService.removeStoryFromHighlight(highlightId, createdAt, storyId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -80,9 +81,9 @@ public class CassandraHighlightController {
     @PatchMapping("/order")
     public List<HighlightByAuthorEntity> reorder(@RequestBody ReorderRequest req,
                                                  @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         if (req == null || req.order() == null) {
-            throw new ForbiddenException("order list is required");
+            throw new ForbiddenException(PostMessages.ORDER_LIST_REQUIRED_MSG);
         }
         return highlightService.reorderHighlights(user.getId(), req.order());
     }

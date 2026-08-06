@@ -1,5 +1,6 @@
 package ak.dev.irc.app.user.dto.request;
 
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.user.enums.Role;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -13,9 +14,9 @@ import jakarta.validation.constraints.Size;
  * so future operators can see why a role was changed.</p>
  */
 public record AdminChangeRoleRequest(
-        @NotNull(message = "role is required")
+        @NotNull(message = UserMessages.VAL_ROLE_REQUIRED)
         Role role,
 
-        @Size(max = 500, message = "reason must not exceed 500 characters")
+        @Size(max = 500, message = UserMessages.VAL_REASON_MAX_500)
         String reason
 ) {}

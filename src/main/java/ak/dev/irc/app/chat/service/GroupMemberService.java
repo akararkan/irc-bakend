@@ -20,6 +20,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -70,7 +71,8 @@ public class GroupMemberService {
         // Channels can hide their subscriber list from non-admins (count stays public).
         if (c.isChannel() && c.channelSettingsOrDefaults().isHiddenSubscribers()
                 && !me.isAdminOrOwner()) {
-            throw new ForbiddenException("This channel's subscriber list is hidden.", "SUBSCRIBERS_HIDDEN");
+            throw new ForbiddenException(
+                    ChatMessages.SUBSCRIBERS_HIDDEN_MSG, ChatMessages.SUBSCRIBERS_HIDDEN);
         }
         Page<ConversationMember> page = memberRepo.findByConversation(conversationId, pageable);
         Set<UUID> ids = page.getContent().stream().map(m -> m.getId().getUserId()).collect(Collectors.toSet());
@@ -86,11 +88,13 @@ public class GroupMemberService {
         Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.ADD_MEMBERS, null, c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot add members to this group.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.ADD_MEMBERS_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         if (c.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
                 actor, ak.dev.irc.app.chat.dto.AdminRights::isCanInviteUsers)) {
-            throw new ForbiddenException("You cannot add subscribers to this channel.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.ADD_SUBSCRIBERS_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
 
         LinkedHashSet<UUID> candidates = new LinkedHashSet<>(userIds);
@@ -151,10 +155,11 @@ public class GroupMemberService {
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
-        if (target.isOwner()) throw new ForbiddenException("The owner cannot be removed.", "NOT_OWNER");
+        if (target.isOwner()) throw new ForbiddenException(
+                ChatMessages.OWNER_NOT_REMOVABLE_MSG, ChatMessages.NOT_OWNER);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.REMOVE_MEMBER, target.getRole(), c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot remove this member.",
-                    target.isAdminOrOwner() ? "CANNOT_ACT_ON_ADMIN" : "ADMINS_ONLY");
+            throw new ForbiddenException(ChatMessages.REMOVE_MEMBER_FORBIDDEN_MSG,
+                    target.isAdminOrOwner() ? ChatMessages.CANNOT_ACT_ON_ADMIN : ChatMessages.ADMINS_ONLY);
         }
         target.setStatus(MemberStatus.REMOVED);
         memberRepo.save(target);
@@ -169,18 +174,20 @@ public class GroupMemberService {
     @Transactional
     public void changeRole(UUID conversationId, UUID actorId, UUID targetId, MemberRole newRole) {
         if (newRole != MemberRole.ADMIN && newRole != MemberRole.MEMBER) {
-            throw new BadRequestException("role must be ADMIN or MEMBER.");
+            throw new BadRequestException(ChatMessages.ROLE_MUST_BE_ADMIN_OR_MEMBER_MSG);
         }
         Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
-        if (target.isOwner()) throw new ForbiddenException("The owner's role cannot be changed.", "NOT_OWNER");
+        if (target.isOwner()) throw new ForbiddenException(
+                ChatMessages.OWNER_ROLE_IMMUTABLE_MSG, ChatMessages.NOT_OWNER);
 
         boolean promote = newRole == MemberRole.ADMIN;
         GroupAction action = promote ? GroupAction.PROMOTE_ADMIN : GroupAction.DEMOTE_ADMIN;
         if (!GroupPermissions.can(actor.getRole(), action, target.getRole(), c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot change this member's role.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.CHANGE_ROLE_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         if (target.getRole() == newRole) return; // no-op
 
@@ -200,10 +207,11 @@ public class GroupMemberService {
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         ConversationMember target = memberRepo.findMember(conversationId, targetId)
                 .orElseThrow(() -> new ResourceNotFoundException("Member", "userId", targetId));
-        if (target.isOwner()) throw new ForbiddenException("The owner cannot be restricted.", "NOT_OWNER");
+        if (target.isOwner()) throw new ForbiddenException(
+                ChatMessages.OWNER_NOT_RESTRICTABLE_MSG, ChatMessages.NOT_OWNER);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.RESTRICT_MEMBER, target.getRole(), c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot restrict this member.",
-                    target.isAdminOrOwner() ? "CANNOT_ACT_ON_ADMIN" : "ADMINS_ONLY");
+            throw new ForbiddenException(ChatMessages.RESTRICT_MEMBER_FORBIDDEN_MSG,
+                    target.isAdminOrOwner() ? ChatMessages.CANNOT_ACT_ON_ADMIN : ChatMessages.ADMINS_ONLY);
         }
         target.setStatus(restricted ? MemberStatus.RESTRICTED : MemberStatus.ACTIVE);
         memberRepo.save(target);
@@ -217,7 +225,7 @@ public class GroupMemberService {
         Conversation c = requireGroup(conversationId);
         ConversationMember me = requireActiveMember(conversationId, userId);
         if (me.isOwner() && c.getMemberCount() > 1) {
-            throw new BadRequestException("Transfer ownership before leaving, or delete the group.");
+            throw new BadRequestException(ChatMessages.LEAVE_TRANSFER_FIRST_MSG);
         }
         boolean soleOwner = me.isOwner();
         MemberRole roleBefore = me.getRole();
@@ -241,9 +249,11 @@ public class GroupMemberService {
     public void transferOwnership(UUID conversationId, UUID actorId, UUID newOwnerId) {
         Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = memberRepo.findMember(conversationId, actorId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_SHORT_MSG, ChatMessages.NOT_A_MEMBER));
         if (!GroupPermissions.can(actor.getRole(), GroupAction.TRANSFER_OWNERSHIP, null, c.getGroupSettings())) {
-            throw new ForbiddenException("Only the owner can transfer ownership.", "NOT_OWNER");
+            throw new ForbiddenException(
+                    ChatMessages.TRANSFER_OWNER_ONLY_MSG, ChatMessages.NOT_OWNER);
         }
         ConversationMember target = memberRepo.findMember(conversationId, newOwnerId)
                 .filter(ConversationMember::isActive)
@@ -317,10 +327,12 @@ public class GroupMemberService {
     public ak.dev.irc.app.chat.dto.response.JoinByTokenResponse join(UUID userId, String token) {
         ConversationInvite invite = inviteRepo.findByTokenHash(sha256(token))
                 .filter(ConversationInvite::isUsable)
-                .orElseThrow(() -> new ForbiddenException("This invite link is invalid or has expired.", "INVITE_INVALID"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.INVITE_INVALID_MSG, ChatMessages.INVITE_INVALID));
         Conversation c = conversationRepo.findById(invite.getConversationId())
                 .filter(x -> x.getDeletedAt() == null)
-                .orElseThrow(() -> new ForbiddenException("This invite link is invalid or has expired.", "INVITE_INVALID"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.INVITE_INVALID_MSG, ChatMessages.INVITE_INVALID));
 
         ConversationMember existing = memberRepo.findMember(c.getId(), userId).orElse(null);
         // Already a member (ACTIVE) or RESTRICTED (read-only) → idempotent no-op;
@@ -332,7 +344,7 @@ public class GroupMemberService {
         // Atomically consume a use up-front so maxUses can't be exceeded under
         // concurrency (guarded UPDATE; 0 rows affected ⇒ exhausted/expired).
         if (inviteRepo.consumeUse(invite.getId()) == 0) {
-            throw new ForbiddenException("This invite link is invalid or has expired.", "INVITE_INVALID");
+            throw new ForbiddenException(ChatMessages.INVITE_INVALID_MSG, ChatMessages.INVITE_INVALID);
         }
         // Approval-gated link → file a join request instead of joining now.
         if (invite.isRequiresApproval()) {
@@ -361,11 +373,13 @@ public class GroupMemberService {
         Conversation c = requireGroupOrChannel(conversationId);
         ConversationMember actor = requireActiveMember(conversationId, actorId);
         if (!GroupPermissions.can(actor.getRole(), GroupAction.CREATE_INVITE, null, c.getGroupSettings())) {
-            throw new ForbiddenException("You cannot manage invite links here.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.MANAGE_INVITES_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         if (c.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
                 actor, ak.dev.irc.app.chat.dto.AdminRights::isCanInviteUsers)) {
-            throw new ForbiddenException("You cannot manage invite links here.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.MANAGE_INVITES_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
     }
 
@@ -412,7 +426,7 @@ public class GroupMemberService {
         Conversation c = conversationRepo.findById(conversationId)
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
-        if (!c.isGroup()) throw new BadRequestException("This action applies only to group conversations.");
+        if (!c.isGroup()) throw new BadRequestException(ChatMessages.GROUP_ONLY_ACTION_MSG);
         return c;
     }
 
@@ -423,7 +437,7 @@ public class GroupMemberService {
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         if (!c.isGroup() && !c.isChannel()) {
-            throw new BadRequestException("This action applies only to group or channel conversations.");
+            throw new BadRequestException(ChatMessages.GROUP_OR_CHANNEL_ONLY_ACTION_MSG);
         }
         return c;
     }
@@ -436,13 +450,15 @@ public class GroupMemberService {
     private ConversationMember requireActiveMember(UUID conversationId, UUID userId) {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
-                .orElseThrow(() -> new ForbiddenException("You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     private ConversationMember requireReadableMember(UUID conversationId, UUID userId) {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     private String label(UUID userId, Map<UUID, User> known) {
@@ -456,7 +472,7 @@ public class GroupMemberService {
             byte[] d = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
             return java.util.HexFormat.of().formatHex(d);
         } catch (Exception e) {
-            throw new BadRequestException("Could not process the invite token.");
+            throw new BadRequestException(ChatMessages.INVITE_TOKEN_FAILED_MSG);
         }
     }
 }

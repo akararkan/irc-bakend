@@ -14,6 +14,7 @@ import ak.dev.irc.app.activity.realtime.UserActivityRealtimeEvent;
 import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.post.enums.PostReactionType;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
 import lombok.RequiredArgsConstructor;
@@ -141,7 +142,7 @@ public class UserActivityServiceImpl implements UserActivityService {
         ActivityLookupEntity meta = lookupRepo.findById(activityId)
                 .orElseThrow(() -> new ResourceNotFoundException("UserActivity", "id", activityId));
         if (!meta.getUserId().equals(userId)) {
-            throw new ForbiddenException("You cannot delete another user's activity");
+            throw new ForbiddenException(UserMessages.ACTIVITY_DELETE_FORBIDDEN_MSG);
         }
         activityRepo.delete(meta.getUserId(), meta.getCreatedAt(), activityId);
         byTypeRepo.delete(meta.getUserId(), meta.getActivityType(),

@@ -6,6 +6,7 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.research.cassandra.service.CassandraResearchEngagementService;
 import ak.dev.irc.app.research.entity.Research;
@@ -89,7 +90,7 @@ public class AdminResearchController {
             case "downloads" -> researchRepository.topByDownloads(clamp(pageable));
             case "citations" -> researchRepository.topByCitations(clamp(pageable));
             default -> throw new BadRequestException(
-                    "Unknown 'by'. Allowed: downloads, citations.", "INVALID_SORT");
+                    AdminContentMessages.INVALID_SORT_MSG, AdminContentMessages.INVALID_SORT);
         };
         return ResponseEntity.ok(page.map(AdminResearchController::toRow));
     }
@@ -143,9 +144,9 @@ public class AdminResearchController {
         Research r = require(id);
         researchService.unpublish(id, r.getResearcher().getId());
         record(r, "ADMIN_RESEARCH_UNPUBLISH", reason(body));
-        notifyOwner(r, "Your research was unpublished",
-                "Your research \"" + r.getTitle() + "\" was unpublished by moderation"
-                        + suffix(body) + ".");
+        notifyOwner(r, AdminContentMessages.NOTIF_RESEARCH_UNPUBLISHED_TITLE,
+                AdminContentMessages.NOTIF_RESEARCH_UNPUBLISHED_BODY
+                        .formatted(r.getTitle(), suffix(body)));
         return ResponseEntity.noContent().build();
     }
 
@@ -156,9 +157,9 @@ public class AdminResearchController {
         Research r = require(id);
         researchService.retract(id, r.getResearcher().getId());
         record(r, "ADMIN_RESEARCH_RETRACT", reason(body));
-        notifyOwner(r, "Your research was retracted",
-                "Your research \"" + r.getTitle() + "\" was retracted by moderation"
-                        + suffix(body) + ".");
+        notifyOwner(r, AdminContentMessages.NOTIF_RESEARCH_RETRACTED_TITLE,
+                AdminContentMessages.NOTIF_RESEARCH_RETRACTED_BODY
+                        .formatted(r.getTitle(), suffix(body)));
         return ResponseEntity.noContent().build();
     }
 
@@ -171,8 +172,8 @@ public class AdminResearchController {
         String title = r.getTitle();
         record(r, "ADMIN_RESEARCH_DELETE", reason(body));
         researchService.delete(id, ownerId);
-        notifyUser(ownerId, "Your research was removed",
-                "Your research \"" + title + "\" was removed by moderation" + suffix(body) + ".");
+        notifyUser(ownerId, AdminContentMessages.NOTIF_RESEARCH_REMOVED_TITLE,
+                AdminContentMessages.NOTIF_RESEARCH_REMOVED_BODY.formatted(title, suffix(body)));
         return ResponseEntity.noContent().build();
     }
 
@@ -180,7 +181,8 @@ public class AdminResearchController {
     public ResponseEntity<ResearchFlag> flag(@PathVariable UUID id, @RequestBody FlagBody body) {
         require(id);
         if (body.type() == null) {
-            throw new BadRequestException("type is required (PLAGIARISM or QUALITY).", "INVALID_INPUT");
+            throw new BadRequestException(AdminContentMessages.INVALID_INPUT_FLAG_TYPE_MSG,
+                    AdminContentMessages.INVALID_INPUT);
         }
         ResearchFlag saved = flagRepository.save(ResearchFlag.builder()
                 .researchId(id)
@@ -246,8 +248,9 @@ public class AdminResearchController {
         try {
             return ResearchStatus.valueOf(raw.trim().toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new BadRequestException("Unknown status. Allowed: "
-                    + java.util.Arrays.toString(ResearchStatus.values()), "INVALID_STATUS");
+            throw new BadRequestException(AdminContentMessages.INVALID_STATUS_MSG.formatted(
+                    java.util.Arrays.toString(ResearchStatus.values())),
+                    AdminContentMessages.INVALID_STATUS);
         }
     }
 

@@ -3,6 +3,7 @@ package ak.dev.irc.app.settings.data.service;
 import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.data.entity.ExportJob;
 import ak.dev.irc.app.settings.data.enums.ExportStatus;
 import ak.dev.irc.app.settings.data.repository.ExportJobRepository;
@@ -77,7 +78,7 @@ public class DataExportService {
         ExportJob job = jobRepo.findById(jobId)
                 .orElseThrow(() -> new ResourceNotFoundException("ExportJob", "id", jobId));
         if (!job.getUserId().equals(userId)) {
-            throw new ForbiddenException("Not your export job.", "NOT_EXPORT_OWNER");
+            throw new ForbiddenException(SettingsMessages.NOT_EXPORT_OWNER_MSG, SettingsMessages.NOT_EXPORT_OWNER);
         }
         // Reflect expiry lazily on read.
         if (job.getStatus() == ExportStatus.READY && job.getExpiresAt() != null
@@ -93,13 +94,13 @@ public class DataExportService {
     public Download openDownload(UUID userId, UUID jobId) {
         ExportJob job = getJob(userId, jobId);
         if (job.getStatus() != ExportStatus.READY || job.getFilePath() == null) {
-            throw new ResourceNotFoundException("Export not ready or expired.");
+            throw new ResourceNotFoundException(SettingsMessages.EXPORT_NOT_READY_MSG);
         }
         try {
             Path p = Path.of(job.getFilePath());
             return new Download(Files.newInputStream(p), job.getSizeBytes() == null ? -1 : job.getSizeBytes());
         } catch (Exception ex) {
-            throw new ResourceNotFoundException("Export file is no longer available.");
+            throw new ResourceNotFoundException(SettingsMessages.EXPORT_FILE_UNAVAILABLE_MSG);
         }
     }
 

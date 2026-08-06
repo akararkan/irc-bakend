@@ -8,6 +8,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.repository.LiveStreamRepository;
 import ak.dev.irc.app.chat.repository.StreamGiftTallyRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.tag.repository.TrendingTagRepository;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.media.repository.MediaAssetRepository;
@@ -126,8 +127,7 @@ public class AdminAnalyticsController {
         }
         body.put("reelsPerDay", reels);
         body.put("postCreatesPerDay", metricDailyService.series("activity.POST_CREATED", days));
-        body.put("note", "posts/stories have no historical date bucket — postCreatesPerDay is "
-                + "collector-sourced and starts at collector deployment.");
+        body.put("note", AdminOpsMessages.NOTE_POST_CREATES_COLLECTOR_SOURCED);
         return ResponseEntity.ok(body);
     }
 
@@ -214,7 +214,7 @@ public class AdminAnalyticsController {
                 }
             }
             default -> throw new BadRequestException(
-                    "Unknown dataset. Allowed: engagement, signups, content.", "INVALID_DATASET");
+                    AdminOpsMessages.INVALID_DATASET_MSG, AdminOpsMessages.INVALID_DATASET);
         }
         adminAuditor.record(AuditOperation.READ, "Analytics", null,
                 "ADMIN_ANALYTICS_EXPORT", dataset + " " + days + "d");
@@ -234,8 +234,7 @@ public class AdminAnalyticsController {
         String m = metric.trim();
         if (m.isEmpty() || m.length() > 80 || !m.matches("[A-Za-z0-9._-]+")) {
             throw new BadRequestException(
-                    "Metric must be 1-80 chars of letters, digits, dot, dash or underscore.",
-                    "INVALID_METRIC");
+                    AdminOpsMessages.INVALID_METRIC_MSG, AdminOpsMessages.INVALID_METRIC);
         }
         int days = clampWindow(window);
         Map<String, Object> body = new LinkedHashMap<>();
@@ -260,7 +259,8 @@ public class AdminAnalyticsController {
                     ? LocalDate.now(ZoneOffset.UTC).withDayOfMonth(1)
                     : LocalDate.parse(cohort.trim() + "-01");
         } catch (Exception e) {
-            throw new BadRequestException("cohort must be YYYY-MM.", "INVALID_COHORT");
+            throw new BadRequestException(
+                    AdminOpsMessages.INVALID_COHORT_MSG, AdminOpsMessages.INVALID_COHORT);
         }
         LocalDateTime from = monthStart.atStartOfDay();
         LocalDateTime to = monthStart.plusMonths(1).atStartOfDay();
@@ -281,8 +281,7 @@ public class AdminAnalyticsController {
             body.put("firstFollow", firstEventsRepository.countFirstFollow(ids));
             body.put("firstContent", firstEventsRepository.countFirstContent(ids));
         }
-        body.put("note", "Milestones are set-once from user_first_events; users who signed up "
-                + "before the funnel tracker deployed only accrue milestones going forward.");
+        body.put("note", AdminOpsMessages.NOTE_FUNNEL_MILESTONES_SET_ONCE);
         return ResponseEntity.ok(body);
     }
 
@@ -336,13 +335,13 @@ public class AdminAnalyticsController {
         LocalDate start = parseDay(from);
         LocalDate end = parseDay(to);
         if (end.isBefore(start)) {
-            throw new BadRequestException("'to' must not be before 'from'.", "INVALID_RANGE");
+            throw new BadRequestException(
+                    AdminOpsMessages.INVALID_RANGE_MSG, AdminOpsMessages.INVALID_RANGE);
         }
         long span = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
         if (span > 90) {
             throw new BadRequestException(
-                    "Backfill is capped at 90 days per call — split larger ranges.",
-                    "RANGE_TOO_LARGE");
+                    AdminOpsMessages.RANGE_TOO_LARGE_MSG, AdminOpsMessages.RANGE_TOO_LARGE);
         }
         int written = 0;
         for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
@@ -396,14 +395,13 @@ public class AdminAnalyticsController {
         String m = metric.trim();
         if (m.isEmpty() || m.length() > 80 || !m.matches("[A-Za-z0-9._-]+")) {
             throw new BadRequestException(
-                    "Metric must be 1-80 chars of letters, digits, dot, dash or underscore.",
-                    "INVALID_METRIC");
+                    AdminOpsMessages.INVALID_METRIC_MSG, AdminOpsMessages.INVALID_METRIC);
         }
         if ((req.zWarn() != null && req.zWarn() <= 0)
                 || (req.zAlert() != null && req.zAlert() <= 0)
                 || (req.minVolume() != null && req.minVolume() < 0)) {
             throw new BadRequestException(
-                    "Thresholds must be positive (minVolume may be 0).", "INVALID_THRESHOLDS");
+                    AdminOpsMessages.INVALID_THRESHOLDS_MSG, AdminOpsMessages.INVALID_THRESHOLDS);
         }
         AnalyticsAlertConfig cfg = alertConfigRepository.findById(m)
                 .orElseGet(() -> AnalyticsAlertConfig.builder().metric(m).build());
@@ -412,7 +410,8 @@ public class AdminAnalyticsController {
         if (req.minVolume() != null) cfg.setMinVolume(req.minVolume());
         if (req.enabled() != null) cfg.setEnabled(req.enabled());
         if (cfg.getZAlert() < cfg.getZWarn()) {
-            throw new BadRequestException("zAlert must be >= zWarn.", "INVALID_THRESHOLDS");
+            throw new BadRequestException(AdminOpsMessages.INVALID_THRESHOLDS_Z_ORDER_MSG,
+                    AdminOpsMessages.INVALID_THRESHOLDS);
         }
         cfg = alertConfigRepository.save(cfg);
         adminAuditor.record(AuditOperation.UPDATE, "Analytics", null,
@@ -435,7 +434,8 @@ public class AdminAnalyticsController {
         try {
             return LocalDate.parse(raw.trim());
         } catch (Exception e) {
-            throw new BadRequestException("Date must be YYYY-MM-DD.", "INVALID_DATE");
+            throw new BadRequestException(
+                    AdminOpsMessages.INVALID_DATE_MSG, AdminOpsMessages.INVALID_DATE);
         }
     }
 

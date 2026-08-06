@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.PollVoteEntity;
 import ak.dev.irc.app.post.cassandra.entity.PollVoterByChoiceEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryPollEntity;
@@ -68,7 +69,7 @@ public class CassandraStoryPollService {
         // Author check — only the story owner can attach a poll.
         var lookup = storyLookupRepo.findById(storyId).orElse(null);
         if (lookup == null || !authorId.equals(lookup.getAuthorId())) {
-            throw new SecurityException("Not the story author");
+            throw new SecurityException(PostMessages.NOT_STORY_AUTHOR_MSG);
         }
         Instant storyExpiresAt = lookup.getExpiresAt();   // null on legacy rows
 
@@ -170,7 +171,7 @@ public class CassandraStoryPollService {
      */
     public CastVoteResult castVote(UUID pollId, UUID voterId, String choice) {
         if (!"A".equals(choice) && !"B".equals(choice)) {
-            throw new IllegalArgumentException("Choice must be A or B");
+            throw new IllegalArgumentException(PostMessages.POLL_CHOICE_INVALID_MSG);
         }
 
         Optional<PollVoteEntity> existing = voteRepo.find(pollId, voterId);

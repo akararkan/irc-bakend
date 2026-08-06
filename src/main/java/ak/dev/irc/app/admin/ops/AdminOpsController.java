@@ -8,6 +8,7 @@ import ak.dev.irc.app.chat.repository.LiveStreamRepository;
 import ak.dev.irc.app.chat.service.LiveStreamService;
 import ak.dev.irc.app.chat.service.MediaControlClient;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
 import ak.dev.irc.app.security.SecurityUtils;
@@ -174,17 +175,20 @@ public class AdminOpsController {
     @RequiresStepUp
     public ResponseEntity<Map<String, Object>> runJob(@PathVariable String jobKey) {
         if (!TRIGGERABLE.contains(jobKey)) {
-            throw new BadRequestException("Job not triggerable. Allowed: " + TRIGGERABLE,
-                    "JOB_NOT_TRIGGERABLE");
+            throw new BadRequestException(
+                    AdminOpsMessages.JOB_NOT_TRIGGERABLE_MSG.formatted(TRIGGERABLE),
+                    AdminOpsMessages.JOB_NOT_TRIGGERABLE);
         }
         if (jobPauseRegistry.isPaused(jobKey)) {
-            throw new BadRequestException("Job '" + jobKey + "' is paused — resume it first "
-                    + "(POST /api/v1/admin/ops/jobs/" + jobKey + "/resume).", "JOB_PAUSED");
+            throw new BadRequestException(
+                    AdminOpsMessages.JOB_PAUSED_MSG.formatted(jobKey, jobKey),
+                    AdminOpsMessages.JOB_PAUSED);
         }
         String lockKey = "ops:job-lock:" + jobKey;
         Boolean locked = redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofMinutes(10));
         if (!Boolean.TRUE.equals(locked)) {
-            throw new BadRequestException("A run of this job is already in progress.", "JOB_LOCKED");
+            throw new BadRequestException(AdminOpsMessages.JOB_LOCKED_MSG,
+                    AdminOpsMessages.JOB_LOCKED);
         }
         UUID adminId = SecurityUtils.getCurrentUserId().orElse(null);
         adminAuditor.record(AuditOperation.OTHER, "Job", null, "ADMIN_JOB_RUN", jobKey);
@@ -213,7 +217,9 @@ public class AdminOpsController {
                             scheduledMessageService.fireDue();
                             return JobRunRecorder.JobStats.NONE;
                         });
-                default -> throw new BadRequestException("Unhandled job.", "JOB_NOT_TRIGGERABLE");
+                default -> throw new BadRequestException(
+                        AdminOpsMessages.JOB_NOT_TRIGGERABLE_UNHANDLED_MSG,
+                        AdminOpsMessages.JOB_NOT_TRIGGERABLE);
             }
         } finally {
             try {
@@ -229,7 +235,7 @@ public class AdminOpsController {
         RabbitAdmin admin = rabbitAdmin.getIfAvailable();
         Map<String, Object> out = new LinkedHashMap<>();
         if (admin == null) {
-            out.put("note", "RabbitAdmin unavailable");
+            out.put("note", AdminOpsMessages.NOTE_RABBIT_ADMIN_UNAVAILABLE);
             return ResponseEntity.ok(out);
         }
         for (String queue : List.of(RabbitMQConstants.NOTIFICATION_QUEUE,
@@ -248,9 +254,7 @@ public class AdminOpsController {
                 out.put(queue, Map.of("error", String.valueOf(e.getMessage())));
             }
         }
-        out.put("note", "Dead letters park in the dead_letters table (browse via "
-                + "GET /queues/dlq) — a nonzero dead-letter QUEUE depth means the drain "
-                + "consumer itself is down.");
+        out.put("note", AdminOpsMessages.NOTE_DLQ_PARKING);
         out.put("dlqParked", deadLetterRepository.countByStatusExact(DeadLetter.Status.PARKED));
         return ResponseEntity.ok(out);
     }
@@ -284,8 +288,8 @@ public class AdminOpsController {
             try {
                 parsed = DeadLetter.Status.valueOf(status.trim().toUpperCase());
             } catch (Exception e) {
-                throw new BadRequestException("Unknown status. Allowed: PARKED, REQUEUED, DISCARDED.",
-                        "INVALID_STATUS");
+                throw new BadRequestException(AdminOpsMessages.INVALID_STATUS_DLQ_MSG,
+                        AdminOpsMessages.INVALID_STATUS);
             }
         }
         return ResponseEntity.ok(deadLetterRepository.browse(parsed,
@@ -302,13 +306,14 @@ public class AdminOpsController {
                 .orElseThrow(() -> new ak.dev.irc.app.common.exception.ResourceNotFoundException(
                         "DeadLetter", "id", id));
         if (dl.getStatus() != DeadLetter.Status.PARKED) {
-            throw new BadRequestException("Only PARKED dead letters can be requeued (this one is "
-                    + dl.getStatus() + ").", "DLQ_NOT_PARKED");
+            throw new BadRequestException(
+                    AdminOpsMessages.DLQ_NOT_PARKED_MSG.formatted(dl.getStatus()),
+                    AdminOpsMessages.DLQ_NOT_PARKED);
         }
         var template = rabbitTemplate.getIfAvailable();
         if (template == null) {
-            throw new BadRequestException("RabbitMQ is unavailable — cannot requeue.",
-                    "QUEUE_UNAVAILABLE");
+            throw new BadRequestException(AdminOpsMessages.QUEUE_UNAVAILABLE_MSG,
+                    AdminOpsMessages.QUEUE_UNAVAILABLE);
         }
         byte[] payload = java.util.Base64.getDecoder().decode(
                 dl.getPayloadB64() == null ? "" : dl.getPayloadB64());
@@ -329,7 +334,7 @@ public class AdminOpsController {
                 "ADMIN_DLQ_REQUEUE", dl.getRoutingKey());
         return ResponseEntity.ok(Map.of("id", id, "requeuedTo",
                 dl.getOriginalExchange() + "/" + dl.getRoutingKey(),
-                "note", "If the consumer still can't process it, it will re-park as a NEW row."));
+                "note", AdminOpsMessages.NOTE_DLQ_REQUEUE_REPARK));
     }
 
     @DeleteMapping("/queues/dlq/{id}")
@@ -345,7 +350,7 @@ public class AdminOpsController {
         adminAuditor.record(AuditOperation.DELETE, "DeadLetter", id,
                 "ADMIN_DLQ_DISCARD", dl.getRoutingKey());
         return ResponseEntity.ok(Map.of("id", id, "status", "DISCARDED",
-                "note", "Row kept for the audit trail; the retention sweep prunes it at 90 days."));
+                "note", AdminOpsMessages.NOTE_DLQ_DISCARD_KEPT));
     }
 
     // ── job pause / resume ──────────────────────────────────────────────
@@ -359,22 +364,23 @@ public class AdminOpsController {
     @RequiresStepUp
     public ResponseEntity<Map<String, Object>> pauseJob(@PathVariable String jobKey) {
         if (!JobPauseRegistry.PAUSABLE.contains(jobKey)) {
-            throw new BadRequestException("Job not pausable. Pausable: "
-                    + JobPauseRegistry.PAUSABLE, "JOB_NOT_PAUSABLE");
+            throw new BadRequestException(
+                    AdminOpsMessages.JOB_NOT_PAUSABLE_MSG.formatted(JobPauseRegistry.PAUSABLE),
+                    AdminOpsMessages.JOB_NOT_PAUSABLE);
         }
         jobPauseRegistry.pause(jobKey);
         adminAuditor.record(AuditOperation.UPDATE, "Job", null, "ADMIN_JOB_PAUSE", jobKey);
         return ResponseEntity.ok(Map.of("job", jobKey, "paused", true,
-                "warning", "Scheduled runs are suppressed until resumed — pausing "
-                        + "retention/GDPR sweeps defers legally-relevant deletion work."));
+                "warning", AdminOpsMessages.WARN_JOB_PAUSE));
     }
 
     @PostMapping("/jobs/{jobKey}/resume")
     @RequiresStepUp
     public ResponseEntity<Map<String, Object>> resumeJob(@PathVariable String jobKey) {
         if (!JobPauseRegistry.PAUSABLE.contains(jobKey)) {
-            throw new BadRequestException("Job not pausable. Pausable: "
-                    + JobPauseRegistry.PAUSABLE, "JOB_NOT_PAUSABLE");
+            throw new BadRequestException(
+                    AdminOpsMessages.JOB_NOT_PAUSABLE_MSG.formatted(JobPauseRegistry.PAUSABLE),
+                    AdminOpsMessages.JOB_NOT_PAUSABLE);
         }
         jobPauseRegistry.resume(jobKey);
         adminAuditor.record(AuditOperation.UPDATE, "Job", null, "ADMIN_JOB_RESUME", jobKey);
@@ -433,19 +439,21 @@ public class AdminOpsController {
     public ResponseEntity<Map<String, Object>> flushRedisPrefix(@RequestParam String prefix) {
         String p = prefix.trim();
         if (p.length() < 3) {
-            throw new BadRequestException("Prefix too short — refusing a near-global flush.",
-                    "INVALID_PREFIX");
+            throw new BadRequestException(AdminOpsMessages.INVALID_PREFIX_MSG,
+                    AdminOpsMessages.INVALID_PREFIX);
         }
         for (String banned : NEVER_FLUSH) {
             if (p.startsWith(banned) || banned.startsWith(p)) {
-                throw new BadRequestException("Prefix '" + p + "' covers auth/abuse state and "
-                        + "can never be flushed from the admin panel.", "PREFIX_FORBIDDEN");
+                throw new BadRequestException(
+                        AdminOpsMessages.PREFIX_FORBIDDEN_MSG.formatted(p),
+                        AdminOpsMessages.PREFIX_FORBIDDEN);
             }
         }
         boolean allowed = FLUSHABLE_PREFIXES.stream().anyMatch(p::startsWith);
         if (!allowed) {
-            throw new BadRequestException("Prefix not in the allowlist. Flushable: "
-                    + FLUSHABLE_PREFIXES, "PREFIX_NOT_ALLOWED");
+            throw new BadRequestException(
+                    AdminOpsMessages.PREFIX_NOT_ALLOWED_MSG.formatted(FLUSHABLE_PREFIXES),
+                    AdminOpsMessages.PREFIX_NOT_ALLOWED);
         }
         long deleted = 0;
         try (var cursor = redis.scan(org.springframework.data.redis.core.ScanOptions.scanOptions()
@@ -490,8 +498,7 @@ public class AdminOpsController {
         });
         return ResponseEntity.accepted().body(Map.of(
                 "jobId", run.getId(),
-                "note", "Idempotent (writes only missing message_by_id rows); "
-                        + "poll GET /api/v1/admin/ops/jobs/chat-message-backfill/runs"));
+                "note", AdminOpsMessages.NOTE_CHAT_BACKFILL_IDEMPOTENT));
     }
 
     /** Startup outcome of the enum-CHECK constraint reconciler. */
@@ -520,7 +527,7 @@ public class AdminOpsController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("app.security.permit-all", permitAll);
         out.put("permitAllWarning", permitAll
-                ? "⚠ CRITICAL: permit-all is ON — every gate incl. /api/v1/admin/** is open"
+                ? AdminOpsMessages.WARN_PERMIT_ALL_ON
                 : null);
         out.put("app.security.step-up.ttl-seconds", stepUpTtlSeconds);
         out.put("media.processing.enabled (MEDIA_TRANSCODE_ENABLED)", transcodeEnabled);

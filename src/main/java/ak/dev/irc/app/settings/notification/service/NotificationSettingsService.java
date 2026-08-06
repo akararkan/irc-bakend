@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.notification.service;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.notification.dto.NotificationSettingsDtos.UpdateDndRequest;
 import ak.dev.irc.app.settings.notification.entity.UserDnd;
 import ak.dev.irc.app.settings.notification.entity.UserNotificationPref;
@@ -68,7 +69,7 @@ public class NotificationSettingsService {
         UserDnd dnd = getDnd(userId);
         if (req.timezone() != null && !req.timezone().isBlank()) {
             try { ZoneId.of(req.timezone()); }
-            catch (Exception ex) { throw new BadRequestException("Invalid IANA timezone: " + req.timezone(), "BAD_TIMEZONE"); }
+            catch (Exception ex) { throw new BadRequestException(SettingsMessages.BAD_TIMEZONE_MSG.formatted(req.timezone()), SettingsMessages.BAD_TIMEZONE); }
             dnd.setTimezone(req.timezone());
         }
         if (req.startTime() != null) dnd.setStartTime(parseTime(req.startTime()));
@@ -90,7 +91,7 @@ public class NotificationSettingsService {
         try {
             return NotificationType.valueOf(eventType.trim().toUpperCase()).name();
         } catch (Exception ex) {
-            throw new BadRequestException("Unknown notification event type: " + eventType, "BAD_EVENT_TYPE");
+            throw new BadRequestException(SettingsMessages.BAD_EVENT_TYPE_MSG.formatted(eventType), SettingsMessages.BAD_EVENT_TYPE);
         }
     }
 
@@ -98,7 +99,7 @@ public class NotificationSettingsService {
         try {
             return NotificationChannel.valueOf(channel.trim().toUpperCase());
         } catch (Exception ex) {
-            throw new BadRequestException("Unknown notification channel: " + channel, "BAD_CHANNEL");
+            throw new BadRequestException(SettingsMessages.BAD_CHANNEL_MSG.formatted(channel), SettingsMessages.BAD_CHANNEL);
         }
     }
 
@@ -106,7 +107,7 @@ public class NotificationSettingsService {
         try {
             return LocalTime.parse(hhmm.trim());
         } catch (Exception ex) {
-            throw new BadRequestException("Time must be HH:mm — got: " + hhmm, "BAD_TIME");
+            throw new BadRequestException(SettingsMessages.BAD_TIME_MSG.formatted(hhmm), SettingsMessages.BAD_TIME);
         }
     }
 }

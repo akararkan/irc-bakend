@@ -1,6 +1,7 @@
 package ak.dev.irc.app.user.controller;
 
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.post.cassandra.service.FriendSuggestionService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.service.ContactMatchService;
@@ -37,7 +38,7 @@ public class UserContactController {
     @PostMapping("/sync")
     public ResponseEntity<Map<String, Object>> sync(@RequestBody SyncContactsRequest body,
                                                     @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         int stored = contactMatchService.syncContacts(user.getId(),
                 body == null ? List.of() : body.hashes());
         int matched = contactMatchService.matchedContactIds(user.getId()).size();
@@ -48,7 +49,7 @@ public class UserContactController {
     /** Privacy op: wipe the caller's uploaded contact hashes. */
     @DeleteMapping
     public ResponseEntity<Void> clear(@AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         contactMatchService.clearContacts(user.getId());
         suggestionService.recomputeFor(user.getId());
         return ResponseEntity.noContent().build();

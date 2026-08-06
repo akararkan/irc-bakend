@@ -13,6 +13,7 @@ import ak.dev.irc.app.chat.search.service.ChannelSearchService;
 import ak.dev.irc.app.chat.service.ChannelService;
 import ak.dev.irc.app.chat.service.ChannelStatsService;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.user.service.NotificationService;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -125,7 +126,7 @@ public class AdminChannelController {
                 reason, body != null ? body.reportId() : null,
                 "members=" + c.getMemberCount());
         adminAuditor.record(AuditOperation.DELETE, "Channel", id, "ADMIN_CHANNEL_TAKEDOWN", reason);
-        notifyOwner(c, "Your channel was taken down",
+        notifyOwner(c, AdminOpsMessages.NOTIF_CHANNEL_TAKEDOWN_TITLE,
                 "Your channel \"" + c.getTitle() + "\" was removed by platform moderation"
                         + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "") + ".");
         return ResponseEntity.noContent().build();
@@ -141,8 +142,8 @@ public class AdminChannelController {
         conversationRepository.save(c);
         channelSearchService.indexAsync(c);
         adminAuditor.record(AuditOperation.UPDATE, "Channel", id, "ADMIN_CHANNEL_RESTORE");
-        notifyOwner(c, "Your channel was restored",
-                "Your channel \"" + c.getTitle() + "\" has been restored.");
+        notifyOwner(c, AdminOpsMessages.NOTIF_CHANNEL_RESTORED_TITLE,
+                AdminOpsMessages.NOTIF_CHANNEL_RESTORED_BODY.formatted(c.getTitle()));
         return ResponseEntity.noContent().build();
     }
 

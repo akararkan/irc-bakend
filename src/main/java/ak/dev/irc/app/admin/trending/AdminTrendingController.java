@@ -5,6 +5,7 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.common.tag.entity.TrendingTagOverride;
 import ak.dev.irc.app.common.tag.job.TrendingTagJob;
 import ak.dev.irc.app.common.tag.repository.TrendingTagOverrideRepository;
@@ -99,7 +100,9 @@ public class AdminTrendingController {
     public static String normalizeScope(String raw) {
         String scope = raw == null || raw.isBlank() ? "ALL" : raw.trim().toUpperCase(Locale.ROOT);
         if (!SCOPES.contains(scope)) {
-            throw new BadRequestException("Unknown scope. Allowed: " + SCOPES, "INVALID_SCOPE");
+            throw new BadRequestException(
+                    AdminContentMessages.INVALID_SCOPE_MSG.formatted(SCOPES),
+                    AdminContentMessages.INVALID_SCOPE);
         }
         return scope;
     }
@@ -108,7 +111,8 @@ public class AdminTrendingController {
         try {
             return TrendingTagOverride.OverrideType.valueOf(raw.trim().toUpperCase(Locale.ROOT));
         } catch (Exception e) {
-            throw new BadRequestException("Unknown type. Allowed: PIN, BAN.", "INVALID_TYPE");
+            throw new BadRequestException(AdminContentMessages.INVALID_TYPE_PIN_BAN_MSG,
+                    AdminContentMessages.INVALID_TYPE);
         }
     }
 
@@ -116,7 +120,8 @@ public class AdminTrendingController {
         String tag = raw.trim().toLowerCase(Locale.ROOT);
         if (tag.startsWith("#")) tag = tag.substring(1);
         if (tag.isBlank() || tag.length() > 100) {
-            throw new BadRequestException("Invalid tag.", "INVALID_TAG");
+            throw new BadRequestException(AdminContentMessages.INVALID_TAG_MSG,
+                    AdminContentMessages.INVALID_TAG);
         }
         return tag;
     }

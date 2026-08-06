@@ -33,6 +33,7 @@ import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.util.MentionExtractor;
 import ak.dev.irc.app.research.service.S3StorageService;
@@ -112,7 +113,7 @@ public class MessageService {
 
         ConversationMember senderMember = memberRepo.findMember(conversationId, senderId)
                 .orElseThrow(() -> new ForbiddenException(
-                        "You are not a member of this conversation.", "NOT_A_MEMBER"));
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
 
         // Idempotency: mint the id, then claim the nonce. A retry that lost the
         // race returns the already-created message instead of a second row.
@@ -132,7 +133,8 @@ public class MessageService {
                 directPeer = otherDirectMember(conversationId, senderId);
                 decision = permissionEngine.authorizeDirectSend(senderId, directPeer);
                 if (decision == SendDecision.DENY) {
-                    throw new ForbiddenException("This interaction is not allowed.", "BLOCKED");
+                    throw new ForbiddenException(
+                            ChatMessages.INTERACTION_NOT_ALLOWED_MSG, ChatMessages.BLOCKED);
                 }
             }
 
@@ -149,12 +151,12 @@ public class MessageService {
             String pollJson = null;
             if (req.getPoll() != null) {
                 if (req.getType() != null && req.getType() != MessageType.POLL) {
-                    throw new BadRequestException("A poll payload requires type POLL.");
+                    throw new BadRequestException(ChatMessages.POLL_PAYLOAD_TYPE_MISMATCH_MSG);
                 }
                 req.setType(MessageType.POLL);
                 pollJson = pollService.validateAndSerialize(req.getPoll());
             } else if (req.getType() == MessageType.POLL) {
-                throw new BadRequestException("A POLL message requires a poll payload.");
+                throw new BadRequestException(ChatMessages.POLL_PAYLOAD_REQUIRED_MSG);
             }
 
             // Location / contact payloads — required by their types, forbidden otherwise.
@@ -209,22 +211,24 @@ public class MessageService {
         // Must be able to read the source.
         memberRepo.findMember(src.getConversationId(), senderId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You cannot access the source message.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.SOURCE_MESSAGE_INACCESSIBLE_MSG, ChatMessages.NOT_A_MEMBER));
 
         // Telegram "protected content": posts of a protected channel cannot be
         // forwarded out of it.
         Conversation source = conversationRepo.findById(src.getConversationId()).orElse(null);
         boolean sourceIsChannel = source != null && source.isChannel();
         if (sourceIsChannel && source.channelSettingsOrDefaults().isProtectedContent()) {
-            throw new ForbiddenException("This channel's content is protected and cannot be forwarded.",
-                    "PROTECTED_CONTENT");
+            throw new ForbiddenException(ChatMessages.PROTECTED_CONTENT_MSG,
+                    ChatMessages.PROTECTED_CONTENT);
         }
 
         Conversation target = conversationRepo.findById(targetConversationId)
                 .filter(c -> c.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", targetConversationId));
         ConversationMember targetMember = memberRepo.findMember(targetConversationId, senderId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of the target.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_TARGET_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
 
         SendDecision decision = SendDecision.ALLOW;
         UUID directPeer = null;
@@ -234,7 +238,8 @@ public class MessageService {
             directPeer = otherDirectMember(targetConversationId, senderId);
             decision = permissionEngine.authorizeDirectSend(senderId, directPeer);
             if (decision == SendDecision.DENY) {
-                throw new ForbiddenException("This interaction is not allowed.", "BLOCKED");
+                throw new ForbiddenException(
+                        ChatMessages.INTERACTION_NOT_ALLOWED_MSG, ChatMessages.BLOCKED);
             }
         }
 
@@ -282,10 +287,10 @@ public class MessageService {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         if (Boolean.TRUE.equals(m.getDeleted())) {
-            throw new BadRequestException("Cannot edit a deleted message.");
+            throw new BadRequestException(ChatMessages.EDIT_DELETED_MESSAGE_MSG);
         }
         if (MessageType.SYSTEM.name().equals(m.getType())) {
-            throw new BadRequestException("System messages cannot be edited.");
+            throw new BadRequestException(ChatMessages.EDIT_SYSTEM_MESSAGE_MSG);
         }
         if (!userId.equals(m.getSenderId())) {
             // Channel posts belong to the channel: any admin with the edit right
@@ -296,7 +301,8 @@ public class MessageService {
                     && ak.dev.irc.app.chat.permission.ChannelRights.can(
                             me, ak.dev.irc.app.chat.dto.AdminRights::isCanEditMessages);
             if (!channelAdminEdit) {
-                throw new ForbiddenException("You can only edit your own messages.", "ACCESS_FORBIDDEN");
+                throw new ForbiddenException(
+                        ChatMessages.EDIT_OWN_MESSAGES_ONLY_MSG, ChatMessages.ACCESS_FORBIDDEN);
             }
         }
         Instant now = Instant.now();
@@ -355,7 +361,8 @@ public class MessageService {
                         && GroupPermissions.can(me.getRole(), GroupAction.DELETE_ANY_MESSAGE, null, convo.getGroupSettings());
             }
             if (!adminDelete) {
-                throw new ForbiddenException("You cannot delete this message.", "ACCESS_FORBIDDEN");
+                throw new ForbiddenException(
+                        ChatMessages.DELETE_MESSAGE_FORBIDDEN_MSG, ChatMessages.ACCESS_FORBIDDEN);
             }
         }
         messageRepo.tombstone(m.getConversationId(), m.getBucket(), messageId);
@@ -462,7 +469,8 @@ public class MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         memberRepo.findMember(m.getConversationId(), userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) return; // idempotent
         hiddenRepo.save(ak.dev.irc.app.chat.entity.HiddenMessage.builder()
                 .userId(userId).messageId(messageId).conversationId(m.getConversationId())
@@ -506,14 +514,17 @@ public class MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         ConversationMember me = memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
-                .orElseThrow(() -> new ForbiddenException("You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         if (convo.isGroup()
                 && !GroupPermissions.can(me.getRole(), GroupAction.PIN_MESSAGE, null, convo.getGroupSettings())) {
-            throw new ForbiddenException("You cannot pin messages in this group.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.PIN_GROUP_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         if (convo.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
                 me, ak.dev.irc.app.chat.dto.AdminRights::isCanPinMessages)) {
-            throw new ForbiddenException("You cannot pin posts in this channel.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.PIN_CHANNEL_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
         }
         return convo;
     }
@@ -525,11 +536,12 @@ public class MessageService {
         if (convo == null || !convo.isChannel()) return;
         var settings = convo.channelSettingsOrDefaults();
         if (!settings.isReactionsEnabled()) {
-            throw new ForbiddenException("Reactions are disabled in this channel.", "REACTIONS_DISABLED");
+            throw new ForbiddenException(
+                    ChatMessages.REACTIONS_DISABLED_MSG, ChatMessages.REACTIONS_DISABLED);
         }
         List<String> allowed = settings.getAllowedReactions();
         if (allowed != null && !allowed.isEmpty() && !allowed.contains(emoji)) {
-            throw new BadRequestException("This reaction is not allowed in this channel.");
+            throw new BadRequestException(ChatMessages.REACTION_NOT_ALLOWED_MSG);
         }
     }
 
@@ -812,26 +824,26 @@ public class MessageService {
 
     private void authorizeGroupSend(ConversationMember member, Conversation convo) {
         if (member.getStatus() == MemberStatus.LEFT || member.getStatus() == MemberStatus.REMOVED) {
-            throw new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER");
+            throw new ForbiddenException(ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER);
         }
         if (member.getStatus() == MemberStatus.RESTRICTED) {
-            throw new ForbiddenException("You are restricted from posting here.", "READ_ONLY");
+            throw new ForbiddenException(ChatMessages.RESTRICTED_POSTING_MSG, ChatMessages.READ_ONLY);
         }
         if (!GroupPermissions.can(member.getRole(), GroupAction.SEND_MESSAGE, null, convo.getGroupSettings())) {
-            throw new ForbiddenException("Only admins can send messages here.", "ADMINS_ONLY");
+            throw new ForbiddenException(ChatMessages.ADMINS_ONLY_SEND_MSG, ChatMessages.ADMINS_ONLY);
         }
         // Channels: an admin additionally needs the granular post right.
         if (convo.isChannel() && !ak.dev.irc.app.chat.permission.ChannelRights.can(
                 member, ak.dev.irc.app.chat.dto.AdminRights::isCanPostMessages)) {
-            throw new ForbiddenException("You do not have the right to post in this channel.", "ADMINS_ONLY");
+            throw new ForbiddenException(ChatMessages.CHANNEL_POST_RIGHT_MSG, ChatMessages.ADMINS_ONLY);
         }
         // Platform-admin freeze (chat-channels-live.md §6): outranks every
         // channel-local right, including the owner's.
         if (convo.isChannel() && convo.getChannelSettings() != null
                 && convo.getChannelSettings().isFrozenByAdmin()) {
             throw new ForbiddenException(
-                    "Posting in this channel has been suspended by platform moderation.",
-                    "CHANNEL_FROZEN");
+                    ChatMessages.CHANNEL_FROZEN_MSG,
+                    ChatMessages.CHANNEL_FROZEN);
         }
         // Slow mode: non-admin group members get one message per window.
         if (convo.isGroup() && convo.getGroupSettings() != null && !member.isAdminOrOwner()) {
@@ -847,15 +859,15 @@ public class MessageService {
     private String payloadJson(boolean typeMatches, Object payload, String typeName, String field) {
         if (payload == null) {
             if (typeMatches) throw new BadRequestException(
-                    "A " + typeName + " message requires a " + field + " payload.");
+                    ChatMessages.TYPED_PAYLOAD_REQUIRED_MSG.formatted(typeName, field));
             return null;
         }
         if (!typeMatches) throw new BadRequestException(
-                "A " + field + " payload requires type " + typeName + ".");
+                ChatMessages.TYPED_PAYLOAD_MISMATCH_MSG.formatted(field, typeName));
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (Exception e) {
-            throw new BadRequestException("Could not store the " + field + " payload.");
+            throw new BadRequestException(ChatMessages.TYPED_PAYLOAD_STORE_FAILED_MSG.formatted(field));
         }
     }
 
@@ -899,11 +911,12 @@ public class MessageService {
         }
         if (existing.getStatus() != MessageRequestStatus.PENDING) {
             // Declined/blocked (accepted would not route here) — refuse further sends.
-            throw new ForbiddenException("This interaction is not allowed.", "REQUEST_LIMIT_REACHED");
+            throw new ForbiddenException(
+                    ChatMessages.INTERACTION_NOT_ALLOWED_MSG, ChatMessages.REQUEST_LIMIT_REACHED);
         }
         if (existing.getMessageCount() >= STRANGER_MESSAGE_CAP) {
             throw new ForbiddenException(
-                    "You've reached the limit before this request is accepted.", "REQUEST_LIMIT_REACHED");
+                    ChatMessages.STRANGER_CAP_REACHED_MSG, ChatMessages.REQUEST_LIMIT_REACHED);
         }
         existing.setMessageCount(existing.getMessageCount() + 1);
         return new RequestOutcome(messageRequestRepo.save(existing), false);
@@ -923,7 +936,8 @@ public class MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         memberRepo.findMember(m.getConversationId(), userId)
                 .filter(ConversationMember::canRead)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         return m;
     }
 
@@ -933,9 +947,11 @@ public class MessageService {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
         ConversationMember mem = memberRepo.findMember(m.getConversationId(), userId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
         if (!mem.isActive()) {
-            throw new ForbiddenException("You are restricted from interacting here.", "READ_ONLY");
+            throw new ForbiddenException(
+                    ChatMessages.RESTRICTED_INTERACTING_MSG, ChatMessages.READ_ONLY);
         }
         return m;
     }
@@ -945,7 +961,7 @@ public class MessageService {
                 .map(m -> m.getId().getUserId())
                 .filter(id -> !id.equals(me))
                 .findFirst()
-                .orElseThrow(() -> new BadRequestException("Direct conversation has no peer."));
+                .orElseThrow(() -> new BadRequestException(ChatMessages.DIRECT_NO_PEER_MSG));
     }
 
     private List<MediaRef> buildMedia(List<MediaRefDto> dtos) {

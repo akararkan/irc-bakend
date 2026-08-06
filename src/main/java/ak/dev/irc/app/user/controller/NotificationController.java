@@ -1,5 +1,6 @@
 package ak.dev.irc.app.user.controller;
 
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import ak.dev.irc.app.user.dto.response.NotificationResponse;
@@ -80,8 +81,7 @@ public class NotificationController {
             try {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType(MediaType.TEXT_PLAIN_VALUE);
-                response.getWriter().write(
-                        "Authentication required. Pass access token as ?token=<jwt>.");
+                response.getWriter().write(UserMessages.NOTE_SSE_AUTH_REQUIRED);
                 response.flushBuffer();
             } catch (Exception ignored) { /* swallowed — connection is going to close anyway */ }
             return null;

@@ -5,6 +5,7 @@ import ak.dev.irc.app.post.cassandra.entity.CommentReactionEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReactionByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReactionByUserEntity;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.repository.CommentLookupRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentReactionRepository;
@@ -187,8 +188,8 @@ public class CassandraReactionService {
             return new CassandraNotificationService.DeliverRequest(
                     post.getAuthorId(),
                     NotificationKind.POST_REACTED,
-                    "Someone liked your post",
-                    label + " liked your post",
+                    PostMessages.NOTIF_POST_REACTED_TITLE,
+                    PostMessages.NOTIF_POST_REACTED_BODY.formatted(label),
                     actorId,
                     "Post", postId,
                     "POST_REACTED:" + postId
@@ -204,8 +205,8 @@ public class CassandraReactionService {
             return new CassandraNotificationService.DeliverRequest(
                     meta.getAuthorId(),
                     NotificationKind.POST_COMMENT_REACTED,
-                    "Someone liked your comment",
-                    label + " liked your comment",
+                    PostMessages.NOTIF_POST_COMMENT_REACTED_TITLE,
+                    PostMessages.NOTIF_POST_COMMENT_REACTED_BODY.formatted(label),
                     actorId,
                     "Comment", commentId,
                     "POST_COMMENT_REACTED:" + commentId

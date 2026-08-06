@@ -4,6 +4,7 @@ import ak.dev.irc.app.chat.dto.response.LiveStreamResponse;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeBroadcaster;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEvent;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
@@ -63,9 +64,9 @@ public class LiveStreamFanoutService {
     public void fanoutStreamStarted(LiveStreamResponse publicStream, UUID hostId, String hostLabel) {
         if (publicStream == null || hostId == null) return;
         final UUID   streamId = publicStream.id();
-        final String title    = hostLabel + " is live";
+        final String title    = ChannelStreamMessages.NOTIF_STREAM_STARTED_TITLE.formatted(hostLabel);
         final String body     = StringUtils.hasText(publicStream.title())
-                ? publicStream.title() : "Tap to watch the stream.";
+                ? publicStream.title() : ChannelStreamMessages.NOTIF_STREAM_STARTED_BODY_FALLBACK;
         final String groupKey = "STREAM_STARTED:" + streamId;   // one row per go-live
 
         final ChatRealtimeEvent event = ChatRealtimeEvent.builder()

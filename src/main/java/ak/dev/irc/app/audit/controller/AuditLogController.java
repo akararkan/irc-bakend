@@ -7,6 +7,7 @@ import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.audit.enums.AuditOutcome;
 import ak.dev.irc.app.audit.realtime.AuditRealtimeService;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.CommonMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -102,7 +103,7 @@ public class AuditLogController {
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream() {
         ak.dev.irc.app.user.entity.User admin = SecurityUtils.getCurrentUser()
-                .orElseThrow(() -> new UnauthorizedException("Admin authentication required"));
+                .orElseThrow(() -> new UnauthorizedException(CommonMessages.ADMIN_AUTH_REQUIRED_MSG));
         // `*/stream` paths are excluded from the request interceptor by
         // SKIP_PATTERN, so the connect itself would otherwise leave no trace —
         // record it explicitly (logs-audit.md E3 mitigation).

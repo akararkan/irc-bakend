@@ -1,6 +1,7 @@
 package ak.dev.irc.app.common.service;
 
 import ak.dev.irc.app.common.exception.ForbiddenException;
+import ak.dev.irc.app.common.messages.CommonMessages;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserRestrictionRepository;
 import lombok.RequiredArgsConstructor;
@@ -48,7 +49,7 @@ public class SocialGuard {
         if (actorId == null || targetId == null || actorId.equals(targetId)) return;
         if (blockRepo.isBlockedBetween(actorId, targetId)) {
             throw new ForbiddenException(
-                    "This interaction is not allowed.",
+                    CommonMessages.INTERACTION_NOT_ALLOWED_MSG,
                     errorCode);
         }
     }

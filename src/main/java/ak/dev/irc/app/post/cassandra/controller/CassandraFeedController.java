@@ -12,6 +12,7 @@ import ak.dev.irc.app.post.cassandra.entity.SaveByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.ShareByPostEntity;
 import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.post.cassandra.service.CassandraCommentService;
 import ak.dev.irc.app.post.cassandra.service.CassandraPostService;
@@ -85,7 +86,7 @@ public class CassandraFeedController {
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<PostResponse> create(@RequestBody CassandraPostService.CreatePostCommand cmd,
                                                @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkSocial(user.getId());
         // authorId is server-derived from the JWT — body-supplied authorId is ignored.
         CassandraPostService.CreatePostCommand authed = new CassandraPostService.CreatePostCommand(
@@ -133,7 +134,7 @@ public class CassandraFeedController {
     public ResponseEntity<?> createMultipart(MultipartHttpServletRequest request,
                                              @AuthenticationPrincipal User user) {
 
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         // Throttle BEFORE the R2 upload — a banned user shouldn't waste
         // bandwidth + storage round-trips just to be rejected at the end.
         rateLimiter.checkSocial(user.getId());
@@ -170,7 +171,7 @@ public class CassandraFeedController {
         } catch (Exception e) {
             rollbackR2(uploadedKeys);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .body(Map.of("error", "upload_failed", "message", String.valueOf(e.getMessage())));
+                    .body(Map.of("error", PostMessages.UPLOAD_FAILED, "message", String.valueOf(e.getMessage())));
         }
 
         // 2b) VOICE_POST: an uploaded audio file must surface in `audioTrackUrl`
@@ -201,7 +202,7 @@ public class CassandraFeedController {
         } catch (Exception e) {
             rollbackR2(uploadedKeys);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "post_create_failed",
+                    .body(Map.of("error", PostMessages.POST_CREATE_FAILED,
                             "message", String.valueOf(e.getMessage()),
                             "rolledBackFiles", uploadedKeys.size()));
         }
@@ -267,7 +268,7 @@ public class CassandraFeedController {
     public ResponseEntity<PostResponse> editPost(@PathVariable UUID id,
                                                  @RequestBody CassandraPostService.EditPostCommand body,
                                                  @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         try {
             PostByIdEntity updated = postService.editPost(id, user.getId(), body);
             if (updated == null) return ResponseEntity.notFound().build();
@@ -285,7 +286,7 @@ public class CassandraFeedController {
 
             return ResponseEntity.ok(hydrator.hydrate(updated));
         } catch (SecurityException e) {
-            throw new ForbiddenException("You do not have permission to perform this action");
+            throw new ForbiddenException(PostMessages.ACCESS_FORBIDDEN_MSG);
         }
     }
 
@@ -293,11 +294,11 @@ public class CassandraFeedController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deletePost(@PathVariable UUID id,
                                            @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         PostByIdEntity existing = postService.getById(id);
         if (existing == null) return ResponseEntity.notFound().build();
         if (!user.getId().equals(existing.getAuthorId())) {
-            throw new ForbiddenException("You do not have permission to perform this action");
+            throw new ForbiddenException(PostMessages.ACCESS_FORBIDDEN_MSG);
         }
         postService.deletePost(id);
         return ResponseEntity.noContent().build();
@@ -491,14 +492,14 @@ public class CassandraFeedController {
     @GetMapping("/suggestions")
     public List<FriendSuggestionEntity> suggestions(@RequestParam(defaultValue = "20") int limit,
                                                     @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return suggestionService.topSuggestionsFor(user.getId(), Pages.clamp(limit));
     }
 
     /** Trigger a recompute of the CALLER's suggestions (e.g. after onboarding). */
     @PostMapping("/suggestions/recompute")
     public ResponseEntity<Void> recompute(@AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         suggestionService.recomputeFor(user.getId());
         return ResponseEntity.accepted().build();
     }
@@ -512,7 +513,7 @@ public class CassandraFeedController {
     public List<ak.dev.irc.app.post.dto.SuggestionResponse> detailedSuggestions(
             @RequestParam(defaultValue = "20") int limit,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         return suggestionService.detailedSuggestionsFor(user.getId(), Pages.clamp(limit));
     }
 
@@ -524,7 +525,7 @@ public class CassandraFeedController {
     @PostMapping("/suggestions/{candidateId}/dismiss")
     public ResponseEntity<Void> dismissSuggestion(@PathVariable UUID candidateId,
                                                   @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         suggestionService.dismiss(user.getId(), candidateId);
         return ResponseEntity.noContent().build();
     }
@@ -535,7 +536,7 @@ public class CassandraFeedController {
     @PostMapping("/{postId}/reactions")
     public ResponseEntity<Map<String, Object>> togglePostReaction(@PathVariable UUID postId,
                                                                   @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         UUID userId = user.getId();
         return ResponseEntity.ok(Map.of("postId", postId, "userId", userId,
                 "liked", reactionService.togglePostReaction(postId, userId)));
@@ -563,7 +564,7 @@ public class CassandraFeedController {
     public ResponseEntity<Map<String, Object>> toggleCommentReaction(@PathVariable UUID postId,
                                                                      @PathVariable UUID commentId,
                                                                      @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         UUID userId = user.getId();
         return ResponseEntity.ok(Map.of("commentId", commentId, "userId", userId,
                 "liked", reactionService.toggleCommentReaction(commentId, postId, userId)));
@@ -573,7 +574,7 @@ public class CassandraFeedController {
     @DeleteMapping("/{postId}/reactions")
     public ResponseEntity<Map<String, Object>> deletePostReaction(@PathVariable UUID postId,
                                                                   @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         reactionService.removePostReaction(postId, user.getId());
         return ResponseEntity.ok(Map.of("postId", postId, "liked", false));
     }
@@ -583,7 +584,7 @@ public class CassandraFeedController {
     public ResponseEntity<Map<String, Object>> deleteCommentReaction(@PathVariable UUID postId,
                                                                      @PathVariable UUID commentId,
                                                                      @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         reactionService.removeCommentReaction(commentId, postId, user.getId());
         return ResponseEntity.ok(Map.of("commentId", commentId, "liked", false));
     }
@@ -617,7 +618,7 @@ public class CassandraFeedController {
             @PathVariable UUID postId,
             @RequestBody CreateCommentRequest body,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkComment(user.getId());
         return ResponseEntity.ok(hydrator.hydrate(
                 commentService.createComment(postId, user.getId(),
@@ -644,7 +645,7 @@ public class CassandraFeedController {
             @PathVariable UUID commentId,
             @RequestBody CreateReplyRequest body,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkComment(user.getId());
         return ResponseEntity.ok(hydrator.hydrate(
                 commentService.replyTo(commentId, user.getId(), body.text(), body.mediaUrl())));
@@ -663,7 +664,7 @@ public class CassandraFeedController {
     public ResponseEntity<Void> editComment(@PathVariable UUID commentId,
                                             @RequestBody EditCommentRequest body,
                                             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         commentService.editComment(commentId, user.getId(), body.text());
         return ResponseEntity.noContent().build();
     }
@@ -672,7 +673,7 @@ public class CassandraFeedController {
     @DeleteMapping("/comments/{commentId}")
     public ResponseEntity<Void> deleteComment(@PathVariable UUID commentId,
                                               @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         commentService.deleteComment(commentId, user.getId());
         return ResponseEntity.noContent().build();
     }
@@ -684,7 +685,7 @@ public class CassandraFeedController {
     public ResponseEntity<Map<String, Object>> toggleSave(@PathVariable UUID postId,
                                                           @RequestParam(required = false) String collection,
                                                           @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         UUID userId = user.getId();
         rateLimiter.checkSocial(userId);
         boolean saved = saveService.toggleSave(postId, userId, collection);
@@ -705,7 +706,7 @@ public class CassandraFeedController {
     @DeleteMapping("/{postId}/saves")
     public ResponseEntity<Map<String, Object>> deleteSave(@PathVariable UUID postId,
                                                           @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         if (saveService.isSaved(postId, user.getId())) {
             saveService.toggleSave(postId, user.getId(), null);   // flips true → false
         }
@@ -743,7 +744,7 @@ public class CassandraFeedController {
     public ResponseEntity<ShareByPostEntity> recordShare(@PathVariable UUID postId,
                                                          @RequestBody(required = false) RecordShareRequest body,
                                                          @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkSocial(user.getId());
         String caption = body != null ? body.caption() : null;
         return ResponseEntity.ok(shareService.recordShare(postId, user.getId(), caption));
@@ -776,7 +777,7 @@ public class CassandraFeedController {
             @RequestBody(required = false) RecordShareRequest body,
             @AuthenticationPrincipal User user,
             jakarta.servlet.http.HttpServletRequest request) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         rateLimiter.checkSocial(user.getId());
         String caption = body != null ? body.caption() : null;
         return ResponseEntity.ok(shareService.recordShareLink(

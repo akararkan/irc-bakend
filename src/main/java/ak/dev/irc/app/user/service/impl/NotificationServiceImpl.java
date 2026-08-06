@@ -2,6 +2,7 @@ package ak.dev.irc.app.user.service.impl;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.post.cassandra.entity.NotificationEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.security.SecurityUtils;
@@ -66,8 +67,9 @@ public class NotificationServiceImpl implements NotificationService {
                 .user(target)
                 .actor(actor)
                 .type(NotificationType.NEW_FOLLOWER)
-                .title("New follower")
-                .body(actor.getFullName() + " (@" + actor.getUsername() + ") started following you.")
+                .title(UserMessages.NOTIF_NEW_FOLLOWER_TITLE)
+                .body(UserMessages.NOTIF_NEW_FOLLOWER_BODY.formatted(
+                        actor.getFullName(), actor.getUsername()))
                 .resourceId(actor.getId())
                 .resourceType("User")
                 .build());
@@ -86,8 +88,9 @@ public class NotificationServiceImpl implements NotificationService {
                 .user(target)
                 .actor(actor)
                 .type(NotificationType.UNBLOCKED)
-                .title("You have been unblocked")
-                .body(actor.getFullName() + " (@" + actor.getUsername() + ") unblocked you.")
+                .title(UserMessages.NOTIF_UNBLOCKED_TITLE)
+                .body(UserMessages.NOTIF_UNBLOCKED_BODY.formatted(
+                        actor.getFullName(), actor.getUsername()))
                 .resourceId(actor.getId())
                 .resourceType("User")
                 .build());
@@ -394,6 +397,6 @@ public class NotificationServiceImpl implements NotificationService {
     private UUID authenticatedUserId() {
         return SecurityUtils.getCurrentUserId()
                 .orElseThrow(() -> new UnauthorizedException(
-                        "You must be authenticated to access notifications."));
+                        UserMessages.MUST_BE_AUTHENTICATED_NOTIFICATIONS_MSG));
     }
 }

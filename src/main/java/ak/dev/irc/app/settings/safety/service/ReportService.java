@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import ak.dev.irc.app.settings.safety.entity.Report;
 import ak.dev.irc.app.settings.safety.enums.ReportReason;
 import ak.dev.irc.app.settings.safety.enums.ReportState;
@@ -55,7 +56,7 @@ public class ReportService {
 
         if (targetId == null && (targetRef == null || targetRef.isBlank())) {
             throw new ak.dev.irc.app.common.exception.BadRequestException(
-                    "targetId (or targetRef for MESSAGE targets) is required.", "TARGET_REQUIRED");
+                    SettingsMessages.TARGET_REQUIRED_MSG, SettingsMessages.TARGET_REQUIRED);
         }
         String ref = targetId != null ? targetId.toString() : targetRef.trim();
         String groupKey = ref + ":" + reason.name();
@@ -92,11 +93,11 @@ public class ReportService {
         Report r = repo.findById(reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Report", "id", reportId));
         if (!r.getReporterId().equals(reporterId)) {
-            throw new ForbiddenException("You can only appeal your own reports.", "NOT_REPORTER");
+            throw new ForbiddenException(SettingsMessages.NOT_REPORTER_MSG, SettingsMessages.NOT_REPORTER);
         }
         if (r.getState() != ReportState.ACTIONED && r.getState() != ReportState.DISMISSED) {
             throw new ConflictException(
-                    "This report cannot be appealed in its current state.", "REPORT_NOT_APPEALABLE");
+                    SettingsMessages.REPORT_NOT_APPEALABLE_MSG, SettingsMessages.REPORT_NOT_APPEALABLE);
         }
         r.setState(ReportState.APPEALED);
         return repo.save(r);

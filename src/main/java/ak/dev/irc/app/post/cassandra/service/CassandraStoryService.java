@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.StoryByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryLookupEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryViewEntity;
@@ -179,7 +180,7 @@ public class CassandraStoryService {
         if (!meta.getAuthorId().equals(actorId)) {
             log.warn("[STORY] delete forbidden — storyId={} owned by {} but actor is {}",
                     storyId, meta.getAuthorId(), actorId);
-            throw new SecurityException("Only the author can delete this story");
+            throw new SecurityException(PostMessages.STORY_DELETE_AUTHOR_ONLY_MSG);
         }
 
         UUID   authorId   = meta.getAuthorId();
@@ -370,11 +371,11 @@ public class CassandraStoryService {
                     .findMember(meta.getAuthorId(), requesterId)
                     .filter(m -> m.isActive() && m.isAdminOrOwner())
                     .isPresent();
-            if (!staff) throw new SecurityException("Only channel admins can view the viewer log");
+            if (!staff) throw new SecurityException(PostMessages.VIEWER_LOG_CHANNEL_ADMINS_ONLY_MSG);
             return storyViewRepo.recent(storyId, pageSize);
         }
         if (requesterId == null || !requesterId.equals(meta.getAuthorId())) {
-            throw new SecurityException("Only the story author can view the viewer log");
+            throw new SecurityException(PostMessages.VIEWER_LOG_AUTHOR_ONLY_MSG);
         }
         return storyViewRepo.recent(storyId, pageSize);
     }

@@ -2,6 +2,7 @@ package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.post.cassandra.entity.FeedByUserEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.realtime.FeedRealtimePublisher;
 import ak.dev.irc.app.post.cassandra.repository.FeedByUserRepository;
@@ -362,8 +363,8 @@ public class FeedTimelineService {
             notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
                     followerId,
                     NotificationKind.POST_NEW,
-                    authorLabel + " posted",
-                    preview == null ? authorLabel + " just posted." : preview,
+                    PostMessages.NOTIF_POST_NEW_TITLE.formatted(authorLabel),
+                    preview == null ? PostMessages.NOTIF_POST_NEW_BODY_FALLBACK.formatted(authorLabel) : preview,
                     authorId,
                     "Post", postId,
                     "POST_NEW:" + postId

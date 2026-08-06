@@ -3,6 +3,7 @@ package ak.dev.irc.app.admin.notification;
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.common.notification.job.TrendingNotificationJob;
 import ak.dev.irc.app.common.util.Pages;
@@ -89,9 +90,7 @@ public class AdminNotificationController {
         body.put("from", f);
         body.put("to", t);
         body.put("byType", byType);
-        body.put("note", "Aggregated from the legacy Postgres inbox — the live write path is "
-                + "Cassandra (notifications_by_user), which has no cross-user aggregate; a rollup "
-                + "collector is the planned successor source.");
+        body.put("note", AdminOpsMessages.NOTE_NOTIF_STATS_LEGACY_INBOX);
         return ResponseEntity.ok(body);
     }
 
@@ -111,7 +110,7 @@ public class AdminNotificationController {
                 row.put("emailEligible", kind.emailEligible());
             } else {
                 row.put("prefCategory", null);
-                row.put("note", "no NotificationKind — legacy/relational-only type");
+                row.put("note", AdminOpsMessages.NOTE_NO_NOTIFICATION_KIND);
             }
             rows.add(row);
         }
@@ -135,9 +134,9 @@ public class AdminNotificationController {
                         body.audienceLanguage().trim().toUpperCase());
             } catch (Exception e) {
                 throw new ak.dev.irc.app.common.exception.BadRequestException(
-                        "Unknown language code. Allowed: " + java.util.Arrays.toString(
-                                ak.dev.irc.app.common.enums.Language.values()),
-                        "INVALID_LANGUAGE");
+                        AdminOpsMessages.INVALID_LANGUAGE_MSG.formatted(java.util.Arrays.toString(
+                                ak.dev.irc.app.common.enums.Language.values())),
+                        AdminOpsMessages.INVALID_LANGUAGE);
             }
         }
         java.time.LocalDateTime scheduledAt = null;
@@ -146,8 +145,8 @@ public class AdminNotificationController {
                 scheduledAt = java.time.LocalDateTime.parse(body.scheduledAt().trim());
             } catch (Exception e) {
                 throw new ak.dev.irc.app.common.exception.BadRequestException(
-                        "scheduledAt must be ISO-8601 local date-time, e.g. 2026-08-07T09:00:00.",
-                        "INVALID_SCHEDULE");
+                        AdminOpsMessages.INVALID_SCHEDULE_FORMAT_MSG,
+                        AdminOpsMessages.INVALID_SCHEDULE);
             }
         }
         AnnouncementService.ComposeResult result = announcementService.compose(
@@ -224,7 +223,8 @@ public class AdminNotificationController {
     @PostMapping("/email/test")
     public ResponseEntity<Map<String, Object>> testEmail(@RequestBody TestEmailBody body,
                                                          @AuthenticationPrincipal User admin) {
-        emailService.sendAsync(admin.getEmail(), "[TEST] " + body.subject(),
+        emailService.sendAsync(admin.getEmail(),
+                AdminOpsMessages.NOTIF_TEST_EMAIL_SUBJECT.formatted(body.subject()),
                 body.body(), "<p>" + body.body() + "</p>");
         adminAuditor.record(AuditOperation.OTHER, "Email", null,
                 "ADMIN_EMAIL_TEST", "to self (" + admin.getId() + ")");

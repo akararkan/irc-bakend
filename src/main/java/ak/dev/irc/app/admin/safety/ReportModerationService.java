@@ -5,6 +5,7 @@ import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.settings.safety.entity.Report;
 import ak.dev.irc.app.settings.safety.entity.UserStrike;
@@ -80,8 +81,8 @@ public class ReportModerationService {
                          boolean issueStrike, String strikeReason, boolean wholeGroup) {
         if (resolution == null || resolution == Resolution.NONE) {
             throw new BadRequestException(
-                    "resolution is required (WARNING_ISSUED, CONTENT_REMOVED, ACCOUNT_SUSPENDED, NO_ACTION).",
-                    "INVALID_RESOLUTION");
+                    AdminOpsMessages.INVALID_RESOLUTION_MSG,
+                    AdminOpsMessages.INVALID_RESOLUTION);
         }
         Report r = require(reportId);
         requireState(r, "action", ReportState.SUBMITTED, ReportState.TRIAGED);
@@ -105,9 +106,8 @@ public class ReportModerationService {
                     ? r.getTargetId() : null;
             if (strikeTarget == null) {
                 throw new BadRequestException(
-                        "issueStrike inline is only supported for USER-target reports; "
-                                + "use POST /api/v1/admin/safety/users/{userId}/strikes for content authors.",
-                        "STRIKE_TARGET_AMBIGUOUS");
+                        AdminOpsMessages.STRIKE_TARGET_AMBIGUOUS_MSG,
+                        AdminOpsMessages.STRIKE_TARGET_AMBIGUOUS);
             }
             strikeService.issueStrike(strikeTarget, r.getId(),
                     strikeReason != null && !strikeReason.isBlank()
@@ -158,7 +158,8 @@ public class ReportModerationService {
         UserStrike strike = strikeRepository.findById(strikeId)
                 .orElseThrow(() -> new ResourceNotFoundException("UserStrike", "id", strikeId));
         if (!strike.isActive()) {
-            throw new ConflictException("Strike is not active.", "STRIKE_NOT_ACTIVE");
+            throw new ConflictException(AdminOpsMessages.STRIKE_NOT_ACTIVE_MSG,
+                    AdminOpsMessages.STRIKE_NOT_ACTIVE);
         }
         strike.setExpiresAt(LocalDateTime.now());   // rows are never deleted
         strikeRepository.save(strike);
@@ -178,8 +179,8 @@ public class ReportModerationService {
             if (r.getState() == s) return;
         }
         throw new ConflictException(
-                "Cannot " + verb + " a report in state " + r.getState() + ".",
-                "REPORT_STATE_INVALID");
+                AdminOpsMessages.REPORT_STATE_INVALID_MSG.formatted(verb, r.getState()),
+                AdminOpsMessages.REPORT_STATE_INVALID);
     }
 
     private void forGroup(Report anchor, boolean wholeGroup, ReportState onlyFrom,

@@ -2,6 +2,7 @@ package ak.dev.irc.app.admin.logs;
 
 import ak.dev.irc.app.admin.ops.DeadLetterRepository;
 import ak.dev.irc.app.admin.ops.JobRunRepository;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.security.login.repository.LoginEventRepository;
 import ak.dev.irc.app.security.otp.repository.OtpChallengeRepository;
 import ak.dev.irc.app.settings.data.enums.DeletionStatus;
@@ -93,38 +94,38 @@ public class LogAlertSweepJob {
             case FAILED_LOGIN_PER_ACCOUNT -> {
                 for (Object[] row : loginEventRepository.failedByUserSince(since, rule.getThreshold())) {
                     fire(rule, "user=" + row[0],
-                            row[1] + " failed logins in " + rule.getWindowMinutes()
-                                    + "m for account " + row[0]);
+                            AdminOpsMessages.NOTIF_LOG_ALERT_FAILED_LOGIN_ACCOUNT_BODY
+                                    .formatted(row[1], rule.getWindowMinutes(), row[0]));
                 }
             }
             case FAILED_LOGIN_PER_IP -> {
                 for (Object[] row : loginEventRepository.failedByIpSince(since, rule.getThreshold())) {
                     fire(rule, "ip=" + row[0],
-                            row[1] + " failed logins in " + rule.getWindowMinutes()
-                                    + "m from IP " + row[0]);
+                            AdminOpsMessages.NOTIF_LOG_ALERT_FAILED_LOGIN_IP_BODY
+                                    .formatted(row[1], rule.getWindowMinutes(), row[0]));
                 }
             }
             case REPORT_PILE_ON -> {
                 for (Object[] row : reportRepository.pileOnGroupsSince(since, rule.getThreshold())) {
                     fire(rule, "group=" + row[0],
-                            row[1] + " reports on group " + row[0] + " in "
-                                    + rule.getWindowMinutes() + "m — brigading or real incident");
+                            AdminOpsMessages.NOTIF_LOG_ALERT_REPORT_PILE_ON_BODY
+                                    .formatted(row[1], row[0], rule.getWindowMinutes()));
                 }
             }
             case DLQ_ARRIVALS -> {
                 long arrivals = deadLetterRepository.countArrivedSince(since);
                 if (arrivals >= rule.getThreshold()) {
                     fire(rule, "dlq",
-                            arrivals + " dead-lettered message(s) parked in the last "
-                                    + rule.getWindowMinutes() + "m — inspect /admin/ops/queues/dlq");
+                            AdminOpsMessages.NOTIF_LOG_ALERT_DLQ_BODY
+                                    .formatted(arrivals, rule.getWindowMinutes()));
                 }
             }
             case OTP_ABUSE -> {
                 long issued = otpChallengeRepository.countIssuedSince(since);
                 if (issued >= rule.getThreshold()) {
                     fire(rule, "otp",
-                            issued + " OTP challenges issued in " + rule.getWindowMinutes()
-                                    + "m — possible abuse");
+                            AdminOpsMessages.NOTIF_LOG_ALERT_OTP_BODY
+                                    .formatted(issued, rule.getWindowMinutes()));
                 }
             }
             case PURGE_JOB_SILENCE -> {
@@ -136,8 +137,8 @@ public class LogAlertSweepJob {
                         .orElse(false);
                 if (pendingOverdue && !ranRecently) {
                     fire(rule, "purge-silence",
-                            "Deletions are past purge_after but no account-purge run recorded in "
-                                    + rule.getWindowMinutes() + "m — scheduler or job broken");
+                            AdminOpsMessages.NOTIF_LOG_ALERT_PURGE_SILENCE_BODY
+                                    .formatted(rule.getWindowMinutes()));
                 }
             }
         }
@@ -166,7 +167,7 @@ public class LogAlertSweepJob {
             for (var admin : admins.getContent()) {
                 try {
                     notificationService.sendSystemNotification(admin.getId(),
-                            "⚠ Log alert: " + rule.getName(), detail);
+                            AdminOpsMessages.NOTIF_LOG_ALERT_TITLE.formatted(rule.getName()), detail);
                 } catch (Exception ignored) {
                 }
             }

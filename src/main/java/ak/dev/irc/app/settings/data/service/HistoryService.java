@@ -1,6 +1,7 @@
 package ak.dev.irc.app.settings.data.service;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SettingsMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -27,7 +28,7 @@ public class HistoryService {
     public void deleteHistory(UUID userId, String type) {
         String t = type == null ? "" : type.trim().toLowerCase();
         if (!TYPES.contains(t)) {
-            throw new BadRequestException("Unknown history type: " + type + " (expected search|watch)");
+            throw new BadRequestException(SettingsMessages.HISTORY_TYPE_UNKNOWN_MSG.formatted(type));
         }
         log.info("[HISTORY] delete {} history for user {} (no-op until history stores exist)", t, userId);
     }

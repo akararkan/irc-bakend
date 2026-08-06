@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -7,6 +8,6 @@ import lombok.Data;
 @Data
 public class ReadMarkerRequest {
 
-    @NotNull(message = "lastReadMessageId is required")
+    @NotNull(message = ChatMessages.VAL_LAST_READ_REQUIRED)
     private Long lastReadMessageId;
 }

@@ -2,6 +2,7 @@ package ak.dev.irc.app.security.jwt;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ak.dev.irc.app.common.dto.ApiErrorResponse;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -39,9 +40,9 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
         ApiErrorResponse error = ApiErrorResponse.builder()
                 .status(HttpStatus.FORBIDDEN.value())
                 .error("Forbidden")
-                .message("You do not have the required permissions to access this resource.")
+                .message(SecurityMessages.ACCESS_DENIED_MSG)
                 .path(request.getRequestURI())
-                .errorCode("ACCESS_DENIED")
+                .errorCode(SecurityMessages.ACCESS_DENIED)
                 .traceId(traceId)
                 .build();
 

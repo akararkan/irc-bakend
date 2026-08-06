@@ -1,6 +1,7 @@
 package ak.dev.irc.app.chat.dto.request;
 
 import ak.dev.irc.app.chat.enums.MemberRole;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -8,6 +9,6 @@ import lombok.Data;
 @Data
 public class ChangeRoleRequest {
 
-    @NotNull(message = "role is required (ADMIN | MEMBER)")
+    @NotNull(message = ChatMessages.VAL_ROLE_REQUIRED)
     private MemberRole role;
 }

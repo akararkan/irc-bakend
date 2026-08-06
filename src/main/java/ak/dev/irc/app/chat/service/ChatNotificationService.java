@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.service;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService.DeliverRequest;
@@ -39,7 +40,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 recipientId,
                 NotificationKind.NEW_MESSAGE,
-                "New message",
+                ChatMessages.NOTIF_NEW_MESSAGE_TITLE,
                 truncate(senderLabel + ": " + (preview == null ? "" : preview), 160),
                 senderId,
                 "Conversation", conversationId,
@@ -52,8 +53,8 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 recipientId,
                 NotificationKind.MESSAGE_REQUEST,
-                "Message request",
-                requesterLabel + " wants to send you a message",
+                ChatMessages.NOTIF_MESSAGE_REQUEST_TITLE,
+                ChatMessages.NOTIF_MESSAGE_REQUEST_BODY.formatted(requesterLabel),
                 requesterId,
                 "Conversation", conversationId,
                 "MESSAGE_REQUEST:" + conversationId));
@@ -65,7 +66,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 recipientId,
                 NotificationKind.ADDED_TO_GROUP,
-                "Added to a group",
+                ChatMessages.NOTIF_ADDED_TO_GROUP_TITLE,
                 actorLabel + " added you to " + (groupTitle == null ? "a group" : "\"" + groupTitle + "\""),
                 actorId,
                 "Conversation", conversationId,
@@ -87,7 +88,7 @@ public class ChatNotificationService {
             return new DeliverRequest(
                     recipientId,
                     NotificationKind.CALL_MISSED,
-                    "Missed call",
+                    ChatMessages.NOTIF_MISSED_CALL_TITLE,
                     "You missed a " + (video ? "video" : "voice") + " call from " + caller,
                     callerId,
                     "Conversation", conversationId,
@@ -114,7 +115,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 recipientId,
                 NotificationKind.MESSAGE_MENTION,
-                "You were mentioned",
+                ChatMessages.NOTIF_MENTIONED_TITLE,
                 truncate(body, 160),
                 senderId,
                 channel ? "Channel" : "Conversation", conversationId,
@@ -136,7 +137,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 subscriberId,
                 NotificationKind.CHANNEL_NEW_POST,
-                "New channel post",
+                ChatMessages.NOTIF_CHANNEL_POST_TITLE,
                 body,
                 posterId,
                 "Channel", channelId,
@@ -149,7 +150,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 adminId,
                 NotificationKind.CHANNEL_JOIN_REQUEST,
-                "Join request",
+                ChatMessages.NOTIF_JOIN_REQUEST_TITLE,
                 requesterLabel + " requested to join "
                         + (channelTitle == null ? "your channel" : "\"" + channelTitle + "\""),
                 requesterId,
@@ -162,7 +163,7 @@ public class ChatNotificationService {
         notifications.deliverAsync(new DeliverRequest(
                 userId,
                 NotificationKind.CHANNEL_JOIN_APPROVED,
-                "Request approved",
+                ChatMessages.NOTIF_JOIN_APPROVED_TITLE,
                 "You joined " + (channelTitle == null ? "the channel" : "\"" + channelTitle + "\""),
                 null,
                 "Channel", channelId,

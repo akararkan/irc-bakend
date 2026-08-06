@@ -24,6 +24,7 @@ import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -106,7 +107,7 @@ public class LiveStreamService {
 
     @Transactional
     public LiveStreamResponse start(UUID hostId, StartStreamRequest req) {
-        if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException("A stream requires a title.");
+        if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.STREAM_TITLE_REQUIRED_MSG);
         boolean record = req.getRecord() != null ? req.getRecord() : recordingDefaultOn;
         LiveStream s = streamRepo.save(LiveStream.builder()
                 .hostId(hostId)
@@ -154,7 +155,8 @@ public class LiveStreamService {
     public void end(UUID streamId, UUID hostId) {
         LiveStream s = requireStream(streamId);
         if (!s.getHostId().equals(hostId)) {
-            throw new ForbiddenException("Only the host can end this stream.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STREAM_END_HOST_ONLY_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         }
         if (s.getStatus() == LiveStreamStatus.ENDED) return; // idempotent
         // Everyone who should hear "it's over": viewers, the host, and any co-host
@@ -221,10 +223,12 @@ public class LiveStreamService {
     private LiveStream requireOwnedLiveStream(UUID streamId, UUID hostId) {
         LiveStream s = requireStream(streamId);
         if (!s.getHostId().equals(hostId)) {
-            throw new ForbiddenException("Only the host can control this recording.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.RECORDING_CONTROL_HOST_ONLY_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         }
         if (s.getStatus() != LiveStreamStatus.LIVE) {
-            throw new BadRequestException("This stream is not live.", "STREAM_NOT_LIVE");
+            throw new BadRequestException(
+                    ChannelStreamMessages.STREAM_NOT_LIVE_MSG, ChannelStreamMessages.STREAM_NOT_LIVE);
         }
         return s;
     }
@@ -353,12 +357,13 @@ public class LiveStreamService {
 
     @Transactional(readOnly = true)
     public void chat(UUID streamId, UUID userId, LiveChatRequest req) {
-        if (!StringUtils.hasText(req.getText())) throw new BadRequestException("Message text is required.");
+        if (!StringUtils.hasText(req.getText())) throw new BadRequestException(ChannelStreamMessages.STREAM_CHAT_TEXT_REQUIRED_MSG);
         rateLimiter.check("stream-chat", userId, 20, Duration.ofSeconds(10));
         LiveStream s = requireLive(streamId);
         boolean host = s.getHostId().equals(userId);
         if (!host && !viewerRepo.existsByStreamIdAndUserIdAndActiveTrue(streamId, userId)) {
-            throw new ForbiddenException("Join the stream before chatting.", "NOT_A_MEMBER");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STREAM_CHAT_JOIN_FIRST_MSG, ChannelStreamMessages.NOT_A_MEMBER);
         }
         String username = userRepository.findById(userId).map(User::getUsername).orElse("user");
         String text = req.getText().length() <= 500 ? req.getText() : req.getText().substring(0, 500);
@@ -419,7 +424,7 @@ public class LiveStreamService {
     public LiveStreamResponse update(UUID streamId, UUID hostId, UpdateStreamRequest req) {
         LiveStream s = requireOwnedStream(streamId, hostId);
         if (req.getTitle() != null) {
-            if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException("Title cannot be blank.");
+            if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.TITLE_BLANK_MSG);
             s.setTitle(req.getTitle().trim());
         }
         if (req.getDescription() != null) {
@@ -663,7 +668,8 @@ public class LiveStreamService {
     private LiveStream requireOwnedStream(UUID streamId, UUID hostId) {
         LiveStream s = requireStream(streamId);
         if (!s.getHostId().equals(hostId)) {
-            throw new ForbiddenException("Only the host can manage this stream.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STREAM_MANAGE_HOST_ONLY_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         }
         return s;
     }
@@ -675,7 +681,7 @@ public class LiveStreamService {
 
     private LiveStream requireLive(UUID id) {
         LiveStream s = requireStream(id);
-        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException("This stream is not live.");
+        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException(ChannelStreamMessages.STREAM_NOT_LIVE_MSG);
         return s;
     }
 

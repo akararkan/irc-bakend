@@ -3,6 +3,7 @@ package ak.dev.irc.app.security.twofa.service;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.crypto.SecretCipher;
 import ak.dev.irc.app.security.twofa.TwoFaProperties;
 import ak.dev.irc.app.security.twofa.TotpProvider;
@@ -44,7 +45,7 @@ public class TwoFactorService {
     public SetupResult setup(UUID userId) {
         User user = user(userId);
         if (user.isTwoFactorEnabled()) {
-            throw new ConflictException("Two-factor authentication is already enabled.", "TWO_FA_ALREADY_ON");
+            throw new ConflictException(SecurityMessages.TWO_FA_ALREADY_ON_MSG, SecurityMessages.TWO_FA_ALREADY_ON);
         }
         String secret = totp.generateSecret();
         user.setTwoFactorSecret(cipher.encrypt(secret));
@@ -63,10 +64,10 @@ public class TwoFactorService {
     public boolean confirmEnable(UUID userId, String code) {
         User user = user(userId);
         if (user.getTwoFactorSecret() == null) {
-            throw new BadRequestException("Start 2FA setup first.", "TWO_FA_NOT_STARTED");
+            throw new BadRequestException(SecurityMessages.TWO_FA_NOT_STARTED_MSG, SecurityMessages.TWO_FA_NOT_STARTED);
         }
         if (!verifyInternal(user, code)) {
-            throw new BadRequestException("Invalid authentication code.", "TWO_FA_INVALID");
+            throw new BadRequestException(SecurityMessages.TWO_FA_INVALID_MSG, SecurityMessages.TWO_FA_INVALID);
         }
         boolean newlyEnabled = !user.isTwoFactorEnabled();
         user.setTwoFactorEnabled(true);

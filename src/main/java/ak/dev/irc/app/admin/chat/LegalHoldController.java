@@ -11,6 +11,7 @@ import ak.dev.irc.app.chat.util.ChatBuckets;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ConflictException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.security.SecurityUtils;
 import jakarta.validation.constraints.NotBlank;
@@ -80,8 +81,8 @@ public class LegalHoldController {
             try {
                 parsed = LegalHold.Status.valueOf(status.trim().toUpperCase());
             } catch (Exception e) {
-                throw new BadRequestException("Unknown status. Allowed: OPEN, APPROVED, "
-                        + "EXECUTED, REJECTED.", "INVALID_STATUS");
+                throw new BadRequestException(AdminOpsMessages.INVALID_STATUS_HOLD_MSG,
+                        AdminOpsMessages.INVALID_STATUS);
             }
         }
         return ResponseEntity.ok(holdRepository.browse(parsed,
@@ -93,11 +94,12 @@ public class LegalHoldController {
     @RequiresStepUp
     public ResponseEntity<LegalHold> open(@RequestBody OpenBody body) {
         if (body.conversationId() == null) {
-            throw new BadRequestException("conversationId is required.", "INVALID_INPUT");
+            throw new BadRequestException(AdminOpsMessages.INVALID_INPUT_CONVERSATION_MSG,
+                    AdminOpsMessages.INVALID_INPUT);
         }
         if (body.reason() == null || body.reason().isBlank()) {
             throw new BadRequestException(
-                    "A case reference (ticket / court order id) is required.", "INVALID_INPUT");
+                    AdminOpsMessages.INVALID_INPUT_CASE_REF_MSG, AdminOpsMessages.INVALID_INPUT);
         }
         conversationRepository.findById(body.conversationId())
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -123,8 +125,7 @@ public class LegalHoldController {
         requireStatus(hold, LegalHold.Status.OPEN, "approve");
         UUID adminId = SecurityUtils.getCurrentUserId().orElse(null);
         if (adminId != null && adminId.equals(hold.getOpenedBy())) {
-            throw new ConflictException("Dual control: the admin who opened a legal hold "
-                    + "cannot approve it — a second admin must review.");
+            throw new ConflictException(AdminOpsMessages.LEGAL_HOLD_DUAL_CONTROL_MSG);
         }
         hold.setStatus(LegalHold.Status.APPROVED);
         hold.setApprovedBy(adminId);
@@ -189,9 +190,7 @@ public class LegalHoldController {
         body.put("messageCount", messages.size());
         body.put("capped", messages.size() >= EXECUTE_CAP);
         body.put("messages", messages);
-        body.put("warning", "This export contains private message content released under "
-                + "legal hold " + hold.getReason() + ". Handle per your evidence-retention "
-                + "policy; the hold is now EXECUTED and cannot be re-run.");
+        body.put("warning", AdminOpsMessages.WARN_LEGAL_HOLD_EXPORT.formatted(hold.getReason()));
         return ResponseEntity.ok(body);
     }
 
@@ -244,9 +243,9 @@ public class LegalHoldController {
 
     private static void requireStatus(LegalHold hold, LegalHold.Status expected, String verb) {
         if (hold.getStatus() != expected) {
-            throw new BadRequestException("Cannot " + verb + " a " + hold.getStatus()
-                    + " hold — only " + expected + " holds can be " + verb + "d.",
-                    "LEGAL_HOLD_WRONG_STATE");
+            throw new BadRequestException(AdminOpsMessages.LEGAL_HOLD_WRONG_STATE_MSG
+                    .formatted(verb, hold.getStatus(), expected, verb),
+                    AdminOpsMessages.LEGAL_HOLD_WRONG_STATE);
         }
     }
 

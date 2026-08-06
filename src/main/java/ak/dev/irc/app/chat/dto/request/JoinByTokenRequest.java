@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
@@ -7,6 +8,6 @@ import lombok.Data;
 @Data
 public class JoinByTokenRequest {
 
-    @NotBlank(message = "token is required")
+    @NotBlank(message = ChatMessages.VAL_TOKEN_REQUIRED)
     private String token;
 }

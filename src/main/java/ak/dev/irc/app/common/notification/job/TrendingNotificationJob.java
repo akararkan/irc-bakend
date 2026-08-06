@@ -1,5 +1,6 @@
 package ak.dev.irc.app.common.notification.job;
 
+import ak.dev.irc.app.common.messages.CommonMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.common.tag.ContentType;
 import ak.dev.irc.app.common.tag.entity.TrendingTagEntity;
@@ -99,7 +100,7 @@ public class TrendingNotificationJob {
             String today    = LocalDate.now(ZoneOffset.UTC).toString();
             String groupKey = "TRENDING_DIGEST:" + today;
             String body     = composeBody(digest);
-            String title    = "Today's trending in scholarship";
+            String title    = CommonMessages.NOTIF_TRENDING_DIGEST_TITLE;
 
             long sent = fanOut(groupKey, title, body);
             log.info("[TRENDING] dispatched digest [{}] to {} active users — tags={}",

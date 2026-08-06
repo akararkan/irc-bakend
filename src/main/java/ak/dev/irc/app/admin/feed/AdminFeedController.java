@@ -2,6 +2,7 @@ package ak.dev.irc.app.admin.feed;
 
 import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.post.cassandra.repository.UserAuthorAffinityRepository;
 import ak.dev.irc.app.post.cassandra.service.FeedRankingService;
@@ -157,7 +158,7 @@ public class AdminFeedController {
             @org.springframework.web.bind.annotation.RequestBody FeedPreviewRequest req) {
         if (req.userId() == null) {
             throw new ak.dev.irc.app.common.exception.BadRequestException(
-                    "userId is required.", "MISSING_USER");
+                    AdminOpsMessages.MISSING_USER_MSG, AdminOpsMessages.MISSING_USER);
         }
         int limit = Pages.clamp(req.limit() == null ? 20 : req.limit());
 
@@ -197,9 +198,7 @@ public class AdminFeedController {
         body.put("baselineKnobs", baseline);
         body.put("proposedKnobs", proposed);
         body.put("preview", rows);
-        body.put("note", "Shadow-scored twice over the live candidate set — nothing was "
-                + "persisted; the two fetches may see slightly different candidates if "
-                + "content landed in between.");
+        body.put("note", AdminOpsMessages.NOTE_FEED_PREVIEW_SHADOW);
         return ResponseEntity.ok(body);
     }
 
@@ -225,11 +224,11 @@ public class AdminFeedController {
     private static void validate(FeedConfigPatch p) {
         if (p.rolloutPercent() != null && (p.rolloutPercent() < 0 || p.rolloutPercent() > 100)) {
             throw new ak.dev.irc.app.common.exception.BadRequestException(
-                    "rolloutPercent must be 0-100.", "INVALID_ROLLOUT");
+                    AdminOpsMessages.INVALID_ROLLOUT_MSG, AdminOpsMessages.INVALID_ROLLOUT);
         }
         if (p.maxAuthorRun() != null && (p.maxAuthorRun() < 1 || p.maxAuthorRun() > 10)) {
             throw new ak.dev.irc.app.common.exception.BadRequestException(
-                    "maxAuthorRun must be 1-10.", "INVALID_KNOB");
+                    AdminOpsMessages.INVALID_KNOB_RUN_MSG, AdminOpsMessages.INVALID_KNOB);
         }
         for (Double v : new Double[]{p.wLike(), p.wComment(), p.wShare(), p.wSave(), p.wView(),
                 p.wAffinity(), p.halfLifePost(), p.halfLifeReel(), p.halfLifeChannel(),
@@ -237,7 +236,7 @@ public class AdminFeedController {
                 p.dampChannel(), p.dampExplore()}) {
             if (v != null && (v.isNaN() || v.isInfinite() || v < 0 || v > 1000)) {
                 throw new ak.dev.irc.app.common.exception.BadRequestException(
-                        "Knob values must be finite, non-negative and ≤ 1000.", "INVALID_KNOB");
+                        AdminOpsMessages.INVALID_KNOB_MSG, AdminOpsMessages.INVALID_KNOB);
             }
         }
     }

@@ -1,6 +1,7 @@
 package ak.dev.irc.app.admin.ops;
 
 import ak.dev.irc.app.chat.service.MediaControlClient;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.email.EmailService;
 import ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants;
 import com.datastax.oss.driver.api.core.CqlSession;
@@ -70,7 +71,7 @@ public class OpsHealthService {
     private Map<String, Object> probeRabbit() {
         RabbitAdmin admin = rabbitAdmin.getIfAvailable();
         if (admin == null) {
-            return Map.of("status", "UNKNOWN", "note", "RabbitAdmin unavailable");
+            return Map.of("status", "UNKNOWN", "note", AdminOpsMessages.NOTE_RABBIT_ADMIN_UNAVAILABLE);
         }
         long start = System.currentTimeMillis();
         Map<String, Object> queues = new LinkedHashMap<>();
@@ -98,7 +99,7 @@ public class OpsHealthService {
     private Map<String, Object> probeR2() {
         S3Client client = s3Client.getIfAvailable();
         if (client == null || r2Bucket == null || r2Bucket.isBlank()) {
-            return Map.of("status", "DISABLED", "note", "R2 credentials not configured");
+            return Map.of("status", "DISABLED", "note", AdminOpsMessages.NOTE_R2_NOT_CONFIGURED);
         }
         return probe(() -> client.headBucket(HeadBucketRequest.builder().bucket(r2Bucket).build()));
     }

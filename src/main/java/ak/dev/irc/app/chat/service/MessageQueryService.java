@@ -21,6 +21,7 @@ import ak.dev.irc.app.chat.util.ChatBuckets;
 import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -535,7 +536,7 @@ public class MessageQueryService {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::canRead)
                 .orElseThrow(() -> new ForbiddenException(
-                        "You are not a member of this conversation.", "NOT_A_MEMBER"));
+                        ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
     }
 
     /** Epoch-ms floor of the scan range — never before the conversation existed,

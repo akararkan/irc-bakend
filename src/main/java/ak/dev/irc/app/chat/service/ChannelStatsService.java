@@ -8,6 +8,7 @@ import ak.dev.irc.app.chat.repository.ConversationMemberRepository;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,7 +45,7 @@ public class ChannelStatsService {
         ConversationMember me = memberRepo.findMember(channelId, actorId)
                 .filter(m -> m.isActive() && m.isAdminOrOwner())
                 .orElseThrow(() -> new ForbiddenException(
-                        "Only channel admins can view statistics.", "ADMINS_ONLY"));
+                        ChannelStreamMessages.CHANNEL_STATS_ADMINS_ONLY_MSG, ChannelStreamMessages.ADMINS_ONLY));
 
         LocalDateTime now = LocalDateTime.now();
         long joined7 = memberRepo.countJoinedSince(channelId, now.minusDays(7));

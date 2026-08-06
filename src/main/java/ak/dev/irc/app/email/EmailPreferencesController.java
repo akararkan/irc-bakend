@@ -1,6 +1,7 @@
 package ak.dev.irc.app.email;
 
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.EmailMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -77,20 +78,11 @@ public class EmailPreferencesController {
         if (user.getEmail() == null || user.getEmail().isBlank()) {
             return ResponseEntity.ok(Map.of(
                     "queued", false,
-                    "reason", "no email on account"));
+                    "reason", EmailMessages.NOTE_NO_EMAIL_ON_ACCOUNT));
         }
-        String subject = "IRC Platform — test email";
-        String plain = "Hi " + user.getFullName() + ",\n\n"
-                + "This is a test email from IRC Platform. If you can read it, "
-                + "your notification pipeline is working end to end.\n\n"
-                + "Tip: if you don't see future activity emails, check your spam folder "
-                + "and mark this address as 'Not spam'.\n\n— IRC";
-        String html = "<p>Hi " + user.getFullName() + ",</p>"
-                + "<p>This is a <strong>test email</strong> from IRC Platform. "
-                + "If you can read it, your notification pipeline is working end to end.</p>"
-                + "<p style=\"color:#57606a;font-size:13px;\">Tip — if you don't see future "
-                + "activity emails, check your spam folder and mark this address as "
-                + "\"Not spam\".</p><p>— IRC</p>";
+        String subject = EmailMessages.NOTIF_TEST_EMAIL_SUBJECT;
+        String plain = EmailMessages.NOTIF_TEST_EMAIL_PLAIN.formatted(user.getFullName());
+        String html = EmailMessages.NOTIF_TEST_EMAIL_HTML.formatted(user.getFullName());
         emailService.sendAsync(user.getEmail(), subject, plain, html);
         return ResponseEntity.ok(Map.of(
                 "queued", true,
@@ -109,9 +101,9 @@ public class EmailPreferencesController {
 
     private User currentUser() {
         UUID id = SecurityUtils.getCurrentUserId()
-                .orElseThrow(() -> new UnauthorizedException("Authentication required"));
+                .orElseThrow(() -> new UnauthorizedException(EmailMessages.AUTH_UNAUTHORIZED_MSG));
         return userRepository.findActiveById(id)
-                .orElseThrow(() -> new UnauthorizedException("Authentication required"));
+                .orElseThrow(() -> new UnauthorizedException(EmailMessages.AUTH_UNAUTHORIZED_MSG));
     }
 
     /**

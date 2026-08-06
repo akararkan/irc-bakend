@@ -1,5 +1,6 @@
 package ak.dev.irc.app.security.login.service;
 
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.login.entity.LoginEvent;
 import ak.dev.irc.app.security.login.repository.LoginEventRepository;
 import ak.dev.irc.app.user.service.NotificationService;
@@ -57,7 +58,7 @@ public class LoginEventService {
         if (isNew) {
             try {
                 notificationService.sendSystemNotification(userId,
-                        "New sign-in to your account",
+                        SecurityMessages.NOTIF_NEW_DEVICE_TITLE,
                         "A new device signed in" + (ip != null ? " from " + ip : "")
                                 + ". If this wasn't you, secure your account now.");
             } catch (Exception ex) {

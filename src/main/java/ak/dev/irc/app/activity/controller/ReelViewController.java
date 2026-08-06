@@ -11,6 +11,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -30,7 +31,7 @@ public class ReelViewController {
             @PathVariable UUID postId,
             @Valid @RequestBody(required = false) RecordReelViewRequest req,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         Integer watchedSeconds = req != null ? req.getWatchedSeconds() : null;
         ReelViewResponse response = reelViewService.recordWatch(user.getId(), postId, watchedSeconds);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
@@ -41,7 +42,7 @@ public class ReelViewController {
     public ResponseEntity<Page<ReelViewResponse>> listMyWatched(
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         return ResponseEntity.ok(reelViewService.listMyWatched(user.getId(), pageable));
     }
 
@@ -50,7 +51,7 @@ public class ReelViewController {
     public ResponseEntity<Void> deleteOne(
             @PathVariable UUID reelViewId,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         reelViewService.deleteOne(user.getId(), reelViewId);
         return ResponseEntity.noContent().build();
     }
@@ -58,7 +59,7 @@ public class ReelViewController {
     // Clear all watch history
     @DeleteMapping("/api/v1/users/me/reels/watched")
     public ResponseEntity<Map<String, Object>> deleteAll(@AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         int deleted = reelViewService.deleteAll(user.getId());
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }

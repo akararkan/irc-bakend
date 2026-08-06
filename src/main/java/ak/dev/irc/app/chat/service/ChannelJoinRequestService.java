@@ -19,6 +19,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -157,7 +158,7 @@ public class ChannelJoinRequestService {
     private ConversationJoinRequest requirePending(UUID channelId, UUID userId) {
         ConversationJoinRequest r = requestRepo.findByConversationIdAndUserId(channelId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("JoinRequest", "userId", userId));
-        if (!r.isPending()) throw new BadRequestException("This join request was already decided.");
+        if (!r.isPending()) throw new BadRequestException(ChannelStreamMessages.JOIN_REQUEST_DECIDED_MSG);
         return r;
     }
 
@@ -170,7 +171,8 @@ public class ChannelJoinRequestService {
     private void requireApprover(UUID channelId, UUID actorId) {
         ConversationMember actor = memberRepo.findMember(channelId, actorId).orElse(null);
         if (!ChannelRights.can(actor, AdminRights::isCanApproveJoinRequests)) {
-            throw new ForbiddenException("You cannot manage join requests here.", "ADMINS_ONLY");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.JOIN_REQUESTS_MANAGE_FORBIDDEN_MSG, ChannelStreamMessages.ADMINS_ONLY);
         }
     }
 

@@ -15,6 +15,7 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -75,7 +76,7 @@ public class UserActivityController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
 
         // `types` takes precedence over the legacy single `type` param.
         List<UserActivityType> resolved = (types != null && !types.isEmpty())
@@ -90,7 +91,7 @@ public class UserActivityController {
     public ResponseEntity<Void> deleteOne(
             @PathVariable UUID activityId,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         activityService.deleteOne(user.getId(), activityId);
         return ResponseEntity.noContent().build();
     }
@@ -99,7 +100,7 @@ public class UserActivityController {
     public ResponseEntity<Map<String, Object>> deleteAll(
             @RequestParam(value = "type", required = false) UserActivityType type,
             @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
         int deleted = activityService.deleteAll(user.getId(), type);
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }
@@ -144,8 +145,7 @@ public class UserActivityController {
             try {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType(MediaType.TEXT_PLAIN_VALUE);
-                response.getWriter().write(
-                        "Authentication required. Pass access token as ?token=<jwt>.");
+                response.getWriter().write(UserMessages.NOTE_SSE_AUTH_REQUIRED);
                 response.flushBuffer();
             } catch (Exception ignored) { /* connection going to close anyway */ }
             return null;

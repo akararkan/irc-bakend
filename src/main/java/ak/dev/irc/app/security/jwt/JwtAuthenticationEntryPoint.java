@@ -2,6 +2,7 @@ package ak.dev.irc.app.security.jwt;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ak.dev.irc.app.common.dto.ApiErrorResponse;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -39,10 +40,9 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
         ApiErrorResponse error = ApiErrorResponse.builder()
                 .status(HttpStatus.UNAUTHORIZED.value())
                 .error("Unauthorized")
-                .message("You must be authenticated to access this resource. " +
-                         "Please log in or provide a valid token.")
+                .message(SecurityMessages.AUTH_REQUIRED_ENTRY_POINT_MSG)
                 .path(request.getRequestURI())
-                .errorCode("AUTH_REQUIRED")
+                .errorCode(SecurityMessages.AUTH_REQUIRED)
                 .traceId(traceId)
                 .build();
 

@@ -6,6 +6,7 @@ import ak.dev.irc.app.chat.realtime.ChatRealtimeEvent;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
 import ak.dev.irc.app.chat.repository.ConversationMemberRepository;
 import ak.dev.irc.app.common.exception.ForbiddenException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -53,7 +54,7 @@ public class TypingService {
         var member = memberRepo.findMember(conversationId, senderId)
                 .filter(m -> m.getStatus() != null && m.isActive())
                 .orElseThrow(() -> new ForbiddenException(
-                        "You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                        ChatMessages.NOT_AN_ACTIVE_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
 
         ak.dev.irc.app.chat.enums.ChatAction effective =
                 action == null ? ak.dev.irc.app.chat.enums.ChatAction.TYPING : action;

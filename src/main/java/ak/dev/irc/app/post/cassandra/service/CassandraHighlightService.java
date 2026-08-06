@@ -1,5 +1,6 @@
 package ak.dev.irc.app.post.cassandra.service;
 
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.HighlightByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryInHighlightEntity;
@@ -133,14 +134,14 @@ public class CassandraHighlightService {
         StoryLookupEntity meta = storyLookupRepo.findById(storyId).orElse(null);
         if (meta == null) return Optional.empty();
         if (!meta.getAuthorId().equals(requesterId)) {
-            throw new SecurityException("Not the story author");
+            throw new SecurityException(PostMessages.NOT_STORY_AUTHOR_MSG);
         }
         // The target highlight must also belong to the requester — otherwise a
         // caller could inject their story into somebody else's highlight rail.
         boolean ownsHighlight = highlightRepo.listFor(requesterId).stream()
                 .anyMatch(h -> h.getHighlightId().equals(highlightId));
         if (!ownsHighlight) {
-            throw new SecurityException("Not the highlight owner");
+            throw new SecurityException(PostMessages.NOT_HIGHLIGHT_OWNER_MSG);
         }
 
         // We need to find the actual story content. The author's partition is
@@ -181,7 +182,7 @@ public class CassandraHighlightService {
                             && r.getAuthorId() != null
                             && r.getAuthorId().equals(requesterId));
         if (!owned) {
-            throw new SecurityException("Not the highlight owner");
+            throw new SecurityException(PostMessages.NOT_HIGHLIGHT_OWNER_MSG);
         }
         storyInHighlightRepo.delete(highlightId, createdAt, storyId);
     }

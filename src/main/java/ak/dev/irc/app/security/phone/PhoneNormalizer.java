@@ -1,6 +1,7 @@
 package ak.dev.irc.app.security.phone;
 
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -33,7 +34,7 @@ public class PhoneNormalizer {
      */
     public String toE164(String raw) {
         if (raw == null || raw.isBlank()) {
-            throw new BadRequestException("Phone number is required.", "PHONE_REQUIRED");
+            throw new BadRequestException(SecurityMessages.PHONE_REQUIRED_MSG, SecurityMessages.PHONE_REQUIRED);
         }
         String s = raw.trim();
         boolean hadPlus = s.startsWith("+");
@@ -41,7 +42,7 @@ public class PhoneNormalizer {
         // Strip everything except digits (drops spaces, dashes, parens, dots).
         String digits = s.replaceAll("[^0-9]", "");
         if (digits.isEmpty()) {
-            throw new BadRequestException("Phone number has no digits.", "PHONE_INVALID");
+            throw new BadRequestException(SecurityMessages.PHONE_INVALID_NO_DIGITS_MSG, SecurityMessages.PHONE_INVALID);
         }
 
         String e164Digits;
@@ -60,7 +61,7 @@ public class PhoneNormalizer {
 
         if (e164Digits.length() < 8 || e164Digits.length() > 15) {
             throw new BadRequestException(
-                    "Phone number is not a valid E.164 length.", "PHONE_INVALID");
+                    SecurityMessages.PHONE_INVALID_LENGTH_MSG, SecurityMessages.PHONE_INVALID);
         }
         return "+" + e164Digits;
     }

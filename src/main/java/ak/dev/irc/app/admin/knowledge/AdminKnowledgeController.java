@@ -5,6 +5,7 @@ import ak.dev.irc.app.admin.support.RequiresStepUp;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.knowledge.entity.Madhhab;
 import ak.dev.irc.app.knowledge.entity.Topic;
 import ak.dev.irc.app.knowledge.repository.MadhhabRepository;
@@ -200,8 +201,9 @@ public class AdminKnowledgeController {
         for (Topic t : topicRepository.findAll()) {
             if (t.getNameEn() != null && t.getNameEn().trim().toLowerCase().equals(needle)
                     && (exceptId == null || !t.getId().equals(exceptId))) {
-                throw new BadRequestException("A topic named '" + nameEn + "' already exists.",
-                        "DUPLICATE_VOCAB_NAME");
+                throw new BadRequestException(
+                        AdminContentMessages.DUPLICATE_VOCAB_NAME_TOPIC_MSG.formatted(nameEn),
+                        AdminContentMessages.DUPLICATE_VOCAB_NAME);
             }
         }
     }
@@ -211,8 +213,9 @@ public class AdminKnowledgeController {
         for (Madhhab m : madhhabRepository.findAll()) {
             if (m.getNameEn() != null && m.getNameEn().trim().toLowerCase().equals(needle)
                     && (exceptId == null || !m.getId().equals(exceptId))) {
-                throw new BadRequestException("A madhhab named '" + nameEn + "' already exists.",
-                        "DUPLICATE_VOCAB_NAME");
+                throw new BadRequestException(
+                        AdminContentMessages.DUPLICATE_VOCAB_NAME_MADHHAB_MSG.formatted(nameEn),
+                        AdminContentMessages.DUPLICATE_VOCAB_NAME);
             }
         }
     }

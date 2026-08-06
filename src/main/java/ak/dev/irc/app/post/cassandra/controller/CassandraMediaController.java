@@ -1,6 +1,7 @@
 package ak.dev.irc.app.post.cassandra.controller;
 
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.post.cassandra.entity.MediaByPostEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraMediaService;
 import ak.dev.irc.app.user.entity.User;
@@ -65,7 +66,7 @@ public class CassandraMediaController {
     }
 
     private void requireAuthenticatedAuthor(UUID postId, User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(PostMessages.AUTH_REQUIRED_MSG);
         mediaService.requireAuthor(postId, user.getId());
     }
 }

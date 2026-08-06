@@ -10,6 +10,7 @@ import ak.dev.irc.app.chat.repository.CallSessionRepository;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.repository.MessageRequestRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
@@ -76,8 +77,8 @@ public class AdminChatController {
         ConversationType parsed = parseType(type);
         if (parsed == ConversationType.DIRECT) {
             throw new BadRequestException(
-                    "DM conversations are not browsable — aggregate stats only.",
-                    "DM_BROWSE_FORBIDDEN");
+                    AdminOpsMessages.DM_BROWSE_FORBIDDEN_MSG,
+                    AdminOpsMessages.DM_BROWSE_FORBIDDEN);
         }
         Page<Conversation> page = conversationRepository.adminBrowse(parsed,
                 q == null || q.isBlank() ? null : q.trim(), null, null, null,
@@ -203,7 +204,8 @@ public class AdminChatController {
         try {
             return ConversationType.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown type. Allowed: GROUP, CHANNEL.", "INVALID_TYPE");
+            throw new BadRequestException(AdminOpsMessages.INVALID_TYPE_CONVERSATION_MSG,
+                    AdminOpsMessages.INVALID_TYPE);
         }
     }
 
@@ -212,7 +214,8 @@ public class AdminChatController {
         try {
             return CallType.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown call type. Allowed: VOICE, VIDEO.", "INVALID_TYPE");
+            throw new BadRequestException(AdminOpsMessages.INVALID_TYPE_CALL_MSG,
+                    AdminOpsMessages.INVALID_TYPE);
         }
     }
 
@@ -221,8 +224,9 @@ public class AdminChatController {
         try {
             return CallStatus.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown call status. Allowed: "
-                    + java.util.Arrays.toString(CallStatus.values()), "INVALID_STATUS");
+            throw new BadRequestException(AdminOpsMessages.INVALID_STATUS_CALL_MSG.formatted(
+                    java.util.Arrays.toString(CallStatus.values())),
+                    AdminOpsMessages.INVALID_STATUS);
         }
     }
 }

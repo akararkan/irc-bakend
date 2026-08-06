@@ -5,6 +5,7 @@ import ak.dev.irc.app.common.enums.Language;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.knowledge.entity.Madhhab;
 import ak.dev.irc.app.knowledge.entity.Topic;
 import ak.dev.irc.app.knowledge.repository.MadhhabRepository;
@@ -105,7 +106,9 @@ public class UserProfileServiceImpl implements UserProfileService {
                 profile.setContentLanguage(Language.valueOf(req.contentLanguage().toUpperCase()));
                 changes++;
             } catch (IllegalArgumentException e) {
-                throw new BadRequestException("Invalid language code: " + req.contentLanguage(), "INVALID_LANGUAGE");
+                throw new BadRequestException(
+                        UserMessages.INVALID_LANGUAGE_MSG.formatted(req.contentLanguage()),
+                        UserMessages.INVALID_LANGUAGE);
             }
         }
 
@@ -244,20 +247,20 @@ public class UserProfileServiceImpl implements UserProfileService {
     private UUID authenticatedUserId() {
         return SecurityUtils.getCurrentUserId()
             .orElseThrow(() -> new UnauthorizedException(
-                "You must be authenticated to perform this action."));
+                UserMessages.MUST_BE_AUTHENTICATED_MSG));
     }
 
     private void validateImage(MultipartFile image) {
         if (image == null || image.isEmpty())
-            throw new BadRequestException("Image file is required.", "EMPTY_FILE");
+            throw new BadRequestException(UserMessages.EMPTY_FILE_MSG, UserMessages.EMPTY_FILE);
         String ct = image.getContentType();
         if (ct == null || !ALLOWED_IMAGE_TYPES.contains(ct.toLowerCase()))
-            throw new BadRequestException("Invalid image type. Allowed: jpeg, png, webp, gif.", "INVALID_FILE_TYPE");
+            throw new BadRequestException(UserMessages.INVALID_FILE_TYPE_MSG, UserMessages.INVALID_FILE_TYPE);
         String fn = image.getOriginalFilename();
         if (fn == null || fn.isBlank())
-            throw new BadRequestException("File name is required.", "MISSING_FILENAME");
+            throw new BadRequestException(UserMessages.MISSING_FILENAME_MSG, UserMessages.MISSING_FILENAME);
         if (fn.contains("..") || fn.contains("/") || fn.contains("\\"))
-            throw new BadRequestException("Invalid file name.", "INVALID_FILENAME");
+            throw new BadRequestException(UserMessages.INVALID_FILENAME_MSG, UserMessages.INVALID_FILENAME);
     }
 
     private void deleteS3Object(String s3Key) {

@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.PositiveOrZero;
 import lombok.Data;
 
@@ -8,6 +9,6 @@ import lombok.Data;
 @Data
 public class DisappearingRequest {
 
-    @PositiveOrZero(message = "seconds must be >= 0")
+    @PositiveOrZero(message = ChatMessages.VAL_SECONDS_NON_NEGATIVE)
     private int seconds;
 }

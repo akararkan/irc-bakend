@@ -9,6 +9,7 @@ import ak.dev.irc.app.chat.service.MessageQueryService;
 import ak.dev.irc.app.chat.service.MessageService;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
@@ -152,7 +153,7 @@ public class MessageController {
         UUID userId = requireId(user);
         boolean hasFiles = files != null && !files.isEmpty();
         if (!hasFiles && !StringUtils.hasText(body)) {
-            throw new BadRequestException("Provide a body and/or at least one file.");
+            throw new BadRequestException(ChatMessages.BODY_OR_FILE_REQUIRED_MSG);
         }
 
         SendMessageRequest req = new SendMessageRequest();
@@ -340,7 +341,7 @@ public class MessageController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChatMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

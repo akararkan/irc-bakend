@@ -5,6 +5,7 @@ import ak.dev.irc.app.admin.support.AdminAuditor;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminContentMessages;
 import ak.dev.irc.app.post.cassandra.entity.PostBySoundEntity;
 import ak.dev.irc.app.post.cassandra.entity.SoundEntity;
 import ak.dev.irc.app.post.cassandra.service.CassandraSoundService;
@@ -171,15 +172,16 @@ public class AdminSoundService {
     /** Official bulk-seed: first-party audio, auto-approved, official-flagged. */
     public List<AdminSoundRow> importOfficial(List<ImportItem> items) {
         if (items == null || items.isEmpty() || items.size() > 100) {
-            throw new BadRequestException("Provide 1–100 items.", "INVALID_IMPORT_BATCH");
+            throw new BadRequestException(AdminContentMessages.INVALID_IMPORT_BATCH_MSG,
+                    AdminContentMessages.INVALID_IMPORT_BATCH);
         }
         UUID adminId = SecurityUtils.requireCurrentUserId();
         List<AdminSoundRow> out = new ArrayList<>();
         for (ImportItem item : items) {
             if (item.title() == null || item.title().isBlank()
                     || item.audioUrl() == null || item.audioUrl().isBlank()) {
-                throw new BadRequestException("Each item needs title and audioUrl.",
-                        "INVALID_IMPORT_ITEM");
+                throw new BadRequestException(AdminContentMessages.INVALID_IMPORT_ITEM_MSG,
+                        AdminContentMessages.INVALID_IMPORT_ITEM);
             }
             String category = parseCategory(item.category() == null
                     ? SoundCategory.PLATFORM_MUSIC.name() : item.category());
@@ -230,8 +232,9 @@ public class AdminSoundService {
         try {
             return SoundStatus.valueOf(raw.trim().toUpperCase()).name();
         } catch (Exception e) {
-            throw new BadRequestException("Unknown status. Allowed: "
-                    + java.util.Arrays.toString(SoundStatus.values()), "INVALID_STATUS");
+            throw new BadRequestException(AdminContentMessages.INVALID_STATUS_MSG.formatted(
+                    java.util.Arrays.toString(SoundStatus.values())),
+                    AdminContentMessages.INVALID_STATUS);
         }
     }
 
@@ -239,8 +242,9 @@ public class AdminSoundService {
         try {
             return SoundCategory.valueOf(raw.trim().toUpperCase()).name();
         } catch (Exception e) {
-            throw new BadRequestException("Unknown category. Allowed: "
-                    + java.util.Arrays.toString(SoundCategory.values()), "INVALID_CATEGORY");
+            throw new BadRequestException(AdminContentMessages.INVALID_CATEGORY_MSG.formatted(
+                    java.util.Arrays.toString(SoundCategory.values())),
+                    AdminContentMessages.INVALID_CATEGORY);
         }
     }
 

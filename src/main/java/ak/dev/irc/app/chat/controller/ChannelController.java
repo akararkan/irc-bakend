@@ -14,6 +14,7 @@ import ak.dev.irc.app.chat.service.ChannelPostMetricsService;
 import ak.dev.irc.app.chat.service.ChannelService;
 import ak.dev.irc.app.chat.service.ChannelStatsService;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.user.entity.User;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -264,7 +265,7 @@ public class ChannelController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChannelStreamMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

@@ -2,6 +2,7 @@ package ak.dev.irc.app.user.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.*;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.rabbitmq.publisher.UserEventPublisher;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.dto.response.SocialActionResponse;
@@ -62,15 +63,15 @@ public class UserSocialServiceImpl implements UserSocialService {
         if (blockRepository.isBlockedBetween(me, targetId)) {
             log.warn("Follow blocked — block relationship exists between [{}] and [{}]", me, targetId);
             throw new ForbiddenException(
-                    "Cannot follow this user due to an existing block relationship.",
-                    "FOLLOW_BLOCKED_RELATIONSHIP");
+                    UserMessages.FOLLOW_BLOCKED_RELATIONSHIP_MSG,
+                    UserMessages.FOLLOW_BLOCKED_RELATIONSHIP);
         }
 
         if (target.isProfileLocked()) {
             log.warn("Follow rejected — target user [{}] profile is locked", targetId);
             throw new ForbiddenException(
-                    "This user's profile is locked and cannot be followed.",
-                    "FOLLOW_PROFILE_LOCKED");
+                    UserMessages.FOLLOW_PROFILE_LOCKED_MSG,
+                    UserMessages.FOLLOW_PROFILE_LOCKED);
         }
 
         UserFollowId fid = new UserFollowId(me, targetId);
@@ -128,7 +129,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         UserFollowId fid = new UserFollowId(me, targetId);
         if (!followRepository.existsById(fid)) {
             log.warn("Unfollow failed — user [{}] is not following [{}]", me, targetId);
-            throw new ResourceNotFoundException("You are not following this user. Cannot unfollow.");
+            throw new ResourceNotFoundException(UserMessages.NOT_FOLLOWING_MSG);
         }
 
         User target = userRepository.findById(targetId).orElse(null);
@@ -164,7 +165,7 @@ public class UserSocialServiceImpl implements UserSocialService {
 
         if (blockRepository.isBlocking(me, targetId)) {
             log.warn("Block failed — user [{}] already blocks [{}]", me, targetId);
-            throw new DuplicateResourceException("You are already blocking this user.");
+            throw new DuplicateResourceException(UserMessages.ALREADY_BLOCKING_MSG);
         }
 
         User meUser = findActiveOrThrow(me);
@@ -209,7 +210,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         UserBlockId bid = new UserBlockId(me, targetId);
         if (!blockRepository.existsById(bid)) {
             log.warn("Unblock failed — user [{}] has not blocked [{}]", me, targetId);
-            throw new ResourceNotFoundException("You have not blocked this user. Cannot unblock.");
+            throw new ResourceNotFoundException(UserMessages.NOT_BLOCKING_MSG);
         }
 
         blockRepository.deleteById(bid);
@@ -239,14 +240,14 @@ public class UserSocialServiceImpl implements UserSocialService {
         if (blockRepository.isBlocking(me, targetId)) {
             log.warn("Restrict failed — user [{}] already blocks [{}], restriction not needed", me, targetId);
             throw new BadRequestException(
-                    "This user is already blocked. A restriction is unnecessary.",
-                    "RESTRICT_ALREADY_BLOCKED");
+                    UserMessages.RESTRICT_ALREADY_BLOCKED_MSG,
+                    UserMessages.RESTRICT_ALREADY_BLOCKED);
         }
 
         UserRestrictionId rid = new UserRestrictionId(me, targetId);
         if (restrictionRepository.existsById(rid)) {
             log.warn("Restrict failed — user [{}] already restricts [{}]", me, targetId);
-            throw new DuplicateResourceException("You are already restricting this user.");
+            throw new DuplicateResourceException(UserMessages.ALREADY_RESTRICTING_MSG);
         }
 
         User meUser = findActiveOrThrow(me);
@@ -275,7 +276,7 @@ public class UserSocialServiceImpl implements UserSocialService {
         UserRestrictionId rid = new UserRestrictionId(me, targetId);
         if (!restrictionRepository.existsById(rid)) {
             log.warn("Unrestrict failed — user [{}] is not restricting [{}]", me, targetId);
-            throw new ResourceNotFoundException("You are not restricting this user. Cannot unrestrict.");
+            throw new ResourceNotFoundException(UserMessages.NOT_RESTRICTING_MSG);
         }
 
         restrictionRepository.deleteById(rid);
@@ -363,7 +364,7 @@ public class UserSocialServiceImpl implements UserSocialService {
                 .orElseThrow(() -> {
                     log.warn("Unauthenticated access attempt in social service");
                     return new UnauthorizedException(
-                            "You must be authenticated to perform this action.");
+                            UserMessages.MUST_BE_AUTHENTICATED_MSG);
                 });
     }
 
@@ -371,7 +372,8 @@ public class UserSocialServiceImpl implements UserSocialService {
         if (me.equals(target)) {
             log.warn("User [{}] attempted to {} themselves", me, action);
             throw new BadRequestException(
-                    "You cannot " + action + " yourself.", "SELF_ACTION_NOT_ALLOWED");
+                    UserMessages.SELF_ACTION_NOT_ALLOWED_MSG.formatted(action),
+                    UserMessages.SELF_ACTION_NOT_ALLOWED);
         }
     }
 

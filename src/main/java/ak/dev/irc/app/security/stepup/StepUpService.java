@@ -3,6 +3,7 @@ package ak.dev.irc.app.security.stepup;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -43,7 +44,7 @@ public class StepUpService {
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
         if (user.getPassword() == null || rawPassword == null
                 || !passwordEncoder.matches(rawPassword, user.getPassword())) {
-            throw new BadRequestException("Password is incorrect.", "STEP_UP_BAD_PASSWORD");
+            throw new BadRequestException(SecurityMessages.STEP_UP_BAD_PASSWORD_MSG, SecurityMessages.STEP_UP_BAD_PASSWORD);
         }
         arm(userId);
     }
@@ -72,7 +73,7 @@ public class StepUpService {
     public void requireRecentStepUp(UUID userId) {
         if (!hasRecentStepUp(userId)) {
             throw new ForbiddenException(
-                    "This action requires you to confirm your identity.", "STEP_UP_REQUIRED");
+                    SecurityMessages.STEP_UP_REQUIRED_MSG, SecurityMessages.STEP_UP_REQUIRED);
         }
     }
 

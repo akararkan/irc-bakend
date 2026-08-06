@@ -21,6 +21,7 @@ import ak.dev.irc.app.common.cache.RateLimiter;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -118,16 +119,17 @@ public class StreamStageService {
     @Transactional
     public StageMember requestUp(UUID streamId, UUID userId) {
         LiveStream s = requireLive(streamId);
-        if (s.getHostId().equals(userId)) throw new BadRequestException("You are the host of this stream.");
+        if (s.getHostId().equals(userId)) throw new BadRequestException(ChannelStreamMessages.STAGE_HOST_SELF_MSG);
         if (!viewerRepo.existsByStreamIdAndUserIdAndActiveTrue(streamId, userId)) {
-            throw new ForbiddenException("Join the stream before asking to come up.", "NOT_A_MEMBER");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STAGE_JOIN_BEFORE_REQUEST_MSG, ChannelStreamMessages.NOT_A_MEMBER);
         }
         rateLimiter.check("stream-stage-request", userId, 5, Duration.ofSeconds(30));
 
         StreamGuest g = guestRepo.findByStreamIdAndUserId(streamId, userId).orElseGet(() ->
                 StreamGuest.builder().streamId(streamId).userId(userId).build());
         if (g.getStatus() == StreamGuestStatus.ACTIVE) {
-            throw new BadRequestException("You are already on stage.");
+            throw new BadRequestException(ChannelStreamMessages.STAGE_ALREADY_ON_MSG);
         }
         g.setStatus(StreamGuestStatus.REQUESTED);
         g.setRequestedAt(Instant.now());
@@ -151,7 +153,7 @@ public class StreamStageService {
         LiveStream s = requireLive(streamId);
         StreamGuest g = guestRepo.findByStreamIdAndUserId(streamId, userId)
                 .filter(x -> x.getStatus() == StreamGuestStatus.INVITED)
-                .orElseThrow(() -> new BadRequestException("You have no pending invite to come up."));
+                .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.STAGE_NO_PENDING_INVITE_MSG));
         promoteToStage(s, g);
         guestRepo.save(g);
         Map<UUID, User> users = broadcastRoster(s); // reuse its user map — no extra load
@@ -188,7 +190,7 @@ public class StreamStageService {
         StreamGuest g = guestRepo.findByStreamIdAndUserId(streamId, guestUserId)
                 .filter(x -> x.getStatus() == StreamGuestStatus.REQUESTED
                           || x.getStatus() == StreamGuestStatus.INVITED)
-                .orElseThrow(() -> new BadRequestException("No pending request from this user."));
+                .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.STAGE_NO_PENDING_REQUEST_MSG));
         promoteToStage(s, g);
         guestRepo.save(g);
         Map<UUID, User> users = broadcastRoster(s);   // one user map, reused twice below
@@ -218,13 +220,13 @@ public class StreamStageService {
     @Transactional
     public void invite(UUID streamId, UUID hostId, UUID guestUserId) {
         LiveStream s = requireOwnedLive(streamId, hostId);
-        if (guestUserId.equals(hostId)) throw new BadRequestException("You are the host of this stream.");
+        if (guestUserId.equals(hostId)) throw new BadRequestException(ChannelStreamMessages.STAGE_HOST_SELF_MSG);
         userRepository.findById(guestUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", guestUserId));
 
         StreamGuest g = guestRepo.findByStreamIdAndUserId(streamId, guestUserId).orElseGet(() ->
                 StreamGuest.builder().streamId(streamId).userId(guestUserId).build());
-        if (g.getStatus() == StreamGuestStatus.ACTIVE) throw new BadRequestException("They are already on stage.");
+        if (g.getStatus() == StreamGuestStatus.ACTIVE) throw new BadRequestException(ChannelStreamMessages.STAGE_TARGET_ALREADY_ON_MSG);
         g.setStatus(StreamGuestStatus.INVITED);
         g.setRequestedAt(Instant.now());
         guestRepo.save(g);
@@ -259,7 +261,7 @@ public class StreamStageService {
         LiveStream s = requireOwnedStream(streamId, hostId);
         StreamGuest g = guestRepo.findByStreamIdAndUserId(streamId, guestUserId).orElse(null);
         if (g == null || g.getStatus() != StreamGuestStatus.ACTIVE) {
-            throw new BadRequestException("That user is not on stage.");
+            throw new BadRequestException(ChannelStreamMessages.STAGE_TARGET_NOT_ON_MSG);
         }
         if (g.isMuted() == muted) return; // no-op, no needless broadcast
         g.setMuted(muted);
@@ -360,7 +362,7 @@ public class StreamStageService {
         // lock on the stream; not worth it for a moderator-driven flow at this scale.
         long active = guestRepo.countByStreamIdAndStatus(s.getId(), StreamGuestStatus.ACTIVE);
         if (active >= maxGuests) {
-            throw new BadRequestException("The stage is full (" + maxGuests + " guests).");
+            throw new BadRequestException(ChannelStreamMessages.STAGE_FULL_MSG.formatted(maxGuests));
         }
         g.setStatus(StreamGuestStatus.ACTIVE);
         g.setPublishPath(mintId());
@@ -496,11 +498,11 @@ public class StreamStageService {
     }
 
     private static StreamGift parseGift(String raw) {
-        if (raw == null || raw.isBlank()) throw new BadRequestException("A gift id is required.");
+        if (raw == null || raw.isBlank()) throw new BadRequestException(ChannelStreamMessages.GIFT_ID_REQUIRED_MSG);
         try {
             return StreamGift.valueOf(raw.trim().toUpperCase());
         } catch (IllegalArgumentException unknown) {
-            throw new BadRequestException("Unknown gift '" + raw + "'.");
+            throw new BadRequestException(ChannelStreamMessages.GIFT_UNKNOWN_MSG.formatted(raw));
         }
     }
 
@@ -510,21 +512,22 @@ public class StreamStageService {
 
     private LiveStream requireLive(UUID id) {
         LiveStream s = requireStream(id);
-        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException("This stream is not live.");
+        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException(ChannelStreamMessages.STREAM_NOT_LIVE_MSG);
         return s;
     }
 
     private LiveStream requireOwnedStream(UUID streamId, UUID hostId) {
         LiveStream s = requireStream(streamId);
         if (!s.getHostId().equals(hostId)) {
-            throw new ForbiddenException("Only the host can manage this stream's stage.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STAGE_MANAGE_HOST_ONLY_MSG, ChannelStreamMessages.ACCESS_FORBIDDEN);
         }
         return s;
     }
 
     private LiveStream requireOwnedLive(UUID streamId, UUID hostId) {
         LiveStream s = requireOwnedStream(streamId, hostId);
-        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException("This stream is not live.");
+        if (s.getStatus() != LiveStreamStatus.LIVE) throw new BadRequestException(ChannelStreamMessages.STREAM_NOT_LIVE_MSG);
         return s;
     }
 
@@ -533,7 +536,8 @@ public class StreamStageService {
      *  gate for reactions/gifts, with no extra query. O(1) membership on the Set. */
     private void requireInAudience(Set<UUID> audience, UUID userId) {
         if (!audience.contains(userId)) {
-            throw new ForbiddenException("Join the stream first.", "NOT_A_MEMBER");
+            throw new ForbiddenException(
+                    ChannelStreamMessages.STAGE_JOIN_STREAM_FIRST_MSG, ChannelStreamMessages.NOT_A_MEMBER);
         }
     }
 }

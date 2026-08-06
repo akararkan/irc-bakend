@@ -22,6 +22,7 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChannelStreamMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -72,7 +73,8 @@ public class CallService {
         if (convo.isDirect()) {
             UUID peer = otherDirectMember(conversationId, initiatorId);
             if (peer != null && relationships.isBlockedEitherWay(initiatorId, peer)) {
-                throw new ForbiddenException("This interaction is not allowed.", "BLOCKED");
+                throw new ForbiddenException(
+                        ChannelStreamMessages.CALL_BLOCKED_MSG, ChannelStreamMessages.BLOCKED);
             }
         }
 
@@ -163,7 +165,7 @@ public class CallService {
         CallSession call = requireActiveCall(callId);
         requireInvitee(call, fromUserId);
         participantRepo.findByCallIdAndUserId(callId, req.getToUserId())
-                .orElseThrow(() -> new BadRequestException("Target is not part of this call."));
+                .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.CALL_TARGET_NOT_IN_CALL_MSG));
         CallSignalMessage msg = new CallSignalMessage(callId, fromUserId, req.getKind().name(), req.getPayload());
         broadcaster.broadcastTo(req.getToUserId(), ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.CALL_SIGNAL)
@@ -245,13 +247,14 @@ public class CallService {
     private CallSession requireActiveCall(UUID callId) {
         CallSession call = callRepo.findById(callId)
                 .orElseThrow(() -> new ResourceNotFoundException("Call", "id", callId));
-        if (!call.isActive()) throw new BadRequestException("This call is no longer active.");
+        if (!call.isActive()) throw new BadRequestException(ChannelStreamMessages.CALL_NOT_ACTIVE_MSG);
         return call;
     }
 
     private CallParticipant requireInvitee(CallSession call, UUID userId) {
         return participantRepo.findByCallIdAndUserId(call.getId(), userId)
-                .orElseThrow(() -> new ForbiddenException("You are not part of this call.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChannelStreamMessages.NOT_IN_CALL_MSG, ChannelStreamMessages.NOT_A_MEMBER));
     }
 
     private Conversation requireConversation(UUID conversationId) {
@@ -263,7 +266,8 @@ public class CallService {
     private ConversationMember requireActiveMember(UUID conversationId, UUID userId) {
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
-                .orElseThrow(() -> new ForbiddenException("You are not an active member of this conversation.", "NOT_A_MEMBER"));
+                .orElseThrow(() -> new ForbiddenException(
+                        ChannelStreamMessages.NOT_ACTIVE_CONVERSATION_MEMBER_MSG, ChannelStreamMessages.NOT_A_MEMBER));
     }
 
     private UUID otherDirectMember(UUID conversationId, UUID me) {

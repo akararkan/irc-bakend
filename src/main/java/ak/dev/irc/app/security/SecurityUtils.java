@@ -1,6 +1,7 @@
 package ak.dev.irc.app.security;
 
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.user.entity.User;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -34,8 +35,8 @@ public class SecurityUtils {
      */
     public static UUID requireCurrentUserId() {
         return getCurrentUserId().orElseThrow(() -> new UnauthorizedException(
-                "Authentication is required for this endpoint.",
-                "AUTH_REQUIRED"));
+                SecurityMessages.AUTH_REQUIRED_MSG,
+                SecurityMessages.AUTH_REQUIRED));
     }
 
     public static Optional<User> getCurrentUser() {

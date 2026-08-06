@@ -10,6 +10,7 @@ import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
 import ak.dev.irc.app.chat.repository.MessageRequestRepository;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import ak.dev.irc.app.user.service.UserSocialService;
@@ -88,7 +89,8 @@ public class MessageRequestService {
         MessageRequest r = requestRepo.findById(requestId)
                 .orElseThrow(() -> new ResourceNotFoundException("MessageRequest", "id", requestId));
         if (!r.getRecipientId().equals(userId)) {
-            throw new ForbiddenException("This request is not addressed to you.", "ACCESS_FORBIDDEN");
+            throw new ForbiddenException(
+                    ChatMessages.REQUEST_NOT_ADDRESSED_MSG, ChatMessages.ACCESS_FORBIDDEN);
         }
         return r;
     }

@@ -4,6 +4,7 @@ import ak.dev.irc.app.chat.dto.response.MessageRequestResponse;
 import ak.dev.irc.app.chat.enums.MessageRequestStatus;
 import ak.dev.irc.app.chat.service.MessageRequestService;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -58,7 +59,7 @@ public class MessageRequestController {
     }
 
     private static UUID requireId(User user) {
-        if (user == null) throw new UnauthorizedException("Authentication required");
+        if (user == null) throw new UnauthorizedException(ChatMessages.AUTH_REQUIRED_MSG);
         return user.getId();
     }
 }

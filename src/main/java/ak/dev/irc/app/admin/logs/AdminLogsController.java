@@ -6,6 +6,7 @@ import ak.dev.irc.app.audit.cassandra.repository.AuditLogByUserRepository;
 import ak.dev.irc.app.audit.enums.AuditOperation;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.AdminOpsMessages;
 import ak.dev.irc.app.common.util.Pages;
 import ak.dev.irc.app.security.login.repository.LoginEventRepository;
 import ak.dev.irc.app.settings.audit.repository.SettingsAuditRepository;
@@ -107,8 +108,7 @@ public class AdminLogsController {
         List<String> notes = new ArrayList<>();
         if (query.wantsStore("audit")) {
             if (query.userId() == null) {
-                notes.add("audit store skipped — it is partitioned per user; add user:<id|@username> "
-                        + "to include it (a global Cassandra scan is impossible by design).");
+                notes.add(AdminOpsMessages.NOTE_AUDIT_STORE_SKIPPED);
             } else {
                 auditLogByUserRepository.firstPage(query.userId(), size).stream()
                         .filter(r -> query.matchesTime(toLdt(r.getCreatedAt())))
@@ -119,8 +119,7 @@ public class AdminLogsController {
                                         "outcome", String.valueOf(r.getOutcome()),
                                         "path", String.valueOf(r.getPath()),
                                         "status", String.valueOf(r.getStatusCode())))));
-                notes.add("audit rows are the newest page of the user partition with filters applied "
-                        + "in-memory — fetch more via /api/v1/admin/audit?userId=.");
+                notes.add(AdminOpsMessages.NOTE_AUDIT_NEWEST_PAGE);
             }
         }
         if (query.wantsStore("login")) {
@@ -146,7 +145,7 @@ public class AdminLogsController {
         }
         if (query.wantsStore("consent")) {
             if (query.userId() == null) {
-                notes.add("consent store skipped — user-anchored; add user: to include it.");
+                notes.add(AdminOpsMessages.NOTE_CONSENT_STORE_SKIPPED);
             } else {
                 consentService.history(query.userId(), PageRequest.of(0, size))
                         .filter(c -> query.matchesTime(c.getOccurredAt()))
@@ -418,8 +417,9 @@ public class AdminLogsController {
         try {
             return LogAlertRule.RuleKind.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown rule kind. Allowed: "
-                    + java.util.Arrays.toString(LogAlertRule.RuleKind.values()), "INVALID_RULE_KIND");
+            throw new BadRequestException(AdminOpsMessages.INVALID_RULE_KIND_MSG.formatted(
+                    java.util.Arrays.toString(LogAlertRule.RuleKind.values())),
+                    AdminOpsMessages.INVALID_RULE_KIND);
         }
     }
 
@@ -428,8 +428,8 @@ public class AdminLogsController {
         try {
             return LogAlertRule.Severity.valueOf(raw.trim().toUpperCase());
         } catch (Exception e) {
-            throw new BadRequestException("Unknown severity. Allowed: INFO, MEDIUM, HIGH.",
-                    "INVALID_SEVERITY");
+            throw new BadRequestException(AdminOpsMessages.INVALID_SEVERITY_MSG,
+                    AdminOpsMessages.INVALID_SEVERITY);
         }
     }
 
@@ -464,8 +464,7 @@ public class AdminLogsController {
                     "challenges", ((Number) row[1]).longValue()));
         }
         body.put("hotDestinations", hot);
-        body.put("note", "Aggregate-only: codes and raw destinations are never stored or "
-                + "shown; destinationHash is HMAC'd and useful only as a correlator.");
+        body.put("note", AdminOpsMessages.NOTE_OTP_AGGREGATE_ONLY);
         return org.springframework.http.ResponseEntity.ok(body);
     }
 

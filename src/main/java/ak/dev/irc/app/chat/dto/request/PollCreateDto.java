@@ -1,5 +1,6 @@
 package ak.dev.irc.app.chat.dto.request;
 
+import ak.dev.irc.app.common.messages.ChatMessages;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
@@ -11,13 +12,13 @@ import java.util.List;
 @Data
 public class PollCreateDto {
 
-    @NotBlank(message = "a poll requires a question")
+    @NotBlank(message = ChatMessages.VAL_POLL_QUESTION_REQUIRED)
     @Size(max = 300)
     private String question;
 
     /** 2–10 answer options, in display order. */
     @NotEmpty
-    @Size(min = 2, max = 10, message = "a poll needs 2–10 options")
+    @Size(min = 2, max = 10, message = ChatMessages.VAL_POLL_OPTIONS_RANGE)
     private List<@NotBlank @Size(max = 100) String> options;
 
     /** Voters may pick more than one option (not allowed for quizzes). */

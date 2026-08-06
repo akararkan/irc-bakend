@@ -1,5 +1,6 @@
 package ak.dev.irc.app.research.dto.request;
 
+import ak.dev.irc.app.common.messages.ResearchMessages;
 import ak.dev.irc.app.research.enums.ContributorRole;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -16,7 +17,7 @@ import java.util.UUID;
  */
 public record ContributorRequest(
 
-        @NotNull(message = "userId is required")
+        @NotNull(message = ResearchMessages.VAL_USER_ID_REQUIRED)
         UUID userId,
 
         /** Defaults to CO_AUTHOR when omitted. */
@@ -25,7 +26,7 @@ public record ContributorRequest(
         /** Optional ordering — lower value listed first. */
         Integer displayOrder,
 
-        @Size(max = 500, message = "contributionNote must not exceed 500 characters")
+        @Size(max = 500, message = ResearchMessages.VAL_CONTRIBUTION_NOTE_MAX_500)
         String contributionNote
 
 ) {

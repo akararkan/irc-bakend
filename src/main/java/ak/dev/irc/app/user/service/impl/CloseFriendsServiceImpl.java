@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
+import ak.dev.irc.app.common.messages.UserMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.user.dto.response.UserResponse;
 import ak.dev.irc.app.user.entity.CloseFriendsList;
@@ -43,9 +44,9 @@ public class CloseFriendsServiceImpl implements CloseFriendsService {
     public void addCloseFriend(UUID friendId) {
         UUID myId = authenticatedUserId();
         if (myId.equals(friendId))
-            throw new BadRequestException("Cannot add yourself to close friends.", "SELF_ACTION");
+            throw new BadRequestException(UserMessages.SELF_ACTION_MSG, UserMessages.SELF_ACTION);
         if (closeFriendsRepository.existsByIdOwnerIdAndIdFriendId(myId, friendId))
-            throw new DuplicateResourceException("User is already a close friend.");
+            throw new DuplicateResourceException(UserMessages.CLOSE_FRIEND_DUPLICATE_MSG);
 
         User me     = findActiveOrThrow(myId);
         User friend = findActiveOrThrow(friendId);
@@ -62,7 +63,7 @@ public class CloseFriendsServiceImpl implements CloseFriendsService {
         UUID myId = authenticatedUserId();
         CloseFriendsList.CloseFriendsId id = new CloseFriendsList.CloseFriendsId(myId, friendId);
         if (!closeFriendsRepository.existsById(id))
-            throw new ResourceNotFoundException("Close friend not found.");
+            throw new ResourceNotFoundException(UserMessages.CLOSE_FRIEND_NOT_FOUND_MSG);
         closeFriendsRepository.deleteById(id);
         log.info("User [{}] removed [{}] from close friends", myId, friendId);
     }
@@ -74,6 +75,6 @@ public class CloseFriendsServiceImpl implements CloseFriendsService {
 
     private UUID authenticatedUserId() {
         return SecurityUtils.getCurrentUserId()
-            .orElseThrow(() -> new UnauthorizedException("You must be authenticated."));
+            .orElseThrow(() -> new UnauthorizedException(UserMessages.MUST_BE_AUTHENTICATED_BRIEF_MSG));
     }
 }
