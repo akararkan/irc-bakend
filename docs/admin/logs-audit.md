@@ -44,11 +44,11 @@ Section layout — left-hand sub-nav with six views, unified Explorer as the lan
 |------|-------------------|-----------|
 | **Log Explorer** (landing) [PLANNED] | Filter bar (grammar §4.1) → virtualized result table (time, store badge, user, operation, outcome, resource, ip, duration, summary) → row drawer with full record + "pivot" buttons (same user ±5 min across all stores, same resource, same IP) | Aggregation façade over §3 stores (§4) |
 | **Live tail** [EXISTS today as raw SSE] | Streaming table of audit events as they happen; pause/resume; client-side filter on operation/outcome/path; per-minute rate sparkline; connected-admins count | `GET /api/v1/admin/audit/stream` (§3.1) — the only global audit view that exists today |
-| **Security log** [PARTIAL] | Login-events table (outcome/method/ip/geo), failed-login spike chart, new-IP alerts feed, OTP challenge volume, step-up usage | `login_events` (§3.4 — **writer currently unwired**), `otp_challenges` (§3.6) |
-| **Moderation trail** [PARTIAL] | Reports intake timeline, per-target report stacks (`group_key`), strikes ledger (write-dead today), appeal states | `reports` + `user_strikes` (§3.7); actions live in [safety-reports.md](safety-reports.md) |
+| **Security log** [PARTIAL] | Login-events table (outcome/method/ip/geo), failed-login spike chart, new-IP alerts feed, OTP challenge volume, step-up usage | `login_events` (§3.4 — writer wired via `AuthServiceImpl`, admin read `GET /api/v1/admin/logs/login-events`), `otp_challenges` (§3.6) |
+| **Moderation trail** [PARTIAL] | Reports intake timeline, per-target report stacks (`group_key`), strikes ledger (live since 2026-08), appeal states | `reports` + `user_strikes` (§3.7); actions live in [safety-reports.md](safety-reports.md) |
 | **Lifecycle & compliance** [PARTIAL] | Deletion pipeline funnel (PENDING_DELETION → PURGED), export-jobs table with expiry status, consent history viewer, policy-acceptance coverage matrix | §3.5, §3.8, §3.9 |
 | **Infra logs** [PARTIAL] | DLQ casualty feed (parsed from drain log), publisher NACK/unroutable counters, media-failure queue (status + `error_message`), app-log level matrix (read-only display of config) | §3.10–§3.13 |
-| **Retention board** [PLANNED] | Per-store card: current retention → recommended → enforcement status (enforced / job / **unbounded ⚠**); row-count + growth trend per PG store | §7 matrix + `pg_stat_user_tables` / Cassandra estimates |
+| **Retention board** [EXISTS (built 2026-08) — backend] | Per-store card: current retention → recommended → enforcement status (enforced / job / **unbounded ⚠**); row-count + growth trend per PG store | `GET /api/v1/admin/logs/retention` (A10) over the §7 matrix |
 
 ---
 
@@ -125,24 +125,26 @@ This is the **only** table that captures anonymous traffic (null user), and
 the only store that can answer "what happened to this Post?".
 
 **Read APIs [EXISTS]** — `AuditLogController`, base `/api/v1/admin/audit`,
-class-level `@PreAuthorize("hasAnyRole('ADMIN','SUPER_ADMIN')")` (SUPER_ADMIN
-is a phantom — not in the four-role model; effectively ADMIN-only) **plus** the
+class-level `@PreAuthorize("hasAnyRole('ADMIN','MODERATOR','SUPPORT','ANALYST')")`
+(the phantom `SUPER_ADMIN` was dropped; the gate now names real staff roles from
+the widened seven-role model) **plus** the
 `/api/v1/admin/**` filter-chain double gate:
 
 | Endpoint | Semantics | Limits |
 |----------|-----------|--------|
 | `GET /api/v1/admin/audit?userId=&operation=&outcome=&from=&to=&pageSize=50&cursor=` | Audit search. **400 without `userId`** — Cassandra requires a partition anchor | `operation/outcome/from/to` filtered **in-memory on one fetched page** (a filtered page may return < pageSize rows even when more matches exist deeper) |
 | `GET /api/v1/admin/audit/users/{userId}?pageSize=&cursor=` | Per-user history, pure keyset (`firstPage`/`nextPage` on `created_at`, cursor = `LocalDateTime`) | No filters, no in-memory pass |
-| `GET /api/v1/admin/audit/stream` | Global realtime SSE tail — events `connected` / `audit` / `heartbeat` (25 s), timeout 0, multi-instance safe via Redis channel `irc:audit:stream` | **The only global view** — historical global query is impossible today |
+| `GET /api/v1/admin/audit/resources/{resourceType}/{resourceId}?pageSize=&cursor=` (built 2026-08) | Per-resource history over `audit_log_by_resource` (A2) | Keyset, same cursor shape |
+| `GET /api/v1/admin/audit/stream` | Global realtime SSE tail — events `connected` / `audit` / `heartbeat` (25 s), timeout 0, multi-instance safe via Redis channel `irc:audit:stream`; each connect writes an explicit audit row via `AuditLogService.record` | **The only global view** — historical global query is impossible today |
 
 **Known gaps (feed the build order, §10):**
 
 | Gap | Impact |
 |-----|--------|
-| 180-day TTL is documented in both entity javadocs but `schema-action=create_if_not_exists` creates the tables **without** `default_time_to_live` and nothing else sets it | Audit log is **unbounded** until a manual `ALTER TABLE … WITH default_time_to_live = 15552000` |
-| `audit_log_by_resource` has **no read endpoint** — `AuditLogByResourceRepository.firstPage` is dead code from HTTP | "What happened to this resource?" cannot be asked via the API |
-| `AuditLogService.record(...)` (service-layer/business-event writer, the reason `SYSTEM` values exist) has **zero callers** outside the audit module | Scheduled jobs, purges, and reindexes leave no audit trail |
-| Per-user partition has no time-bucket component | A very active user's partition grows without bound; acceptable at current scale, revisit before TTL fix lands |
+| ~~180-day TTL never applied~~ **Fixed (built 2026-08):** `audit/config/AuditSchemaInitializer` idempotently ensures `default_time_to_live = 15552000` on both audit tables at startup (create-with-TTL for fresh keyspaces, `ALTER` otherwise) | Audit log is now bounded at 180 d |
+| ~~`audit_log_by_resource` has no read endpoint~~ **Fixed (built 2026-08):** `GET /api/v1/admin/audit/resources/{resourceType}/{resourceId}` (A2) exposes it | "What happened to this resource?" is now answerable via the API |
+| ~~`AuditLogService.record(...)` has zero callers outside the audit module~~ **Fixed (built 2026-08):** `admin/support/AdminAuditor` funnels every admin mutation through it (`ADMIN_*` rows), the account-purge job writes a `SYSTEM` event per run, and `AuditLogController.stream` records each SSE connect | Jobs and admin mutations now leave an audit trail |
+| Per-user partition has no time-bucket component | A very active user's partition grows without bound; acceptable at current scale, bounded by the 180 d TTL |
 
 ### 3.2 `BaseAuditEntity` — per-row audit columns on every table [EXISTS]
 
@@ -168,7 +170,7 @@ required.
 | Dashboard use | The row drawer in the user/content inspection views ([users-roles.md](users-roles.md)) shows this stamp per record; Log Explorer pivots "same IP" queries can hit these columns per-table [PLANNED] |
 | Caveat | Hard-deleted rows (e.g. comments) take their stamp with them — the request-level log (§3.1) is the surviving record of the delete |
 
-### 3.3 `settings_audit` — settings change trail [EXISTS, no read surface]
+### 3.3 `settings_audit` — settings change trail [EXISTS; admin read built 2026-08]
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -182,12 +184,12 @@ required.
 | Aspect | Detail |
 |--------|--------|
 | Writers | `SettingsAuditService.record(...)` — called by `SettingsService`, `PrivacyService`, `DiscoverabilityService`, `PresencePolicyService` on every privacy/security-relevant mutation; best-effort (WARN on failure, never fails the settings write). Log prefix `[SETTINGS-AUDIT]` |
-| Read APIs | **None** — `SettingsAuditService.history(userId, pageable)` exists but no controller (user or admin) exposes it [PARTIAL] |
-| Retention | Unbounded — no TTL, no cleanup job |
-| Dashboard views | Per-user "settings changes" tab in user inspection; Log Explorer store `settings` [PLANNED via A3 in §5] |
+| Read APIs | `GET /api/v1/admin/users/{userId}/settings-audit` (`AdminUserController`, A3) + the `settings` store in the Log Explorer (A1) [EXISTS (built 2026-08)] |
+| Retention | 2 y — enforced by `RetentionSweepJob` (nightly, built 2026-08) |
+| Dashboard views | Per-user "settings changes" tab in user inspection; Log Explorer store `settings` [EXISTS (built 2026-08) — backend] |
 | Why separate from §3.1 | Captures the `(key, old, new)` diff shape the generic request log cannot (bodies are never read); see [../settings/README.md](../settings/README.md) §22.3 |
 
-### 3.4 `login_events` — login history [PARTIAL — table + API real, **writer unwired**]
+### 3.4 `login_events` — login history [EXISTS — writer wired (built 2026-08)]
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -202,10 +204,10 @@ required.
 
 | Aspect | Detail |
 |--------|--------|
-| Writers | `LoginEventService.record` / `recordSuccessAndAlertIfNew` (new-IP heuristic via `distinctSuccessfulIps` → security alert through `NotificationService.sendSystemNotification`, bypasses DND; prefix `[LOGIN-ALERT]`). **GAP: zero production callers — `AuthServiceImpl` never invokes either, so the table is empty until wired.** The build order (§10) makes this step 1 — the Security view and both login alerts (§6) are dead until then |
-| Read APIs | `GET /api/v1/security/login-history` [EXISTS] — **self-scoped only** (`SecurityController`, pageable). No admin read |
-| Retention | Unbounded — no purge job |
-| Dashboard views | Security log view (§2): per-user login table, failed-spike chart, new-IP feed; admin read endpoint proposed as A4 (§5) |
+| Writers | `LoginEventService.record` / `recordSuccessAndAlertIfNew` (new-IP heuristic via `distinctSuccessfulIps` → security alert through `NotificationService.sendSystemNotification`, bypasses DND; prefix `[LOGIN-ALERT]`). **Wired (built 2026-08):** `AuthServiceImpl` calls `recordSuccessAndAlertIfNew` on login success and `record(userId, ip, userAgent, method, outcome)` on every attempt |
+| Read APIs | `GET /api/v1/security/login-history` [EXISTS] — self-scoped (`SecurityController`, pageable). Admin read: `GET /api/v1/admin/logs/login-events` (A4, built 2026-08) |
+| Retention | 1 y — enforced by `RetentionSweepJob` (nightly, built 2026-08) |
+| Dashboard views | Security log view (§2): per-user login table, failed-spike chart, new-IP feed; admin read endpoint A4 [EXISTS (built 2026-08)] |
 | Adjacent | The request audit log (§3.1) *does* already record `POST /auth/login` rows with `LOGIN` operation and status — a stopgap failed-login signal, but only for authenticated partitions (failed anonymous logins land in `audit_log_by_resource` only if a UUID parses, i.e. effectively nowhere useful) |
 
 ### 3.5 `consent_events` — consent evidence [EXISTS]
@@ -243,8 +245,8 @@ view; admin read proposed as A5 (§5).
 Writers: `OtpService` — row on issue, `attempts`/`consumed_at` updated on
 verify. The **live** code lives in Redis (`otp:{purpose}:{destHash}`, TTL
 `OTP_TTL_SECONDS`, default 300) — this PG row is the durable audit copy.
-Reads: none (internal). Retention: unbounded — index on `expires_at` exists
-but **no purge job** [PARTIAL]. Dashboard: volume + failure-rate widget only
+Reads: none (internal). Retention: 180 d on the indexed `expires_at` column —
+enforced by `RetentionSweepJob` [EXISTS (built 2026-08)]. Dashboard: volume + failure-rate widget only
 (hashes make rows individually meaningless, which is the point).
 
 ### 3.7 `reports` + `user_strikes` — moderation records [EXISTS as records; console is [safety-reports.md](safety-reports.md)]
@@ -258,7 +260,7 @@ but **no purge job** [PARTIAL]. Dashboard: volume + failure-rate widget only
 | `target_type` / `target_id` | varchar(20) / uuid | 9 `ReportTargetType` values (USER…STORY); index `(target_id, reason)` |
 | `reason` | varchar(24) | 10 `ReportReason` values (SPAM…OTHER) |
 | `details` | varchar(1000) | Reporter free text |
-| `state` | varchar(16) | `SUBMITTED → TRIAGED → ACTIONED\|DISMISSED → APPEALED → UPHELD\|REVERSED` — **only SUBMITTED/APPEALED reachable today** (no triage code exists) |
+| `state` | varchar(16) | `SUBMITTED → TRIAGED → ACTIONED\|DISMISSED → APPEALED → UPHELD\|REVERSED` — full machine driven by `ReportModerationService` (triage/action/dismiss/uphold/reverse, built 2026-08) |
 | `resolution` | varchar(24) | `NONE / WARNING_ISSUED / CONTENT_REMOVED / ACCOUNT_SUSPENDED / NO_ACTION` — never shown to reporter |
 | `group_key` | varchar(80) | `targetId:reason` — dedupes/stacks reports per target; indexed |
 | `created_at` / `updated_at` | timestamp | |
@@ -266,11 +268,12 @@ but **no purge job** [PARTIAL]. Dashboard: volume + failure-rate widget only
 **`user_strikes`:** `id`, `user_id`, `report_id` (evidence link), `reason`
 varchar(200), `issued_at`, `expires_at` (= issued + 90 d decay; `isActive()`
 filter — rows never deleted); index `(user_id, expires_at)`.
-**`StrikeService.issueStrike` has zero callers — the ledger is write-dead
-until the moderation console ships.**
+**`StrikeService.issueStrike` is live (built 2026-08)** — called from
+`AdminSafetyController.issueStrike`, `ReportModerationService.action` and
+`AdminUserServiceImpl.issueStrike`; the ledger is no longer write-dead.
 
 Writers: `ReportService.submit/appeal` (user-side, rate-limited 20/h).
-Reads: self-scoped `GET /api/v1/safety/reports`, `/strikes`, `/score` [EXISTS]; no admin read [PLANNED — owned by safety-reports.md].
+Reads: self-scoped `GET /api/v1/safety/reports`, `/strikes`, `/score` [EXISTS]; admin queue + detail via `AdminSafetyController` (`GET /api/v1/admin/safety/reports[/{id}]`, built 2026-08 — owned by safety-reports.md).
 Retention: unbounded (correct for moderation evidence; see §7).
 Dashboard: Moderation trail view (§2) is **read-only here** — intake volume,
 `group_key` stacks, state distribution; every mutating action belongs to
@@ -280,7 +283,7 @@ Dashboard: Moderation trail view (§2) is **read-only here** — intake volume,
 
 | Table | Columns | Notes |
 |-------|---------|-------|
-| `export_jobs` | `id`, `user_id`, `status` ExportStatus(16) default `PENDING`, `file_path` varchar(500) (ZIP on worker-host temp storage), `size_bytes`, `error_message` varchar(500), `created_at`, `ready_at`, `expires_at`; idx `(user_id, created_at)` | **GAP: `expires_at` exists but no job deletes rows or ZIP files** — expired exports (user PII archives!) linger on disk |
+| `export_jobs` | `id`, `user_id`, `status` ExportStatus(16) default `PENDING`, `file_path` varchar(500) (ZIP on worker-host temp storage), `size_bytes`, `error_message` varchar(500), `created_at`, `ready_at`, `expires_at`; idx `(user_id, created_at)` | ~~no job deletes rows or ZIP files~~ **Fixed (built 2026-08):** `RetentionSweepJob` deletes the ZIP + row at `expires_at`; the GDPR purge cascade also deletes a purged user's export jobs + files immediately |
 | `account_deletion_requests` | `id`, `user_id`, `status` DeletionStatus(24) default `PENDING_DELETION`, `requested_at`, `purge_after` (= requested + 30 d), `resolved_at`; idx `(user_id, status)` | State machine record **and** audit trail of the deletion flow |
 | `deleted_accounts` | `id` uuid PK **= the old user id** (not generated), `deleted_at` | Pure tombstone: prevents id reuse, keeps nothing else |
 
@@ -316,18 +319,19 @@ route it through `settings_audit` with key `policy.{key}`), keeping the upsert
 table as the "current" projection. Dashboard: acceptance-coverage matrix
 (users × policy versions) in Lifecycle & compliance view.
 
-### 3.10 RabbitMQ dead-letter drain [EXISTS — log-line store]
+### 3.10 RabbitMQ dead-letter parking lot [EXISTS — PG-backed since 2026-08]
 
-Not a table: every poison message becomes one ERROR log line, then is gone.
+Every poison message is now **parked as a `dead_letters` PG row** (plus the
+ERROR log line) instead of being consumed and lost.
 
 | Aspect | Detail |
 |--------|--------|
 | Pipeline | All feeder queues carry `x-dead-letter-exchange=irc.dlx.exchange` + `x-message-ttl=86400000` (24 h max age); listener retries 3× (1 s → ×2 → 10 s) then reject → DLX → `irc.queue.dead-letter` |
-| Drain | `RabbitMQConfig.drainDeadLetter` `@RabbitListener` consumes and logs: `[RABBIT-DLQ] dead-lettered message — originalExchange={x-first-death-exchange} originalRoutingKey={x-first-death-queue} typeId={__TypeId__} bodyBytes={n} headers={all}` |
+| Drain | `RabbitMQConfig.drainDeadLetter` `@RabbitListener` consumes, logs `[RABBIT-DLQ] …`, and **persists a `dead_letters` row** (`admin/ops/DeadLetter`) — the message is parked, not dropped (built 2026-08) |
 | Companions | Publisher-confirm NACKs (`[RABBIT] broker NACKed publish…`) and unroutable returns (`[RABBIT] unroutable message returned…`) at ERROR |
-| Read APIs | None — the log line is the **only surviving record** (message is consumed, not parked) |
-| Retention | Process stdout retention (i.e. none managed — §3.11) |
-| Dashboard | Infra logs view: DLQ casualty feed + arrivals/day counter. Requires either a log-shipping pipeline or [PLANNED] a small `dlq_events` PG table written by the drain listener alongside the log line — recommended, since "the only record is an unshipped console line" is the weakest link in the whole catalog |
+| Read APIs | `GET /api/v1/admin/ops/queues/dlq` + `POST …/dlq/{id}/requeue` and `DELETE …/dlq/{id}` (discard; step-up) — see [operations.md](operations.md) |
+| Retention | 90 d — enforced by `RetentionSweepJob` (built 2026-08) |
+| Dashboard | Infra logs view: DLQ casualty feed + arrivals/day counter, served from the `dead_letters` table |
 
 ### 3.11 Application log [EXISTS — console only]
 
@@ -379,7 +383,7 @@ a feature. Boundary rationale: [chat-channels-live.md](chat-channels-live.md).
 
 ---
 
-## 4. Unified Admin Log Explorer [PLANNED]
+## 4. Unified Admin Log Explorer [EXISTS (built 2026-08) — backend: `AdminLogsController`]
 
 One screen, one filter grammar, every *eligible* store (§3.1–§3.13; never
 §3.14). Implementation is a thin aggregation façade — no new pipeline, no
@@ -402,7 +406,7 @@ since:<iso|relative e.g. 2h,7d>   until:<iso>   text:"<substring over summary/de
 | Field mapping | Per-store adapter maps grammar → native filters (e.g. `op:` → `operation` in audit, `method`/`outcome` in login_events, no-op where inapplicable) |
 | In-memory filter caveat | Audit-store `op:`/`outcome:`/time filters keep today's semantics (§3.1) until pushed down — the UI must label short pages "filtered page, fetch more" |
 
-### 4.2 Saved views
+### 4.2 Saved views [EXISTS (built 2026-08)]
 
 Named filter-sets per admin (PG table `admin_saved_log_views`: `id`,
 `admin_id`, `name`, `query` text, `created_at`), pinned to the section nav.
@@ -421,14 +425,13 @@ three audit layers (§1) meet:
 | "This IP" | login_events + otp_challenges + settings_audit by `ip`; audit store only within an already-anchored user page (no IP index in Cassandra — document, don't fake) |
 | "Same group_key" | Report stacks by `group_key` |
 
-### 4.4 Export to CSV
+### 4.4 Export to CSV [EXISTS (built 2026-08)]
 
-`POST /api/v1/admin/logs/export` with a grammar query → async job, bounded row
-cap (e.g. 50 000), file delivered like a privacy export (temp path +
-expiry). **Step-up required; the export itself writes an audit record**
-(operation `READ`, resourceType `LogExport`) including the query string — an
-export of logs is the most sensitive read in the system. Reuses the
-`export_jobs` shape (§3.8) with a distinct job type.
+`POST /api/v1/admin/logs/export` with a grammar query → synchronous CSV
+response (`text/csv`), bounded row cap (10 000). **Step-up required
+(`@RequiresStepUp`); the export itself writes an explicit audit record**
+(`ADMIN_LOG_EXPORT`, including the query string) via `AdminAuditor` — an
+export of logs is the most sensitive read in the system.
 
 ---
 
@@ -443,18 +446,18 @@ integrity: **no log-delete endpoints, ever**).
 |---|--------|----------|--------|--------|---------|---------------------|
 | E1 | Search audit log (per-user anchor) | `GET /api/v1/admin/audit` **[EXISTS]** | `userId!`, `operation`, `outcome`, `from`, `to`, `pageSize`, `cursor` | 🟢 | No | Auto via interceptor (§3.1 — admin reads are themselves audited, path is `/api/**`) |
 | E2 | Per-user audit history | `GET /api/v1/admin/audit/users/{userId}` **[EXISTS]** | `pageSize`, `cursor` | 🟢 | No | Auto (resourceType `User`) |
-| E3 | Live audit tail | `GET /api/v1/admin/audit/stream` **[EXISTS]** | — (SSE) | 🟢 | No | **Not audited** — `*/stream` is in `SKIP_PATTERN`; mitigate: `AuditRealtimeService.subscribe` should call `AuditLogService.record` once per connect [PLANNED] |
-| A1 | Unified Log Explorer query | `GET /api/v1/admin/logs/explore` **[PLANNED]** | `q` (grammar §4.1), `pageSize`, per-store cursors | 🟢 | No | Auto + explicit row incl. the query for anchor-free PG sweeps |
-| A2 | Resource audit history | `GET /api/v1/admin/audit/resources/{type}/{id}` **[PLANNED]** — exposes the already-written `audit_log_by_resource` via `AuditLogByResourceRepository.firstPage` | `pageSize`, `cursor` | 🟢 | No | Auto |
-| A3 | Settings-audit history (admin) | `GET /api/v1/admin/logs/settings-audit/{userId}` **[PLANNED]** — wraps existing `SettingsAuditService.history` | `pageable` | 🟢 | No | Auto |
-| A4 | Login events (admin) | `GET /api/v1/admin/logs/login-events` **[PLANNED]** | `userId` \| `ip` \| `outcome=FAILED`, time range | 🟢 | No | Auto |
-| A5 | Consent history (admin) | `GET /api/v1/admin/logs/consent/{userId}` **[PLANNED]** | `scope?`, `pageable` | 🟢 | No | Auto |
-| A6 | Export logs to CSV | `POST /api/v1/admin/logs/export` **[PLANNED]** | body: `{query, format}` | 🟡 | **Yes** | Explicit (`LogExport` + query string) |
-| A7 | Saved views CRUD | `GET/POST/DELETE /api/v1/admin/logs/views[/{id}]` **[PLANNED]** | body: `{name, query}` | 🟢 | No | Auto |
-| A8 | Alert rules CRUD | `GET/POST/PATCH/DELETE /api/v1/admin/logs/alerts[/{id}]` **[PLANNED]** | rule spec (§6.2) | 🟡 | Yes (create/modify) | Explicit (`AlertRule`, old→new spec) |
-| A9 | Alert firings feed | `GET /api/v1/admin/logs/alerts/firings` **[PLANNED]** | `since`, `ruleId?` | 🟢 | No | Auto |
-| A10 | Retention status board | `GET /api/v1/admin/logs/retention` **[PLANNED]** | — | 🟢 | No | Auto |
-| A11 | Apply Cassandra audit TTL | one-time `ALTER TABLE` ops task, **deliberately not an endpoint** | — | 🟡 | n/a | Runbook entry — [operations.md](operations.md) |
+| E3 | Live audit tail | `GET /api/v1/admin/audit/stream` **[EXISTS]** | — (SSE) | 🟢 | No | `*/stream` is in `SKIP_PATTERN`, so `AuditLogController.stream` writes an explicit `AuditLogService.record` row per connect (built 2026-08) |
+| A1 | Unified Log Explorer query | `GET /api/v1/admin/logs/explore` **[EXISTS (built 2026-08)]** — grammar `q` or discrete params, merged multi-store (audit/login/settings/consent/reports) | `q` (grammar §4.1), `pageSize`, per-store cursors | 🟢 | No | Auto + explicit row incl. the query for anchor-free PG sweeps |
+| A2 | Resource audit history | `GET /api/v1/admin/audit/resources/{type}/{id}` **[EXISTS (built 2026-08)]** — exposes `audit_log_by_resource` via `AuditLogByResourceRepository.firstPage` | `pageSize`, `cursor` | 🟢 | No | Auto |
+| A3 | Settings-audit history (admin) | `GET /api/v1/admin/users/{userId}/settings-audit` **[EXISTS (built 2026-08)]** (`AdminUserController`) — wraps `SettingsAuditService.history` | `pageable` | 🟢 | No | Auto |
+| A4 | Login events (admin) | `GET /api/v1/admin/logs/login-events` **[EXISTS (built 2026-08)]** | `userId` \| `ip` \| `outcome=FAILED`, time range | 🟢 | No | Auto |
+| A5 | Consent history (admin) | `GET /api/v1/admin/safety/users/{userId}/consent[?scope=]` **[EXISTS (built 2026-08)]** (`AdminSafetyController`) | `scope?`, `pageable` | 🟢 | No | Auto |
+| A6 | Export logs to CSV | `POST /api/v1/admin/logs/export` **[EXISTS (built 2026-08)]** — synchronous CSV, 10 000-row cap | body: `{query}` | 🟡 | **Yes** | Explicit (`ADMIN_LOG_EXPORT` + query string) |
+| A7 | Saved views CRUD | `GET/POST/DELETE /api/v1/admin/logs/views[/{id}]` **[EXISTS (built 2026-08)]** | body: `{name, query}` | 🟢 | No | Auto |
+| A8 | Alert rules CRUD | `GET/POST/PATCH/DELETE /api/v1/admin/logs/alerts[/{id}]` **[EXISTS (built 2026-08)]** | rule spec (§6.2) | 🟡 | Yes (create/modify) | Explicit (`AlertRule`, old→new spec) |
+| A9 | Alert firings feed | `GET /api/v1/admin/logs/alerts/firings` **[EXISTS (built 2026-08)]** | `since`, `ruleId?` | 🟢 | No | Auto |
+| A10 | Retention status board | `GET /api/v1/admin/logs/retention` **[EXISTS (built 2026-08)]** | — | 🟢 | No | Auto |
+| A11 | Apply Cassandra audit TTL | **automated (built 2026-08)** — `AuditSchemaInitializer` ensures the 180 d TTL idempotently at startup; no endpoint | — | 🟡 | n/a | Runbook entry — [operations.md](operations.md) |
 
 Explicitly **not** offered: delete/redact/edit of any log row; per-store
 retention override endpoints (retention changes are code+migration, reviewed);
@@ -471,8 +474,8 @@ any read over §3.14 stores.
 | Audit events/min | Rows flowing through `irc:audit:stream` | Live-tail counter [EXISTS via SSE]; historical needs a per-day rollup [PLANNED] | Sparkline (tail) / area (history) |
 | Outcome mix | % SUCCESS / CLIENT_ERROR / SERVER_ERROR | Audit rows (per-anchor today; global via rollup [PLANNED]) | Stacked bar |
 | p50/p95 `duration_ms` | Request latency from audit rows | §3.1 | Line, per path-prefix |
-| Failed-login rate | FAILED / all login_events, per hour | §3.4 (**after wiring**) | Line + threshold band |
-| New-IP alerts/day | `recordSuccessAndAlertIfNew` firings | §3.4 (after wiring) | Bar |
+| Failed-login rate | FAILED / all login_events, per hour | §3.4 (wired, built 2026-08) | Line + threshold band |
+| New-IP alerts/day | `recordSuccessAndAlertIfNew` firings | §3.4 (wired) | Bar |
 | OTP failure ratio | challenges with `attempts>0 && consumed_at IS NULL` / issued | §3.6 | Line |
 | Settings churn | settings_audit rows/day, top `setting_key`s | §3.3 | Bar + top-N table |
 | Report intake / stack depth | reports/day; max reports per `group_key` | §3.7 | Line + leaderboard |
@@ -482,11 +485,17 @@ any read over §3.14 stores.
 | Audit executor pressure | queue depth / CallerRuns engagements on `auditExecutor` | Micrometer gauge [PLANNED — actuator exposure gap, see [operations.md](operations.md)] | Gauge |
 | Admin action volume | audit rows with `path:/api/v1/admin/*` | §3.1 | Bar per admin |
 
-### 6.2 Alert rules [PLANNED]
+### 6.2 Alert rules [EXISTS (built 2026-08)]
 
-Rule engine: small scheduled evaluator over PG stores + a stream-side counter
-on the audit Redis channel; firings → `NotificationService.sendSystemNotification`
-to admins (bypasses DND) + Alerts panel. Rules stored per A8.
+Rule engine: `LogAlertSweepJob` — a scheduled evaluator (every 5 min,
+`irc.logs.alert-sweep-ms`) over the PG stores; **6 default rules are seeded on
+first startup** (failed-login per-account / per-IP, report pile-on, DLQ
+arrivals, OTP abuse, purge-job silence) and editable via the A8 CRUD
+(`log_alert_rules`); firings land
+in `log_alert_firings` (A9 feed) and notify admins via
+`NotificationService.sendSystemNotification` (bypasses DND). The table below
+remains the full rule wishlist — rows beyond the seeded six keep their stated
+preconditions.
 
 | Rule | Condition (default) | Severity | Precondition |
 |------|--------------------|----------|--------------|
@@ -507,22 +516,24 @@ to admins (bypasses DND) + Alerts panel. Rules stored per A8.
 ## 7. Retention policy matrix
 
 Current reality vs. recommended policy, per store. "Job" = scheduled cleanup;
-"TTL" = datastore-level expiry. Recommendations are [PLANNED].
+"TTL" = datastore-level expiry. The core matrix is enforced since 2026-08 by
+`AuditSchemaInitializer` (Cassandra TTL) + `RetentionSweepJob` (nightly PG
+sweep), and surfaced live on `GET /api/v1/admin/logs/retention` (A10).
 
 | Store | Current | Enforced by | Recommended | Rationale |
 |-------|---------|-------------|-------------|-----------|
-| `audit_log_by_user` / `by_resource` | **Unbounded** (180 d documented, never applied) | — ⚠ | 180 d via `ALTER TABLE … default_time_to_live=15552000` (A11) | Matches javadoc intent; ops runbook item, verify with `DESCRIBE TABLE` |
-| `settings_audit` | Unbounded | — | 2 y, then job-purge | Security evidence; long but finite |
-| `login_events` | Unbounded (and empty — writer unwired) | — | 1 y full, keep FAILED 90 d beyond via partial purge | Forensics + spike detection |
+| `audit_log_by_user` / `by_resource` | 180 d TTL | `AuditSchemaInitializer` at startup (idempotent `ALTER … default_time_to_live=15552000`) [EXISTS (built 2026-08)] | — (matches javadoc intent) | Verify with `DESCRIBE TABLE` |
+| `settings_audit` | 2 y | `RetentionSweepJob` [EXISTS (built 2026-08)] | Keep | Security evidence; long but finite |
+| `login_events` | 1 y (writer wired) | `RetentionSweepJob` [EXISTS (built 2026-08)] | Optionally keep FAILED 90 d beyond via partial purge | Forensics + spike detection |
 | `consent_events` | Unbounded | design | **Keep** for account life + 1 y post-purge (see §8) | It *is* the compliance evidence |
-| `otp_challenges` | Unbounded (Redis copy expires; PG rows don't) | — | 180 d job on `expires_at` (index already exists) | Hashes only, but volume grows |
+| `otp_challenges` | 180 d on `expires_at` | `RetentionSweepJob` [EXISTS (built 2026-08)] | Keep | Hashes only, but volume grows |
 | `reports` / `user_strikes` | Unbounded / soft-decay 90 d, rows kept | `isActive()` filter only | Keep ≥ 2 y (moderation/legal evidence); never auto-delete strikes | Evidence chain `report_id → strike` |
-| `export_jobs` + ZIP files | `expires_at` set, **nothing enforces it** ⚠ | — | Daily job: delete ZIP + row at `expires_at` | Expired **PII archives sit on disk** today — highest-priority retention fix |
+| `export_jobs` + ZIP files | ZIP + row deleted at `expires_at` | `RetentionSweepJob` [EXISTS (built 2026-08)]; GDPR purge cascade deletes a purged user's exports immediately | Keep | Was the highest-priority retention fix — closed |
 | `account_deletion_requests` | Resolved by nightly purge (30 d grace) | cron `0 30 3 * * *` [EXISTS] | Keep resolved rows 2 y | Deletion audit trail |
 | `deleted_accounts` | Forever | design [EXISTS] | Forever | Id-reuse tombstone, no PII |
 | `policy_acceptances` | Current row only (upsert overwrites) | — | Add append-only history (§3.9) | Version-acceptance evidence |
 | `notifications` (adjacent) | READ > 90 d purged | `NotificationCleanupJob` cron `0 15 3 * * *` [EXISTS] | Keep | Reference model for job-based retention |
-| DLQ log lines | stdout lifetime | — ⚠ | `dlq_events` PG table, 90 d | Only record of poison messages |
+| `dead_letters` (DLQ parking lot) | 90 d | `RetentionSweepJob` [EXISTS (built 2026-08)] | Keep | Poison messages parked as PG rows since 2026-08 (§3.10) |
 | Application log | stdout lifetime, no file appender | — | Platform log retention (Railway) or rolling file 14 d | Not an audit source |
 | `media_assets.error_message` | Life of asset row | — | Keep | Rides the asset |
 | §3.14 content stores | Own product rules (chat TTLs, story 24 h, user-deletable activity) | various | **Out of scope for this section — never governed by log retention** | Privacy boundary |
@@ -537,14 +548,14 @@ vs. required behavior**:
 
 | Store | PII held | On purge today | Required [PLANNED] |
 |-------|----------|----------------|--------------------|
-| Cassandra audit tables | `username` (captured at request time), `ip_address`, `user_agent`; `user_id` remains as key | **Nothing** — rows keep the real username/IP forever ⚠ | Add a purge step: delete the user's `audit_log_by_user` partition (single partition delete — cheap) or accept 180 d TTL as the erasure horizon **once A11 lands** and document that choice in the privacy policy. `by_resource` rows: rely on TTL |
+| Cassandra audit tables | `username` (captured at request time), `ip_address`, `user_agent`; `user_id` remains as key | **Purged (built 2026-08)** — the purge cascade deletes the user's `audit_log_by_user` partition (`purgePartition`); `by_resource` rows rely on the now-applied 180 d TTL | Done — document in the privacy policy |
 | `BaseAuditEntity` columns | ip/device on rows the user touched | Rows owned by the user are deleted/anonymized by domain cascades; **stamps on other-owned rows persist** | Acceptable (legitimate-interest forensic minimum); document |
-| `settings_audit` | old/new values can embed PII (bio text, etc.), ip | Nothing ⚠ | Purge step: delete by `user_id` |
-| `login_events` | ip, user_agent, coarse_geo | Nothing (empty today) | Purge step: delete by `user_id` at purge; retention (§7) bounds the rest |
+| `settings_audit` | old/new values can embed PII (bio text, etc.), ip | **Purged (built 2026-08)** — deleted by `user_id` in the cascade | Done |
+| `login_events` | ip, user_agent, coarse_geo | **Purged (built 2026-08)** — deleted by `user_id` in the cascade; retention (§7) bounds the rest | Done |
 | `consent_events` | scope grants | Kept | **Keep deliberately** (defensible compliance evidence post-erasure under record-keeping exemption); document in policy |
 | `otp_challenges` | ip, device_id; destination is **hashed** | Nothing | Purge step optional; hashes are already pseudonymous — rely on 180 d job |
 | `reports` | reporter/target ids, free-text `details` (may contain PII) | Nothing | Keep rows (moderation evidence) but null `reporter_id` → tombstone id where reporter is the purged user; strikes keep `user_id` for repeat-abuse defense — document |
-| `export_jobs` | `file_path` → ZIP **containing the user's full archive** | Nothing ⚠ | On purge: delete the user's export rows **and files** immediately, before the generic expiry job |
+| `export_jobs` | `file_path` → ZIP **containing the user's full archive** | **Purged (built 2026-08)** — the cascade deletes the user's export rows **and ZIP files** immediately, ahead of the generic expiry sweep | Done |
 | `policy_acceptances` | acceptance facts | Nothing | Keep (compliance evidence), or move to history table with user tombstone id |
 | DLQ / app log lines | May embed ids in payload headers | Nothing (ephemeral stdout) | Bounded by log retention; never grep-purge |
 
@@ -561,17 +572,26 @@ event (§10 step 2) — deleting data is itself an auditable act.
 | Principle | Statement | Status |
 |-----------|-----------|--------|
 | Append-only | No API mutates or deletes log rows. Retention is TTL/scheduled-job only, defined in code + reviewed migrations — never an endpoint | Holds today (no such endpoints exist); §5 keeps it that way |
-| Admin reads are audited | Every `/api/v1/admin/logs/**` and `/api/v1/admin/audit/**` request passes the §3.1 interceptor (`/api/**`) and lands in the audit log itself | [EXISTS] — with the E3 stream-connect exception, patched per §5 |
-| Exports are the hottest reads | Log export requires step-up, writes an explicit audit record with the query, caps rows, expires files | [PLANNED] A6 |
+| Admin reads are audited | Every `/api/v1/admin/logs/**` and `/api/v1/admin/audit/**` request passes the §3.1 interceptor (`/api/**`) and lands in the audit log itself | [EXISTS] — E3 stream-connect exception patched (explicit record per connect, built 2026-08) |
+| Exports are the hottest reads | Log export requires step-up, writes an explicit `ADMIN_LOG_EXPORT` audit record with the query, caps rows (10 000) | [EXISTS (built 2026-08)] A6 |
 | Metadata-only capture | Request bodies are never read anywhere in the audit pipeline; OTP stores hashes; invite tokens stored hashed platform-wide | [EXISTS] |
 | Failure isolation | Audit writes are async and swallow failures — availability beats completeness for the request log; alerting on executor pressure (§6.2) covers the blind spot | [EXISTS] + gauge [PLANNED] |
 | Content firewall | Log tooling never reads §3.14 stores; admin projections exclude `last_message_preview`, `live_streams.stream_key`, `stream_guests.publish_key` | Policy — enforce in code review + projection DTOs |
-| Access | Everything in this section: `ROLE_ADMIN`, under `/api/v1/admin/**` (filter-chain double gate + `@PreAuthorize`). Cleanup: drop the phantom `SUPER_ADMIN` from `AuditLogController` (only 4 roles exist) | [EXISTS] / cleanup [PLANNED] |
-| Honest UI | Views over unwired stores (login_events) or in-memory-filtered pages (E1) carry explicit banners — never render an empty table as "no events" | Dashboard rule |
+| Access | Everything in this section under `/api/v1/admin/**` (filter-chain double gate + `@PreAuthorize`); read surfaces admit the staff roles `ADMIN/MODERATOR/SUPPORT/ANALYST` from the widened role model. Phantom `SUPER_ADMIN` dropped from `AuditLogController` | [EXISTS] / cleanup done (built 2026-08) |
+| Honest UI | In-memory-filtered pages (E1) and anchor-skipped stores (audit without `user:`) carry explicit banners — never render an empty table as "no events" | Dashboard rule |
 
 ---
 
 ## 10. Build order / dependencies
+
+> **Status (built 2026-08):** steps 1–5 and 7–9 are shipped — login_events
+> wired from `AuthServiceImpl` (step 1), business-event auditing via
+> `AdminAuditor` + purge `SYSTEM` events (step 2), retention fixes via
+> `AuditSchemaInitializer` / `RetentionSweepJob` / `dead_letters` (step 3),
+> read endpoints A2–A5 (step 4), Explorer + saved views (step 5), alert engine
+> (step 7), CSV export (step 8), GDPR purge choreography (step 9). Step 6
+> (tail UI) is frontend work; step 10 hygiene is partially done
+> (`SUPER_ADMIN` dropped from `AuditLogController`).
 
 | Step | Work | Unblocks | Effort |
 |------|------|----------|--------|

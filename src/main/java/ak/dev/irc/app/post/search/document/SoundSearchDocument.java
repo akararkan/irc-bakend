@@ -36,6 +36,12 @@ public class SoundSearchDocument {
     /** How many posts/reels use this sound — popularity ranking signal. */
     @Field(type = FieldType.Long)    private Long   useCount;
 
+    /** Uploader — powers the admin review-queue + reputation views. */
+    @Field(type = FieldType.Keyword) private String uploaderId;
+
+    /** First-party "official ✓" flag. */
+    @Field(type = FieldType.Boolean) private Boolean official;
+
     @Field(type = FieldType.Date, format = DateFormat.date_time)
     private Instant createdAt;
 

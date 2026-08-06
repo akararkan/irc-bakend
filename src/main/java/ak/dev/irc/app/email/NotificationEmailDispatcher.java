@@ -45,6 +45,7 @@ public class NotificationEmailDispatcher {
     private final EmailService         emailService;
     private final EmailTemplate        template;
     private final EmailThrottle        throttle;
+    private final EmailSendLogRepository sendLogRepository;
 
     @EventListener
     public void onNotificationPushed(NotificationPushedEvent event) {
@@ -56,21 +57,24 @@ public class NotificationEmailDispatcher {
             log.debug("[EMAIL-DISPATCH] skipped — empty payload or recipient");
             return;
         }
+        String kind = n.type() != null ? n.type().name() : null;
+        String dedupeKey = n.resourceId() != null && n.type() != null
+                ? n.type() + ":" + n.resourceId()
+                : (n.id() != null ? n.id().toString() : null);
 
         if (!emailService.isEnabled()) {
             log.debug("[EMAIL-DISPATCH] skipped — email service disabled (notif type={} recipient={})",
                     n.type(), recipientId);
+            ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.DISABLED, "email service off");
             return;
         }
 
         // Pre-throttle on the cheap — short-circuit before touching the DB
         // or the cache. Same `(recipient, groupKey)` won't be emailed twice
         // inside the throttle window.
-        String dedupeKey = n.resourceId() != null && n.type() != null
-                ? n.type() + ":" + n.resourceId()
-                : (n.id() != null ? n.id().toString() : null);
         if (dedupeKey != null && !throttle.shouldSend(recipientId, dedupeKey)) {
             log.debug("[EMAIL-DISPATCH] throttled — userId={} key={}", recipientId, dedupeKey);
+            ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.THROTTLED, null);
             return;
         }
 
@@ -78,18 +82,21 @@ public class NotificationEmailDispatcher {
         UserEmailContext ctx = contextProvider.get(recipientId);
         if (ctx == null) {
             log.warn("[EMAIL-DISPATCH] recipient {} not found / inactive — skip", recipientId);
+            ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.SKIPPED, "recipient inactive");
             return;
         }
 
         if (!isEnabledForUser(ctx, n.type(), n.category())) {
             log.debug("[EMAIL-DISPATCH] muted by user prefs — userId={} category={} type={}",
                     recipientId, n.category(), n.type());
+            ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.MUTED, null);
             return;
         }
 
         String to = ctx.email();
         if (to == null || to.isBlank()) {
             log.warn("[EMAIL-DISPATCH] recipient {} has no email address — skip", recipientId);
+            ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.NO_ADDRESS, null);
             return;
         }
 
@@ -98,6 +105,24 @@ public class NotificationEmailDispatcher {
         log.info("[EMAIL-DISPATCH] queueing '{}' → {} (type={} category={})",
                 rendered.subject(), to, n.type(), n.category());
         emailService.sendAsync(to, rendered.subject(), rendered.plainBody(), rendered.htmlBody());
+        ledger(recipientId, kind, dedupeKey, EmailSendLog.Outcome.QUEUED, null);
+    }
+
+    /** Append-only send-ledger write — best-effort, never blocks dispatch. */
+    private void ledger(UUID recipientId, String kind, String groupKey,
+                        EmailSendLog.Outcome outcome, String error) {
+        try {
+            sendLogRepository.save(EmailSendLog.builder()
+                    .recipientId(recipientId)
+                    .kind(kind)
+                    .groupKey(groupKey != null && groupKey.length() > 160
+                            ? groupKey.substring(0, 160) : groupKey)
+                    .outcome(outcome)
+                    .error(error)
+                    .build());
+        } catch (Exception e) {
+            log.debug("[EMAIL-DISPATCH] ledger write failed: {}", e.getMessage());
+        }
     }
 
     /**

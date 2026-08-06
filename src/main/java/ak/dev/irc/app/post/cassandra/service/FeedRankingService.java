@@ -78,6 +78,59 @@ public class FeedRankingService {
     /** Max consecutive items from the same author / channel. */
     static final int MAX_AUTHOR_RUN = 2;
 
+    /**
+     * The complete tunable-knob set. {@link #DEFAULTS} mirrors the compile-time
+     * constants; {@code FeedTuningService} materialises a runtime override row
+     * into one of these (staged by rollout percent) and threads it through
+     * {@code HomeFeedService} → {@link #score} / {@link #diversify}.
+     */
+    public record Knobs(double wLike, double wComment, double wShare, double wSave,
+                        double wView, double wAffinity,
+                        double halfLifePost, double halfLifeReel, double halfLifeChannel,
+                        double halfLifeResearch, double halfLifeQuestion,
+                        double boostMutual, double boostSelf,
+                        double dampChannel, double dampExplore,
+                        int maxAuthorRun) {
+
+        public static final Knobs DEFAULTS = new Knobs(
+                W_LIKE, W_COMMENT, W_SHARE, W_SAVE, W_VIEW, W_AFFINITY,
+                HALF_LIFE_POST, HALF_LIFE_REEL, HALF_LIFE_CHANNEL,
+                HALF_LIFE_RESEARCH, HALF_LIFE_QUESTION,
+                BOOST_MUTUAL, BOOST_SELF, DAMP_CHANNEL, DAMP_EXPLORE,
+                MAX_AUTHOR_RUN);
+    }
+
+    /**
+     * Read-only knob registry for the admin observability surface
+     * (search-feed-trending.md §2.3.1). Every value here is a compile-time
+     * constant — changing one is a recompile + redeploy, and the dashboard
+     * says so instead of pretending to offer runtime tuning.
+     */
+    public static java.util.Map<String, Object> knobRegistry() {
+        java.util.Map<String, Object> knobs = new java.util.LinkedHashMap<>();
+        knobs.put("formula", "score = (1 + E + A) · F · B");
+        knobs.put("W_LIKE", W_LIKE);
+        knobs.put("W_COMMENT", W_COMMENT);
+        knobs.put("W_SHARE", W_SHARE);
+        knobs.put("W_SAVE", W_SAVE);
+        knobs.put("W_VIEW", W_VIEW);
+        knobs.put("W_AFFINITY", W_AFFINITY);
+        knobs.put("HALF_LIFE_POST_H", HALF_LIFE_POST);
+        knobs.put("HALF_LIFE_REEL_H", HALF_LIFE_REEL);
+        knobs.put("HALF_LIFE_CHANNEL_H", HALF_LIFE_CHANNEL);
+        knobs.put("HALF_LIFE_RESEARCH_H", HALF_LIFE_RESEARCH);
+        knobs.put("HALF_LIFE_QUESTION_H", HALF_LIFE_QUESTION);
+        knobs.put("BOOST_MUTUAL", BOOST_MUTUAL);
+        knobs.put("BOOST_SELF", BOOST_SELF);
+        knobs.put("DAMP_CHANNEL", DAMP_CHANNEL);
+        knobs.put("DAMP_EXPLORE", DAMP_EXPLORE);
+        knobs.put("MAX_AUTHOR_RUN", MAX_AUTHOR_RUN);
+        knobs.put("tuning", "these are the compile-time DEFAULTS; a runtime override row "
+                + "(feed_ranking_config via FeedTuningService, staged by rolloutPercent) "
+                + "can supersede them — see GET /api/v1/admin/feed/config");
+        return knobs;
+    }
+
     /** Everything the scorer needs about the viewer, bulk-loaded per page. */
     public record RankSignals(
             UUID viewerId,
@@ -92,47 +145,53 @@ public class FeedRankingService {
     /** A candidate with its provenance and computed score. */
     public record Scored(FeedItemResponse item, String source, double score) {}
 
-    /** Score one hydrated candidate. */
+    /** Score one hydrated candidate under the compile-time defaults. */
     public Scored score(FeedItemResponse item, String source, RankSignals signals, Instant now) {
+        return score(item, source, signals, now, Knobs.DEFAULTS);
+    }
+
+    /** Score one hydrated candidate under an explicit knob set. */
+    public Scored score(FeedItemResponse item, String source, RankSignals signals,
+                        Instant now, Knobs k) {
         double engagement =
-                W_LIKE    * Math.log1p(item.reactionCount()) +
-                W_COMMENT * Math.log1p(item.commentCount())  +
-                W_SHARE   * Math.log1p(item.shareCount())    +
-                W_SAVE    * Math.log1p(item.saveCount())     +
-                W_VIEW    * Math.log1p(item.viewCount());
+                k.wLike()    * Math.log1p(item.reactionCount()) +
+                k.wComment() * Math.log1p(item.commentCount())  +
+                k.wShare()   * Math.log1p(item.shareCount())    +
+                k.wSave()    * Math.log1p(item.saveCount())     +
+                k.wView()    * Math.log1p(item.viewCount());
 
         double affinity = 0.0;
         UUID author = item.authorId();
         if (author != null) {
             long interactions = signals.affinityByAuthor().getOrDefault(author, 0L);
-            affinity = W_AFFINITY * Math.log1p(interactions);
+            affinity = k.wAffinity() * Math.log1p(interactions);
         }
 
-        double freshness = freshness(item, now);
+        double freshness = freshness(item, now, k);
 
         double boost = 1.0;
-        if (author != null && author.equals(signals.viewerId()))            boost *= BOOST_SELF;
-        else if (author != null && signals.mutualFollowAuthors().contains(author)) boost *= BOOST_MUTUAL;
-        if (HomeFeedSources.CHANNEL.equals(source)) boost *= DAMP_CHANNEL;
-        if (HomeFeedSources.EXPLORE.equals(source)) boost *= DAMP_EXPLORE;
+        if (author != null && author.equals(signals.viewerId()))            boost *= k.boostSelf();
+        else if (author != null && signals.mutualFollowAuthors().contains(author)) boost *= k.boostMutual();
+        if (HomeFeedSources.CHANNEL.equals(source)) boost *= k.dampChannel();
+        if (HomeFeedSources.EXPLORE.equals(source)) boost *= k.dampExplore();
 
         return new Scored(item, source, (1.0 + engagement + affinity) * freshness * boost);
     }
 
-    private static double freshness(FeedItemResponse item, Instant now) {
+    private static double freshness(FeedItemResponse item, Instant now, Knobs k) {
         Instant createdAt = item.createdAt();
         if (createdAt == null) return 0.5;   // undated — middle of the road
         double ageHours = Math.max(0.0,
                 (now.toEpochMilli() - createdAt.toEpochMilli()) / 3_600_000.0);
-        return Math.exp(-ageHours / halfLifeOf(item));
+        return Math.exp(-ageHours / halfLifeOf(item, k));
     }
 
-    private static double halfLifeOf(FeedItemResponse item) {
+    private static double halfLifeOf(FeedItemResponse item, Knobs k) {
         String entityType = item.entityType();
-        if ("CHANNEL_POST".equals(entityType)) return HALF_LIFE_CHANNEL;
-        if ("RESEARCH".equals(entityType))     return HALF_LIFE_RESEARCH;
-        if ("QUESTION".equals(entityType))     return HALF_LIFE_QUESTION;
-        return "REEL".equals(item.postType()) ? HALF_LIFE_REEL : HALF_LIFE_POST;
+        if ("CHANNEL_POST".equals(entityType)) return k.halfLifeChannel();
+        if ("RESEARCH".equals(entityType))     return k.halfLifeResearch();
+        if ("QUESTION".equals(entityType))     return k.halfLifeQuestion();
+        return "REEL".equals(item.postType()) ? k.halfLifeReel() : k.halfLifePost();
     }
 
     /**
@@ -143,14 +202,20 @@ public class FeedRankingService {
      * emitted anyway — the cap shapes, it never drops.
      */
     public List<Scored> diversify(List<Scored> sortedByScoreDesc) {
-        if (sortedByScoreDesc.size() <= MAX_AUTHOR_RUN) return sortedByScoreDesc;
+        return diversify(sortedByScoreDesc, Knobs.DEFAULTS);
+    }
+
+    /** Diversity re-ranking under an explicit knob set. */
+    public List<Scored> diversify(List<Scored> sortedByScoreDesc, Knobs k) {
+        int run = Math.max(1, k.maxAuthorRun());
+        if (sortedByScoreDesc.size() <= run) return sortedByScoreDesc;
 
         LinkedList<Scored> pool = new LinkedList<>(sortedByScoreDesc);
         List<Scored> out = new ArrayList<>(pool.size());
         while (!pool.isEmpty()) {
             Scored picked = null;
             for (Scored candidate : pool) {
-                if (!violatesRun(out, candidate)) { picked = candidate; break; }
+                if (!violatesRun(out, candidate, run)) { picked = candidate; break; }
             }
             if (picked == null) picked = pool.getFirst();   // all violate — take the best
             pool.remove(picked);
@@ -159,11 +224,11 @@ public class FeedRankingService {
         return out;
     }
 
-    private static boolean violatesRun(List<Scored> emitted, Scored candidate) {
-        if (emitted.size() < MAX_AUTHOR_RUN) return false;
+    private static boolean violatesRun(List<Scored> emitted, Scored candidate, int run) {
+        if (emitted.size() < run) return false;
         Object key = authorKey(candidate);
         if (key == null) return false;
-        for (int i = emitted.size() - MAX_AUTHOR_RUN; i < emitted.size(); i++) {
+        for (int i = emitted.size() - run; i < emitted.size(); i++) {
             if (!key.equals(authorKey(emitted.get(i)))) return false;
         }
         return true;

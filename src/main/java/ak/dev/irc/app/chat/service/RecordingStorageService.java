@@ -95,6 +95,25 @@ public class RecordingStorageService {
         }
     }
 
+    /** Every stream id with a recording directory on disk (admin fleet view).
+     *  Non-UUID directory names are ignored — nothing else lives in root. */
+    public List<UUID> listAllStreamIds() {
+        if (!Files.isDirectory(root)) return List.of();
+        List<UUID> out = new ArrayList<>();
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(root)) {
+            for (Path p : ds) {
+                if (!Files.isDirectory(p)) continue;
+                try {
+                    out.add(UUID.fromString(p.getFileName().toString()));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        } catch (IOException e) {
+            log.warn("[REC] fleet listing failed: {}", e.getMessage());
+        }
+        return out;
+    }
+
     /** Total bytes across every part — one scan. */
     public long totalBytes(UUID streamId) {
         long total = 0L;

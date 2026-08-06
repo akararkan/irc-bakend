@@ -48,4 +48,23 @@ public interface UserContactHashRepository extends JpaRepository<UserContactHash
           AND u.id NOT IN (SELECT h.ownerId FROM UserContactHash h WHERE h.kind = 'IDENTITY')
         """)
     List<Object[]> findUsersMissingIdentityHash();
+
+    // ── Admin oversight (docs/admin/discovery-pymk-privacy.md §5.2) ───────
+
+    long countByKind(String kind);
+
+    @Query("SELECT COUNT(DISTINCT h.ownerId) FROM UserContactHash h WHERE h.kind = :kind")
+    long countDistinctOwnersByKind(@Param("kind") String kind);
+
+    @Query("SELECT DISTINCT h.ownerId FROM UserContactHash h WHERE h.kind = 'CONTACT'")
+    List<java.util.UUID> findDistinctContactOwners(org.springframework.data.domain.Pageable pageable);
+
+    /** Owners approaching the 5000-hash cap — harvesting signal. */
+    @Query("""
+        SELECT h.ownerId, COUNT(h) FROM UserContactHash h
+        WHERE h.kind = 'CONTACT'
+        GROUP BY h.ownerId HAVING COUNT(h) >= :threshold
+        ORDER BY COUNT(h) DESC
+        """)
+    List<Object[]> ownersNearCap(@Param("threshold") long threshold);
 }

@@ -22,7 +22,8 @@ import java.util.UUID;
        indexes = {
            @Index(name = "idx_report_reporter", columnList = "reporter_id, created_at"),
            @Index(name = "idx_report_target",   columnList = "target_id, reason"),
-           @Index(name = "idx_report_group",    columnList = "group_key")
+           @Index(name = "idx_report_group",    columnList = "group_key"),
+           @Index(name = "idx_report_state",    columnList = "state, created_at")
        })
 @Getter
 @Setter
@@ -43,8 +44,16 @@ public class Report {
     @Column(name = "target_type", nullable = false, length = 20)
     private ReportTargetType targetType;
 
-    @Column(name = "target_id", nullable = false)
+    /** Nullable since the MESSAGE-target fix: chat ids are Snowflakes, not UUIDs. */
+    @Column(name = "target_id")
     private UUID targetId;
+
+    /**
+     * String target reference for non-UUID targets (chat message Snowflakes).
+     * Exactly one of {@code targetId}/{@code targetRef} is set.
+     */
+    @Column(name = "target_ref", length = 64)
+    private String targetRef;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "reason", nullable = false, length = 24)
@@ -68,11 +77,33 @@ public class Report {
     @Column(name = "group_key", nullable = false, length = 80)
     private String groupKey;
 
+    // ── Reviewer attribution (admin build — safety-reports.md §4) ─────────
+
+    @Column(name = "triaged_by")
+    private UUID triagedBy;
+
+    @Column(name = "triaged_at")
+    private LocalDateTime triagedAt;
+
+    @Column(name = "actioned_by")
+    private UUID actionedBy;
+
+    @Column(name = "acted_at")
+    private LocalDateTime actedAt;
+
+    @Column(name = "moderator_note", length = 1000)
+    private String moderatorNote;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    /** The effective target reference — UUID form or the string ref. */
+    public String targetRefOrId() {
+        return targetId != null ? targetId.toString() : targetRef;
+    }
 
     @PrePersist
     void onCreate() {

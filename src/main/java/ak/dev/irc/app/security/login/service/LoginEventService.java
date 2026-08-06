@@ -25,9 +25,19 @@ public class LoginEventService {
 
     private final LoginEventRepository repo;
     private final NotificationService notificationService;
+    private final ak.dev.irc.app.admin.analytics.MetricDailyService metricDaily;
+    private final ak.dev.irc.app.admin.analytics.FunnelTracker funnelTracker;
 
     @Transactional
     public LoginEvent record(UUID userId, String ip, String userAgent, String method, String outcome) {
+        // Telemetry tee: login outcomes are the cheapest correct DAU source.
+        if ("SUCCESS".equalsIgnoreCase(outcome)) {
+            metricDaily.bump("login.success");
+            metricDaily.markActive(userId);
+            funnelTracker.markFirstSeen(userId);
+        } else if (outcome != null) {
+            metricDaily.bump("login." + outcome.toLowerCase());
+        }
         return repo.save(LoginEvent.builder()
                 .userId(userId).ip(ip).userAgent(userAgent)
                 .method(method).outcome(outcome).build());

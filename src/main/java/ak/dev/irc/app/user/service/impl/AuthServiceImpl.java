@@ -61,6 +61,9 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder         passwordEncoder;
     private final UserMapper              userMapper;
     private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
+    private final ak.dev.irc.app.user.service.UserProvisioningService provisioningService;
+    private final ak.dev.irc.app.security.login.service.LoginEventService loginEventService;
+    private final ak.dev.irc.app.security.session.SessionDenylist sessionDenylist;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  REGISTER
@@ -72,36 +75,14 @@ public class AuthServiceImpl implements AuthService {
         log.info("Registration attempt — email='{}', username='{}'",
                 request.email(), request.username());
 
-        if (userRepository.existsByEmail(request.email())) {
-            log.warn("Registration rejected — duplicate email '{}'", request.email());
-            throw new DuplicateResourceException("User", "email", request.email());
-        }
-        if (userRepository.existsByUsername(request.username())) {
-            log.warn("Registration rejected — duplicate username '{}'", request.username());
-            throw new DuplicateResourceException("User", "username", request.username());
-        }
-
-        User user = User.builder()
-                .fname(request.fname())
-                .lname(request.lname())
-                .username(request.username())
-                .email(request.email())
-                .password(passwordEncoder.encode(request.password()))
-                .role(ak.dev.irc.app.user.enums.Role.SCHOLAR)
-                .isEnabled(true)
-                .build();
-        user.audit(AuditAction.CREATE, "User registered");
-        user = userRepository.save(user);
-
-        // Create the linked public profile immediately after registration
-        UserProfile profile = UserProfile.builder()
-                .user(user)
-                .displayName(user.getFname() + " " + user.getLname())
-                .build();
-        profile.audit(AuditAction.CREATE, "Profile created on registration");
-        profileRepository.save(profile);
-
-        userSearch.indexAsync(user.getId());
+        // Shared provisioning path — identical mechanics for self-signup and
+        // admin-create. Self-signup grants USER; RESEARCHER/SCHOLAR are
+        // admin-elevated tiers (user-administration.md §2 recon fix).
+        User user = provisioningService.provision(
+                new ak.dev.irc.app.user.service.UserProvisioningService.ProvisionCommand(
+                        request.fname(), request.lname(), request.username(), request.email(),
+                        request.password(), ak.dev.irc.app.user.enums.Role.USER,
+                        true, false, "User registered"));
 
         log.info("User registered — id={}, email='{}'", user.getId(), user.getEmail());
 
@@ -117,16 +98,31 @@ public class AuthServiceImpl implements AuthService {
                               HttpServletResponse response) {
         log.info("Login attempt — username/email='{}'", request.username());
 
-        Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        request.username(),   // ← was request.email()
-                        request.password()));
+        Authentication authentication;
+        try {
+            authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            request.username(),   // ← was request.email()
+                            request.password()));
+        } catch (org.springframework.security.core.AuthenticationException authEx) {
+            recordLoginEvent(resolveUserId(request.username()), "PASSWORD", "FAILED");
+            throw authEx;
+        }
 
         User user = (User) authentication.getPrincipal();
 
         userRepository.updateLastLogin(user.getId());
         user.audit(AuditAction.LOGIN, "User logged in");
         userRepository.save(user);
+
+        // login_events writer — was never wired anywhere, leaving the table
+        // permanently empty. Success path also fires the new-IP alert.
+        try {
+            loginEventService.recordSuccessAndAlertIfNew(
+                    user.getId(), currentIp(), currentUserAgent(), "PASSWORD");
+        } catch (Exception e) {
+            log.debug("login_events write failed (non-fatal): {}", e.getMessage());
+        }
 
         log.info("Login successful — id={}, email='{}'", user.getId(), user.getEmail());
 
@@ -211,9 +207,14 @@ public class AuthServiceImpl implements AuthService {
 
         log.info("Token refreshed for user [{}]", user.getId());
 
-        String newAccess  = jwtTokenProvider.generateAccessToken(user);
+        // Session continuity: the rotated pair keeps the old row's sid so the
+        // device stays one revocable session across rotations.
+        UUID sid = storedToken.getSid() != null ? storedToken.getSid() : UUID.randomUUID();
+        String newAccess  = jwtTokenProvider.generateAccessToken(user, sid);
         String newRefresh = jwtTokenProvider.generateRefreshToken(user);
-        persistRefreshToken(user, newRefresh);
+        persistRefreshToken(user, newRefresh, sid);
+
+        recordLoginEvent(user.getId(), "REFRESH", "SUCCESS");
 
         // Set cookies
         jwtCookieUtil.addAccessTokenCookie(httpResponse, newAccess);
@@ -239,6 +240,11 @@ public class AuthServiceImpl implements AuthService {
 
         if (refreshToken != null && !refreshToken.isBlank()) {
             log.info("Logout — revoking refresh token");
+            // Deny the session id too, so the paired access token dies with
+            // the refresh token instead of surviving until expiry.
+            refreshTokenRepository.findByToken(refreshToken)
+                    .map(RefreshToken::getSid)
+                    .ifPresent(sid -> sessionDenylist.deny(sid, null));
             refreshTokenRepository.revokeByToken(refreshToken);
         }
 
@@ -311,10 +317,11 @@ public class AuthServiceImpl implements AuthService {
     // ══════════════════════════════════════════════════════════════════════════
 
     private AuthResponse issueTokenPair(User user, HttpServletResponse response) {
-        String accessToken  = jwtTokenProvider.generateAccessToken(user);
+        UUID sid = UUID.randomUUID();
+        String accessToken  = jwtTokenProvider.generateAccessToken(user, sid);
         String refreshToken = jwtTokenProvider.generateRefreshToken(user);
 
-        persistRefreshToken(user, refreshToken);
+        persistRefreshToken(user, refreshToken, sid);
 
         // Set cookies for browser clients
         jwtCookieUtil.addAccessTokenCookie(response, accessToken);
@@ -332,18 +339,103 @@ public class AuthServiceImpl implements AuthService {
         );
     }
 
-    private void persistRefreshToken(User user, String rawToken) {
+    private void persistRefreshToken(User user, String rawToken, UUID sid) {
         long refreshMs = jwtTokenProvider.getRefreshTokenExpirationMs();
 
+        String userAgent = currentUserAgent();
         RefreshToken entity = RefreshToken.builder()
                 .user(user)
                 .token(rawToken)
+                .sid(sid)
+                .ipAddress(currentIp())
+                .userAgent(userAgent)
+                .platform(platformOf(userAgent))
+                .deviceName(deviceNameOf(userAgent))
+                .lastSeenAt(LocalDateTime.now())
                 .expiresAt(LocalDateTime.now().plusSeconds(refreshMs / 1000))
                 .build();
         entity.audit(AuditAction.CREATE, "Refresh token created");
         refreshTokenRepository.save(entity);
 
-        log.debug("Refresh token persisted for user [{}], expires at {}",
-                user.getId(), entity.getExpiresAt());
+        log.debug("Refresh token persisted for user [{}], sid={}, expires at {}",
+                user.getId(), sid, entity.getExpiresAt());
+    }
+
+    // ── login_events + session-metadata helpers ─────────────────────────────
+
+    private void recordLoginEvent(UUID userId, String method, String outcome) {
+        try {
+            loginEventService.record(userId, currentIp(), currentUserAgent(), method, outcome);
+        } catch (Exception e) {
+            log.debug("login_events write failed (non-fatal): {}", e.getMessage());
+        }
+    }
+
+    /** Best-effort user resolution for FAILED login rows (nullable by design). */
+    private UUID resolveUserId(String identifier) {
+        if (identifier == null || identifier.isBlank()) return null;
+        try {
+            return (identifier.contains("@")
+                    ? userRepository.findByEmailAndDeletedAtIsNull(identifier)
+                    : userRepository.findByUsernameAndDeletedAtIsNull(identifier))
+                    .map(User::getId).orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String currentIp() {
+        HttpServletRequest req = currentRequest();
+        if (req == null) return null;
+        String ip = req.getHeader("X-Forwarded-For");
+        if (ip != null && !ip.isBlank()) return ip.split(",")[0].trim();
+        ip = req.getHeader("X-Real-IP");
+        if (ip != null && !ip.isBlank()) return ip.trim();
+        return req.getRemoteAddr();
+    }
+
+    private static String currentUserAgent() {
+        HttpServletRequest req = currentRequest();
+        if (req == null) return null;
+        String ua = req.getHeader("User-Agent");
+        return ua != null && ua.length() > 400 ? ua.substring(0, 400) : ua;
+    }
+
+    private static HttpServletRequest currentRequest() {
+        try {
+            var attrs = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+            if (attrs instanceof org.springframework.web.context.request.ServletRequestAttributes sra) {
+                return sra.getRequest();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static String platformOf(String ua) {
+        if (ua == null) return null;
+        String lower = ua.toLowerCase();
+        if (lower.contains("android")) return "android";
+        if (lower.contains("iphone") || lower.contains("ipad") || lower.contains("ios")) return "ios";
+        if (lower.contains("windows") || lower.contains("macintosh") || lower.contains("linux")) return "desktop";
+        return "web";
+    }
+
+    private static String deviceNameOf(String ua) {
+        if (ua == null) return null;
+        String browser = "Browser";
+        String lower = ua.toLowerCase();
+        if (lower.contains("edg/")) browser = "Edge";
+        else if (lower.contains("chrome/")) browser = "Chrome";
+        else if (lower.contains("safari/") && !lower.contains("chrome/")) browser = "Safari";
+        else if (lower.contains("firefox/")) browser = "Firefox";
+        String os = "Unknown OS";
+        if (lower.contains("windows")) os = "Windows";
+        else if (lower.contains("macintosh")) os = "macOS";
+        else if (lower.contains("android")) os = "Android";
+        else if (lower.contains("iphone") || lower.contains("ipad")) os = "iOS";
+        else if (lower.contains("linux")) os = "Linux";
+        String name = browser + " on " + os;
+        return name.length() > 120 ? name.substring(0, 120) : name;
     }
 }

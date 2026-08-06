@@ -18,13 +18,14 @@ import java.util.UUID;
 @Repository
 public interface ResearchRepository extends JpaRepository<Research, UUID> {
 
-    Optional<Research> findBySlugAndDeletedAtIsNull(String slug);
+    @Query("SELECT r FROM Research r WHERE r.slug = :slug AND r.deletedAt IS NULL")
+    Optional<Research> findBySlugAndDeletedAtIsNull(@Param("slug") String slug);
 
-    Optional<Research> findByShareTokenAndDeletedAtIsNull(String shareToken);
+    @Query("SELECT r FROM Research r WHERE r.shareToken = :shareToken AND r.deletedAt IS NULL")
+    Optional<Research> findByShareTokenAndDeletedAtIsNull(@Param("shareToken") String shareToken);
 
-    Optional<Research> findByIdAndDeletedAtIsNull(UUID id);
-
-    Optional<Research> findByIrcIdAndDeletedAtIsNull(String ircId);
+    @Query("SELECT r FROM Research r WHERE r.id = :id AND r.deletedAt IS NULL")
+    Optional<Research> findByIdAndDeletedAtIsNull(@Param("id") UUID id);
 
     // ── Feed queries ─────────────────────────────────────────────────────────
 
@@ -70,13 +71,29 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
                                      @Param("blockedIds") List<UUID> blockedIds,
                                      Pageable pageable);
 
-    Page<Research> findByResearcherIdAndDeletedAtIsNull(UUID researcherId, Pageable pageable);
+    @Query("SELECT r FROM Research r WHERE r.researcher.id = :researcherId AND r.deletedAt IS NULL")
+    Page<Research> findByResearcherIdAndDeletedAtIsNull(
+            @Param("researcherId") UUID researcherId, Pageable pageable);
 
+    @Query("""
+        SELECT r FROM Research r
+        WHERE r.researcher.id = :researcherId
+          AND r.status = :status
+          AND r.deletedAt IS NULL
+        """)
     Page<Research> findByResearcherIdAndStatusAndDeletedAtIsNull(
-            UUID researcherId, ResearchStatus status, Pageable pageable);
+            @Param("researcherId") UUID researcherId, @Param("status") ResearchStatus status,
+            Pageable pageable);
 
     /** Profile-stat count: a researcher's PUBLISHED, non-deleted research. */
-    long countByResearcherIdAndStatusAndDeletedAtIsNull(UUID researcherId, ResearchStatus status);
+    @Query("""
+        SELECT COUNT(r) FROM Research r
+        WHERE r.researcher.id = :researcherId
+          AND r.status = :status
+          AND r.deletedAt IS NULL
+        """)
+    long countByResearcherIdAndStatusAndDeletedAtIsNull(
+            @Param("researcherId") UUID researcherId, @Param("status") ResearchStatus status);
 
     /**
      * Drafts whose scheduled publish time has arrived — driven by the
@@ -153,11 +170,6 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     """)
     Page<Research> findByTags(@Param("tagNames") List<String> tagNames, Pageable pageable);
 
-    // ── Scheduled publish ────────────────────────────────────────────────────
-
-    List<Research> findByStatusAndScheduledPublishAtBeforeAndDeletedAtIsNull(
-            ResearchStatus status, LocalDateTime now);
-
     // ── Counter adjustments ───────────────────────────────────────────────────
 
     @Modifying
@@ -193,127 +205,82 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     void incrementShareCount(@Param("id") UUID id);
 
     @Modifying
-    @Query("UPDATE Research r SET r.shareCount = " +
-            "CASE WHEN r.shareCount > 0 THEN r.shareCount - 1 ELSE 0 END WHERE r.id = :id")
-    void decrementShareCount(@Param("id") UUID id);
-
-    @Modifying
     @Query("UPDATE Research r SET r.citationCount = r.citationCount + 1 WHERE r.id = :id")
     void incrementCitationCount(@Param("id") UUID id);
 
-    @Modifying
-    @Query("UPDATE Research r SET r.citationCount = " +
-            "CASE WHEN r.citationCount > 0 THEN r.citationCount - 1 ELSE 0 END WHERE r.id = :id")
-    void decrementCitationCount(@Param("id") UUID id);
+    @Query("SELECT COUNT(r) > 0 FROM Research r WHERE r.slug = :slug")
+    boolean existsBySlug(@Param("slug") String slug);
 
-    // ── Bulk reconcile from source-of-truth row counts ──────────────────────
-
-    @Modifying
-    @Query(value = """
-        UPDATE researches SET reaction_count = (
-            SELECT COUNT(*) FROM research_reactions r WHERE r.research_id = researches.id
-        )
-        """, nativeQuery = true)
-    int bulkReconcileReactionCount();
-
-    @Modifying
-    @Query(value = """
-        UPDATE researches SET comment_count = (
-            SELECT COUNT(*) FROM research_comments c
-            WHERE c.research_id = researches.id AND c.deleted_at IS NULL
-        )
-        """, nativeQuery = true)
-    int bulkReconcileCommentCount();
-
-    @Modifying
-    @Query(value = """
-        UPDATE researches SET save_count = (
-            SELECT COUNT(*) FROM research_saves s WHERE s.research_id = researches.id
-        )
-        """, nativeQuery = true)
-    int bulkReconcileSaveCount();
-
-    @Modifying
-    @Query(value = """
-        UPDATE researches SET download_count = (
-            SELECT COUNT(*) FROM research_downloads d WHERE d.research_id = researches.id
-        )
-        """, nativeQuery = true)
-    int bulkReconcileDownloadCount();
-
-    boolean existsBySlug(String slug);
-
-    // ── Full-text search (Postgres FTS + trigram fallback) ─────────────
-    // Indexed by SearchInfrastructureInitializer; sub-100ms on millions of rows.
-    // Block-aware via :blockedIds — pass null/empty for anonymous viewers.
-    /**
-     * FTS search with engagement boost — the BM25-style {@code ts_rank_cd} score
-     * is multiplied by {@code ln(1 + reactions + views/10 + downloads*5 + citations*10)}
-     * so popular research surfaces above bare keyword matches with equal text
-     * relevance. Downloads and citations weighted more because they signal
-     * deeper scholarly intent than a view.
-     */
-    @Query(value = """
-        SELECT r.id, (ts_rank_cd(to_tsvector('simple',
-                  coalesce(r.title, '') || ' ' || coalesce(r.abstract_text, '') || ' ' ||
-                  coalesce(r.description, '') || ' ' || coalesce(r.keywords, '')),
-                websearch_to_tsquery('simple', :q))
-              * (1 + LN(1 + r.reaction_count
-                          + r.view_count / 10.0
-                          + r.download_count * 5
-                          + r.citation_count * 10))) AS score
-        FROM researches r
-        WHERE r.deleted_at IS NULL
-          AND r.status = 'PUBLISHED'
-          AND to_tsvector('simple',
-                  coalesce(r.title, '') || ' ' || coalesce(r.abstract_text, '') || ' ' ||
-                  coalesce(r.description, '') || ' ' || coalesce(r.keywords, ''))
-              @@ websearch_to_tsquery('simple', :q)
-          AND (CAST(:blockedIds AS uuid[]) IS NULL
-               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
-        ORDER BY score DESC, r.created_at DESC
-        LIMIT :limit
-        """, nativeQuery = true)
-    List<Object[]> searchFts(@Param("q") String q,
-                              @Param("blockedIds") java.util.UUID[] blockedIds,
-                              @Param("limit") int limit);
+    // ═════════════════════════════════════════════════════════════════════
+    //  Admin browse (docs/admin/research-qna.md §4) — all statuses,
+    //  soft-deleted included when :deleted says so, fetch-join + countQuery.
+    // ═════════════════════════════════════════════════════════════════════
 
     @Query(value = """
-        SELECT r.id, GREATEST(similarity(coalesce(r.title,''), :q),
-                              similarity(coalesce(r.keywords,''), :q)) AS score
-        FROM researches r
-        WHERE r.deleted_at IS NULL
-          AND r.status = 'PUBLISHED'
-          AND (coalesce(r.title,'') % :q OR coalesce(r.keywords,'') % :q)
-          AND (CAST(:blockedIds AS uuid[]) IS NULL
-               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
-        ORDER BY score DESC, r.created_at DESC
-        LIMIT :limit
-        """, nativeQuery = true)
-    List<Object[]> searchTrgm(@Param("q") String q,
-                               @Param("blockedIds") java.util.UUID[] blockedIds,
-                               @Param("limit") int limit);
+        SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE (:status IS NULL OR r.status = :status)
+          AND (:researcherId IS NULL OR res.id = :researcherId)
+          AND (:ircId IS NULL OR r.ircId = :ircId)
+          AND (:q IS NULL OR LOWER(r.title) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
+          AND r.deletedAt IS NULL
+        ORDER BY r.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
+        WHERE (:status IS NULL OR r.status = :status)
+          AND (:researcherId IS NULL OR r.researcher.id = :researcherId)
+          AND (:ircId IS NULL OR r.ircId = :ircId)
+          AND (:q IS NULL OR LOWER(r.title) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
+          AND r.deletedAt IS NULL
+        """)
+    Page<Research> adminBrowse(@Param("status") ak.dev.irc.app.research.enums.ResearchStatus status,
+                               @Param("researcherId") UUID researcherId,
+                               @Param("ircId") String ircId,
+                               @Param("q") String q,
+                               Pageable pageable);
 
-    /** Prefix-only typeahead for the instant search dropdown — block-aware. */
+    @Query("SELECT COUNT(r) FROM Research r WHERE r.status = :status AND r.deletedAt IS NULL")
+    long countByStatusAndDeletedAtIsNull(
+            @Param("status") ak.dev.irc.app.research.enums.ResearchStatus status);
+
+    @Query("SELECT COUNT(r) FROM Research r WHERE r.deletedAt IS NULL")
+    long countByDeletedAtIsNull();
+
     @Query(value = """
-        SELECT r.id,
-               CASE WHEN LOWER(r.title) LIKE LOWER(:q || '%') THEN 1.0
-                    WHEN LOWER(r.keywords) LIKE LOWER(:q || '%') THEN 0.8
-                    ELSE GREATEST(similarity(coalesce(r.title,''), :q),
-                                  similarity(coalesce(r.keywords,''), :q))
-               END AS score
-        FROM researches r
-        WHERE r.deleted_at IS NULL
-          AND r.status = 'PUBLISHED'
-          AND (LOWER(r.title) LIKE LOWER(:q || '%')
-            OR LOWER(r.keywords) LIKE LOWER(:q || '%')
-            OR coalesce(r.title,'') % :q)
-          AND (CAST(:blockedIds AS uuid[]) IS NULL
-               OR r.researcher_id <> ALL(CAST(:blockedIds AS uuid[])))
-        ORDER BY score DESC, r.created_at DESC
-        LIMIT :limit
-        """, nativeQuery = true)
-    List<Object[]> searchPrefix(@Param("q") String q,
-                                 @Param("blockedIds") java.util.UUID[] blockedIds,
-                                 @Param("limit") int limit);
+            SELECT CAST(date_trunc('day', r.created_at) AS date), COUNT(*)
+            FROM researches r
+            WHERE r.created_at >= :from AND r.deleted_at IS NULL
+            GROUP BY 1 ORDER BY 1
+            """, nativeQuery = true)
+    java.util.List<Object[]> createdPerDay(@Param("from") java.time.LocalDateTime from);
+
+    @Query(value = """
+        SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE r.status = ak.dev.irc.app.research.enums.ResearchStatus.PUBLISHED
+          AND r.deletedAt IS NULL
+        ORDER BY r.downloadCount DESC, r.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
+        WHERE r.status = ak.dev.irc.app.research.enums.ResearchStatus.PUBLISHED AND r.deletedAt IS NULL
+        """)
+    Page<Research> topByDownloads(Pageable pageable);
+
+    @Query(value = """
+        SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE r.status = ak.dev.irc.app.research.enums.ResearchStatus.PUBLISHED
+          AND r.deletedAt IS NULL
+        ORDER BY r.citationCount DESC, r.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(r) FROM Research r
+        WHERE r.status = ak.dev.irc.app.research.enums.ResearchStatus.PUBLISHED AND r.deletedAt IS NULL
+        """)
+    Page<Research> topByCitations(Pageable pageable);
 }

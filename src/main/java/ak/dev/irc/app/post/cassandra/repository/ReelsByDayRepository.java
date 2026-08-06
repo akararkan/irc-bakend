@@ -17,6 +17,15 @@ public interface ReelsByDayRepository extends CassandraRepository<ReelsByDayEnti
     List<ReelsByDayEntity> firstPage(@Param("day") String day,
                                      @Param("pageSize") int pageSize);
 
+    @Query("DELETE FROM reels_by_day WHERE day_bucket = :day " +
+           "AND created_at = :createdAt AND post_id = :postId")
+    void deleteRow(@Param("day") String day,
+                   @Param("createdAt") java.time.Instant createdAt,
+                   @Param("postId") java.util.UUID postId);
+
+    @Query("SELECT COUNT(*) FROM reels_by_day WHERE day_bucket = :day")
+    long countForDay(@Param("day") String day);
+
     @Query("SELECT * FROM reels_by_day WHERE day_bucket = :day " +
            "AND created_at < :cursor LIMIT :pageSize")
     List<ReelsByDayEntity> nextPage(@Param("day")       String day,

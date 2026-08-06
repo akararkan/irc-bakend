@@ -43,6 +43,7 @@ public class MediaAssetService {
     private final MediaProcessingService processingService;
     private final S3StorageService storage;
     private final MediaProperties props;
+    private final MediaQuotaService quotaService;
 
     // ── Upload intent ────────────────────────────────────────────────────────
 
@@ -59,6 +60,10 @@ public class MediaAssetService {
                     "File exceeds the maximum size for " + type + " (" + cap + " bytes).",
                     "MEDIA_TOO_LARGE");
         }
+
+        // Per-role daily quota (§8) — checked before dedup so a capped user
+        // can't keep minting reference rows either.
+        quotaService.enforce(ownerId, req.sizeBytes());
 
         // Dedup (§20.5): a duplicate upload reuses existing renditions and only
         // creates a new reference row — no re-encode, no extra storage.

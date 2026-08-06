@@ -56,6 +56,7 @@ public class CassandraStoryService {
     private final ak.dev.irc.app.chat.repository.ConversationMemberRepository chatMemberRepo;
     private final CassandraStoryPollService pollService;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
+    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
     /**
      * Used to write with explicit per-row {@code USING TTL <seconds>}, so the
      * 8 / 16 / 24-hour story windows actually expire at the row level — the
@@ -95,9 +96,13 @@ public class CassandraStoryService {
                                            String thumbnailUrl, String textContent,
                                            StoryLifetime lifetime) {
         if (lifetime == null) lifetime = StoryLifetime.DEFAULT;
+        String flaggedKeyword = platformKeywords.blockOrFlag(textContent);
         UUID    storyId = UUID.randomUUID();
         Instant now     = Instant.now();
         Instant expires = now.plus(lifetime.duration());
+        if (flaggedKeyword != null) {
+            platformKeywords.recordHit("STORY", storyId.toString(), authorId, flaggedKeyword);
+        }
 
         StoryByAuthorEntity row = StoryByAuthorEntity.builder()
                 .authorId(authorId)

@@ -82,6 +82,23 @@ public class AuditLoggingInterceptor implements HandlerInterceptor {
             User principal = SecurityUtils.getCurrentUser().orElse(null);
             UUID userId = principal != null ? principal.getId() : null;
             String username = principal != null ? principal.getUsername() : null;
+            String queryString = request.getQueryString();
+
+            // Impersonated requests are attributed to the ADMIN, never the
+            // target: the trail must not blame the victim for the admin's
+            // reads. The target id is preserved as a queryString marker.
+            Object impersonatorId = request.getAttribute(
+                    ak.dev.irc.app.security.jwt.JwtAuthenticationFilter.ATTR_IMPERSONATOR_ID);
+            if (impersonatorId instanceof UUID adminId) {
+                userId = adminId;
+                Object adminUsername = request.getAttribute(
+                        ak.dev.irc.app.security.jwt.JwtAuthenticationFilter.ATTR_IMPERSONATOR_USERNAME);
+                username = adminUsername != null ? adminUsername.toString() : username;
+                Object target = request.getAttribute(
+                        ak.dev.irc.app.security.jwt.JwtAuthenticationFilter.ATTR_IMPERSONATED_TARGET);
+                String marker = "impersonating=" + target;
+                queryString = queryString == null ? marker : queryString + "&" + marker;
+            }
 
             AuditOperation operation = inferOperation(request);
             AuditOutcome   outcome   = inferOutcome(response, ex);
@@ -96,7 +113,7 @@ public class AuditLoggingInterceptor implements HandlerInterceptor {
                     .resourceId(resource.id)
                     .httpMethod(request.getMethod())
                     .path(path)
-                    .queryString(truncate(request.getQueryString(), 1000))
+                    .queryString(truncate(queryString, 1000))
                     .statusCode(response.getStatus())
                     .durationMs(duration)
                     .ipAddress(extractIp(request))

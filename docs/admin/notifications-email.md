@@ -76,23 +76,26 @@ PG notifications older than **90 days**; unread rows are never purged.
 | Email health | `EmailThrottle` Redis keys (TTL'd, ephemeral) **[EXISTS]**; `email_send_log` ledger **[PLANNED — see Actions]**; `MAIL_ENABLED`, `irc.email.*` config **[EXISTS]** |
 | Digest | `TrendingNotificationJob` (`common/notification/job`) **[EXISTS]**; `User.emailTrendingEnabled` **[EXISTS]** |
 | Prefs/DND/push | `user_notification_prefs`, `user_dnd`, `push_tokens` **[EXISTS]** (settings module) |
-| Announcements | `NotificationService.sendSystemNotification(userId, title, body)` **[EXISTS — the per-user primitive]**; broadcast fan-out job **[PLANNED]** |
+| Announcements | `NotificationService.sendSystemNotification(userId, title, body)` **[EXISTS — the per-user primitive]**; broadcast fan-out + scheduling via `AnnouncementService` / `platform_announcements` **[EXISTS (built 2026-08)]** (§4) |
 
 ## 4. Admin actions
 
 | Method & path | What | Danger | Step-up | Audit action |
 |---|---|---|---|---|
-| `GET /api/v1/admin/notifications/stats` | volume/read-rate aggregates (from/to, groupBy) | read | — | — |
+| `GET /api/v1/admin/notifications/stats` | volume/read-rate aggregates | read | — | — |
 | `GET /api/v1/admin/notifications/types` | the types registry | read | — | — |
-| `POST /api/v1/admin/announcements` | **Announcement composer**: `{title, body, audience{role?, activeSinceDays?, locale?}, schedule?, dryRun}` → fan-out job walks `findActiveUserIdsAfter` keyset batches calling `sendSystemNotification` (kind `SYSTEM_ANNOUNCEMENT`, honors `PrefCategory.SYSTEM` email toggles); `dryRun=true` returns audience count only | **HIGH** (mass send) | **Yes** | `ANNOUNCEMENT_SENT` |
-| `GET /api/v1/admin/announcements` | send history + per-announcement reach/read stats | read | — | — |
-| `POST /api/v1/admin/notifications/digest/run` | trigger TRENDING_DIGEST manually (respects the 1/day group-key cap — safe to re-run) | medium | — | `DIGEST_TRIGGERED` |
-| `GET /api/v1/admin/email/health` | sender status, throttle config, last errors, send-ledger tail | read | — | — |
-| `POST /api/v1/admin/email/test` | send a test email to an admin-owned address | low | — | `EMAIL_TEST_SENT` |
-| `DELETE /api/v1/admin/push-tokens/{id}` | purge a stale/abusive token | low | — | `PUSH_TOKEN_PURGED` |
+| `POST /api/v1/admin/notifications/announcements` | **Announcement composer**: `{title, body, audience{role?, activeSinceDays?}, audienceLanguage?, scheduledAt?, dryRun}` — fan-out walks keyset batches calling `sendSystemNotification` (`SYSTEM_ANNOUNCEMENT`); `dryRun=true` returns audience count only. **`audienceLanguage`** filters the audience by `User.preferredLanguage` (built 2026-08); **`scheduledAt`** (ISO-8601, future) stores the row as `Status.SCHEDULED` — a **minute sweep** (`AnnouncementService.fireDueScheduled`) fires it when due | **HIGH** (mass send) | **Yes** | audited (`AdminAuditor`) |
+| `DELETE /api/v1/admin/notifications/announcements/{id}` | cancel a SCHEDULED announcement before its sweep fires (built 2026-08) | medium | **Yes** | audited |
+| `GET /api/v1/admin/notifications/announcements` | send history (`platform_announcements`) + per-announcement reach | read | — | — |
+| `POST /api/v1/admin/notifications/digest/run` | trigger TRENDING_DIGEST manually (respects the 1/day group-key cap — safe to re-run) | medium | — | `ADMIN_DIGEST_RUN` |
+| `GET /api/v1/admin/notifications/email/stats` | sender status, throttle config, health | read | — | — |
+| `POST /api/v1/admin/notifications/email/test` | send a test email to the calling admin's own address | low | — | `ADMIN_EMAIL_TEST` |
+| `DELETE /api/v1/admin/notifications/push-tokens/{id}` | purge a stale/abusive token | low | — | `ADMIN_PUSH_TOKEN_PURGE` |
 
-All **[PLANNED]** — phase 2 of the [blueprint](admin-api-blueprint.md). The
-composer is the only new *machinery*; everything else wraps existing primitives.
+All **[EXISTS (built 2026-08)]** — `admin/notification/AdminNotificationController`
++ `AnnouncementService`/`PlatformAnnouncement`. Announcements now support
+**scheduling** (SCHEDULED status + minute sweep + cancel) and an
+**`audienceLanguage`** locale filter over `User.preferredLanguage`.
 
 **The send-ledger [PLANNED]:** a small append-only `email_send_log`
 (id, recipientId, kind, groupKey, outcome SENT|THROTTLED|FAILED|DISABLED, error,
@@ -107,7 +110,7 @@ Write it from `NotificationEmailDispatcher` (one insert per decision).
 | Notification rows themselves | PG + Cassandra **[EXISTS]** | the record of what was sent in-app; 90-day read-purge caveat — **volume stats must be computed from rollups, not raw counts, or history silently shrinks** |
 | `email_send_log` | **[PLANNED]** | the email ledger (above) |
 | Throttle decisions | Redis (TTL) **[EXISTS]** | ephemeral — visible only until TTL expiry; ledger supersedes |
-| Announcement runs | `settings_audit` + announcements table **[PLANNED]** | who sent what to whom, when |
+| Announcement runs | `platform_announcements` **[EXISTS (built 2026-08)]** + `AdminAuditor` audit rows | who sent what to whom, when; SCHEDULED rows visible before firing |
 | Digest job runs | app log **[EXISTS]** → `job_runs` ledger **[PLANNED]** ([operations.md](operations.md)) | |
 
 ## 6. Analytics & KPIs

@@ -19,4 +19,7 @@ public interface SoundCounterRepository extends CassandraRepository<SoundCounter
     /** Bulk counter read — one IN query per reindex batch instead of one point read per sound. */
     @Query("SELECT * FROM sound_counters WHERE sound_id IN :soundIds")
     List<SoundCounterEntity> findAllBySoundIdIn(@Param("soundIds") java.util.Collection<UUID> soundIds);
+
+    @Query("DELETE FROM sound_counters WHERE sound_id = :soundId")
+    void deleteBySoundId(@Param("soundId") UUID soundId);
 }

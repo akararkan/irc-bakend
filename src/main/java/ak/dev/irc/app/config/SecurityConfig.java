@@ -97,7 +97,13 @@ public class SecurityConfig {
                 // annotation can never expose them.
                 .authorizeHttpRequests(auth -> {
                     if (!permitAll) {
-                        auth.requestMatchers("/api/v1/admin/**").hasRole("ADMIN");
+                        // RBAC widening (architecture.md §6): the chain-level
+                        // belt admits every staff tier; per-controller
+                        // @PreAuthorize braces then narrow section-by-section
+                        // (deny-by-default — a controller without an explicit
+                        // staff grant stays ADMIN-only).
+                        auth.requestMatchers("/api/v1/admin/**")
+                                .hasAnyRole("ADMIN", "MODERATOR", "SUPPORT", "ANALYST");
                     }
                     auth.anyRequest().permitAll();
                 })

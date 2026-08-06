@@ -17,7 +17,8 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
 
     // ── Session surfacing (spec §12) ─────────────────────────────────────────
 
-    Optional<RefreshToken> findBySid(UUID sid);
+    @Query("SELECT rt FROM RefreshToken rt WHERE rt.sid = :sid")
+    Optional<RefreshToken> findBySid(@Param("sid") UUID sid);
 
     /** Active (non-revoked, unexpired) sessions for the Active Sessions screen. */
     @Query("""
@@ -57,4 +58,15 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
     @Modifying
     @Query("DELETE FROM RefreshToken rt WHERE rt.user.id = :userId")
     void deleteAllByUserId(@Param("userId") UUID userId);
+
+    /** Sessions-per-user distribution (users-roles.md §6): p50/p95/avg/max of
+     *  live-session counts, computed in one aggregate over the grouped subquery. */
+    @Query(value = """
+        SELECT percentile_cont(0.5)  WITHIN GROUP (ORDER BY t.cnt),
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY t.cnt),
+               AVG(t.cnt), MAX(t.cnt), COUNT(*)
+        FROM (SELECT COUNT(*) AS cnt FROM refresh_tokens
+              WHERE is_revoked = false GROUP BY user_id) t
+        """, nativeQuery = true)
+    List<Object[]> sessionsPerUserPercentiles();
 }

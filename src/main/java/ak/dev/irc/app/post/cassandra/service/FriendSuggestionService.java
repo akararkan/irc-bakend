@@ -116,6 +116,38 @@ public class FriendSuggestionService {
     static final double W_BADGE           = 0.75;  // RESEARCHER / SCHOLAR / ADMIN
     static final double W_COMPLETE        = 0.75;  // bio + avatar present
 
+    /**
+     * Read-only knob registry for the admin observability surface
+     * (discovery-pymk-privacy.md §5.1): the 6 sources, the weight constants
+     * and the gates — each explicitly "recompile-only".
+     */
+    public static java.util.Map<String, Object> knobRegistry() {
+        java.util.Map<String, Object> knobs = new java.util.LinkedHashMap<>();
+        knobs.put("sources", java.util.List.of(
+                "GRAPH", "CONTACTS", "MESSAGING", "GROUPS", "INTERACTIONS", "AFFILIATION"));
+        knobs.put("W_MUTUAL", W_MUTUAL);
+        knobs.put("MUTUAL_CAP", MUTUAL_CAP);
+        knobs.put("W_CONTACT", W_CONTACT);
+        knobs.put("W_CONTACT_BIDIR", W_CONTACT_BIDIR);
+        knobs.put("W_DM", W_DM);
+        knobs.put("W_GROUP", W_GROUP);
+        knobs.put("GROUP_CAP", GROUP_CAP);
+        knobs.put("W_AFFINITY", W_AFFINITY);
+        knobs.put("W_INSTITUTION", W_INSTITUTION);
+        knobs.put("W_LOCATION", W_LOCATION);
+        knobs.put("W_SPECIALIZATION", W_SPECIALIZATION);
+        knobs.put("SPECIALIZATION_CAP", SPECIALIZATION_CAP);
+        knobs.put("W_LANGUAGE", W_LANGUAGE);
+        knobs.put("W_BADGE", W_BADGE);
+        knobs.put("W_COMPLETE", W_COMPLETE);
+        knobs.put("MIN_SCORE", MIN_SCORE);
+        knobs.put("MAX_SUGGESTIONS_TO_STORE", MAX_SUGGESTIONS_TO_STORE);
+        knobs.put("DIVERSITY_HEAD", DIVERSITY_HEAD);
+        knobs.put("CANDIDATE_CAP", CANDIDATE_CAP);
+        knobs.put("tuning", "recompile-only — no runtime config surface exists by design");
+        return knobs;
+    }
+
     private final UserFollowRepository          userFollowRepo;
     private final FriendSuggestionRepository    suggestionRepo;
     private final UserBlockRepository           blockRepo;

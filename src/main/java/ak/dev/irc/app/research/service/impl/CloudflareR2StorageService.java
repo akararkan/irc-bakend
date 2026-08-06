@@ -256,6 +256,36 @@ public class CloudflareR2StorageService implements S3StorageService {
         }
     }
 
+    @Override
+    public java.util.List<StoredObject> list(String prefix, int maxKeys) {
+        int cap = Math.max(1, Math.min(maxKeys, 10_000));
+        java.util.List<StoredObject> out = new java.util.ArrayList<>();
+        try {
+            String continuation = null;
+            do {
+                var reqB = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
+                        .bucket(bucketName)
+                        .maxKeys(Math.min(1000, cap - out.size()));
+                if (prefix != null && !prefix.isBlank()) reqB.prefix(prefix);
+                if (continuation != null) reqB.continuationToken(continuation);
+                var resp = s3Client.listObjectsV2(reqB.build());
+                for (var obj : resp.contents()) {
+                    out.add(new StoredObject(obj.key(), obj.size(),
+                            obj.lastModified() == null ? 0 : obj.lastModified().toEpochMilli()));
+                    if (out.size() >= cap) return out;
+                }
+                continuation = Boolean.TRUE.equals(resp.isTruncated())
+                        ? resp.nextContinuationToken() : null;
+            } while (continuation != null);
+            return out;
+        } catch (SdkClientException e) {
+            log.error("R2 storage is unreachable — list failed for prefix '{}': {}", prefix, e.getMessage());
+            throw new AppException(
+                    "File storage service is currently unavailable. Please try again later.",
+                    HttpStatus.SERVICE_UNAVAILABLE, "STORAGE_UNAVAILABLE");
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
 
     private String extractExtension(String filename) {

@@ -22,16 +22,18 @@ Related: [logs-audit.md](logs-audit.md) (log catalog), [operations.md](operation
 |----------|--------------|
 | Product analytics: activity, growth, engagement, retention, funnels, per-module KPIs | Infra health (CPU, queue depth, SSE fan-out) → [operations.md](operations.md) |
 | The Overview page + per-module drilldowns of the dashboard's Analytics section | Moderation queues/decision metrics → [safety-reports.md](safety-reports.md), [content-moderation.md](content-moderation.md) |
-| The `analytics_events` collection pipeline, rollup jobs, and query API **[PLANNED]** | Per-creator "insights" for end users (future product feature; this doc's pipeline is its prerequisite) |
-| Anomaly alerting on daily metric series **[PLANNED]** | Billing/monetization (gifts are symbolic — no wallet exists) |
+| The `analytics_events` collection pipeline, rollup jobs, and query API **[EXISTS (built 2026-08)]** | Per-creator "insights" for end users (future product feature; this doc's pipeline is its prerequisite) |
+| Anomaly alerting on daily metric series **[EXISTS (built 2026-08)]** | Billing/monetization (gifts are symbolic — no wallet exists) |
 
-**The single most important honest statement in this doc:** the platform has
-rich *lifetime, per-entity* counters and *per-user, private* activity logs, but
-**no date-bucketed, platform-wide metric store of any kind**. DAU/WAU/MAU,
-retention, funnels, and every "X per day" time-series over Cassandra-backed
-content are **not computable today**. Postgres-backed domains (research, QnA,
-chat metadata, live, media, users) can be aggregated with new SQL only —
-tagged **[PARTIAL]** throughout.
+**The single most important honest statement in this doc** (pre-2026-08
+baseline): the platform had rich *lifetime, per-entity* counters and
+*per-user, private* activity logs, but **no date-bucketed, platform-wide
+metric store**. **Since the 2026-08 build the §6 pipeline exists**
+(`analytics_events`, `analytics_metric_daily`/`analytics_dau_by_day`/
+`analytics_metric_rollup`, rollup jobs) — DAU/MAU, retention, funnels, and
+daily series accrue **from deployment forward**; history before then remains
+uncomputable. Postgres-backed domains (research, QnA, chat metadata, live,
+media, users) are additionally aggregable with plain SQL.
 
 ## 2. Measurement reality today
 
@@ -40,7 +42,7 @@ tagged **[PARTIAL]** throughout.
 | "How many likes does post X have?" | **Yes [EXISTS]** | `post_counters` point read via `PostCounterRepository` / `CounterCache` |
 | "Total platform likes / views / posts?" | **No** | Cassandra counter tables are point-readable per id; full-table scans are forbidden by schema design (recon: "no scan index") |
 | "Signups per day?" | **Query away [PARTIAL]** | `users.created_at` exists (`BaseAuditEntity`); no endpoint aggregates it |
-| "DAU yesterday?" | **No [PLANNED]** | No daily active-user set anywhere; `audit_log_by_user` is partitioned per user (no cross-user day scan); `login_events` has **zero writers wired** (`LoginEventService` is never called — see [logs-audit.md](logs-audit.md)) |
+| "DAU yesterday?" | **Yes [EXISTS (built 2026-08)]** — from deployment forward | `analytics_dau_by_day` (PK-dedup upsert via `MetricDailyService.markActive`); `login_events` writer is wired from `AuthServiceImpl` (see [logs-audit.md](logs-audit.md)) |
 | "Research downloads this week?" | **Query away [PARTIAL]** | PG `research_downloads` rows carry `created_at` (written by `ResearchAnalyticsConsumer`) |
 | "Story views last month?" | **Never (data is gone)** | `story_views_by_story` rows carry the story's 24h TTL — historical story analytics evaporate by design |
 | "Top search queries?" | **No [PLANNED]** | Queries logged only in per-user `activity_by_user` (`GLOBAL_SEARCH` with `query` + `hit_count`); no global index, and scanning per-user partitions platform-wide is impractical |
@@ -102,7 +104,7 @@ Recon-confirmed "computable today with only new queries":
 | `conversations.{member_count,post_count,type}` | Chat/channel structural totals |
 | `user_follows` | Graph size, follows/day (`created_at`) |
 | `users`, `user_profiles`, `account_deletion_requests`, `deleted_accounts` | Signups/day, role mix, deletion pipeline |
-| `media_assets.stored_bytes` (+ `status`, `media_type`) | Per-user footprint **[EXISTS]** via `StorageUsageService` (`sumStoredBytes`, Redis-cached 1h); platform total = trivial unfiltered `SUM` — **query not yet written [PARTIAL]** |
+| `media_assets.stored_bytes` (+ `status`, `media_type`) | Per-user footprint **[EXISTS]** via `StorageUsageService` (`sumStoredBytes`, Redis-cached 1h); platform total **[EXISTS (built 2026-08)]** — `MediaAssetRepository.sumStoredBytesPlatform()` feeds the `storageBytes` overview tile |
 | `live_streams.{viewer_count,peak_viewer_count}`, `stream_viewers.{joined_at,left_at}` | Streams/day, peaks, per-session watch-time (left_at null on crash — caveat) |
 | `stream_gift_tallies` | Coin totals per stream/user; platform `SUM` [PARTIAL] |
 | `call_sessions` / `call_participants` | Call volume, duration, missed rate |
@@ -139,15 +141,15 @@ excluded until events land. Chart: weekly line + WoW delta tile.
 
 | KPI | Definition | Source | Chart | Status |
 |-----|------------|--------|-------|--------|
-| DAU | Distinct authenticated users emitting ≥1 event per UTC day | `analytics_events` rollup; interim shim: Redis HLL `analytics:dau:{yyyyMMdd}` PFADD'd from the auth filter (cheap, day-1 deployable) | Line (90d) + tile | **[PLANNED]** |
-| WAU / MAU | Distinct actives, trailing 7d / 28d | Rollup over daily actor sets (HLL union) | Line | **[PLANNED]** |
+| DAU | Distinct authenticated users emitting ≥1 event per UTC day | `analytics_dau_by_day` (PK-dedup upsert, `MetricDailyService.markActive` → `dauSeries`); `dauToday` overview tile | Line (90d) + tile | **[EXISTS (built 2026-08)]** |
+| WAU / MAU | Distinct actives, trailing 7d / 30d | `MetricDailyService.distinctActiveOver(n)` union over `analytics_dau_by_day`; `mau30d` (30 d distinct) + `onlineNow` tiles in `/overview` | Line | **[EXISTS (built 2026-08)]** |
 | Stickiness | DAU ÷ MAU | Derived | Line + tile | **[PLANNED]** |
 | New signups | `users` rows created per day | PG `users.created_at` | Bar | **[PARTIAL]** |
-| Login success / fail / new-IP | Per-day login outcomes | `login_events` — **table exists, writer never wired** (`LoginEventService` has zero callers). Wiring `AuthServiceImpl` → `record(...)` is a 1-day prerequisite | Stacked bar | **[PARTIAL]** (blocked on wiring) |
+| Login success / fail / new-IP | Per-day login outcomes | `login_events` — writer **wired** (`AuthServiceImpl` calls `record(...)` / `recordSuccessAndAlertIfNew`); `login.success` / `login.failed` daily series served by `GET /api/v1/admin/analytics/engagement` | Stacked bar | **[EXISTS (built 2026-08)]** |
 | Content created | posts+reels+stories+questions+answers+research per day | PG halves [PARTIAL]; posts/stories need events [PLANNED]; **exception: reels are day-partitioned in `reels_by_day` and countable per day today [PARTIAL]** | Stacked area by type | mixed |
 | Engagement actions | reactions+comments+shares+saves per day | **[PLANNED]** — lifetime counters can't be diffed retroactively | Stacked area | **[PLANNED]** |
 
-### 4.3 Activation funnel **[PLANNED]** (interim [PARTIAL] via SQL)
+### 4.3 Activation funnel **[EXISTS (built 2026-08)]** — `FunnelTracker` + `user_first_events` + `GET /api/v1/admin/analytics/funnel`
 
 `signup → profile completed → first follow → first post-or-question`
 
@@ -159,15 +161,17 @@ excluded until events land. Chart: weekly line + WoW delta tile.
 | First post/question | first authored content | questions via PG [PARTIAL]; posts need events | `post.create` / `qna.question_create` |
 
 Rendered as a funnel bar per monthly cohort + median time-between-steps table.
-Maintained incrementally in `user_first_events` (§6.3) so the funnel is a read,
-not a scan.
+Maintained incrementally in `user_first_events` via `FunnelTracker`
+(first-seen / profile-completed / first-follow / first-content hooks) so the
+funnel is a read, not a scan.
 
-### 4.4 Retention cohorts **[PLANNED]**
+### 4.4 Retention cohorts **[EXISTS (built 2026-08)]**
 
 Weekly signup cohorts × weeks-since-signup, cell = % of cohort active that week
-(active = any event). Triangle heatmap, 12 cohorts × 12 weeks default. Requires
-daily actor sets (§6.3 `uniques_daily`); impossible before the pipeline —
-`audit_log_by_user` cannot be scanned across users and `login_events` is empty.
+(active = any event). Triangle heatmap, 12 cohorts × 12 weeks default. Backed
+by `cohort_retention_weekly`, maintained by the weekly cohort job (Mon 03:10
+UTC) over `analytics_dau_by_day` actor sets, served at
+`GET /api/v1/admin/analytics/retention`.
 
 ## 5. Per-module KPI tables
 
@@ -267,7 +271,7 @@ Column key — **Source** cites what computes it *today* or what will;
 |--------|------------|--------|-------|--------|
 | Uploads/day by type & status | `media_assets` rows | PG `created_at`, `media_type`, `status` | Stacked bar | **[PARTIAL]** |
 | Failure rate | FAILED_* ÷ terminal per day | PG `status` (`MediaStatus.isTerminalFailure`) | Line | **[PARTIAL]** |
-| Total stored bytes (+growth) | Platform Σ `stored_bytes` | Trivial unfiltered SUM — **not yet written**; per-user version **[EXISTS]** (`StorageUsageService`) | Area | **[PARTIAL]** |
+| Total stored bytes (+growth) | Platform Σ `stored_bytes` | `MediaAssetRepository.sumStoredBytesPlatform()` → `storageBytes` tile in `/overview`; per-user version via `StorageUsageService` | Area | **[EXISTS (built 2026-08)]** |
 | Dedup savings | Referrer rows with `stored_bytes = 0` | PG count | Tile | **[PARTIAL]** |
 | Top storage consumers | Per-owner SUM ranked | `sumStoredBytes(ownerId)` over top-N | Table | **[PARTIAL]** |
 
@@ -290,7 +294,7 @@ Column key — **Source** cites what computes it *today* or what will;
 | Dismiss rate | Persistent dismissals/day | Cassandra dismissal writes exist (per-user) — daily count needs events or a counter | Line | **[PLANNED]** |
 | Source mix of accepted | FoF/contacts/DM/groups/affinity/institution shares | Pipeline knows the source at serve time — carry as event prop | Stacked bar | **[PLANNED]** |
 
-## 6. The gap & the fix: unified event pipeline **[PLANNED]**
+## 6. The gap & the fix: unified event pipeline **[EXISTS (built 2026-08)]**
 
 ### 6.1 Why nothing lighter works
 
@@ -299,7 +303,7 @@ Column key — **Source** cites what computes it *today* or what will;
 - Audit log: request-grained, per-user partitions, SSE/heartbeat paths excluded, metadata-only; an ops/compliance tool, not analytics.
 - RabbitMQ: **already carries many of the right events** (`post.social.#`, `qna.#`, `research.analytics.downloaded`, `user.social.#` on `irc.topic.exchange`) but nothing durable subscribes for analytics — a head start, not a store.
 
-### 6.2 Collection — `analytics_events` (Cassandra, bucketed)
+### 6.2 Collection — `analytics_events` (Cassandra, bucketed) [EXISTS (built 2026-08) — bootstrapped by `AnalyticsEventService`]
 
 ```
 CREATE TABLE analytics_events (
@@ -321,14 +325,15 @@ CREATE TABLE analytics_events (
 
 Writers, in priority order:
 
-1. **`AnalyticsEventConsumer`** — new queue `irc.queue.analytics-events` bound
-   with pattern `#` on `irc.topic.exchange`: instantly captures every event the
-   platform already publishes, zero touch to domain code. **[PLANNED]**, transport **[EXISTS]**.
-2. **`AnalyticsEventService.record(...)`** — explicit async fire-and-forget
-   (dedicated executor, fail-open, mirroring the `AuthorAffinityService`
-   pattern) for surfaces with no RabbitMQ event today: views, searches, story
-   views, sound plays, reel watches, stream watch heartbeats, notification
-   opens, suggestion impressions, session starts.
+1. **`AnalyticsEventTapConsumer`** — queue `irc.queue.analytics-events` bound
+   with pattern `#` on `irc.topic.exchange`: captures every event the
+   platform already publishes, zero touch to domain code. **[EXISTS (built 2026-08)]**.
+2. **`AnalyticsEventService.record(...)`** — explicit fail-open one-statement
+   writer **[EXISTS (built 2026-08)]**; hooked up so far via `FunnelTracker`
+   (first-seen / profile-completed / first-follow / first-content). The wider
+   explicit-instrumentation list — views, searches, story views, sound plays,
+   reel watches, stream watch heartbeats, notification opens, suggestion
+   impressions, session starts — remains **[PLANNED]** per surface.
 
 ### 6.3 Event taxonomy (v1)
 
@@ -359,26 +364,27 @@ Writers, in priority order:
 | `suggestion.impression` / `dismiss` | user | USER | source | PYMK serve/dismiss paths |
 | `report.submit` | reporter | entity | reason | `ReportService` (volume only; triage lives in [safety-reports.md](safety-reports.md)) |
 
-### 6.4 Rollups (daily jobs) **[PLANNED]**
+### 6.4 Rollups (daily jobs) **[EXISTS (built 2026-08)]** — `AnalyticsJobs` + `MetricDailyService`
 
 | Table | Shape | Written by |
 |-------|-------|-----------|
-| `metric_daily` | PK `(metric, month)`, clustering `day`; plain `bigint value` (NOT a counter — idempotent overwrite, safe re-runs) | `DailyRollupJob`, cron `0 40 2 * * *` UTC for D-1; plus hourly today-so-far refresh of the current day |
-| `metric_daily_by_dim` | `(metric, dim, month)` → day → value (e.g. `content.created` × postType) | same |
-| `uniques_daily` | `(metric, day)` → serialized HLL sketch (DAU/WAU/MAU unions without raw re-scans) | same |
-| `user_first_events` | `user_id` PK → first_seen, profile_completed_at, first_follow_at, first_content_at (funnel §4.3) | incremental, on-event |
-| `cohort_retention_weekly` | `(cohort_week)` → week_offset → active_count | `WeeklyCohortJob`, Mondays 03:10 UTC |
-| `metric_alerts` | `(day)` → metric, z, value, mean, sd (§11) | `AnomalyScanJob` after daily rollup |
+| `analytics_metric_daily` (Cassandra) | live per-day metric counters, bumped as events happen (`MetricDailyService.bump`; sources incl. `LoginEventService`, activity hooks) | on-event |
+| `analytics_metric_rollup` (Cassandra) | PK `(metric, month)`, clustering `day`; plain `bigint value` (NOT a counter — **idempotent overwrite, safe re-runs**) | `AnalyticsJobs.dailyRollup`, cron `0 40 2 * * *` UTC for D-1 |
+| `analytics_dau_by_day` (Cassandra) | `((day), user_id)` — DAU via PK-dedup upsert (`markActive`); `distinctActiveOver(n)` unions days for WAU/MAU | on-event |
+| `user_first_events` (PG) | `user_id` PK → first_seen, profile_completed_at, first_follow_at, first_content_at (funnel §4.3) | incremental, on-event via `FunnelTracker` |
+| `cohort_retention_weekly` (PG) | `(cohort_week, week_offset)` → active_count | `AnalyticsJobs.weeklyCohorts`, Mondays 03:10 UTC |
+| `metric_alerts` (PG) | metric, day, z, value, mean, sd (§11) | `AnalyticsJobs.anomalyScan`, cron `0 55 2 * * *` UTC |
 
 Scheduler note: the shared `@Scheduled` pool is `size: 4` and already carries
 16 methods ([operations.md](operations.md)) — bump the pool or give rollups
 their own executor.
 
-### 6.5 Query API **[PLANNED]** — see §9 for the endpoint table
+### 6.5 Query API **[EXISTS (built 2026-08)]** — see §9 for the endpoint table
 
-Thin read layer over `metric_daily*` — no ad-hoc event scans from the
-dashboard, ever. Raw `analytics_events` is touched only by rollup jobs and the
-step-up-gated sample endpoint.
+Thin read layer over the rollup tables (`mergedSeries` = rollup overlaid with
+today's live counters) — no ad-hoc event scans from the dashboard, ever. Raw
+`analytics_events` is touched only by rollup jobs and the step-up-gated sample
+endpoint.
 
 ## 7. Dashboard views & widgets
 
@@ -389,8 +395,8 @@ drilldown. Status = what powers it at launch vs end-state.
 
 | # | Tile | Content | Launch source | Status |
 |---|------|---------|---------------|--------|
-| 1 | **DAU** | yesterday + WoW delta | interim Redis HLL → `uniques_daily` | **[PLANNED]** |
-| 2 | **WAU / MAU** | trailing 7d / 28d | `uniques_daily` union | **[PLANNED]** |
+| 1 | **DAU** | yesterday + WoW delta | `analytics_dau_by_day` (`dauToday` in `/overview`) | **[EXISTS (built 2026-08)]** |
+| 2 | **MAU / online-now** | 30 d distinct actives + live presence count | `mau30d` (`distinctActiveOver(30)`) + `onlineNow` tiles in `/overview` | **[EXISTS (built 2026-08)]** |
 | 3 | **Stickiness** | DAU÷MAU % | derived | **[PLANNED]** |
 | 4 | **North Star (WALC)** | weekly, WoW | §4.1 | **[PLANNED]** |
 | 5 | **New signups** | today + 7d spark | PG `users.created_at` | **[PARTIAL]** — day-1 buildable |
@@ -399,7 +405,7 @@ drilldown. Status = what powers it at launch vs end-state.
 | 8 | **Messages sent** | today, count only | `metric_daily` (`chat.message_send`) | **[PLANNED]** |
 | 9 | **Live now** | LIVE streams + Σ viewers | `GET /api/v1/streams/live` + `viewer_count` | **[EXISTS]** — day-1 buildable |
 | 10 | **Notifications delivered** | today, in-app vs email | PG `notifications` + email ledger | **[PARTIAL]** / email **[PLANNED]** |
-| 11 | **Storage footprint** | total GB + 30d growth | Σ `media_assets.stored_bytes` | **[PARTIAL]** — one query away |
+| 11 | **Storage footprint** | total GB + 30d growth | `sumStoredBytesPlatform()` → `storageBytes` in `/overview` | **[EXISTS (built 2026-08)]** |
 | 12 | **Open reports** | SUBMITTED + APPEALED count | PG `reports.state` → [safety-reports.md](safety-reports.md) | **[PARTIAL]** |
 
 Below the tiles: **Activity chart** (DAU line, 90d, compare overlay), **Content
@@ -423,19 +429,19 @@ gift leaderboard) — these are **[EXISTS]** and ship in phase A.
 | Compare period | Preceding window of equal length (28d vs prior 28d); tiles additionally show WoW same-weekday |
 | Deltas | Absolute + %, green/red only when direction is unambiguous (reports ↑ = red) |
 | Dedupe disclosure | Charts whose source dedupes (post views 7d/user, downloads 90d/user, HLL ±0.8%) carry a ⓘ footnote — the dedupe window shapes the number |
-| CSV export | Every chart/table exports the visible series: `GET /api/v1/admin/analytics/export.csv` **[PLANNED]**; UTF-8, header row, one row per (day, metric, dim) |
+| CSV export | Every chart/table exports the visible series: `GET /api/v1/admin/analytics/export?dataset=&window=` (`text/csv`) **[EXISTS (built 2026-08)]**; UTF-8, header row |
 
 ## 8. Data sources per widget (summary map)
 
 | Widget family | Reads | Store |
 |---------------|-------|-------|
-| Tiles 1–4, 7, 8 + all time-series | `metric_daily`, `uniques_daily` **[PLANNED]** | Cassandra (rollups) |
-| Tiles 5, 10, 12 + PG breakdowns | new aggregate SQL **[PARTIAL]** | Postgres |
+| Tiles 1–4, 7, 8 + all time-series | `analytics_metric_daily` / `analytics_metric_rollup` / `analytics_dau_by_day` **[EXISTS (built 2026-08)]** | Cassandra (rollups) |
+| Tiles 5, 10, 12 + PG breakdowns | aggregate SQL in `AdminAnalyticsController` **[EXISTS (built 2026-08)]** | Postgres |
 | Tile 9, live rail | `GET /api/v1/streams/live`, `live_streams` **[EXISTS]** | PG |
-| Tile 11, storage tables | `MediaAssetRepository.sumStoredBytes*` **[EXISTS per-user / PARTIAL total]** | PG |
+| Tile 11, storage tables | `MediaAssetRepository.sumStoredBytes*` **[EXISTS — per-user + `sumStoredBytesPlatform()` (built 2026-08)]** | PG |
 | Entity inspectors | `post_counters`/`CounterCache`, `UserStatsService`, `ChannelStatsService`, `GET /api/v1/streams/{id}/gifts/top`, `GET /api/v1/tags/trending` **[EXISTS]** | Cassandra/Redis/PG |
-| Funnel & retention | `user_first_events`, `cohort_retention_weekly` **[PLANNED]** | Cassandra |
-| Anomaly list | `metric_alerts` **[PLANNED]** | Cassandra |
+| Funnel & retention | `user_first_events`, `cohort_retention_weekly` **[EXISTS (built 2026-08)]** | PG |
+| Anomaly list | `metric_alerts` **[EXISTS (built 2026-08)]** | PG |
 
 ## 9. Admin actions
 
@@ -446,15 +452,17 @@ are the *additional* explicit audit actions.
 
 | Action | Endpoint | Params | Danger | Step-up | Audit action |
 |--------|----------|--------|--------|---------|--------------|
-| Overview snapshot | `GET /api/v1/admin/analytics/overview` **[PLANNED]** | `date?` | Low | No | — (interceptor READ) |
-| Metric series | `GET /api/v1/admin/analytics/series` **[PLANNED]** | `metric, dim?, from, to, interval=day\|week` | Low | No | — |
-| Funnel | `GET /api/v1/admin/analytics/funnel` **[PLANNED]** | `cohort=YYYY-MM` | Low | No | — |
-| Retention grid | `GET /api/v1/admin/analytics/retention` **[PLANNED]** | `weeks=12` | Low | No | — |
-| CSV export | `GET /api/v1/admin/analytics/export.csv` **[PLANNED]** | `metric, from, to` | Medium (bulk egress) | No | `ANALYTICS_EXPORTED` |
-| Re-run a rollup day | `POST /api/v1/admin/analytics/rollup/{date}/run` **[PLANNED]** | path date; idempotent (plain-column overwrite §6.4) | Medium | No | `ANALYTICS_ROLLUP_RERUN` |
-| Backfill from PG sources | `POST /api/v1/admin/analytics/backfill` **[PLANNED]** | `source, from, to` | Medium (long-running; PG load) | No | `ANALYTICS_BACKFILL` |
-| Sample raw events | `GET /api/v1/admin/analytics/events/sample` **[PLANNED]** | `type, day, limit≤100` | **High** (individual behavioral traces) | **Yes** | `ANALYTICS_RAW_ACCESS` |
-| Configure alert thresholds | `PUT /api/v1/admin/analytics/alerts/{metric}` **[PLANNED]** | zWarn, zAlert, minVolume, enabled | Low | No | `ANALYTICS_ALERT_CONFIG` |
+| Overview snapshot | `GET /api/v1/admin/analytics/overview` **[EXISTS (built 2026-08)]** — incl. `dauToday`, `mau30d`, `onlineNow`, `storageBytes` tiles | — | Low | No | — (interceptor READ) |
+| Content / engagement / trending breakdowns | `GET /api/v1/admin/analytics/{content,engagement,trending}` **[EXISTS (built 2026-08)]** | `days?` | Low | No | — |
+| Metric series | `GET /api/v1/admin/analytics/series` **[EXISTS (built 2026-08)]** — rollup merged over live counters | `metric, window=30` | Low | No | — |
+| Funnel | `GET /api/v1/admin/analytics/funnel` **[EXISTS (built 2026-08)]** | `cohort=YYYY-MM` | Low | No | — |
+| Retention grid | `GET /api/v1/admin/analytics/retention` **[EXISTS (built 2026-08)]** | `weeks=12` (≤26) | Low | No | — |
+| CSV export | `GET /api/v1/admin/analytics/export` (`text/csv`) **[EXISTS (built 2026-08)]** | `dataset, window` | Medium (bulk egress) | No | `ANALYTICS_EXPORTED` |
+| Re-run a rollup day | `POST /api/v1/admin/analytics/rollup/{date}/run` **[EXISTS (built 2026-08)]** | path date; idempotent (plain-column overwrite §6.4) | Medium | No | `ANALYTICS_ROLLUP_RERUN` |
+| Backfill from PG sources | `POST /api/v1/admin/analytics/backfill` **[EXISTS (built 2026-08)]** | `source, from, to` | Medium (long-running; PG load) | No | `ANALYTICS_BACKFILL` |
+| Sample raw events | `GET /api/v1/admin/analytics/events/sample` **[EXISTS (built 2026-08)]** | `type, day, limit≤100` | **High** (individual behavioral traces) | **Yes** (`@RequiresStepUp`) | `ANALYTICS_RAW_ACCESS` |
+| Read / configure alert thresholds | `GET /api/v1/admin/analytics/alerts-config` + `PUT /api/v1/admin/analytics/alerts/{metric}` **[EXISTS (built 2026-08)]** (`analytics_alert_config`) | zWarn, zAlert, minVolume, enabled | Low | No | `ANALYTICS_ALERT_CONFIG` |
+| Anomaly feed | `GET /api/v1/admin/analytics/anomalies` **[EXISTS (built 2026-08)]** | `days?` | Low | No | — |
 
 Existing endpoints the section reuses without change: 7 reindexes
 (`SearchAdminController`) stay in [search-feed-trending.md](search-feed-trending.md);
@@ -469,15 +477,15 @@ surfaces these read-only views:
 
 | Log | Use here | Status |
 |-----|----------|--------|
-| `analytics_events` (sampled, step-up) | Taxonomy debugging, instrumentation verification | **[PLANNED]** |
+| `analytics_events` (sampled, step-up) | Taxonomy debugging, instrumentation verification — `GET …/events/sample`, audited `ANALYTICS_RAW_ACCESS` | **[EXISTS (built 2026-08)]** |
 | `research_downloads` (PG) / `research_downloads_by_research` (Cassandra) | Download drilldown per research | **[EXISTS]** (repo reads; no admin endpoint yet → [research-qna.md](research-qna.md)) |
 | `audit_log_by_user.duration_ms` | Per-user request latency in the user inspector (not aggregated) | **[EXISTS]** via `GET /api/v1/admin/audit` |
-| `login_events` | Login outcome series once the writer is wired | **[PARTIAL]** (empty today) |
+| `login_events` | Login outcome series (writer wired from `AuthServiceImpl`; served via `/engagement`) | **[EXISTS (built 2026-08)]** |
 | `activity_by_user` | **Explicitly NOT surfaced** — per-user private history; admins never browse it (§12) | — |
 
-## 11. Alerts & thresholds — anomaly detection **[PLANNED]**
+## 11. Alerts & thresholds — anomaly detection **[EXISTS (built 2026-08)]**
 
-`AnomalyScanJob` runs after the daily rollup (cron `0 55 2 * * *` UTC):
+`AnalyticsJobs.anomalyScan` runs after the daily rollup (cron `0 55 2 * * *` UTC):
 
 | Rule | Definition |
 |------|------------|
@@ -486,8 +494,8 @@ surfaces these read-only views:
 | Alert | \|z\| ≥ **3.5**, or metric = 0 where μ ≥ 50 (pipeline-dead detector) |
 | Noise floor | Skip metrics with μ < 50/day (small numbers make meaningless z) |
 | Weekly seasonality | Optional per-metric mode: baseline over trailing 8 same-weekdays instead of 28 days (default ON for signups, content, DAU) |
-| Delivery | Row in `metric_alerts` + system notification to all ADMINs (new `NotificationType.ADMIN_ANOMALY` — **remember the `EmailTemplate.actionVerb` switch is exhaustive**: new type needs a case) + Overview "Recent anomalies" list |
-| Defaults reviewable | Thresholds per metric editable via `PUT .../alerts/{metric}` (§9) |
+| Delivery | Row in `metric_alerts` + system notification **and email** to all ADMINs via `NotificationType.ADMIN_ANOMALY` (built 2026-08, incl. its `EmailTemplate.actionVerb` case) + `GET …/anomalies` feed |
+| Defaults reviewable | Thresholds per metric stored in `analytics_alert_config`, editable via `PUT .../alerts/{metric}` / read via `GET .../alerts-config` (§9) |
 
 Suggested initial watchlist: DAU, signups, content.created, engagement.actions,
 chat.messages, notifications.delivered, media.upload_failures, reports.submitted,
@@ -509,9 +517,21 @@ to [operations.md](operations.md).
 
 ## 13. Build order / dependencies
 
+> **Status (built 2026-08):** phases 0–D are substantially shipped —
+> `login_events` is wired from `AuthServiceImpl` (phase 0), the platform
+> `stored_bytes` SUM exists (`sumStoredBytesPlatform`), the phase-A aggregate
+> endpoints live in `AdminAnalyticsController`, collection runs via
+> `analytics_events` + `AnalyticsEventTapConsumer` (`#` tap) + `FunnelTracker`
+> hooks (phase B; the wider per-surface explicit instrumentation of §6.2
+> writer 2 remains open), rollups + query API are live
+> (`AnalyticsJobs`, `analytics_metric_rollup`, §9 endpoints — phase C), and
+> funnel/retention/anomaly-scan + CSV export shipped (phase D). Still open:
+> the WALC North-Star composite (§4.1) and any §5 rows still tagged
+> [PLANNED].
+
 | Phase | Work | Depends on | Delivers |
 |-------|------|-----------|----------|
-| **0 — prerequisites (days)** | Wire `LoginEventService` into `AuthServiceImpl` (writer has zero callers today); add interim DAU Redis HLL (`analytics:dau:{day}` PFADD in the auth filter, 40-day expiry); write the platform-total `stored_bytes` SUM query | — | Login series starts accruing; approximate DAU from day 1 |
+| **0 — prerequisites (days)** | Wire `LoginEventService` into `AuthServiceImpl` — **done (built 2026-08)**; DAU via `analytics_dau_by_day` (superseded the interim Redis-HLL idea); platform-total `stored_bytes` SUM — **done** (`sumStoredBytesPlatform`) | — | Login series accruing; DAU from day 1 |
 | **A — read-only over existing data (week 1-2)** | Aggregate SQL endpoints for every **[PARTIAL]** row in §5 (signups, research, QnA, chat metadata, live sessions, gifts, media, notifications, reports); `reels_by_day` count; Overview tiles 5, 9, 11, 12 + drilldown skeletons; entity inspectors from existing point reads | Phase 0 | A useful dashboard with zero new collection risk |
 | **B — collection (week 3-5)** | `analytics_events` table; `AnalyticsEventConsumer` on `irc.queue.analytics-events` bound `#` to `irc.topic.exchange` (captures all existing post/qna/research/user events immediately); `AnalyticsEventService` + explicit instrumentation for views, searches, story views, sound plays, reel watches, stream heartbeats, notification opens, suggestion impressions | A | Events accruing for every surface incl. the three recon call-outs: sound plays, story views, stream watch-time |
 | **C — rollups + query API (week 5-7)** | `DailyRollupJob`, `metric_daily*`, `uniques_daily`, `user_first_events`; query API of §9; Overview tiles 1-4, 6-8, 10 complete; **bump `spring.task.scheduling.pool.size`** (16 methods already share 4 threads) | B (≥1 week of events) | Real DAU/WAU/MAU, stickiness, all daily series |

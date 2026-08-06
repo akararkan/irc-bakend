@@ -49,4 +49,14 @@ public interface UserRestrictionRepository
         """)
     java.util.List<UUID> findRestrictedAmong(@Param("userId") UUID userId,
                                              @Param("candidateIds") java.util.Collection<UUID> candidateIds);
+
+    @Query(value = "SELECT COUNT(*) FROM user_restrictions", nativeQuery = true)
+    long countAllRestrictions();
+
+    @Query(value = """
+            SELECT CAST(date_trunc('day', r.restricted_at) AS date), COUNT(*)
+            FROM user_restrictions r WHERE r.restricted_at >= :from
+            GROUP BY 1 ORDER BY 1
+            """, nativeQuery = true)
+    java.util.List<Object[]> restrictionsPerDay(@Param("from") java.time.LocalDateTime from);
 }

@@ -113,6 +113,7 @@ public class NotificationEventConsumer {
         private final ApplicationEventPublisher eventPublisher;
         private final UserActivityService    userActivityService;
         private final ak.dev.irc.app.user.service.NotificationDispatcher dispatcher;
+        private final ak.dev.irc.app.admin.analytics.FunnelTracker funnelTracker;
         /** Mixed-feed fanout target — research/qna ride the same feed_by_user table as posts. */
         private final ak.dev.irc.app.post.cassandra.service.FeedTimelineService feedTimelineService;
 
@@ -125,6 +126,8 @@ public class NotificationEventConsumer {
     public void onUserFollowed(UserFollowedEvent event) {
         log.info("[CONSUMER] UserFollowed — actor={} ({}) → target={}",
                 event.actorId(), event.actorUsername(), event.targetId());
+
+        funnelTracker.markFirstFollow(event.actorId());
 
         Optional<User> actorOpt  = userRepo.findActiveById(event.actorId());
         Optional<User> targetOpt = userRepo.findActiveById(event.targetId());
@@ -1255,5 +1258,57 @@ public class NotificationEventConsumer {
             log.warn("[ACTIVITY] failed to record research comment reaction (commentId={}, userId={}): {}",
                     event.commentId(), event.reactorId(), e.getMessage());
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Sound — moderation outcomes (uploader notifications)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** The previously-dead SoundApprovedEvent, finally consumed. */
+    @RabbitHandler
+    @Transactional
+    public void onSoundApproved(ak.dev.irc.app.rabbitmq.event.post.SoundApprovedEvent event) {
+        log.info("[CONSUMER] SoundApproved — soundId={} uploaderId={}",
+                event.getSoundId(), event.getUploaderId());
+        if (event.getUploaderId() == null) return;
+        userRepo.findActiveById(event.getUploaderId()).ifPresent(uploader -> {
+            Notification notification = Notification.builder()
+                    .user(uploader)
+                    .type(NotificationType.SOUND_APPROVED)
+                    .title("Your sound was approved")
+                    .body("\"" + safeTitle(event.getSoundTitle())
+                            + "\" is now live in the sound library.")
+                    .resourceId(event.getSoundId())
+                    .resourceType("Sound")
+                    .build();
+            dispatcher.dispatch(notification);
+        });
+    }
+
+    @RabbitHandler
+    @Transactional
+    public void onSoundRejected(ak.dev.irc.app.rabbitmq.event.post.SoundRejectedEvent event) {
+        log.info("[CONSUMER] SoundRejected — soundId={} uploaderId={}",
+                event.getSoundId(), event.getUploaderId());
+        if (event.getUploaderId() == null) return;
+        userRepo.findActiveById(event.getUploaderId()).ifPresent(uploader -> {
+            String reason = event.getReason() == null || event.getReason().isBlank()
+                    ? "" : " Reason: " + event.getReason() + ".";
+            Notification notification = Notification.builder()
+                    .user(uploader)
+                    .type(NotificationType.SOUND_REJECTED)
+                    .title("Your sound was not approved")
+                    .body("\"" + safeTitle(event.getSoundTitle())
+                            + "\" was reviewed and not approved for the sound library." + reason)
+                    .resourceId(event.getSoundId())
+                    .resourceType("Sound")
+                    .build();
+            dispatcher.dispatch(notification);
+        });
+    }
+
+    private static String safeTitle(String title) {
+        if (title == null || title.isBlank()) return "Untitled sound";
+        return title.length() > 80 ? title.substring(0, 80) + "…" : title;
     }
 }

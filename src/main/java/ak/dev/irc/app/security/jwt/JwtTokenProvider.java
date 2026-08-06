@@ -79,9 +79,22 @@ public class JwtTokenProvider {
     // ══════════════════════════════════════════════════════════════════════════
 
     public String generateAccessToken(User user) {
+        return generateAccessToken(user, null);
+    }
+
+    /**
+     * Access token bound to a session id ({@code sid} claim). The sid matches
+     * the persisted refresh-token row, so a revoked session can be rejected
+     * mid-lifetime via the {@code sid:denied:*} denylist — closing the seam
+     * where a killed session's access JWT stayed valid until expiry.
+     */
+    public String generateAccessToken(User user, UUID sid) {
         log.debug("Generating access token for user [{}] ({})", user.getId(), user.getEmail());
 
         Map<String, Object> claims = buildClaims(user, "ACCESS");
+        if (sid != null) {
+            claims.put("sid", sid.toString());
+        }
 
         return Jwts.builder()
                 .claims(claims)
@@ -89,6 +102,34 @@ public class JwtTokenProvider {
                 .issuer(issuer)
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + accessTokenExpirationMs))
+                .signWith(signingKey, Jwts.SIG.HS256)
+                .compact();
+    }
+
+    /**
+     * Mints a short-TTL read-only impersonation token: subject = target user,
+     * {@code act} = the admin who initiated it. Carries only the synthetic
+     * {@code ROLE_IMPERSONATED_READ} authority — never the target's roles —
+     * and a {@code sid} so it is revocable via the session denylist.
+     */
+    public String generateImpersonationToken(User admin, User target, UUID sid, long ttlMs) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("email",       target.getEmail());
+        claims.put("username",    target.getUsername());
+        claims.put("fullName",    target.getFullName());
+        claims.put("role",        target.getRole().name());
+        claims.put("tokenType",   "IMPERSONATION");
+        claims.put("act",         admin.getId().toString());
+        claims.put("actUsername", admin.getUsername());
+        claims.put("sid",         sid.toString());
+        claims.put("authorities", List.of("ROLE_IMPERSONATED_READ"));
+
+        return Jwts.builder()
+                .claims(claims)
+                .subject(target.getId().toString())
+                .issuer(issuer)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + ttlMs))
                 .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
     }
@@ -144,6 +185,22 @@ public class JwtTokenProvider {
 
     public String getTokenType(String token) {
         return parseClaims(token).get("tokenType", String.class);
+    }
+
+    /** Session id claim, or {@code null} for tokens minted before sid binding. */
+    public UUID getSidFromToken(String token) {
+        String sid = parseClaims(token).get("sid", String.class);
+        return sid == null ? null : UUID.fromString(sid);
+    }
+
+    /** Impersonating admin id ({@code act} claim), or {@code null} for normal tokens. */
+    public UUID getActorIdFromToken(String token) {
+        String act = parseClaims(token).get("act", String.class);
+        return act == null ? null : UUID.fromString(act);
+    }
+
+    public String getActorUsernameFromToken(String token) {
+        return parseClaims(token).get("actUsername", String.class);
     }
 
     public Date getExpirationFromToken(String token) {

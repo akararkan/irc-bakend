@@ -24,4 +24,12 @@ public class Topic {
 
     @Column(name = "name_ckb", nullable = false, length = 150)
     private String nameCkb;
+
+    /**
+     * Soft-retire marker (knowledge-vocabulary.md §5): a retired row leaves
+     * the pickers but stays resolvable by id, so existing profile references
+     * never orphan. Hard delete is deliberately not offered.
+     */
+    @Column(name = "archived_at")
+    private java.time.LocalDateTime archivedAt;
 }

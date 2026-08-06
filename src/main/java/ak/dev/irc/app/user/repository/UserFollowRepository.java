@@ -53,9 +53,11 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         """)
     Page<UserFollow> findFollowing(@Param("userId") UUID userId, Pageable pageable);
 
-    long countByFollowingId(UUID userId);
+    @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.following.id = :userId")
+    long countByFollowingId(@Param("userId") UUID userId);
 
-    long countByFollowerId(UUID userId);
+    @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.follower.id = :userId")
+    long countByFollowerId(@Param("userId") UUID userId);
 
     @Query("""
         SELECT COUNT(uf) > 0 FROM UserFollow uf

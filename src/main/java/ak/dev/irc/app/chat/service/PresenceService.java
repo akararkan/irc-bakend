@@ -64,6 +64,23 @@ public class PresenceService {
         }
     }
 
+    /** Online-now count for the admin overview tile — a bounded SCAN over the
+     *  30s-TTL presence keys (users-roles.md §6 proxy). Capped at 100k keys. */
+    public long onlineNowCount() {
+        long count = 0;
+        try (var cursor = redis.scan(org.springframework.data.redis.core.ScanOptions
+                .scanOptions().match(PRESENCE_PREFIX + "*").count(1000).build())) {
+            while (cursor.hasNext() && count < 100_000) {
+                cursor.next();
+                count++;
+            }
+        } catch (Exception e) {
+            log.debug("[PRESENCE] online-now scan failed: {}", e.getMessage());
+            return -1;   // sentinel: Redis unreachable, not "zero users online"
+        }
+        return count;
+    }
+
     /** The online subset of a batch — one MGET instead of a per-user round-trip. */
     public java.util.Set<UUID> onlineAmong(Collection<UUID> userIds) {
         if (userIds == null || userIds.isEmpty()) return java.util.Set.of();

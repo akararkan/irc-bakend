@@ -52,6 +52,7 @@ public class CassandraPostService {
 
     private final PostByIdRepository       postByIdRepo;
     private final PostByAuthorRepository   postByAuthorRepo;
+    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
     /** Bounded shared pool (AsyncConfig) — runs the post-delete cascade off the request thread. */
     private final ThreadPoolTaskExecutor   taskExecutor;
     private final ReelsByDayRepository     reelsByDayRepo;
@@ -84,9 +85,16 @@ public class CassandraPostService {
      * a copy. The returned entity is the canonical posts_by_id row.
      */
     public PostByIdEntity createPost(CreatePostCommand cmd) {
+        // Platform keyword blocklist: BLOCK severity rejects here; FLAG lets
+        // the post publish and drops a moderation-queue hit below.
+        String flaggedKeyword = platformKeywords.blockOrFlag(cmd.textContent());
+
         UUID    id        = UUID.randomUUID();
         Instant now       = Instant.now();
         String  preview   = preview(cmd.textContent());
+        if (flaggedKeyword != null) {
+            platformKeywords.recordHit("POST", id.toString(), cmd.authorId(), flaggedKeyword);
+        }
         // For reels, prefer the VIDEO-typed URL so feed rows always point to playable media.
         // For other post types, the first URL (typically the cover image) is correct.
         String  coverMedia = "REEL".equals(cmd.postType())

@@ -111,6 +111,11 @@ public class StoryTrayRealtimeService {
      * which leaked a JVM thread per SSE client (10k users → 10k threads → OOM).
      * Dead emitters are removed inline so a single bad connection can't accumulate.
      */
+    /** Connected tray viewers — ops SSE fleet visibility (operations.md §6.2). */
+    public int viewerCount() {
+        return sessions.size();
+    }
+
     @Scheduled(fixedDelay = HEARTBEAT_MS)
     public void heartbeat() {
         if (sessions.isEmpty()) return;

@@ -57,8 +57,6 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
     Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(
             @Param("researchId") UUID researchId, Pageable pageable);
 
-    long countByResearchIdAndDeletedAtIsNull(UUID researchId);
-
     // ── Comment likes (junction table managed via native queries) ─────────────
 
     @Query(value = """

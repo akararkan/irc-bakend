@@ -69,4 +69,23 @@ public interface UserBlockRepository extends JpaRepository<UserBlock, UserBlockI
         """)
     List<UUID> findBlockedAmong(@Param("userId") UUID userId,
                                 @Param("candidateIds") Collection<UUID> candidateIds);
+
+    // ── Admin aggregates (safety-reports.md §3.7) — population stats only ──
+
+    @Query(value = """
+            SELECT CAST(date_trunc('day', b.created_at) AS date), COUNT(*)
+            FROM user_blocks b WHERE b.created_at >= :from
+            GROUP BY 1 ORDER BY 1
+            """, nativeQuery = true)
+    List<Object[]> blocksPerDay(@Param("from") java.time.LocalDateTime from);
+
+    /** Most-blocked users — a strong abuse signal needing no report to exist. */
+    @Query(value = """
+            SELECT b.blocked_id, COUNT(*) AS n FROM user_blocks b
+            GROUP BY b.blocked_id ORDER BY n DESC LIMIT :limit
+            """, nativeQuery = true)
+    List<Object[]> topBlockedUsers(@Param("limit") int limit);
+
+    @Query(value = "SELECT COUNT(*) FROM user_blocks", nativeQuery = true)
+    long countAllBlocks();
 }

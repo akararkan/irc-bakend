@@ -71,11 +71,13 @@ public class CassandraCommentService {
     private final DedupGuard                   dedupGuard;
     private final ak.dev.irc.app.common.service.MentionService mentionService;
     private final AuthorAffinityService        affinityService;
+    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
 
     // ── Create top-level comment ─────────────────────────────────────────────
 
     public CommentByPostEntity createComment(UUID postId, UUID authorId,
                                              String text, String mediaUrl, String mediaType) {
+        String flaggedKeyword = platformKeywords.blockOrFlag(text);
         if (dedupGuard.isDuplicate("post-comment", postId, authorId, text)) {
             log.debug("[COMMENT] dedup hit — author={} post={} skipping duplicate", authorId, postId);
             CommentByPostEntity existing = mostRecentMatchingComment(postId, authorId, text);
@@ -84,6 +86,9 @@ public class CassandraCommentService {
 
         UUID    commentId = UUID.randomUUID();
         Instant now       = Instant.now();
+        if (flaggedKeyword != null) {
+            platformKeywords.recordHit("COMMENT", commentId.toString(), authorId, flaggedKeyword);
+        }
 
         CommentByPostEntity row = CommentByPostEntity.builder()
                 .postId(postId).createdAt(now).commentId(commentId)
@@ -111,6 +116,10 @@ public class CassandraCommentService {
 
     public ReplyByCommentEntity replyTo(UUID targetCommentId, UUID authorId,
                                         String text, String mediaUrl) {
+        String flaggedKeyword = platformKeywords.blockOrFlag(text);
+        if (flaggedKeyword != null) {
+            platformKeywords.recordHit("COMMENT", targetCommentId.toString(), authorId, flaggedKeyword);
+        }
         CommentLookupEntity target = lookupRepo.findById(targetCommentId).orElse(null);
         if (target == null) {
             throw new IllegalArgumentException("Comment not found: " + targetCommentId);

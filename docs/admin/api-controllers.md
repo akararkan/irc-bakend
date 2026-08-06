@@ -36,15 +36,18 @@ Key facts the build must respect:
 
 - **The kill-switch.** `SecurityConfig` is `@ConditionalOnProperty(app.security.permit-all=false, matchIfMissing=true)` with `@EnableMethodSecurity`. When `app.security.permit-all=true` (env `SECURITY_PERMIT_ALL`), method security is **off** and the prefix matcher is **skipped** — a local-only escape hatch. In prod this flag being true is a critical alert ([operations.md](operations.md), [admin-api-blueprint.md](admin-api-blueprint.md) §7). Default (`false`/absent) = fully locked.
 - **`anyRequest().permitAll()`** — the chain is otherwise permissive; per-endpoint auth outside the admin prefix is enforced by `@PreAuthorize` / manual principal checks on each controller, **not** by the chain. So a new admin route **must** sit under `/api/v1/admin/**` to inherit the prefix gate.
-- **Phantom roles.** `hasAnyRole('ADMIN','SUPER_ADMIN')` (AuditLogController) and `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')` (sound approve) reference roles that **do not exist** — `Role` defines only `USER / RESEARCHER / SCHOLAR / ADMIN` (`user/enums/Role`). Those extra branches can never match; they are inert today and must be normalized to `ADMIN` (or a real widened RBAC) when touched. Never render `SUPER_ADMIN`/`MODERATOR` as grantable.
+- **Phantom roles — normalized (built 2026-08).** `AuditLogController` and the sound-approve stray are now plain `hasRole('ADMIN')`, and `Role` has since widened to seven values (`MODERATOR`/`SUPPORT`/`ANALYST` staff tiers are live and used in per-section admin grants). `SUPER_ADMIN` remains phantom — residual `hasAnyRole(…,'SUPER_ADMIN')` grants linger outside the admin surface in `research/controller/ResearchController`; never render `SUPER_ADMIN` as grantable.
 - **STATELESS + JWT.** No sessions/CSRF/formLogin; the JWT filter populates the security context, so `@PreAuthorize` sees the authorities from `User.getAuthorities()`.
 
 ---
 
 ## 2. Existing admin controllers (the real surface)
 
-Four controllers serve routes under `/api/v1/admin/**` today. That is the **entire**
-admin API in code.
+Four controllers originally served routes under `/api/v1/admin/**`. Since the 2026-08
+build, **~29 admin controllers serve well over 100 endpoints** under the prefix — the
+`admin/**` package (§6) plus the extended `AdminUserController`, `TagAdminController`,
+`AuditLogController`, `SearchAdminController` and the new `AdminSearchOpsController`.
+The four founding controllers are detailed below.
 
 ### 2.1 `AdminUserController` **[EXISTS]**
 
@@ -55,13 +58,15 @@ admin API in code.
 |--------|------|------|------|---------|---------|
 | `PATCH` | `/{userId}/role` | `@PreAuthorize("hasRole('ADMIN')")` | `AdminChangeRoleRequest` `{ role: Role (@NotNull), reason?: String (≤500) }` | `UserResponse` | `adminUserService.changeRole(userId, req)` |
 
-- **The only admin user mutation that exists.** Promote/demote along the 4-role
+- **Now one of ~30 mappings on this controller** (built 2026-08: create/bulk/invite/edit,
+  credentials, disable/enable/lock/unlock, sessions, deletion/purge, strikes,
+  bulk-action, impersonation). Promote/demote along the 7-role
   ladder; the auto-derived badge updates on next read. Users can't self-promote.
 - A now-removed `/account-type` endpoint (+ `AdminChangeAccountTypeRequest`) was
   retired with the AccountType/VerificationTier cleanup — role is the only knob.
 - `reason` is captured in the user's **entity audit** (`BaseAuditEntity.audit`,
   "Role X → Y (reason)"), not the Cassandra business-audit (see §5).
-- **This is the class the full add-users & full-control surface extends** — see
+- **This is the class the full add-users & full-control surface extended** — see
   [user-administration.md](user-administration.md) and §6.1 below.
 
 ### 2.2 `SearchAdminController` **[EXISTS]**
@@ -111,8 +116,8 @@ a `?drop=` toggle (default `true`).
 ### 2.4 `AuditLogController` **[EXISTS]**
 
 `audit/controller/AuditLogController` · base `/api/v1/admin/audit` · **class-level**
-`@PreAuthorize("hasAnyRole('ADMIN','SUPER_ADMIN')")` (the `SUPER_ADMIN` branch is
-phantom, §1).
+`@PreAuthorize("hasRole('ADMIN')")` (the historical phantom `SUPER_ADMIN` branch was
+normalized away in 2026-08, §1).
 
 | Method | Path | Params | Returns | Notes |
 |--------|------|--------|---------|-------|
@@ -135,23 +140,25 @@ phantom, §1).
 | `AdminUserController` | `/api/v1/admin/users` | 1 (role change) | method `hasRole('ADMIN')` |
 | `SearchAdminController` | `/api/v1/admin/search` | 7 (reindexes) | method `hasRole('ADMIN')` ×7 |
 | `TagAdminController` | `/api/v1/admin/tags` | 1 (backfill) | method `hasRole('ADMIN')` |
-| `AuditLogController` | `/api/v1/admin/audit` | 3 (search, user history, SSE) | **class** `hasAnyRole('ADMIN','SUPER_ADMIN')` |
+| `AuditLogController` | `/api/v1/admin/audit` | 3 (search, user history, SSE) | **class** `hasRole('ADMIN')` |
 
-**12 real admin endpoints across 4 controllers.** Everything else in the admin docs
-is a proposed controller (§6) over data/services that already exist.
+**12 endpoints across these 4 founding controllers — historically the entire surface.**
+The 2026-08 build shipped the §6 controller map: ~29 controllers, well over 100
+endpoints under `/api/v1/admin/**`.
 
 ---
 
 ## 4. Stray admin-power endpoints (outside `/api/v1/admin/**`)
 
 Two routes carry admin-only power but live under a **feature** prefix, so they miss
-the chain-level prefix gate and lean on `@PreAuthorize` alone. Both should be
-re-homed (or aliased) under the admin prefix and normalized off the phantom roles.
+the chain-level prefix gate and lean on `@PreAuthorize` alone. Both were aliased
+under the admin prefix and deprecated in place (built 2026-08): each stray now returns
+`Deprecation` + successor-version `Link` headers and was normalized off the phantom roles.
 
 | Endpoint | Controller | Auth | Concern |
 |----------|-----------|------|---------|
-| `POST /api/v1/sounds/{id}/approve` | `post/cassandra/controller/CassandraSoundController` (base `/api/v1/sounds`) | `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')` | outside prefix; **two phantom roles**; approve is the only `SoundStatus` transition wired. Re-home → `POST /api/v1/admin/sounds/{id}/approve` ([sound-library.md](sound-library.md) §6, [blueprint §3.3](admin-api-blueprint.md)) |
-| `PUT /api/v1/channels/{id}/verified?verified=` | `chat/controller/ChannelController` (base `/api/v1`) | `hasRole('ADMIN')` | outside prefix (clean role, at least). Returns `ChannelResponse`; delegates `channelService.setVerified(id, verified)`. Consider aliasing under the admin prefix ([chat-channels-live.md](chat-channels-live.md), [blueprint §3.5](admin-api-blueprint.md)) |
+| `POST /api/v1/sounds/{id}/approve` | `post/cassandra/controller/CassandraSoundController` (base `/api/v1/sounds`) | `hasRole('ADMIN')` (normalized 2026-08) + `@Deprecated` | outside prefix; deprecated with `Deprecation`/`Link` successor headers → `POST /api/v1/admin/sounds/{id}/approve` **[EXISTS]** (built 2026-08; [sound-library.md](sound-library.md) §6, [blueprint §3.3](admin-api-blueprint.md)) |
+| `PUT /api/v1/channels/{id}/verified?verified=` | `chat/controller/ChannelController` (base `/api/v1`) | `hasRole('ADMIN')` | outside prefix (clean role, at least). Returns `ChannelResponse`; delegates `channelService.setVerified(id, verified)`. Aliased 2026-08 → `PATCH /api/v1/admin/channels/{id}/verified` (`AdminChannelController`); stray deprecated with successor `Link` ([chat-channels-live.md](chat-channels-live.md), [blueprint §3.5](admin-api-blueprint.md)) |
 
 The blueprint's **stray-endpoint regression** guardrail ([§7](admin-api-blueprint.md))
 is exactly for these: an arch-test that fails the build if an ADMIN-annotated route
@@ -167,7 +174,7 @@ Two systems, both **[EXISTS]**, plus one wiring gap:
 |--------|------------------|--------|
 | **HTTP auto-audit** | `audit/web/AuditLoggingInterceptor` writes `audit_log_by_user` + `audit_log_by_resource` (Cassandra, 180-day TTL) for **every** authenticated `/api/**` request, then broadcasts on the SSE audit stream via `AuditRealtimeService`. | **[EXISTS]** — so every admin call is captured as "method + path + status + duration" with **zero** controller code. This is the "interceptor" audit-action in the blueprint tables. |
 | **Entity audit** | `BaseAuditEntity.audit(action, note)` + `AuditingEntityListener` stamp `created_by/updated_by/*_ip/*_device/last_action/action_note` on the row. Role change uses it ("Role X → Y"). | **[EXISTS]** |
-| **Business audit helper** | `AuditLogService.record(adminId, username, operation, resourceType, resourceId, summary)` — the "record *this* named business action with a meaningful summary" call. | ⚠️ **[EXISTS but ZERO callers].** The named `ADMIN_*` audit actions in the blueprint depend on wiring this into each mutating handler; the auto-interceptor only knows "PATCH /role 200", not "promoted to ADMIN because X". Wiring it is a build deliverable. |
+| **Business audit helper** | `AuditLogService.record(adminId, username, operation, resourceType, resourceId, summary)` — the "record *this* named business action with a meaningful summary" call. | **[EXISTS]** (built 2026-08) — funneled through `admin/support/AdminAuditor`, injected across the admin controllers/services; every admin mutation writes its named `ADMIN_*` row. |
 
 **Convention for new controllers:** a read endpoint relies on the interceptor; a
 **mutation** endpoint additionally calls `AuditLogService.record(...)` with the exact
@@ -175,7 +182,7 @@ Two systems, both **[EXISTS]**, plus one wiring gap:
 
 ---
 
-## 6. Proposed controller layout (the build map)
+## 6. Controller layout (the build map — built 2026-08)
 
 One `@RestController` per admin domain, each mounted under `/api/v1/admin/**`, each
 class-annotated `@PreAuthorize("hasRole('ADMIN')")`, each delegating to existing
@@ -184,27 +191,27 @@ so a builder can go section → controller → methods.
 
 | Proposed controller | Base path | Blueprint § | Doc | Status | Reuses (key services) |
 |---------------------|-----------|-------------|-----|--------|-----------------------|
-| `AdminUserController` *(extend the existing class)* | `/api/v1/admin/users` | 3.1 | [user-administration.md](user-administration.md), [users-roles.md](users-roles.md) | **[EXISTS]** +extend | `provision(...)` (ex-`AuthServiceImpl.register`), `AccountLifecycleService`, `RefreshTokenRepository`, `TwoFactorService`, `StrikeService`, `StepUpService` |
-| `AdminContentController` | `/api/v1/admin/content` | 3.2 | [content-moderation.md](content-moderation.md) | **[PLANNED]** | `CassandraPostService`, `CassandraCommentService`, `CassandraStoryService`, `PostHydrator` |
-| `AdminSoundController` | `/api/v1/admin/sounds` | 3.3 | [sound-library.md](sound-library.md) | **[PLANNED]** (+ re-home the stray approve) | `CassandraSoundService` |
-| `AdminResearchController` · `AdminQnaController` | `/api/v1/admin/research` · `/api/v1/admin/qna` | 3.4 | [research-qna.md](research-qna.md) | **[PLANNED]** | `ResearchServiceImpl`/`QuestionServiceImpl` (already have an ADMIN ownership bypass to expose+audit) |
-| `AdminTagController` *(extend `TagAdminController`)* | `/api/v1/admin/tags` | 3.4 | [research-qna.md](research-qna.md) | **[EXISTS]** +extend | `ContentTagService`, trending suppression (new) |
-| `AdminChatController` · `AdminStreamController` | `/api/v1/admin/chat` · `/api/v1/admin/streams` | 3.5 | [chat-channels-live.md](chat-channels-live.md) | **[PLANNED]** (+ re-home channel-verify) | `ChannelService`, `LiveStreamService`, `StreamStageService`, `MediaControlClient` — **metadata only, never message content** |
-| `AdminSafetyController` | `/api/v1/admin/safety` | 3.6 | [safety-reports.md](safety-reports.md) | **[PLANNED]** | `StrikeService` (first caller!), report/restriction repos |
-| `AdminMediaController` | `/api/v1/admin/media` | 3.7 | [media-storage.md](media-storage.md) | **[PLANNED]** | `StorageUsageService`, media pipeline repos |
-| `AdminNotificationController` | `/api/v1/admin/notifications` | 3.8 | [notifications-email.md](notifications-email.md) | **[PLANNED]** | notification services + the announcement composer (new) |
-| `SearchAdminController` *(exists)* · `AdminFeedController` | `/api/v1/admin/search` · `/api/v1/admin/feed` | 3.9 | [search-feed-trending.md](search-feed-trending.md) | **[EXISTS]** / **[PLANNED]** | the 7 reindexers (exist); `FeedRankingService` knob reflection (read-only) |
+| `AdminUserController` *(extended the existing class)* | `/api/v1/admin/users` | 3.1 | [user-administration.md](user-administration.md), [users-roles.md](users-roles.md) | **[EXISTS]** — extended (built 2026-08) | `UserProvisioningService.provision` (ex-`AuthServiceImpl.register`), `AccountLifecycleService`, `RefreshTokenRepository`, `TwoFactorService`, `StrikeService`, `StepUpService` |
+| `AdminContentController` | `/api/v1/admin/content` | 3.2 | [content-moderation.md](content-moderation.md) | **[EXISTS]** (built 2026-08) | `CassandraPostService`, `CassandraCommentService`, `CassandraStoryService`, `PostHydrator` |
+| `AdminSoundController` | `/api/v1/admin/sounds` | 3.3 | [sound-library.md](sound-library.md) | **[EXISTS]** (built 2026-08; stray approve re-homed) | `CassandraSoundService` |
+| `AdminResearchController` · `AdminQnaController` | `/api/v1/admin/research` · `/api/v1/admin/qna` | 3.4 | [research-qna.md](research-qna.md) | **[EXISTS]** (built 2026-08) | `ResearchServiceImpl`/`QuestionServiceImpl` (already had an ADMIN ownership bypass, now explicit+audited) |
+| `AdminTagController` *(extended `TagAdminController`)* | `/api/v1/admin/tags` | 3.4 | [research-qna.md](research-qna.md) | **[EXISTS]** — extended (built 2026-08: hide/merge) | `ContentTagService`, trending suppression |
+| `AdminChatController` · `AdminChannelController` · `AdminStreamController` | `/api/v1/admin/chat` · `/api/v1/admin/channels` · `/api/v1/admin/streams` | 3.5 | [chat-channels-live.md](chat-channels-live.md) | **[EXISTS]** (built 2026-08; channel-verify re-homed) | `ChannelService`, `LiveStreamService`, `StreamStageService`, `MediaControlClient` — **metadata only, never message content** |
+| `AdminSafetyController` | `/api/v1/admin/safety` | 3.6 | [safety-reports.md](safety-reports.md) | **[EXISTS]** (built 2026-08) | `StrikeService` (now has callers), `ReportModerationService`, report/restriction repos |
+| `AdminMediaController` · `AdminStorageController` | `/api/v1/admin/media` · storage | 3.7 | [media-storage.md](media-storage.md) | **[EXISTS]** (built 2026-08) | `StorageUsageService`, media pipeline repos |
+| `AdminNotificationController` | `/api/v1/admin/notifications` | 3.8 | [notifications-email.md](notifications-email.md) | **[EXISTS]** (built 2026-08) | notification services + the announcement composer |
+| `SearchAdminController` *(exists)* · `AdminFeedController` | `/api/v1/admin/search` · `/api/v1/admin/feed` | 3.9 | [search-feed-trending.md](search-feed-trending.md) | **[EXISTS]** / **[EXISTS]** (built 2026-08) | the 7 reindexers; `FeedRankingService` knob reflection |
 | `AuditLogController` *(exists)* | `/api/v1/admin/audit` | 3.10 | [logs-audit.md](logs-audit.md) | **[EXISTS]** | `AuditLogByUserRepository`, `AuditRealtimeService` |
-| `AdminAnalyticsController` | `/api/v1/admin/analytics` | 3.11 | [analytics-kpis.md](analytics-kpis.md) | **[PLANNED]** | the proposed `analytics_events` collector + rollups |
-| `AdminOpsController` | `/api/v1/admin/ops` | 3.12 | [operations.md](operations.md) | **[PLANNED]** | health probes, job registry, `MediaControlClient`, RabbitMQ mgmt proxy |
-| `AdminDiscoveryController` · `AdminSuggestionsController` | `/api/v1/admin/discovery` · `/api/v1/admin/suggestions` | 3.13 | [discovery-pymk-privacy.md](discovery-pymk-privacy.md) | **[PLANNED]** | `FriendSuggestionService.recomputeFor`, `ContactMatchService`, `ConsentService` |
-| `AdminKnowledgeController` | `/api/v1/admin/knowledge` | 3.14 | [knowledge-vocabulary.md](knowledge-vocabulary.md) | **[PLANNED]** | `TopicRepository`/`MadhhabRepository` (**give them their first `save`/`delete` callers**) + cache eviction |
-| `AdminActivityController` | `/api/v1/admin/users/{id}/activity` etc. | 3.15 | [activity-engagement.md](activity-engagement.md) | **[PLANNED]** | `UserActivityService` (erase); break-glass reads — **default deny** |
+| `AdminAnalyticsController` | `/api/v1/admin/analytics` | 3.11 | [analytics-kpis.md](analytics-kpis.md) | **[EXISTS]** (built 2026-08) | the `analytics_events` collector + daily rollups |
+| `AdminOpsController` | `/api/v1/admin/ops` | 3.12 | [operations.md](operations.md) | **[EXISTS]** (built 2026-08) | health probes, job-run ledger, `MediaControlClient`, queue/DLQ browse |
+| `AdminDiscoveryController` · `AdminSuggestionsController` | `/api/v1/admin/discovery` · `/api/v1/admin/suggestions` | 3.13 | [discovery-pymk-privacy.md](discovery-pymk-privacy.md) | **[EXISTS]** (built 2026-08) | `FriendSuggestionService.recomputeFor`, `ContactMatchService`, `ConsentService` |
+| `AdminKnowledgeController` | `/api/v1/admin/knowledge` | 3.14 | [knowledge-vocabulary.md](knowledge-vocabulary.md) | **[EXISTS]** (built 2026-08) | `TopicRepository`/`MadhhabRepository` (their **first** `save`/retire callers) + cache eviction |
+| `AdminActivityController` | `/api/v1/admin/users/{id}/activity` etc. | 3.15 | [activity-engagement.md](activity-engagement.md) | **[EXISTS]** (built 2026-08) | `UserActivityService` (erase); break-glass reads — **default deny**, dual-control `BreakGlassCase` |
 
 ### 6.1 `AdminUserController` — the extension detail
 
-The single most-extended class. Today: 1 method (role change). The full add-users &
-full-control build appends the **C/E/S/X** method families
+The single most-extended class. Originally 1 method (role change); the 2026-08 build
+appended the **C/E/S/X** method families
 ([user-administration.md](user-administration.md) §6):
 
 - **Create/add** — `POST ""` (create), `POST /bulk`, `POST /invite` (needs a new
@@ -230,9 +237,9 @@ Codify these so all admin controllers read alike (extend the arch-tests in
 1. **Mount under `/api/v1/admin/**`** — inherits the chain gate. A stray = build-fail.
 2. **Class-level `@PreAuthorize("hasRole('ADMIN')")`** — never a phantom role; per-method
    override only to *raise* (e.g. a future `@RequiresStepUp`), never to lower.
-3. **Step-up on `high`/`critical`** — a proposed `@RequiresStepUp` annotation (or an
-   explicit `stepUpService.requireRecentStepUp(adminId)` first line) on every mutating
-   handler the blueprint marks high/critical. `StepUpService` **[EXISTS]**.
+3. **Step-up on `high`/`critical`** — the `@RequiresStepUp` annotation (**[EXISTS]**
+   since 2026-08, enforced by `StepUpGuardInterceptor` via `AdminWebMvcConfig`) on every
+   mutating handler the blueprint marks high/critical. `StepUpService` **[EXISTS]**.
 4. **Audit every mutation** — `AuditLogService.record(...)` with the blueprint's exact
    `ADMIN_{DOMAIN}_{VERB}`; reads rely on the interceptor.
 5. **DTOs are records with Bean-Validation** — mirror `AdminChangeRoleRequest`
@@ -247,8 +254,9 @@ Codify these so all admin controllers read alike (extend the arch-tests in
    ([../errors/error-handling.md](../errors/error-handling.md)); 400 for a missing
    required scope (mirror the audit `userId`-required 400).
 9. **Self-protection guards** — an admin cannot disable/lock/delete/demote themselves;
-   demoting the last `ADMIN` is rejected (`AdminUserService.changeRole` has no such
-   check today — add it).
+   demoting the last `ADMIN` is rejected (**[EXISTS]** built 2026-08 —
+   `AdminUserServiceImpl.changeRole`: `requireNotSelf` + "Cannot demote the last
+   ADMIN." `LAST_ADMIN` conflict).
 
 ---
 

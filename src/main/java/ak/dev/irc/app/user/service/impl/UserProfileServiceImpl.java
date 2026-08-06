@@ -46,6 +46,7 @@ public class UserProfileServiceImpl implements UserProfileService {
     private final UserMapper            userMapper;
     private final S3StorageService      s3;
     private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
+    private final ak.dev.irc.app.admin.analytics.FunnelTracker funnelTracker;
 
     private static final String AVATAR_PREFIX = "users/avatars";
     private static final String COVER_PREFIX  = "users/covers";
@@ -112,6 +113,9 @@ public class UserProfileServiceImpl implements UserProfileService {
             profile.audit(AuditAction.UPDATE, "Profile updated (" + changes + " field(s))");
             profileRepository.save(profile);
             userSearch.indexAsync(myId);
+            if (profile.getProfileBio() != null && !profile.getProfileBio().isBlank()) {
+                funnelTracker.markProfileCompleted(myId);
+            }
             log.info("User [{}] profile updated — {} field(s)", myId, changes);
         }
 
@@ -137,6 +141,7 @@ public class UserProfileServiceImpl implements UserProfileService {
         profile.setAvatarS3Key(s3Key);
         profile.audit(AuditAction.UPLOAD, "Avatar uploaded: " + s3Key);
         profileRepository.save(profile);
+        funnelTracker.markProfileCompleted(myId);
 
         log.info("User [{}] avatar uploaded — s3Key='{}'", myId, s3Key);
         return userMapper.toResponse(profile.getUser(), true);

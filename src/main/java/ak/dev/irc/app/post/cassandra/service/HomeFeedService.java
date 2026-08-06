@@ -90,6 +90,7 @@ public class HomeFeedService {
     private final UserBlockRepository         blockRepo;
     private final UserFollowRepository        followRepo;
     private final ThreadPoolTaskExecutor      taskExecutor;
+    private final ak.dev.irc.app.admin.feed.FeedTuningService feedTuning;
 
     /** Ranked page + live rail + the stateless continuation cursor. */
     public record RankedFeed(List<FeedItemResponse> items,
@@ -97,6 +98,15 @@ public class HomeFeedService {
                              Instant nextCursor) {}
 
     public RankedFeed rankedHomeFeed(UUID viewer, int pageSize, Instant cursor) {
+        return rankedHomeFeed(viewer, pageSize, cursor, feedTuning.effective(viewer));
+    }
+
+    /**
+     * Knob-explicit variant — the admin preview endpoint shadow-scores a real
+     * user's feed under proposed knobs without touching the stored config.
+     */
+    public RankedFeed rankedHomeFeed(UUID viewer, int pageSize, Instant cursor,
+                                     ak.dev.irc.app.post.cassandra.service.FeedRankingService.Knobs knobs) {
         boolean firstPage = cursor == null;
         Instant now = Instant.now();
 
@@ -156,23 +166,23 @@ public class HomeFeedService {
                 timelineItems.size() + channelItems.size() + exploreItems.size());
         for (FeedItemResponse i : timelineItems) {
             String source = viewer.equals(i.authorId()) ? HomeFeedSources.SELF : HomeFeedSources.FOLLOWING;
-            scored.add(ranking.score(i, source, signals, now));
+            scored.add(ranking.score(i, source, signals, now, knobs));
         }
         // Channel digest: score all, keep only the strongest few — a chatty
         // channel must not out-volume the social graph.
         channelItems.stream()
-                .map(i -> ranking.score(i, HomeFeedSources.CHANNEL, signals, now))
+                .map(i -> ranking.score(i, HomeFeedSources.CHANNEL, signals, now, knobs))
                 .sorted(Comparator.comparingDouble(Scored::score).reversed())
                 .limit(CHANNEL_ITEMS_MAX)
                 .forEach(scored::add);
         for (FeedItemResponse i : exploreItems) {
-            scored.add(ranking.score(i, HomeFeedSources.EXPLORE, signals, now));
+            scored.add(ranking.score(i, HomeFeedSources.EXPLORE, signals, now, knobs));
         }
 
         scored.sort(Comparator.comparingDouble(Scored::score).reversed());
 
         // ── Stage 4: diversity re-rank, then final assembly ──
-        List<FeedItemResponse> items = ranking.diversify(scored).stream()
+        List<FeedItemResponse> items = ranking.diversify(scored, knobs).stream()
                 .map(s -> s.item().withRanking(s.source(), s.score()))
                 .toList();
 

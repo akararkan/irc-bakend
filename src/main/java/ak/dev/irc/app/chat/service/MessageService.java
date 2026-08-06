@@ -825,6 +825,14 @@ public class MessageService {
                 member, ak.dev.irc.app.chat.dto.AdminRights::isCanPostMessages)) {
             throw new ForbiddenException("You do not have the right to post in this channel.", "ADMINS_ONLY");
         }
+        // Platform-admin freeze (chat-channels-live.md §6): outranks every
+        // channel-local right, including the owner's.
+        if (convo.isChannel() && convo.getChannelSettings() != null
+                && convo.getChannelSettings().isFrozenByAdmin()) {
+            throw new ForbiddenException(
+                    "Posting in this channel has been suspended by platform moderation.",
+                    "CHANNEL_FROZEN");
+        }
         // Slow mode: non-admin group members get one message per window.
         if (convo.isGroup() && convo.getGroupSettings() != null && !member.isAdminOrOwner()) {
             int slow = convo.getGroupSettings().getSlowModeSeconds();

@@ -14,6 +14,9 @@ import java.util.UUID;
 @Repository
 public interface PostBySoundRepository extends CassandraRepository<PostBySoundEntity, MapId> {
 
+    @Query("DELETE FROM posts_by_sound WHERE sound_id = :soundId")
+    void deleteAllForSound(@Param("soundId") UUID soundId);
+
     @Query("SELECT * FROM posts_by_sound WHERE sound_id = :soundId LIMIT :pageSize")
     List<PostBySoundEntity> firstPage(@Param("soundId") UUID soundId,
                                       @Param("pageSize") int pageSize);

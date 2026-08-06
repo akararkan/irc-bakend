@@ -83,4 +83,51 @@ public class ChannelStatsService {
                 joinsBySource,
                 topPosts);
     }
+
+    /**
+     * Platform-admin override (chat-channels-live.md §6): same aggregates
+     * without the channel-member gate — a non-member platform ADMIN got a 403
+     * from {@link #stats}. Two deliberate differences: taken-down (soft-
+     * deleted) channels remain inspectable, and {@code topPosts} stays empty —
+     * post CONTENT is not projected into the admin view, only counts.
+     */
+    @Transactional(readOnly = true)
+    public ChannelStatsResponse statsAsAdmin(UUID channelId) {
+        Conversation c = conversationRepo.findById(channelId)
+                .filter(Conversation::isChannel)
+                .orElseThrow(() -> new ResourceNotFoundException("Channel", "id", channelId));
+
+        LocalDateTime now = LocalDateTime.now();
+        long joined7 = memberRepo.countJoinedSince(channelId, now.minusDays(7));
+        long joined30 = memberRepo.countJoinedSince(channelId, now.minusDays(30));
+        long left30 = memberRepo.countLeftSince(channelId, now.minusDays(30));
+        long muted = memberRepo.countMuted(channelId);
+
+        Map<String, Long> joinsByDay = new LinkedHashMap<>();
+        for (Object[] row : memberRepo.joinsByDay(channelId, now.minusDays(30))) {
+            joinsByDay.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
+        }
+        Map<String, Long> joinsBySource = new LinkedHashMap<>();
+        for (Object[] row : memberRepo.joinsBySource(channelId)) {
+            joinsBySource.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
+        }
+        long online = presence.onlineAmong(memberRepo.findActiveMemberIds(channelId)).size();
+        Map<String, Long> totals = metrics.totals(channelId);
+
+        return new ChannelStatsResponse(
+                c.getMemberCount(),
+                online,
+                joined7,
+                joined30,
+                left30,
+                muted,
+                Math.max(0, c.getMemberCount() - muted),
+                c.getPostCount(),
+                metrics.postsByType(channelId),
+                totals.getOrDefault("views", 0L),
+                totals.getOrDefault("forwards", 0L),
+                joinsByDay,
+                joinsBySource,
+                List.of());
+    }
 }

@@ -161,4 +161,21 @@ public interface NotificationRepository extends JpaRepository<Notification, UUID
         WHERE n.resourceId = :resourceId
         """)
     int deleteAllByResourceId(@Param("resourceId") UUID resourceId);
+
+    // ── Admin volume/read-rate aggregates (notifications-email.md §4).
+    //    Caveat carried into the endpoint: the live write path moved to
+    //    Cassandra — these aggregate the legacy PG inbox rows only.
+
+    @Query("SELECT n.type, COUNT(n) FROM Notification n GROUP BY n.type ORDER BY COUNT(n) DESC")
+    java.util.List<Object[]> countGroupedByType();
+
+    @Query("""
+        SELECT n.type, COUNT(n), SUM(CASE WHEN n.isRead = TRUE THEN 1 ELSE 0 END)
+        FROM Notification n
+        WHERE n.createdAt >= :from AND n.createdAt <= :to
+        GROUP BY n.type ORDER BY COUNT(n) DESC
+        """)
+    java.util.List<Object[]> volumeAndReadByTypeBetween(
+            @Param("from") java.time.LocalDateTime from,
+            @Param("to") java.time.LocalDateTime to);
 }

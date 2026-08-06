@@ -62,15 +62,16 @@ keep it true by construction.
 | 3 | **Recording files** — `{app.streaming.recordings-dir:./recordings}/<stream-uuid>/*.mp4` | Recorded live A/V, on local disk outside all datastores |
 | 4 | **Cloudflare R2 objects** referenced by `MediaRef` keys | Chat media blobs |
 
-Access to any of these four stores requires the **legal-hold process [PLANNED]** — there is
-deliberately no other path:
+Access to any of these four stores requires the **legal-hold process
+[EXISTS (built 2026-08)]** — `admin/chat/LegalHoldController`,
+`/api/v1/admin/chat/legal-holds` — there is deliberately no other path:
 
-| Legal-hold control [PLANNED] | Design |
+| Legal-hold control [EXISTS (built 2026-08)] | Implementation |
 |------------------------------|--------|
-| Trigger | Documented legal/safety obligation, case ID mandatory |
-| Authorization | Dual control: requesting ADMIN + second approving ADMIN; step-up auth for both |
-| Scope | Single conversation or stream, bounded time range — never bulk export |
-| Audit | Dedicated `LEGAL_HOLD_*` audit actions to `audit_log_by_user` **and** `audit_log_by_resource`, plus an immutable hold record; surfaced in [logs-audit.md](logs-audit.md) |
+| Trigger | `POST /api/v1/admin/chat/legal-holds` — documented legal/safety obligation, case ID mandatory |
+| Authorization | **Dual control**: the opening ADMIN cannot approve their own hold — a **second admin** must `POST …/{id}/approve` (or `/reject`); only then can `POST …/{id}/execute` run. Step-up auth throughout |
+| Scope | Single conversation; execute (APPROVED holds only, once) releases the **newest ≤500 messages**, bucket-walked newest-first — never bulk export |
+| Audit | Dedicated `LEGAL_HOLD_*` audit actions plus the immutable `legal_holds` record (`LegalHold` entity); surfaced in [logs-audit.md](logs-audit.md) |
 | Non-recoverable by design | Live-stream chat (broadcast-only SSE, **never persisted** — `LiveStreamService.chat`) and call media (P2P, server relays signals only). Policy must state: no retroactive evidence exists for these |
 
 ### 2.3 Known metadata→content leak edges (must be handled in phase 1)
@@ -96,7 +97,7 @@ deliberately no other path:
 | **Live-now board** | All LIVE streams ordered by viewer count: host, title, live viewers, peak, started_at, recording flag, guest count. Row → stream detail | **[PARTIAL]** — `GET /api/v1/streams/live` **[EXISTS]** (any authenticated user) already lists LIVE streams by viewerCount; admin filters (by host, by open reports, stale-LIVE flag) planned |
 | **Stream detail** | Stream metadata + stage roster (`StreamGuest`: status, muted, publish_path — key hidden) + gift leaderboard (`StreamGiftTally` top supporters) + viewer trail summary + recording status/size + **Force-stop / Rotate-key / Delete-recording** buttons | **[PARTIAL]** — data exists (§4.5–4.7); admin actions planned |
 | **Stream history** | Ended streams: duration, peak viewers, unique viewers, total gift coins, recording status/size. Per-host history | **[PLANNED]** queries over `live_streams` + `stream_viewers` + `stream_gift_tallies` **[EXISTS]** |
-| **Recordings manager** | Disk usage total + per-stream (`RecordingStorageService.totalBytes`), orphaned dirs, delete action | **[PARTIAL]** (§4.7) |
+| **Recordings manager** | Disk usage total + per-stream (`RecordingStorageService.totalBytes`), orphaned dirs, delete action | **[PARTIAL]** — fleet-listing backend built 2026-08 (§4.7); UI planned |
 
 ---
 
@@ -181,7 +182,7 @@ is wiped while per-post `message_counters` (Cassandra) stay correct.
 | Lifecycle | **[EXISTS]** | `RecordingStatus`: DISABLED / RECORDING / PAUSED / PROCESSING / AVAILABLE / EMPTY / DELETED on `live_streams.recording_status` + `recording_enabled` |
 | Files | **[EXISTS]** | fMP4 parts at `{app.streaming.recordings-dir:./recordings}/<stream-uuid>/`; MediaMTX `recordDeleteAfter: 0s` — **the app owns retention, and no expiry job exists** |
 | Host endpoints | **[EXISTS]** | `GET/DELETE /api/v1/streams/{id}/recording`, `GET …/recording/download`, `POST …/recording/start|stop` — all host-only (`hostId` ownership checks in `LiveStreamService`) |
-| Admin listing / takedown / disk dashboard | **[PLANNED]** | Global disk usage = `live_streams WHERE recording_status='AVAILABLE'` × `totalBytes`; orphan scan = recordings dirs with no matching stream row; admin delete reuses `deleteRecording` + sets status DELETED |
+| Admin fleet listing | **[EXISTS (built 2026-08)]** | `GET /api/v1/admin/streams/recordings` (step-up): per-stream bytes + part counts, **orphan-dir flags** (recordings dirs with no matching stream row), fleet disk total. Takedown/disk-dashboard UI remain the frontend build |
 
 ### 4.8 Calls (metadata only)
 
@@ -248,12 +249,12 @@ step-up = re-auth via the settings module ([../settings/auth-sessions.md](../set
 | Call stats | `GET /api/v1/admin/calls/stats` | from, to, type | Low (read) | No | `ADMIN_CALL_STATS_READ` | **[PLANNED]** |
 | Quarantine stats | `GET /api/v1/admin/message-requests/stats` | from, to | Low (read) | No | `ADMIN_MSGREQ_STATS_READ` | **[PLANNED]** |
 | Live-now (admin view) | `GET /api/v1/admin/streams/live` | hostId?, reported?, stale? | Low (read) | No | `ADMIN_STREAMS_READ` | **[PLANNED]** — until built, reuse `GET /api/v1/streams/live` **[EXISTS]** |
-| **Force-stop stream** | `POST /api/v1/admin/streams/{id}/force-stop` | reason, reportId? | **Critical** | **Yes** | `STREAM_FORCE_STOPPED` | **[PLANNED]** — `LiveStreamService.end` minus the `hostId` equality check, + `MediaControlClient.kickPublisher` on the stream path **and every active guest `publish_path`**, + `viewerRepo.deactivateAll`, + finalize recording. RTMP publishers survive until the RTMP kick lands (§4.9) — doubles as the fix for **orphaned LIVE rows** (no cleanup job exists if the app dies mid-broadcast) |
+| **Force-stop stream** | `POST /api/v1/admin/streams/{id}/force-stop` | reason, reportId? | **Critical** | **Yes** | `STREAM_FORCE_STOPPED` | **[PLANNED]** — `LiveStreamService.end` minus the `hostId` equality check, + `MediaControlClient.kickPublisher` on the stream path **and every active guest `publish_path`**, + `viewerRepo.deactivateAll`, + finalize recording. RTMP publishers survive until the RTMP kick lands (§4.9). Orphaned LIVE rows now have a manual fix — `POST /api/v1/admin/ops/streams/sweep-orphans` (built 2026-08) — though no scheduled cleanup exists |
 | **Rotate/revoke stream key** | `POST /api/v1/admin/streams/{id}/rotate-key` | reason | High | **Yes** | `STREAM_KEY_ROTATED` | **[PLANNED]** — update `live_streams.stream_key` (never rotated today; enforcement already live via the `/internal/media/auth/{secret}` hook) + `kickPublisher` so the old key dies immediately. Response returns **nothing** — new key visible to host only. Guest keys: revoked implicitly on guest REMOVED / stream end (`guestRepo.removeAllActive`); per-guest admin revoke = stage-remove + kick |
 | Remove stream guest | `DELETE /api/v1/admin/streams/{id}/stage/{userId}` | reason | High | Yes | `STREAM_GUEST_REMOVED` | **[PLANNED]** — host-only today (`StreamStageService.requireOwnedStream`) |
-| List recordings + disk usage | `GET /api/v1/admin/streams/recordings` | hostId?, status?, minBytes? | Low (read) | No | `ADMIN_RECORDINGS_READ` | **[PLANNED]** — `live_streams` × `RecordingStorageService.totalBytes` |
+| List recordings + disk usage | `GET /api/v1/admin/streams/recordings` | hostId?, status?, minBytes? | Low (read) | **Yes** | audited | **[EXISTS (built 2026-08)]** — `live_streams` × `RecordingStorageService.totalBytes`: per-stream bytes/parts, orphan-dir flags, fleet total |
 | Delete recording | `DELETE /api/v1/admin/streams/{id}/recording` | reason, reportId? | **Critical** | **Yes** | `RECORDING_DELETED_BY_ADMIN` | **[PLANNED]** — reuses `RecordingStorageService.deleteRecording`; irreversible (files are the only copy) |
-| Legal hold open/execute | `POST /api/v1/admin/legal-holds` (+ approve/execute) | caseId, scope, approverId | **Critical** | **Yes** (both admins) | `LEGAL_HOLD_*` | **[PLANNED]** — §2.2; the only content-access path |
+| Legal hold open/approve/execute | `POST /api/v1/admin/chat/legal-holds` (+ `/{id}/approve` / `/reject` / `/execute`, `GET` list) | conversationId, reason (case ref) | **Critical** | **Yes** (both admins) | `LEGAL_HOLD_OPEN/APPROVE/REJECT/EXECUTE` | **[EXISTS (built 2026-08)]** — §2.2; the only content-access path (dual control, newest ≤500 messages) |
 
 ---
 
@@ -263,7 +264,7 @@ Full catalog: [logs-audit.md](logs-audit.md). This section's log panel filters t
 
 | Log | Source | What this section shows |
 |-----|--------|-------------------------|
-| Admin action audit | Cassandra `audit_log_by_user` / `audit_log_by_resource` **[EXISTS]** (writers) | Every action from §6 (verified toggles are captured today only as generic HTTP rows via the interceptor; the typed actions above are **[PLANNED]** `AuditLogService.record` calls — currently zero service-layer callers exist) |
+| Admin action audit | Cassandra `audit_log_by_user` / `audit_log_by_resource` **[EXISTS]** (writers) | Every action from §6 — typed rows now written via `admin/support/AdminAuditor` → `AuditLogService.record` on every admin mutation (built 2026-08), on top of the generic HTTP interceptor rows |
 | Live audit tail | `GET /api/v1/admin/audit/stream` (SSE) **[EXISTS]** | Real-time feed filtered to `/api/v1/channels/**`, `/api/v1/streams/**`, `/api/v1/admin/chat/**` paths |
 | Reports (MESSAGE/CHANNEL/USER targets) | PG `reports` **[EXISTS]** | Chat-scoped report volume; triage lives in [safety-reports.md](safety-reports.md) |
 | Stream lifecycle trail | `live_streams` + `stream_viewers` + `stream_guests` rows **[EXISTS]** | Who hosted/joined/guested when; per-viewer joined_at/left_at |
@@ -306,7 +307,7 @@ message rows live in per-conversation Cassandra partitions with no scan index, a
 
 | Alert | Condition (tunable) | Source | Action |
 |-------|---------------------|--------|--------|
-| **Stale LIVE stream** | status=LIVE with 0 active viewers AND no MediaMTX publish session for > 30 min, or LIVE > 12 h | `live_streams` × `/v3/webrtcsessions/list` | Offer force-stop (§6); today these rows persist forever — no cleanup job **[PLANNED]** |
+| **Stale LIVE stream** | status=LIVE with 0 active viewers AND no MediaMTX publish session for > 30 min, or LIVE > 12 h | `live_streams` × `/v3/webrtcsessions/list` | Offer force-stop (§6) or run the **manual sweep** `POST /api/v1/admin/ops/streams/sweep-orphans` (step-up, dry-run capable — built 2026-08, see [operations.md](operations.md)); no *scheduled* cleanup job yet |
 | Invite-link burst | use_count Δ > 100/h on one link, or one channel minting > 20 links/day | `conversation_invites` | Review + force-revoke |
 | Join-request flood | > 200 PENDING/h on one channel | `conversation_join_requests` | Possible raid; freeze option |
 | Quarantine spam | one requester BLOCKED by ≥ 10 distinct recipients / 24 h | `message_requests` | Escalate to [safety-reports.md](safety-reports.md) |
@@ -327,7 +328,7 @@ All thresholds are **[PLANNED]**; no alerting infrastructure exists in this subs
 | Never select `stream_key` / `publish_key` / `last_message_preview` into admin DTOs | §2.3 — plaintext secrets and content leak edge |
 | Content access ONLY via legal hold (dual admin, step-up, case ID, per-access audit) | §2.2; there is no other read path today and the build must not create one |
 | Step-up auth on force-stop, key rotation, takedown, recording delete, legal hold | Irreversible or rights-impacting; [../settings/auth-sessions.md](../settings/auth-sessions.md) step-up **[EXISTS]** |
-| Every mutation writes a typed audit row (service-layer `AuditLogService.record` **[PLANNED]** wiring — has zero callers today) | HTTP-interceptor rows alone don't capture reason/reportId |
+| Every mutation writes a typed audit row (`AdminAuditor` → `AuditLogService.record` **[EXISTS (built 2026-08)]**) | HTTP-interceptor rows alone don't capture reason/reportId |
 | Oversight, not substitution: admins monitor join requests / invites / stage but the conversation's own `ChannelRights` governance keeps operating | Preserves the module's self-governance model; admin powers are takedown-shaped, not management-shaped |
 | Aggregate-only for DMs/groups; no browse-by-participant | §5.1 — who-talks-to-whom is sensitive metadata |
 | Force-stop UI must disclose the RTMP gap until `/v3/rtmpconns/kick` lands | An OBS publisher is not actually disconnected by today's `kickPublisher` (§4.9) |

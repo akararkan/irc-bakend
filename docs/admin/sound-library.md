@@ -44,9 +44,9 @@ section designs toward, each mapped to platform reality:
 | TikTok Commercial Music Library / IG "Sounds" curated catalog | `sounds_by_category` browse, `SoundCategory` = NASHEED / QURAN_RECITATION / LECTURE_CLIP / NATURE / ORIGINAL / PLATFORM_MUSIC | **[EXISTS]** |
 | Instagram sound picker (typo-tolerant search, popularity-ranked) | `GET /api/v1/sounds/search` → `irc-sounds` (fuzzy title/artist × log1p useCount) | **[EXISTS]** |
 | "Original audio" attribution | `SoundCategory.ORIGINAL` + `uploaderId` on the row | **[EXISTS]** (category only; no per-post "original from @user" surfacing) |
-| TikTok trending-sounds chart | `sound_counters.use_count` + `posts_by_sound` | **[PARTIAL]** — raw totals only, no time-decayed trend |
-| Facebook Rights Manager / TikTok muted-audio takedown | copyright takedown → `ARCHIVED` + strip from adopting posts | **[PLANNED]** |
-| Music-label / official-partner uploads | `autoApprove` + `PLATFORM_MUSIC` | **[PARTIAL]** — the mechanism exists; no seeding/import tool |
+| TikTok trending-sounds chart | `sound_adoptions_by_day` day-bucketed adoption counter + `GET /api/v1/admin/sounds/trending` (top by adoptions over a rolling window) | **[EXISTS]** (built 2026-08) |
+| Facebook Rights Manager / TikTok muted-audio takedown | copyright takedown → `ARCHIVED` + strip from adopting posts | **[PARTIAL]** — manual takedown + mute-adopting-posts built 2026-08 (`POST /api/v1/admin/sounds/{id}/takedown`); rights register / fingerprint matching still **[PLANNED]** |
+| Music-label / official-partner uploads | `autoApprove` + `PLATFORM_MUSIC` | **[EXISTS]** (built 2026-08) — bulk import `POST /api/v1/admin/sounds/import` |
 | Sound-swap / detach on a live post | — | **[PLANNED]** |
 
 ---
@@ -100,35 +100,33 @@ is repaired by the reindex (§2.5), not by a transaction.
 | POST | `/api/v1/sounds` | `isAuthenticated()` | Upload. Uploader **always** the JWT caller (body `uploaderId` ignored). `autoApprove=true` honored **only** if caller role ∈ `MODERATION_ROLES = Set.of(Role.ADMIN)` — everyone else is forced `PENDING_REVIEW`. |
 | GET | `/api/v1/sounds/{id}` | public | Canonical row or 404. |
 | GET | `/api/v1/sounds/search` | public | `q` (required; blank→`[]`), `category?`, `limit` clamped **1..100** (default 20). APPROVED-only, fuzzy, popularity-boosted. |
-| POST | `/api/v1/sounds/{id}/approve` | `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')` | **The only moderation transition that exists.** Idempotent. See the two caveats below. |
+| POST | `/api/v1/sounds/{id}/approve` | `hasRole('ADMIN')` | Idempotent. `@Deprecated` since 2026-08 — answers with a successor-version `Link` to `POST /api/v1/admin/sounds/{id}/approve`. No longer the only transition: `CassandraSoundService` now also implements reject / archive / restore / takedown / recategorize / editMetadata / hardDelete. |
 | GET | `/api/v1/sounds/by-category/{category}` | public | `pageSize` (default 20), `cursor?` (Instant). Cursor-paginated browse. |
 | GET | `/api/v1/sounds/{id}/posts` | public | `pageSize` (default 20). All posts using the sound. |
 | GET | `/api/v1/sounds/{id}/usage` | public | `{soundId, useCount}`. |
 
-**Two caveats on the approve endpoint — carry these into the dashboard:**
+**Two former caveats on the approve endpoint — both resolved 2026-08:**
 
-1. **Phantom roles.** `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')` references
-   `MODERATOR` and `SUPER_ADMIN`, which **do not exist** in `Role`
-   (`USER / RESEARCHER / SCHOLAR / ADMIN`). The grant is effectively **ADMIN-only**;
-   the extra names are dead SpEL. (Consistent with the platform's four-role
-   model — [users-roles.md](users-roles.md).)
-2. **Outside the admin prefix.** It lives under `/api/v1/sounds`, **not**
-   `/api/v1/admin/**`, so it misses the filter-chain double gate that every
-   other admin mutation gets ([architecture.md](architecture.md)). It relies on
-   the `@PreAuthorize` annotation alone. → Blueprint recommends an
-   `/api/v1/admin/sounds/{id}/approve` alias.
+1. **Phantom roles — fixed.** The stray `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')`
+   grant was normalized to `hasRole('ADMIN')`
+   (`CassandraSoundController.java`). (The `Role` enum has since widened —
+   [users-roles.md](users-roles.md).)
+2. **Outside the admin prefix — aliased.** The double-gated admin path
+   `POST /api/v1/admin/sounds/{id}/approve` now exists; the bare path is
+   `@Deprecated` and answers with `Deprecation` + successor-version `Link`
+   headers pointing at it.
 
 ### 2.4 Admin surface today
 
 | Capability | Status |
 |---|---|
 | `POST /api/v1/admin/search/sounds/reindex?drop=` | **[EXISTS]** `SearchAdminController.reindexSounds`, `hasRole('ADMIN')`, synchronous, returns `ReindexSummary` |
-| Approve a pending sound | **[EXISTS]** (the stray endpoint above) |
+| Approve a pending sound | **[EXISTS]** — `POST /api/v1/admin/sounds/{id}/approve` (built 2026-08; bare path deprecated) |
 | Auto-approve on upload | **[EXISTS]** (ADMIN-only, via `autoApprove`) |
-| **List pending sounds** | **MISSING** — see §2.6 |
-| Reject / archive / takedown / delete | **MISSING** — see §5 |
-| Uploader history / reputation | **MISSING** |
-| Trending board | **MISSING** (data exists, no surface) |
+| **List pending sounds** | **[EXISTS]** (built 2026-08) — `GET /api/v1/admin/sounds?status=` + `GET /api/v1/admin/sounds/status-counts` (§2.6) |
+| Reject / archive / takedown / delete | **[EXISTS]** (built 2026-08) — full endpoint set in §6 |
+| Uploader history / reputation | **[EXISTS]** (built 2026-08) — `GET /api/v1/admin/sounds/uploaders/{userId}` |
+| Trending board | **[EXISTS]** (built 2026-08) — `GET /api/v1/admin/sounds/trending` over `sound_adoptions_by_day` |
 | Rights / copyright register | **MISSING** |
 
 ### 2.5 Search: `SoundSearchService` (`irc-sounds`)
@@ -149,14 +147,12 @@ is repaired by the reindex (§2.5), not by a transaction.
   `{dropped, indexed, batches, ms, note}`. The library is a **bounded curated
   catalog**, so a full scan is deliberately acceptable here (unlike posts).
 
-### 2.6 The blocking gap: no status/uploader index
+### 2.6 The former blocking gap: status/uploader index (closed 2026-08)
 
-`sounds_by_id` is keyed by `id` only. **There is no way to list "all
-PENDING_REVIEW sounds" or "all sounds by uploader X" from Cassandra today** —
-the partition key doesn't support it, and the service javadoc says the review
-query is "out of scope here". This single gap blocks the approval queue, the
-uploader-reputation panel, and any status dashboard. Two ways to close it
-(pick one, documented in §11):
+`sounds_by_id` is keyed by `id` only — from Cassandra alone there was no way to
+list "all PENDING_REVIEW sounds" or "all sounds by uploader X". This single gap
+blocked the approval queue, the uploader-reputation panel, and any status
+dashboard. Two ways to close it were on the table:
 
 - **A — new Cassandra tables** `sounds_by_status (status, created_at DESC, sound_id)`
   and `sounds_by_uploader (uploader_id, created_at DESC, sound_id)`, written on
@@ -166,19 +162,21 @@ uploader-reputation panel, and any status dashboard. Two ways to close it
   tables; couples the admin queue to ES availability, and ES is eventually
   consistent, so a just-uploaded sound may lag the queue by a moment.
 
-Recommendation: **B for the pending queue** (ES already holds `status`; add
-`uploaderId` to `SoundSearchDocument`), because the queue tolerates slight lag
-and it's zero new write-path cost. Use **A only if** the queue must be strongly
-consistent with the moment of upload.
+**Resolution (built 2026-08): option B shipped.** `uploaderId` was added to
+`SoundSearchDocument`, and `SoundSearchService.idsByStatus / idsByUploader /
+countsByStatus` back `GET /api/v1/admin/sounds`, `/uploaders/{userId}` and
+`/status-counts`. Option A remains available if the queue ever needs strong
+consistency with the moment of upload.
 
 ### 2.7 Events
 
 `rabbitmq/event/post/SoundApprovedEvent` (`soundId, uploaderId, soundTitle,
-occurredAt`) is **defined but DEAD** — grep finds it referenced nowhere but its
-own file. It is neither published on approve nor consumed. Wiring it (publish in
-`CassandraSoundService.approve` → an uploader notification) is a phase-2 rider
-(§11). A `SoundRejectedEvent` / `SoundArchivedEvent` pair is **[PLANNED]** for
-the same path.
+occurredAt`) is **wired (2026-08)** — published in `AdminSoundService.approve`
+and consumed by `NotificationEventConsumer.onSoundApproved`, producing a
+`SOUND_APPROVED` notification to the uploader. (Residual: the deprecated bare
+`/api/v1/sounds/{id}/approve` path still bypasses the event.) A
+`SoundRejectedEvent` / `SoundArchivedEvent` pair is **[PLANNED]** for the same
+path.
 
 ---
 
@@ -190,28 +188,28 @@ The at-a-glance state of the catalog. Stat tiles + two panels.
 
 | Widget | Shows | Source |
 |---|---|---|
-| Catalog size tiles | Total sounds · APPROVED · PENDING · REJECTED · ARCHIVED | status counts (§2.6 index) **[PLANNED]** |
-| Pending depth + oldest age | Live `PENDING_REVIEW` count and max wait; red past SLA | §2.6 index **[PLANNED]** |
+| Catalog size tiles | Total sounds · APPROVED · PENDING · REJECTED · ARCHIVED | `GET /api/v1/admin/sounds/status-counts` **[EXISTS]** (built 2026-08) |
+| Pending depth + oldest age | Live `PENDING_REVIEW` count and max wait; red past SLA | status counts + queue listing **[EXISTS]** (built 2026-08) |
 | Category mix | Sounds per `SoundCategory` (donut) | per-category counts |
-| Top sounds this week | Highest `use_count`, with Δ | `sound_counters` + trending collector (§8) **[PARTIAL]** |
-| Recently approved | Last N approvals, approver, latency | decision log (§7) **[PLANNED]** |
+| Top sounds this week | Highest adoptions, with Δ | `sound_adoptions_by_day` + `GET /api/v1/admin/sounds/trending` **[EXISTS]** (built 2026-08) |
+| Recently approved | Last N approvals, approver, latency | decision log (§7) **[EXISTS]** (built 2026-08 — `moderation_decisions`) |
 
-### 3.2 Approval queue [PARTIAL → PLANNED]
+### 3.2 Approval queue [EXISTS — backend built 2026-08]
 
 The moderation-workflow spec is in [content-moderation.md](content-moderation.md)
 §2.6; the canonical column/behavior spec lives here so the two never drift:
 
 | Column / control | Behavior | Source |
 |---|---|---|
-| Pending list | `PENDING_REVIEW`, **oldest-first**; columns: cover, title, artist, category, duration, uploader, waited-for; badge > 48h | §2.6 index **[PLANNED]** |
+| Pending list | `PENDING_REVIEW`, **oldest-first**; columns: cover, title, artist, category, duration, uploader, waited-for; badge > 48h | `GET /api/v1/admin/sounds?status=` **[EXISTS]** (built 2026-08) |
 | Inline preview player | Streams `audioUrl`, shows `coverArtUrl`; scrubber; optional waveform | `SoundEntity` fields **[EXISTS]** |
-| Uploader mini-card | Handle, role, prior approval ratio, "N rejected before" flag | uploader index (§2.6-A/B) **[PLANNED]** |
-| **Approve** | `POST …/approve`; on success publish `SoundApprovedEvent` → uploader notified | `approve` **[EXISTS]**; event publish **[PLANNED]** |
-| **Reject + reason** | New endpoint; `{reasonCode, note}`; sets `REJECTED`, keeps `sounds_by_id` row (audit), removes ES doc, notifies uploader | **[PLANNED]** (§5) |
-| Bulk approve/reject | Select N (≤100), one reason; per-item result list | reuses `/admin/moderation/bulk` **[PLANNED]** |
+| Uploader mini-card | Handle, role, prior approval ratio, "N rejected before" flag | uploader index (§2.6-B) **[EXISTS]** (built 2026-08) |
+| **Approve** | `POST /api/v1/admin/sounds/{id}/approve`; on success publishes `SoundApprovedEvent` → uploader notified | `approve` **[EXISTS]**; event publish **[EXISTS]** (wired 2026-08) |
+| **Reject + reason** | `{reasonCode, note}`; sets `REJECTED`, keeps `sounds_by_id` row (audit), removes ES doc | **[EXISTS]** (built 2026-08 — `POST /api/v1/admin/sounds/{id}/reject`) |
+| Bulk approve/reject | Select N (≤100), one reason; per-item result list | reuses `/admin/moderation/bulk` **[EXISTS]** (built 2026-08) |
 | Auto-checks | Duration in bounds, dedupe by audio hash, title profanity (reuse `KeywordNormalizer`) | **[PLANNED]** |
 
-### 3.3 Sound inspector (detail drawer) [PARTIAL]
+### 3.3 Sound inspector (detail drawer) [EXISTS — `GET /api/v1/admin/sounds/{id}`, built 2026-08]
 
 Opened from any list. Everything about one sound.
 
@@ -219,12 +217,12 @@ Opened from any list. Everything about one sound.
 |---|---|---|
 | Header | Cover, title, artist, category chip, status pill, duration | `sounds_by_id` **[EXISTS]** |
 | Player | `audioUrl` stream + waveform | **[EXISTS]** data |
-| Provenance | Uploader (avatar-join — load via `findActiveWithProfileByIdIn`), created/updated, approver | `uploader_id` **[EXISTS]**; approver in decision log **[PLANNED]** |
+| Provenance | Uploader (avatar-join — load via `findActiveWithProfileByIdIn`), created/updated, approver | `uploader_id` **[EXISTS]**; approver in decision log **[EXISTS]** (built 2026-08 — `moderation_decisions`) |
 | **Blast radius** | `use_count` + a live page of `posts_by_sound` ("in 3,214 reels; newest 4h ago") — the number that governs a takedown decision | `sound_counters` + `posts_by_sound` **[EXISTS]** |
-| Adoption trend | Daily adoptions sparkline | needs `posts_by_sound` day-bucket rollup **[PLANNED]** |
+| Adoption trend | Daily adoptions sparkline | `sound_adoptions_by_day` **[EXISTS]** (built 2026-08) |
 | Rights | Copyright register match / claim state | **[PLANNED]** (§3.8) |
-| Actions | Approve / reject / archive / takedown / re-category / edit metadata | mix of EXISTS + PLANNED (§5–6) |
-| Audit strip | Every action on this sound, newest first | `audit_log_by_resource` **[EXISTS]** write / **[PLANNED]** read |
+| Actions | Approve / reject / archive / takedown / re-category / edit metadata | all **[EXISTS]** (built 2026-08, §5–6) |
+| Audit strip | Every action on this sound, newest first | `audit_log_by_resource` **[EXISTS]** write + read (`GET /api/v1/admin/audit/resources/{type}/{id}`, built 2026-08) |
 
 ### 3.4 Category curation [PARTIAL]
 
@@ -236,7 +234,7 @@ only an app-enum edit).
 | Widget | Behavior | Source |
 |---|---|---|
 | Category board | Per category: count, top sound, weekly adoptions | `sounds_by_category` + counters **[EXISTS]/[PARTIAL]** |
-| Re-categorize | Move a sound to another category → rewrite its `sounds_by_category` row (delete old partition row, insert new), reindex | **[PLANNED]** endpoint |
+| Re-categorize | Move a sound to another category → rewrite its `sounds_by_category` row (delete old partition row, insert new), reindex | **[EXISTS]** (built 2026-08 — `POST /api/v1/admin/sounds/{id}/category`) |
 | Featured shelf | Curated "picks" per category for the app's sound picker | new `sounds_featured` table **[PLANNED]** |
 | Empty/thin categories | Flags categories with < N approved sounds (e.g. `NATURE`) so curators seed them | count query **[PLANNED]** |
 
@@ -246,10 +244,10 @@ The label/partner analog: first-party audio that ships approved.
 
 - **[EXISTS]** the mechanism — an ADMIN uploads with `autoApprove=true` and
   `category=PLATFORM_MUSIC`; the sound is APPROVED immediately and browsable.
-- **[PLANNED]** a **seeding/import tool**: bulk-register a folder/manifest of
+- **[EXISTS]** (built 2026-08) the **seeding/import tool**:
+  `POST /api/v1/admin/sounds/import` bulk-registers a manifest (≤100 items) of
   official audio (title, artist, `audioUrl`, cover, duration) in one call, all
-  auto-approved and attributed to a platform service account. Today each would
-  be a separate `POST /api/v1/sounds`.
+  auto-approved `PLATFORM_MUSIC`.
 - **[PLANNED]** an **"official ✓" flag** distinct from category, so a
   first-party sound in `NASHEED` is still marked official. Add `official boolean`
   to `SoundEntity` + `SoundSearchDocument`.
@@ -258,10 +256,10 @@ The label/partner analog: first-party audio that ships approved.
 
 | Widget | Behavior | Source |
 |---|---|---|
-| Top-by-usage table | Highest `use_count`, all-time / rank | `sound_counters` **[EXISTS]** (no ordered index — needs a rollup, §8) |
-| **Rising** | Time-decayed adoption velocity (last-24h adoptions ÷ baseline) | day-bucketed `posts_by_sound` rollup **[PLANNED]** |
+| Top-by-usage table | Highest adoptions over a rolling window, ranked | `GET /api/v1/admin/sounds/trending` over `sound_adoptions_by_day` **[EXISTS]** (built 2026-08) |
+| **Rising** | Time-decayed adoption velocity (last-24h adoptions ÷ baseline) | `sound_adoptions_by_day` **[EXISTS]** (built 2026-08); the velocity computation itself **[PLANNED]** |
 | Manipulation guardrails | Flag a sound whose adoptions spike from few distinct authors (bot ring) | `posts_by_sound.authorId` distinct-count **[PLANNED]** — ties into [search-feed-trending.md](search-feed-trending.md) |
-| Freeze / exclude from trending | Admin pins a sound out of the trending surface without archiving it | new `trending_excluded` flag **[PLANNED]** |
+| Freeze / exclude from trending | Admin pins a sound out of the trending surface without archiving it | `trending_excluded` flag **[EXISTS]** (built 2026-08 — `POST /api/v1/admin/sounds/{id}/trending-exclude`) |
 
 > The **algorithm** for trending (decay half-life, min-distinct-authors) is a
 > feed-wide concern; this section owns the **sound-specific inputs and the
@@ -274,10 +272,10 @@ Blocks abuse of the upload path (serial re-uploads of rejected audio, spam).
 
 | Widget | Behavior | Source |
 |---|---|---|
-| Uploader panel | All sounds by a user, per-status counts, approval ratio | uploader index (§2.6) **[PLANNED]** |
+| Uploader panel | All sounds by a user, per-status counts, approval ratio | uploader index (§2.6) **[EXISTS]** (built 2026-08 — `GET /api/v1/admin/sounds/uploaders/{userId}`) |
 | Serial-reupload flag | Same audio hash rejected → re-uploaded | audio-hash dedupe store **[PLANNED]** |
 | Rate context | Uploads/day vs. platform norm | upload-event counter **[PLANNED]** |
-| Escalation | Link to issue a strike ([safety-reports.md](safety-reports.md) — `StrikeService.issueStrike` exists, no controller) | **[PLANNED]** |
+| Escalation | Link to issue a strike ([safety-reports.md](safety-reports.md) — `POST /api/v1/admin/safety/users/{userId}/strikes`, built 2026-08) | **[EXISTS]** endpoint / **[PLANNED]** UI link |
 
 ### 3.8 Rights & copyright (DMCA / Rights-Manager analog) [PLANNED]
 
@@ -315,32 +313,32 @@ because the blast-radius data already exists.
 | Usage / blast radius | Cassandra | `sound_counters` (`use_count`), `posts_by_sound` (`PostBySoundEntity`) | **[EXISTS]** |
 | Search / ranking | ES | `irc-sounds` (`SoundSearchDocument`), `SoundSearchService` | **[EXISTS]** |
 | Reindex | ES | `SearchAdminController.reindexSounds` → `reindexAll` | **[EXISTS]** |
-| Pending / status listing | ES or Cassandra | `irc-sounds` status term **or** `sounds_by_status` table | **[PLANNED]** (§2.6) |
-| Uploader listing | ES or Cassandra | `uploaderId` term **or** `sounds_by_uploader` table | **[PLANNED]** |
-| Decision log (approve/reject/archive/takedown) | PG | `moderation_decisions` (shared with [content-moderation.md](content-moderation.md)) | **[PLANNED]** |
-| Per-resource audit | Cassandra | `audit_log_by_resource` (interceptor-written) | **[EXISTS]** write / **[PLANNED]** read |
-| Adoption day-buckets (trend/rising) | Cassandra | `sound_adoptions_by_day` rollup | **[PLANNED]** |
+| Pending / status listing | ES | `irc-sounds` status term (`SoundSearchService.idsByStatus/countsByStatus`) | **[EXISTS]** (built 2026-08, §2.6) |
+| Uploader listing | ES | `uploaderId` term on `SoundSearchDocument` (`idsByUploader`) | **[EXISTS]** (built 2026-08) |
+| Decision log (approve/reject/archive/takedown) | PG | `moderation_decisions` via `ModerationRecorder` (shared with [content-moderation.md](content-moderation.md)) | **[EXISTS]** (built 2026-08) |
+| Per-resource audit | Cassandra | `audit_log_by_resource` (interceptor-written; read via `GET /api/v1/admin/audit/resources/{type}/{id}`) | **[EXISTS]** (read built 2026-08) |
+| Adoption day-buckets (trend/rising) | Cassandra | `sound_adoptions_by_day` (`SoundAdoptionCounter`, bumped on every post usage) | **[EXISTS]** (built 2026-08) |
 | Rights register | PG | `sound_rights` | **[PLANNED]** |
 | Featured shelf | Cassandra/PG | `sounds_featured` | **[PLANNED]** |
-| Uploader notification | RabbitMQ | `SoundApprovedEvent` (dead) + planned reject/archive events | **[EXISTS but DEAD]** |
+| Uploader notification | RabbitMQ | `SoundApprovedEvent` (wired 2026-08) + planned reject/archive events | **[EXISTS]** |
 
 ---
 
 ## 5. State machine
 
 `SoundStatus { PENDING_REVIEW, APPROVED, REJECTED, ARCHIVED }` is fully defined
-in the enum — but **only two states are reachable today**. `REJECTED` and
-`ARCHIVED` are never written by any code path.
+in the enum — and since the 2026-08 build **every transition is implemented**
+(`CassandraSoundService` + `AdminSoundService`/`AdminSoundController`).
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING_REVIEW: upload (regular user)
     [*] --> APPROVED: upload autoApprove (ADMIN only)
     PENDING_REVIEW --> APPROVED: approve (EXISTS)
-    PENDING_REVIEW --> REJECTED: reject (PLANNED)
-    APPROVED --> ARCHIVED: archive / takedown (PLANNED)
-    REJECTED --> APPROVED: re-review override (PLANNED)
-    ARCHIVED --> APPROVED: restore / counter-notice (PLANNED)
+    PENDING_REVIEW --> REJECTED: reject (EXISTS)
+    APPROVED --> ARCHIVED: archive / takedown (EXISTS)
+    REJECTED --> APPROVED: re-review override (EXISTS)
+    ARCHIVED --> APPROVED: restore / counter-notice (EXISTS)
 ```
 
 | Transition | Trigger | Effect | Status |
@@ -348,11 +346,11 @@ stateDiagram-v2
 | → `PENDING_REVIEW` | regular user uploads | row in `sounds_by_id` only; ES indexed (non-APPROVED → never surfaces) | **[EXISTS]** |
 | → `APPROVED` | ADMIN uploads with `autoApprove` | row + `sounds_by_category` + ES | **[EXISTS]** |
 | `PENDING → APPROVED` | `approve` | writes `sounds_by_category`, ES refresh; **idempotent** | **[EXISTS]** |
-| `PENDING → REJECTED` | reject `{reasonCode, note}` | keep `sounds_by_id` row (audit), **remove ES doc**, notify uploader, decision-log | **[PLANNED]** |
-| `APPROVED → ARCHIVED` | archive / copyright takedown | delete `sounds_by_category` row + ES doc; **existing posts keep their audio** (`posts_by_sound` untouched) → archive stops *new* adoption only; takedown may additionally mute adopting posts | **[PLANNED]** |
-| `REJECTED → APPROVED` | admin override on re-review | re-add category + ES | **[PLANNED]** |
-| `ARCHIVED → APPROVED` | restore after counter-notice | re-add category + ES | **[PLANNED]** |
-| hard delete | GDPR erasure of uploader's own content | purge all 5 stores + `posts_by_sound` detach | **[PLANNED]** — see [logs-audit.md](logs-audit.md) GDPR |
+| `PENDING → REJECTED` | reject `{reasonCode, note}` | keep `sounds_by_id` row (audit), **remove ES doc**, decision-log | **[EXISTS]** (built 2026-08) |
+| `APPROVED → ARCHIVED` | archive / copyright takedown | delete `sounds_by_category` row + ES doc; **existing posts keep their audio** (`posts_by_sound` untouched) → archive stops *new* adoption only; takedown may additionally mute adopting posts | **[EXISTS]** (built 2026-08) |
+| `REJECTED → APPROVED` | admin override on re-review | re-add category + ES | **[EXISTS]** (built 2026-08 — restore) |
+| `ARCHIVED → APPROVED` | restore after counter-notice | re-add category + ES | **[EXISTS]** (built 2026-08 — restore) |
+| hard delete | GDPR erasure of uploader's own content | purge all stores + `posts_by_sound` detach | **[EXISTS]** (built 2026-08 — `DELETE /api/v1/admin/sounds/{id}`); see [logs-audit.md](logs-audit.md) GDPR |
 
 **Archive vs. takedown — the important distinction:** *archive* is a catalog
 decision (retire a sound from new use, leave existing posts alone). *Takedown*
@@ -365,28 +363,30 @@ The dashboard must make the operator choose explicitly and show the blast radius
 
 ## 6. Admin actions (endpoint table)
 
-New routes under `/api/v1/admin/**` for the filter-chain double gate. Every
-mutation writes an `audit_log_by_resource` row (interceptor) **and** a
-`moderation_decisions` row; destructive ones require **step-up auth**
+Routes under `/api/v1/admin/**` for the filter-chain double gate — built
+2026-08 (`AdminSoundController`). Every mutation writes an
+`audit_log_by_resource` row (interceptor) **and** a `moderation_decisions` row
+(`ModerationRecorder`); destructive ones require **step-up auth**
 ([architecture.md](architecture.md)). Full cross-doc table in
 [admin-api-blueprint.md](admin-api-blueprint.md) §3.3.
 
 | Action | Endpoint | Body / params | Danger | Step-up | Audit event | Status |
 |---|---|---|---|---|---|---|
-| List by status | `GET /api/v1/admin/sounds` | `status=PENDING_REVIEW`, `uploaderId?`, `category?`, `cursor,pageSize` | L | no | — (read) | **[PLANNED]** (needs §2.6 index) |
-| Inspect | `GET /api/v1/admin/sounds/{id}` | — | L | no | — (read) | **[PLANNED]** — row + `use_count` + `posts_by_sound` page |
-| Approve (re-homed) | `POST /api/v1/admin/sounds/{id}/approve` | — | L | no | `SOUND_APPROVED` | **[PLANNED]** alias over existing `approve`; deprecate stray `/api/v1/sounds/{id}/approve` |
-| Reject | `POST /api/v1/admin/sounds/{id}/reject` | `{reasonCode, note}` | M | no | `SOUND_REJECTED` | **[PLANNED]** — sets `REJECTED`, ES doc removed, uploader notified |
-| Archive | `POST /api/v1/admin/sounds/{id}/archive` | `{reason}` | M | no | `SOUND_ARCHIVED` | **[PLANNED]** — category row + ES removed; posts untouched |
-| **Takedown** | `POST /api/v1/admin/sounds/{id}/takedown` | `{reason, muteAdoptingPosts:bool, rightsClaimId?}` | **H** | **yes** | `SOUND_TAKEDOWN` | **[PLANNED]** — archive + optionally mute `posts_by_sound` |
-| Restore | `POST /api/v1/admin/sounds/{id}/restore` | `{reason}` | M | no | `SOUND_RESTORED` | **[PLANNED]** — from REJECTED/ARCHIVED |
-| Re-categorize | `POST /api/v1/admin/sounds/{id}/category` | `{category}` | M | no | `SOUND_RECATEGORIZED` | **[PLANNED]** — rewrite `sounds_by_category` partition row |
-| Edit metadata | `PATCH /api/v1/admin/sounds/{id}` | `{title?, artistName?, coverArtUrl?}` | M | no | `SOUND_EDITED` | **[PLANNED]** |
-| Hard delete | `DELETE /api/v1/admin/sounds/{id}` | `{reason}` | **H** | **yes** | `SOUND_DELETED` | **[PLANNED]** — purge all stores; GDPR path |
-| Bulk moderate | `POST /api/v1/admin/moderation/bulk` | `{action, targets[≤100], reason}` | **H** | **yes** | per-target + `MODERATION_BULK` | **[PLANNED]** — shared with content-moderation; actions incl. sound approve/reject/archive |
-| Official bulk-seed | `POST /api/v1/admin/sounds/import` | `{items:[…]}` (≤100) | M | no | `SOUND_IMPORTED` | **[PLANNED]** — auto-approve, `PLATFORM_MUSIC`, platform service account |
-| Uploader history | `GET /api/v1/admin/sounds/uploaders/{userId}` | `cursor` | L | no | — (read) | **[PLANNED]** |
-| Exclude from trending | `POST /api/v1/admin/sounds/{id}/trending-exclude` | `{excluded:bool}` | M | no | `SOUND_TRENDING_EXCLUDED` | **[PLANNED]** |
+| List by status | `GET /api/v1/admin/sounds` | `status=PENDING_REVIEW`, `uploaderId?`, `cursor,pageSize` | L | no | — (read) | **[EXISTS]** (built 2026-08); plus `GET /status-counts` |
+| Inspect | `GET /api/v1/admin/sounds/{id}` | — | L | no | — (read) | **[EXISTS]** (built 2026-08) — row + `use_count` + `posts_by_sound` page |
+| Approve (re-homed) | `POST /api/v1/admin/sounds/{id}/approve` | — | L | no | `SOUND_APPROVED` | **[EXISTS]** (built 2026-08); stray `/api/v1/sounds/{id}/approve` deprecated with successor-version `Link` |
+| Reject | `POST /api/v1/admin/sounds/{id}/reject` | `{reasonCode, note}` | M | no | `SOUND_REJECTED` | **[EXISTS]** (built 2026-08) — sets `REJECTED`, ES doc removed |
+| Archive | `POST /api/v1/admin/sounds/{id}/archive` | `{reason}` | M | no | `SOUND_ARCHIVED` | **[EXISTS]** (built 2026-08) — category row + ES removed; posts untouched |
+| **Takedown** | `POST /api/v1/admin/sounds/{id}/takedown` | `{reason, muteAdoptingPosts:bool, rightsClaimId?}` | **H** | **yes** | `SOUND_TAKEDOWN` | **[EXISTS]** (built 2026-08) — archive + optionally mute `posts_by_sound`; returns muted count |
+| Restore | `POST /api/v1/admin/sounds/{id}/restore` | `{reason}` | M | no | `SOUND_RESTORED` | **[EXISTS]** (built 2026-08) — from REJECTED/ARCHIVED |
+| Re-categorize | `POST /api/v1/admin/sounds/{id}/category` | `{category}` | M | no | `SOUND_RECATEGORIZED` | **[EXISTS]** (built 2026-08) — rewrites `sounds_by_category` partition row |
+| Edit metadata | `PATCH /api/v1/admin/sounds/{id}` | `{title?, artistName?, coverArtUrl?}` | M | no | `SOUND_EDITED` | **[EXISTS]** (built 2026-08) |
+| Hard delete | `DELETE /api/v1/admin/sounds/{id}` | `{reason}` | **H** | **yes** | `SOUND_DELETED` | **[EXISTS]** (built 2026-08) — purge all stores; GDPR path |
+| Bulk moderate | `POST /api/v1/admin/moderation/bulk` | `{action, targets[≤100], reason}` | **H** | **yes** | per-target + `ADMIN_MODERATION_BULK` | **[EXISTS]** (built 2026-08) — shared with content-moderation; actions incl. `SOUND_APPROVE`/`SOUND_REJECT` |
+| Official bulk-seed | `POST /api/v1/admin/sounds/import` | `{items:[…]}` (≤100) | M | no | `SOUND_IMPORTED` | **[EXISTS]** (built 2026-08) — auto-approve, `PLATFORM_MUSIC` |
+| Uploader history | `GET /api/v1/admin/sounds/uploaders/{userId}` | `cursor` | L | no | — (read) | **[EXISTS]** (built 2026-08) |
+| Exclude from trending | `POST /api/v1/admin/sounds/{id}/trending-exclude` | `{excluded:bool}` | M | no | `SOUND_TRENDING_EXCLUDED` | **[EXISTS]** (built 2026-08) |
+| Trending board | `GET /api/v1/admin/sounds/trending` | `days, limit` | L | no | — (read) | **[EXISTS]** (built 2026-08) — top by adoptions over a rolling window (`sound_adoptions_by_day`) |
 | Reindex | `POST /api/v1/admin/search/sounds/reindex` | `drop` | H | no | (search-admin) | **[EXISTS]** `SearchAdminController` |
 
 ---
@@ -398,11 +398,11 @@ sound-specific slice.
 
 | Log | Store | Written when | Status |
 |---|---|---|---|
-| `audit_log_by_resource` (resourceType=`SOUND`) | Cassandra | every admin mutation via interceptor | **[EXISTS]** write / **[PLANNED]** read surface |
-| `moderation_decisions` (sound rows) | PG | approve / reject / archive / takedown / restore | **[PLANNED]** |
+| `audit_log_by_resource` (resourceType=`SOUND`) | Cassandra | every admin mutation via interceptor | **[EXISTS]** write + read (`GET /api/v1/admin/audit/resources/{type}/{id}`, built 2026-08) |
+| `moderation_decisions` (sound rows) | PG | approve / reject / archive / takedown / restore | **[EXISTS]** (built 2026-08 — `ModerationRecorder`) |
 | App logs `[SOUND] …` | stdout | usage-record failure, search-unavailable warnings (`CassandraSoundService`, `SoundSearchService`) | **[EXISTS]** |
 | App logs `[SEARCH] … sound …` | stdout | index/refresh/reindex outcomes | **[EXISTS]** |
-| Reject/archive reason capture | PG | with the decision row (reasonCode + free note) | **[PLANNED]** |
+| Reject/archive reason capture | PG | with the decision row (reasonCode + free note) | **[EXISTS]** (built 2026-08) |
 
 Every decision must record **`use_count` at decision time** — a takedown's
 blast radius is forensically meaningful ("this sound was in 3,200 reels when
@@ -425,19 +425,21 @@ need a collector that doesn't exist yet.
 | Oldest pending age | Max wait in queue | §2.6 index | Stat tile |
 | Approval latency | `updatedAt − createdAt` for APPROVED | `sounds_by_id` **[PARTIAL]** (updatedAt set on approve; no reject timestamps) → proper: decision log | Histogram + p95 |
 | Approval ratio | approved ÷ decided | decision log **[PLANNED]** | Line |
-| Adoptions/day | New `posts_by_sound` rows/day | **[PLANNED]** day rollup (`posts_by_sound` isn't date-partitioned) | Stacked area by category |
-| Top sounds | Highest `use_count` | `sound_counters` **[EXISTS]** (no ordered index → rollup) | Bar / table |
-| Rising sounds | 24h adoptions ÷ baseline | **[PLANNED]** rollup | Sorted list w/ Δ |
+| Adoptions/day | New adoptions/day | `sound_adoptions_by_day` **[EXISTS]** (built 2026-08) | Stacked area by category |
+| Top sounds | Highest adoptions over window | `GET /api/v1/admin/sounds/trending` **[EXISTS]** (built 2026-08) | Bar / table |
+| Rising sounds | 24h adoptions ÷ baseline | `sound_adoptions_by_day` **[EXISTS]**; velocity computation **[PLANNED]** | Sorted list w/ Δ |
 | Takedown blast radius | `use_count` at takedown | `sound_counters` snapshot **[PARTIAL]** | Table |
 | Search zero-results | `q` with 0 hits (catalog-gap signal) | needs query logging **[PLANNED]** | Line |
 | `irc-sounds` drift | ES docs vs. APPROVED rows | `_count` compare **[PARTIAL]** | Stat tile |
 
-**Why "adoptions/day" is [PLANNED] and not free:** `sound_counters` is a bare
-Cassandra COUNTER (current total only, no history), and `posts_by_sound` is
-partitioned by `soundId` with a time *clustering* column — you can read one
-sound's timeline but not "all adoptions on 2026-08-01" across sounds without a
-scan. A small `sound_adoptions_by_day (day, sound_id, count)` rollup written
-alongside `recordPostUsage` unlocks every trend metric above.
+**Why "adoptions/day" needed its own store (built 2026-08):** `sound_counters`
+is a bare Cassandra COUNTER (current total only, no history), and
+`posts_by_sound` is partitioned by `soundId` with a time *clustering* column —
+you can read one sound's timeline but not "all adoptions on 2026-08-01" across
+sounds without a scan. The `sound_adoptions_by_day (day, sound_id, count)`
+counter (`SoundAdoptionCounter`), bumped alongside `recordPostUsage` on every
+post usage, now unlocks the trend metrics above and backs
+`GET /api/v1/admin/sounds/trending`.
 
 ---
 
@@ -445,7 +447,7 @@ alongside `recordPostUsage` unlocks every trend metric above.
 
 | Alert | Condition | Why |
 |---|---|---|
-| Review stall | any `PENDING_REVIEW` > 72h, or pending depth > 50 | The queue is invisible today; once built, keep it drained |
+| Review stall | any `PENDING_REVIEW` > 72h, or pending depth > 50 | The queue is visible since 2026-08 — keep it drained |
 | ES/Cassandra drift | `irc-sounds` doc count deviates > 5% from APPROVED rows | Approval flips not landing in search → sounds uploaded but unfindable |
 | Adoption spike from few authors | sound gains > N adoptions/hr from < M distinct authors | Trending-manipulation / bot ring |
 | Takedown backlog | open rights claims older than the DMCA SLA | Legal exposure |
@@ -456,14 +458,14 @@ alongside `recordPostUsage` unlocks every trend metric above.
 
 ## 10. Permissions & privacy
 
-- **ADMIN-only, honestly.** Sound moderation is ADMIN-gated. The existing
-  `approve` endpoint's `MODERATOR`/`SUPER_ADMIN` names are **phantom** (§2.3) —
-  the dashboard must not imply a moderator tier the `Role` enum doesn't have
-  ([users-roles.md](users-roles.md)). If a moderator tier is ever wanted, it's a
-  `Role`-enum change, not just a SpEL string.
-- **Re-home under `/api/v1/admin/**`.** Approve currently misses the
-  filter-chain double gate. New actions all live under the admin prefix; the
-  re-homed approve alias is a phase-1 rider.
+- **ADMIN-only, honestly.** Sound moderation is ADMIN-gated. The bare `approve`
+  endpoint's old phantom `MODERATOR`/`SUPER_ADMIN` names were normalized to
+  `hasRole('ADMIN')` in 2026-08 (§2.3); the `Role` enum has since widened
+  ([users-roles.md](users-roles.md)), so any moderator-tier grant must reference
+  the real enum value, never `SUPER_ADMIN`.
+- **Re-homed under `/api/v1/admin/**`.** All admin sound actions live under the
+  admin prefix (built 2026-08); the bare approve path is `@Deprecated` and kept
+  only for migration.
 - **Public-plane content only.** Sounds attach to reels/posts/stories — public
   content. Nothing here touches chat; the sound picker in a chat context still
   reads the same public library, but **no chat message content is ever surfaced
@@ -490,18 +492,19 @@ Mirrors the platform-wide 3-phase order ([admin-api-blueprint.md](admin-api-blue
 
 ## 12. Open gaps & accepted debts (verified today)
 
-1. **No pending/uploader listing** — the one hard blocker (§2.6). Everything
-   queue-shaped waits on it.
-2. **Half a state machine** — `REJECTED`/`ARCHIVED` exist in the enum, are named
-   in `SoundSearchDocument`'s dead-status comment, but **no code sets them**.
-3. **`SoundApprovedEvent` is dead** — defined, never published/consumed; uploaders
-   are **not notified** of approval today.
-4. **Approve is a stray** — outside `/api/v1/admin/**`, phantom-role gate.
-5. **No rights/copyright anything** — full [PLANNED]; but manual takedown is cheap
-   because blast-radius data already exists.
-6. **No time-series** — `sound_counters` is a bare counter and `posts_by_sound`
-   isn't cross-sound date-queryable, so every trend/rising metric needs the
-   `sound_adoptions_by_day` rollup.
+1. ~~No pending/uploader listing~~ — **closed 2026-08** (option B: `irc-sounds`
+   status/`uploaderId` terms behind `GET /api/v1/admin/sounds`).
+2. ~~Half a state machine~~ — **closed 2026-08**: every `SoundStatus` transition
+   is implemented (§5).
+3. ~~`SoundApprovedEvent` is dead~~ — **wired 2026-08** (published on admin
+   approve, consumed → `SOUND_APPROVED` notification). Residual: the deprecated
+   bare approve path bypasses the event; reject/archive events still unbuilt.
+4. ~~Approve is a stray~~ — **closed 2026-08**: admin path live, bare path
+   normalized to `hasRole('ADMIN')` + `@Deprecated`.
+5. **No rights/copyright register** — still [PLANNED]; the manual takedown
+   (+mute adopting posts) shipped 2026-08, fingerprint matching did not.
+6. ~~No time-series~~ — **closed 2026-08**: `sound_adoptions_by_day` day-bucketed
+   adoption counter, bumped on every post usage.
 7. **`status`/`category` stored as `String`** on `SoundEntity` (not the enums) —
    fine for Cassandra, but the app never validates the String against
    `SoundStatus`/`SoundCategory` on write; a bad category would create an

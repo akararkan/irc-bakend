@@ -94,6 +94,17 @@ public interface QuestionService {
 
     void deleteAnswer(UUID questionId, UUID answerId, UUID requesterId);
 
+    /**
+     * Moderation status transitions (docs/admin/research-qna.md §4). CLOSED
+     * and ARCHIVED were always enforced as answer-blocking but had no writer
+     * until these. Author-or-ADMIN gated via {@code canManageQuestion}.
+     */
+    void closeQuestion(UUID questionId, UUID requesterId, String reason);
+
+    void reopenQuestion(UUID questionId, UUID requesterId);
+
+    void archiveQuestion(UUID questionId, UUID requesterId);
+
     // ── Answer controls ──────────────────────────────────────────────────────
 
     QuestionResponse lockAnswers(UUID questionId, UUID requesterId);

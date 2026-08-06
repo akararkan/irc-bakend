@@ -320,8 +320,11 @@ public class EmailTemplate {
             case STORY_REACTED    -> "reacted to your story";
             case STORY_REPLIED    -> "replied to your story";
             case SOUND_APPROVED   -> "approved your uploaded sound";
+            case SOUND_REJECTED   -> "reviewed your uploaded sound";
 
             case TRENDING_DIGEST  -> "shared today's trending in scholarship";
+
+            case ADMIN_ANOMALY    -> "flagged a metric anomaly";
         };
     }
 

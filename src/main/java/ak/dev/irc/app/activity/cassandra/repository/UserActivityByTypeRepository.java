@@ -15,6 +15,16 @@ import java.util.UUID;
 public interface UserActivityByTypeRepository
         extends CassandraRepository<UserActivityByTypeEntity, MapId> {
 
+    /** Bounded single-partition counts — the break-glass histogram source. */
+    @Query("SELECT COUNT(*) FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type")
+    long countFor(@Param("userId") UUID userId, @Param("type") String activityType);
+
+    @Query("SELECT COUNT(*) FROM activity_by_user_and_type WHERE user_id = :userId " +
+           "AND activity_type = :type AND created_at >= :from")
+    long countForSince(@Param("userId") UUID userId, @Param("type") String activityType,
+                       @Param("from") Instant from);
+
     @Query("SELECT * FROM activity_by_user_and_type WHERE user_id = :userId " +
            "AND activity_type = :type LIMIT :pageSize")
     List<UserActivityByTypeEntity> firstPage(@Param("userId") UUID userId,

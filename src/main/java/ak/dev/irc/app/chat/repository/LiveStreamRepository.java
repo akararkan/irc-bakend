@@ -5,6 +5,8 @@ import ak.dev.irc.app.chat.enums.LiveStreamStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
@@ -15,7 +17,8 @@ import java.util.UUID;
 public interface LiveStreamRepository extends JpaRepository<LiveStream, UUID> {
 
     /** Discovery: live streams, most-watched first. */
-    List<LiveStream> findByStatusOrderByViewerCountDesc(LiveStreamStatus status);
+    @Query("SELECT s FROM LiveStream s WHERE s.status = :status ORDER BY s.viewerCount DESC")
+    List<LiveStream> findByStatusOrderByViewerCountDesc(@Param("status") LiveStreamStatus status);
 
     /**
      * The "following is live" row: live streams whose host is one of the users
@@ -32,4 +35,19 @@ public interface LiveStreamRepository extends JpaRepository<LiveStream, UUID> {
      * O(log N + pageSize), independent of history depth.
      */
     Page<LiveStream> findByHostIdOrderByStartedAtDesc(UUID hostId, Pageable pageable);
+
+    // ── Admin browse (chat-channels-live.md §6) ───────────────────────────
+
+    Page<LiveStream> findAllByOrderByStartedAtDesc(Pageable pageable);
+
+    Page<LiveStream> findByStatusOrderByStartedAtDesc(LiveStreamStatus status, Pageable pageable);
+
+    Page<LiveStream> findByStatusAndHostIdOrderByStartedAtDesc(LiveStreamStatus status,
+                                                               UUID hostId, Pageable pageable);
+
+    @Query("SELECT COUNT(s) FROM LiveStream s WHERE s.status = :status")
+    long countByStatus(@Param("status") LiveStreamStatus status);
+
+    /** Stale-LIVE candidates for the orphan sweep (ops §3.12). */
+    List<LiveStream> findByStatusAndStartedAtBefore(LiveStreamStatus status, java.time.Instant cutoff);
 }

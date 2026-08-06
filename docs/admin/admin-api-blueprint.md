@@ -1,8 +1,9 @@
 # Admin API Blueprint — Every Endpoint in One Place
 
 Section 12 of the [admin dashboard plan](README.md). The consolidated endpoint catalog:
-every admin API the dashboard needs — the **14 that exist today** merged with the
-proposed surface — one table per dashboard section, each row carrying its danger level,
+every admin API the dashboard needs — the 14 that existed pre-build merged with the
+proposed surface (the 2026-08 build has since landed phases 1–3 + impersonation; see the
+§9 note) — one table per dashboard section, each row carrying its danger level,
 step-up requirement, and audit action. Section docs own the views/widgets/KPIs; this doc
 owns the complete HTTP contract and the build sequence.
 
@@ -51,7 +52,7 @@ Defined in [architecture.md §4](architecture.md); summarized here because this 
 | Pagination | PG-backed lists: Spring `Pageable` with `Pages.clamp` (**[EXISTS]** pattern), hard cap `size<=100`. Cassandra-backed lists: `cursor` + `pageSize` keyset, exactly like `AuditLogController` **[EXISTS]**. |
 | Date ranges | `from` / `to` ISO-8601 instants, optional, `from<=to` validated; default last 24h (logs) / last 30d (analytics). |
 | Filters | Consistent names: `userId`, `status`, `type`, `q`, `sort`. Enums parsed case-insensitively; 400 lists allowed values. |
-| Audit | **Every mutation** writes a business audit row via `AuditLogService.record(...)` (**[PARTIAL]** — helper exists, zero callers today) *in addition to* the free interceptor row. The action name is the row's last column. |
+| Audit | **Every mutation** writes a business audit row via `AuditLogService.record(...)` (**[EXISTS]** — funneled through `AdminAuditor` on every admin mutation, built 2026-08) *in addition to* the free interceptor row. The action name is the row's last column. |
 | Step-up | `high`/`critical` rows require an armed `stepup:{userId}` marker (`StepUpService`, TTL 300s **[EXISTS]**); absent → 403 `STEP_UP_REQUIRED`. Reads never step-up (exception: PII/content reveals, marked explicitly). |
 | Idempotency | Mutations honor the global `Idempotency-Key` header (24h replay, `IdempotencyFilter` **[EXISTS]**). |
 | Long-running | Anything reindex-scale returns `202` + job id (**[PLANNED]**; the 7 existing reindexes stay synchronous until migrated). |
@@ -64,64 +65,64 @@ Views/KPIs: [users-roles.md](users-roles.md) (inspection/analytics) + **[user-ad
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/users` | `q,role,status,verified,from,to` + pageable | `Page<AdminUserRow>` — `UserRepository.findActiveByRoles`/`searchUsersFts` | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/users/{userId}` | — | `AdminUserDetail` — User+profile fetch-join, `UserStatsService`, `StorageUsageService` | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/users/{userId}/pii` | — | raw email/phone (masked elsewhere) | **[PLANNED]** | read / **yes** | `ADMIN_PII_REVEAL` |
-| PATCH | `/api/v1/admin/users/{userId}/role` | body `AdminChangeRoleRequest` | updated user | **[EXISTS]** `AdminUserController` → `AdminUserService.changeRole` | critical / **yes [PLANNED]** (none today) | `ADMIN_USER_ROLE_CHANGE` **[PLANNED]** |
-| POST | `/api/v1/admin/users/{userId}/disable` | body `{reason}` | 204 | **[PLANNED]** (`User.is_enabled` column **[PARTIAL]** — never toggled today) | high / **yes** | `ADMIN_USER_DISABLE` |
-| POST | `/api/v1/admin/users/{userId}/enable` | — | 204 | **[PLANNED]** | medium / yes | `ADMIN_USER_ENABLE` |
-| POST | `/api/v1/admin/users/{userId}/lock` · `/unlock` | body `{reason}` | 204 | **[PLANNED]** (`is_account_non_locked` **[PARTIAL]** — never toggled) | high / **yes** | `ADMIN_USER_LOCK` / `_UNLOCK` |
-| GET | `/api/v1/admin/users/{userId}/sessions` | — | `refresh_tokens` projection (device, ip, last_seen, trusted_until) | **[PLANNED]** (self-serve `GET /api/v1/security/sessions` **[EXISTS]**) | read / no | interceptor |
-| DELETE | `/api/v1/admin/users/{userId}/sessions/{sid}` | — | 204 | **[PLANNED]** (`SessionDenylist` **[EXISTS]** primitive) | medium / yes | `ADMIN_SESSION_REVOKE` |
-| POST | `/api/v1/admin/users/{userId}/sessions/revoke-all` | — | count | **[PLANNED]** (`RefreshTokenRepository.revokeAllForUser` **[EXISTS]** primitive) | medium / yes | `ADMIN_SESSIONS_REVOKE_ALL` |
-| POST | `/api/v1/admin/users/{userId}/2fa/reset` | body `{reason}` | 204 + security email | **[PLANNED]** | critical / **yes** | `ADMIN_2FA_RESET` |
-| POST | `/api/v1/admin/users/{userId}/deletion/request` | body `{reason}` | deletion state | **[PLANNED]** (reuses `AccountLifecycleService.requestDeletion` **[EXISTS]**) | critical / **yes** | `ADMIN_ACCOUNT_DELETE_REQUEST` |
-| POST | `/api/v1/admin/users/{userId}/deletion/cancel` | — | deletion state | **[PLANNED]** (reuses `cancelDeletion` **[EXISTS]**) | medium / yes | `ADMIN_ACCOUNT_DELETE_CANCEL` |
-| GET | `/api/v1/admin/users/{userId}/login-events` | pageable | `login_events` rows | **[PLANNED]** — table **[PARTIAL]**: no writer wired (`LoginEventService.record` zero callers) | read / no | interceptor |
-| GET | `/api/v1/admin/users/{userId}/settings-audit` | pageable | `settings_audit` rows | **[PLANNED]** — thin controller over `SettingsAuditService.history` **[PARTIAL]** (no HTTP surface) | read / no | interceptor |
-| GET | `/api/v1/admin/users/{userId}/moderation` | — | strikes + reports by/against (`user_strikes`, `reports`) | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/users/{userId}/data` | — | `export_jobs` + `account_deletion_requests` + tombstone check | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/users/analytics` | `window` | growth aggregates (signups/day, role mix, verification funnel, deletion pipeline) | **[PLANNED]** queries | read / no | interceptor |
-| POST | `/api/v1/admin/users/{userId}/impersonate` | body `{reason}` (min 10 chars) | short-TTL read-only token | **[PLANNED]** ([architecture.md §7](architecture.md), [user-administration.md §5](user-administration.md)) | critical / **yes** | `ADMIN_IMPERSONATE_START` |
-| DELETE | `/api/v1/admin/impersonation` | — | 204 | **[PLANNED]** | low / no | `ADMIN_IMPERSONATE_END` |
-| POST | `/api/v1/admin/users` | body `{fname,lname,username,email,role,temporaryPassword?,sendInvite?,markEmailVerified?}` | created `AdminUserDetail` | **[PLANNED]** — reuses `provision(...)` ex-`register` **[EXISTS]**; ⚠️ register hardcodes `role=SCHOLAR`, form defaults to `USER` | high / **yes** | `ADMIN_USER_CREATE` |
-| POST | `/api/v1/admin/users/bulk` | CSV/JSON `{rows[]}` | per-row `{created\|skipped\|error}` | **[PLANNED]** — loop over `provision(...)`, cap 1000, per-row audit | high / **yes** | `ADMIN_USER_BULK_CREATE` |
-| POST | `/api/v1/admin/users/invite` | body `{email,role}` | invite id | **[PLANNED]** — needs a new `UserInvite`/`TokenType.INVITE` (no user-onboarding invite exists; only channel invites) | medium / yes | `ADMIN_USER_INVITE` |
-| PATCH | `/api/v1/admin/users/{userId}` | body `{fname?,lname?,username?,email?}` | updated user | **[PLANNED]** — direct setters + `existsBy*` guards; email edit resets `email_verified_at` | high / **yes** | `ADMIN_USER_EDIT` |
-| POST | `/api/v1/admin/users/{userId}/password/reset` | body `{temp?\|sendLink}` | 204 (+ revoke-all + notify) | **[PLANNED]** — no admin set-password primitive; **forgot-password intentionally absent** | critical / **yes** | `ADMIN_PASSWORD_RESET` |
-| POST | `/api/v1/admin/users/{userId}/email/verify` | — | 204 | **[PLANNED]** — the **only intended writer** of `email_verified_at` (verify scaffolding is dead: `VerificationToken` has zero injectors) | medium / yes | `ADMIN_EMAIL_VERIFY` |
-| POST | `/api/v1/admin/users/{userId}/purge/{now\|hold}` | — | deletion state | **[PLANNED]** — manual expedite/hold over the nightly purge cron `0 30 3 * * *` | critical / **yes** | `ADMIN_PURGE_NOW` / `_HOLD` |
-| POST | `/api/v1/admin/users/{userId}/strikes` | body `{reportId?,reason}` | strike row | **[PLANNED]** — **first caller** of `StrikeService.issueStrike` (zero callers today); see [safety-reports.md](safety-reports.md) | high / yes | `ADMIN_STRIKE_ISSUE` |
-| POST | `/api/v1/admin/users/bulk-action` | body `{ids[],action,reason}` | per-id result | **[PLANNED]** — batch role/disable/delete over the singular primitives | critical / **yes** | `ADMIN_BULK_ACTION` |
+| GET | `/api/v1/admin/users` | `q,role,status,verified,from,to` + pageable | `Page<AdminUserRow>` — `UserRepository.findActiveByRoles`/`searchUsersFts` | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}` | — | `AdminUserDetail` — User+profile fetch-join, `UserStatsService`, `StorageUsageService` | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}/pii` | — | raw email/phone (masked elsewhere) | **[EXISTS]** (built 2026-08) | read / **yes** | `ADMIN_PII_REVEAL` |
+| PATCH | `/api/v1/admin/users/{userId}/role` | body `AdminChangeRoleRequest` | updated user | **[EXISTS]** `AdminUserController` → `AdminUserService.changeRole` (+ self-guard & last-admin guard, built 2026-08) | critical / **yes** — `@RequiresStepUp` **[EXISTS]** (built 2026-08) | `ADMIN_USER_ROLE_CHANGE` **[EXISTS]** (built 2026-08) |
+| POST | `/api/v1/admin/users/{userId}/disable` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08 — `User.is_enabled` now admin-toggled) | high / **yes** | `ADMIN_USER_DISABLE` |
+| POST | `/api/v1/admin/users/{userId}/enable` | — | 204 | **[EXISTS]** (built 2026-08) | medium / yes | `ADMIN_USER_ENABLE` |
+| POST | `/api/v1/admin/users/{userId}/lock` · `/unlock` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08 — `is_account_non_locked` now admin-toggled) | high / **yes** | `ADMIN_USER_LOCK` / `_UNLOCK` |
+| GET | `/api/v1/admin/users/{userId}/sessions` | — | `refresh_tokens` projection (device, ip, last_seen, trusted_until) | **[EXISTS]** (built 2026-08; self-serve `GET /api/v1/security/sessions` **[EXISTS]**) | read / no | interceptor |
+| DELETE | `/api/v1/admin/users/{userId}/sessions/{sid}` | — | 204 | **[EXISTS]** (built 2026-08, over the `SessionDenylist` primitive) | medium / yes | `ADMIN_SESSION_REVOKE` |
+| POST | `/api/v1/admin/users/{userId}/sessions/revoke-all` | — | count | **[EXISTS]** (built 2026-08, over `RefreshTokenRepository.revokeAllForUser`) | medium / yes | `ADMIN_SESSIONS_REVOKE_ALL` |
+| POST | `/api/v1/admin/users/{userId}/2fa/reset` | body `{reason}` | 204 + security email | **[EXISTS]** (built 2026-08) | critical / **yes** | `ADMIN_2FA_RESET` |
+| POST | `/api/v1/admin/users/{userId}/deletion/request` | body `{reason}` | deletion state | **[EXISTS]** (built 2026-08 — reuses `AccountLifecycleService.requestDeletion`) | critical / **yes** | `ADMIN_ACCOUNT_DELETE_REQUEST` |
+| POST | `/api/v1/admin/users/{userId}/deletion/cancel` | — | deletion state | **[EXISTS]** (built 2026-08 — reuses `cancelDeletion`) | medium / yes | `ADMIN_ACCOUNT_DELETE_CANCEL` |
+| GET | `/api/v1/admin/users/{userId}/login-events` | pageable | `login_events` rows | **[EXISTS]** (built 2026-08) — writer wired from `AuthServiceImpl` login/refresh | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}/settings-audit` | pageable | `settings_audit` rows | **[EXISTS]** (built 2026-08) — thin controller over `SettingsAuditService.history` | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}/moderation` | — | strikes + reports by/against (`user_strikes`, `reports`) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}/data` | — | `export_jobs` + `account_deletion_requests` + tombstone check | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/users/analytics` | `window` | growth aggregates (signups/day, role mix, verification funnel, deletion pipeline, close-friends adoption/list-size, sessions) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| POST | `/api/v1/admin/users/{userId}/impersonate` | body `{reason}` (min 10 chars) | short-TTL read-only token | **[EXISTS]** (built 2026-08; [architecture.md §7](architecture.md), [user-administration.md §5](user-administration.md)) | critical / **yes** | `ADMIN_IMPERSONATE_START` |
+| DELETE | `/api/v1/admin/impersonation` | — | 204 | **[EXISTS]** (built 2026-08) | low / no | `ADMIN_IMPERSONATE_END` |
+| POST | `/api/v1/admin/users` | body `{fname,lname,username,email,role,temporaryPassword?,sendInvite?,markEmailVerified?}` | created `AdminUserDetail` | **[EXISTS]** (built 2026-08) — `UserProvisioningService.provision` shared with `register` (which now defaults `Role.USER`) | high / **yes** | `ADMIN_USER_CREATE` |
+| POST | `/api/v1/admin/users/bulk` | CSV/JSON `{rows[]}` | per-row `{created\|skipped\|error}` | **[EXISTS]** (built 2026-08) — loop over `provision(...)`, per-row audit | high / **yes** | `ADMIN_USER_BULK_CREATE` |
+| POST | `/api/v1/admin/users/invite` | body `{email,role}` | invite id | **[EXISTS]** (built 2026-08, + resend/revoke) | medium / yes | `ADMIN_USER_INVITE` |
+| PATCH | `/api/v1/admin/users/{userId}` | body `{fname?,lname?,username?,email?}` | updated user | **[EXISTS]** (built 2026-08) — email edit resets `email_verified_at` | high / **yes** | `ADMIN_USER_EDIT` |
+| POST | `/api/v1/admin/users/{userId}/password/reset` | body `{temp?\|sendLink}` | 204 (+ revoke-all + notify) | **[EXISTS]** (built 2026-08) — **user-facing forgot-password remains intentionally absent** | critical / **yes** | `ADMIN_PASSWORD_RESET` |
+| POST | `/api/v1/admin/users/{userId}/email/verify` | — | 204 | **[EXISTS]** (built 2026-08) — the **only** writer of `email_verified_at` (user-facing verify scaffolding still dead) | medium / yes | `ADMIN_EMAIL_VERIFY` |
+| POST | `/api/v1/admin/users/{userId}/purge/{now\|hold}` | — | deletion state | **[EXISTS]** (built 2026-08) — manual expedite/hold over the nightly purge cron `0 30 3 * * *` | critical / **yes** | `ADMIN_PURGE_NOW` / `_HOLD` |
+| POST | `/api/v1/admin/users/{userId}/strikes` | body `{reportId?,reason}` | strike row | **[EXISTS]** (built 2026-08) — `StrikeService.issueStrike` now has multiple callers; see [safety-reports.md](safety-reports.md) | high / yes | `ADMIN_STRIKE_ISSUE` |
+| POST | `/api/v1/admin/users/bulk-action` | body `{ids[],action,reason}` | per-id result | **[EXISTS]** (built 2026-08) — batch role/disable/delete over the singular primitives | critical / **yes** | `ADMIN_BULK_ACTION` |
 
 ### 3.2 Content moderation (posts / comments / stories / reels)
 
-Views/KPIs: [content-moderation.md](content-moderation.md). No admin content endpoint exists today — every delete path is author-only; `PostStatus.REMOVED` is a phantom state no code writes.
+Views/KPIs: [content-moderation.md](content-moderation.md). The admin takedown path landed 2026-08: `AdminContentController`/`AdminContentService` post remove/restore (writes `status=REMOVED` / back to `PUBLISHED`) plus comment/story deletes.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
 | GET | `/api/v1/admin/content/posts` | `authorId,type,status,from,to,cursor,pageSize` | post rows — `posts_by_id`/`PostByAuthorRepository` + `PostHydrator` | **[PLANNED]** | read / no | interceptor |
 | GET | `/api/v1/admin/content/posts/{postId}` | — | post detail + counters (`post_counters`) | **[PLANNED]** | read / no | interceptor |
-| POST | `/api/v1/admin/content/posts/{postId}/remove` | body `{reason,reportId?}` | 204 | **[PLANNED]** — writes `status=REMOVED` (column exists, only `PUBLISHED` ever written today), deletes from `irc-posts`, untags trending | high / **yes** | `ADMIN_POST_REMOVE` |
-| POST | `/api/v1/admin/content/posts/{postId}/restore` | — | 204 | **[PLANNED]** | medium / no | `ADMIN_POST_RESTORE` |
-| DELETE | `/api/v1/admin/content/comments/{commentId}` | body `{reason}` | 204 | **[PLANNED]** — extends `CassandraCommentService.deleteComment` (author-only today) with admin path | high / **yes** | `ADMIN_COMMENT_DELETE` |
-| DELETE | `/api/v1/admin/content/stories/{storyId}` | body `{reason}` | 204 | **[PLANNED]** — `CassandraStoryService` delete is author-only today | high / **yes** | `ADMIN_STORY_DELETE` |
+| POST | `/api/v1/admin/content/posts/{postId}/remove` | body `{reason,reportId?}` | 204 | **[EXISTS]** (built 2026-08) — `AdminContentService.removePost` writes `status=REMOVED`, deletes from `irc-posts`, untags trending | high / **yes** | `ADMIN_POST_REMOVE` |
+| POST | `/api/v1/admin/content/posts/{postId}/restore` | — | 204 | **[EXISTS]** (built 2026-08) — writes `PUBLISHED` back | medium / no | `ADMIN_POST_RESTORE` |
+| DELETE | `/api/v1/admin/content/comments/{commentId}` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08) — admin path over `CassandraCommentService.deleteComment` | high / **yes** | `ADMIN_COMMENT_DELETE` |
+| DELETE | `/api/v1/admin/content/stories/{storyId}` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08) — admin path over the author-only `CassandraStoryService` delete | high / **yes** | `ADMIN_STORY_DELETE` |
 | GET | `/api/v1/admin/content/blocklist` | pageable | platform keyword blocklist | **[PLANNED]** — no platform blocklist exists (per-user `HiddenKeyword` is CRUD-only and unenforced) | read / no | interceptor |
 | POST | `/api/v1/admin/content/blocklist` | body `{keyword}` | created row | **[PLANNED]** — reuses `KeywordNormalizer` **[EXISTS]** primitive; enforcement hook is new | medium / no | `ADMIN_BLOCKLIST_ADD` |
 | DELETE | `/api/v1/admin/content/blocklist/{id}` | — | 204 | **[PLANNED]** | medium / no | `ADMIN_BLOCKLIST_REMOVE` |
 
 ### 3.3 Sound library
 
-Views/KPIs: [sound-library.md](sound-library.md) (the whole subsystem — Section 13) and [content-moderation.md](content-moderation.md) §2.6 (the approval-queue slice). State machine `PENDING_REVIEW → APPROVED | REJECTED | ARCHIVED`; only the approve transition exists, and it lives **outside the prefix**. The dedicated doc adds the planned reject/archive/**takedown**/restore/re-categorize/edit/delete + official bulk-seed + trending-exclude endpoints — see its §6.
+Views/KPIs: [sound-library.md](sound-library.md) (the whole subsystem — Section 13) and [content-moderation.md](content-moderation.md) §2.6 (the approval-queue slice). State machine `PENDING_REVIEW → APPROVED | REJECTED | ARCHIVED`. As of 2026-08 the full moderation set (approve/reject/archive/restore/takedown/recategorize/edit-metadata/hard-delete + pending queue + uploader history) lives under `/api/v1/admin/sounds` (`AdminSoundController` over `CassandraSoundService`); the historical stray approve is deprecated in place — see the dedicated doc's §6.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/sounds` | `status` (default `PENDING_REVIEW`), `cursor,pageSize` | review queue rows | **[PLANNED]** — no pending-review query exists anywhere (`CassandraSoundService` javadoc: "out of scope"); needs a status-keyed table/query | read / no | interceptor |
-| GET | `/api/v1/admin/sounds/{id}` | — | `sounds_by_id` row + `sound_counters.use_count` | **[PLANNED]** | read / no | interceptor |
-| POST | `/api/v1/sounds/{id}/approve` | — | 204 (idempotent) | **[EXISTS]** `CassandraSoundController` → `CassandraSoundService.approve` — **stray**: annotation-only gate, phantom `MODERATOR`/`SUPER_ADMIN` grants | medium / no | interceptor only today |
-| POST | `/api/v1/admin/sounds/{id}/approve` | — | 204 | **[PLANNED]** re-home alias (wraps `approve` **[EXISTS]**); deprecate stray | medium / no | `ADMIN_SOUND_APPROVE` |
-| POST | `/api/v1/admin/sounds/{id}/reject` | body `{reason}` | 204 | **[PLANNED]** — `SoundStatus.REJECTED` is never set by any code today | medium / no | `ADMIN_SOUND_REJECT` |
-| POST | `/api/v1/admin/sounds/{id}/archive` | — | 204 | **[PLANNED]** — `ARCHIVED` likewise unreachable today | medium / no | `ADMIN_SOUND_ARCHIVE` |
+| GET | `/api/v1/admin/sounds` | `status` (default `PENDING_REVIEW`), `cursor,pageSize` | review queue rows | **[EXISTS]** (built 2026-08) — backed by `SoundSearchService.idsByStatus` (uploaderId added to `SoundSearchDocument`) | read / no | interceptor |
+| GET | `/api/v1/admin/sounds/{id}` | — | `sounds_by_id` row + `sound_counters.use_count` | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| POST | `/api/v1/sounds/{id}/approve` | — | 204 (idempotent) | **[EXISTS]** `CassandraSoundController` → `CassandraSoundService.approve` — **stray**, now normalized to `hasRole('ADMIN')` + `@Deprecated` with successor `Link` (2026-08) | medium / no | interceptor only |
+| POST | `/api/v1/admin/sounds/{id}/approve` | — | 204 | **[EXISTS]** (built 2026-08) re-home alias (wraps `approve`); stray deprecated | medium / no | `ADMIN_SOUND_APPROVE` |
+| POST | `/api/v1/admin/sounds/{id}/reject` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08) — `CassandraSoundService.reject` | medium / no | `ADMIN_SOUND_REJECT` |
+| POST | `/api/v1/admin/sounds/{id}/archive` | — | 204 | **[EXISTS]** (built 2026-08) — `CassandraSoundService.archive` (+ restore/takedown/recategorize/edit/hard-delete siblings) | medium / no | `ADMIN_SOUND_ARCHIVE` |
 
 ### 3.4 Research / QnA / tags
 
@@ -134,15 +135,15 @@ Views/KPIs: [research-qna.md](research-qna.md). ADMIN already has **programmatic
 | POST | `/api/v1/admin/research/{id}/retract` | body `{reason}` | 204 | **[PARTIAL]** — ADMIN service bypass exists; dedicated endpoint doesn't (owner route: `POST /api/v1/researches/{id}/retract` **[EXISTS]**) | high / **yes** | `ADMIN_RESEARCH_RETRACT` |
 | DELETE | `/api/v1/admin/research/{id}` | body `{reason}` | 204 | **[PARTIAL]** — same bypass; endpoint **[PLANNED]** | critical / **yes** | `ADMIN_RESEARCH_DELETE` |
 | GET | `/api/v1/admin/research/{id}/downloads` | `pageSize` | recent download log — `CassandraResearchEngagementService.recentDownloads` **[EXISTS]** primitive | **[PLANNED]** endpoint | read / no | interceptor |
-| GET | `/api/v1/admin/qna/questions` | `status,q,authorId` + pageable | `Page` over `QuestionRepository` | **[PLANNED]** | read / no | interceptor |
-| POST | `/api/v1/admin/qna/questions/{id}/close` | body `{reason}` | 204 | **[PLANNED]** — `QuestionStatus.CLOSED` is checked (blocks answers) but never set by any code | medium / no | `ADMIN_QUESTION_CLOSE` |
-| POST | `/api/v1/admin/qna/questions/{id}/reopen` | — | 204 | **[PLANNED]** | medium / no | `ADMIN_QUESTION_REOPEN` |
-| POST | `/api/v1/admin/qna/questions/{id}/archive` | — | 204 | **[PLANNED]** — `ARCHIVED` likewise never set | medium / no | `ADMIN_QUESTION_ARCHIVE` |
+| GET | `/api/v1/admin/qna/questions` | `status,q,authorId` + pageable | `Page` over `QuestionRepository` | **[EXISTS]** (built 2026-08 — `AdminQnaController` browse) | read / no | interceptor |
+| POST | `/api/v1/admin/qna/questions/{id}/close` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08) — first writer of `QuestionStatus.CLOSED` | medium / no | `ADMIN_QUESTION_CLOSE` |
+| POST | `/api/v1/admin/qna/questions/{id}/reopen` | — | 204 | **[EXISTS]** (built 2026-08) | medium / no | `ADMIN_QUESTION_REOPEN` |
+| POST | `/api/v1/admin/qna/questions/{id}/archive` | — | 204 | **[EXISTS]** (built 2026-08) — first writer of `ARCHIVED` | medium / no | `ADMIN_QUESTION_ARCHIVE` |
 | DELETE | `/api/v1/admin/qna/questions/{id}` | body `{reason}` | 204 | **[PARTIAL]** — ADMIN bypass in `QuestionServiceImpl`; endpoint **[PLANNED]** | high / **yes** | `ADMIN_QUESTION_DELETE` |
 | DELETE | `/api/v1/admin/qna/answers/{id}` | body `{reason}` | 204 | **[PARTIAL]** — same | high / **yes** | `ADMIN_ANSWER_DELETE` |
 | POST | `/api/v1/admin/tags/backfill-posts` | — | `{postsScanned, postsWithHashtags, tagRowsWritten, startedAt}` | **[EXISTS]** `TagAdminController` — full token-range scan; **trending counter bumps are NOT idempotent** | high / yes **[PLANNED]** (none today) | interceptor only today |
-| POST | `/api/v1/admin/tags/{tag}/hide` | `scope` | 204 | **[PLANNED]** — trending suppression list + removal from `trending_tags`; no such mechanism exists | medium / no | `ADMIN_TAG_HIDE` |
-| DELETE | `/api/v1/admin/tags/{tag}/hide` | `scope` | 204 | **[PLANNED]** | medium / no | `ADMIN_TAG_UNHIDE` |
+| POST | `/api/v1/admin/tags/{tag}/hide` | `scope` | 204 | **[EXISTS]** (built 2026-08 — `TagAdminController`; + `POST /api/v1/admin/tags/merge`, and the trending override manager `AdminTrendingController`/`TrendingTagOverride` consulted by `TrendingTagJob`) | medium / no | `ADMIN_TAG_HIDE` |
+| DELETE | `/api/v1/admin/tags/{tag}/hide` | `scope` | 204 | **[EXISTS]** (built 2026-08) | medium / no | `ADMIN_TAG_UNHIDE` |
 
 ### 3.5 Chat / channels / live
 
@@ -150,9 +151,9 @@ Views + the **privacy boundary** (metadata always, message content never, `last_
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| PUT | `/api/v1/channels/{id}/verified` | `verified` bool | 204 | **[EXISTS]** `ChannelController` → `ChannelService.setVerified` — **stray**: outside prefix, annotation-only gate | medium / no | interceptor only today |
-| PATCH | `/api/v1/admin/channels/{id}/verified` | `verified` bool | 204 | **[PLANNED]** re-home alias (wraps `setVerified` **[EXISTS]**); deprecate stray | medium / no | `ADMIN_CHANNEL_VERIFY` |
-| GET | `/api/v1/admin/channels` | `q,verified,public,category` + pageable | metadata rows from `conversations` (type=CHANNEL) — **excludes `last_message_preview`** | **[PLANNED]** — no admin browse exists | read / no | interceptor |
+| PUT | `/api/v1/channels/{id}/verified` | `verified` bool | 204 | **[EXISTS]** `ChannelController` → `ChannelService.setVerified` — **stray**: outside prefix; deprecated 2026-08 with successor `Link` | medium / no | interceptor only |
+| PATCH | `/api/v1/admin/channels/{id}/verified` | `verified` bool | 204 | **[EXISTS]** (built 2026-08 — `AdminChannelController`, wraps `setVerified`); stray deprecated | medium / no | `ADMIN_CHANNEL_VERIFY` |
+| GET | `/api/v1/admin/channels` | `q,verified,public,category` + pageable | metadata rows from `conversations` (type=CHANNEL) — **excludes `last_message_preview`** | **[EXISTS]** (built 2026-08 — `AdminChannelController` browse) | read / no | interceptor |
 | GET | `/api/v1/admin/channels/{id}` | — | metadata + stats — reuses `ChannelStatsService.stats` with platform-admin override | **[PARTIAL]** — `GET /api/v1/channels/{id}/stats` **[EXISTS]** but member-gated (`ADMINS_ONLY`); non-member platform ADMIN gets 403 | read / no | interceptor |
 | POST | `/api/v1/admin/channels/{id}/takedown` | body `{reason,reportId?}` | 204 | **[PLANNED]** — sets `deleted_at` (owner-only today) + removes from `irc-channels` | critical / **yes** | `ADMIN_CHANNEL_TAKEDOWN` |
 | POST | `/api/v1/admin/channels/{id}/restore` | — | 204 | **[PLANNED]** | medium / yes | `ADMIN_CHANNEL_RESTORE` |
@@ -167,20 +168,20 @@ Views + the **privacy boundary** (metadata always, message content never, `last_
 
 ### 3.6 Safety & reports
 
-Views/SLAs: [safety-reports.md](safety-reports.md). The full `ReportState` machine and `Resolution` enum **[EXISTS]** but only the user side is wired (`SafetyController`) — nothing ever advances a report past `SUBMITTED`/`APPEALED`, and `StrikeService.issueStrike` **[PARTIAL]** has zero callers.
+Views/SLAs: [safety-reports.md](safety-reports.md). The full `ReportState` machine and `Resolution` enum **[EXISTS]**, and the moderator side is now wired (built 2026-08): `admin/safety/ReportModerationService` drives triage/action/dismiss/uphold/reverse, and `StrikeService.issueStrike` is called from `AdminSafetyController.issueStrike` (among others).
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/safety/reports` | `state,targetType,reason,targetId,from,to` + pageable | triage queue — `reports` (indexes on `target_id,reason` and `group_key` ready) | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/safety/reports/{id}` | — | report detail + same-target siblings via `group_key` | **[PLANNED]** | read / no | interceptor |
-| POST | `/api/v1/admin/safety/reports/{id}/triage` | — | updated report | **[PLANNED]** — `SUBMITTED → TRIAGED` (never set today) | low / no | `ADMIN_REPORT_TRIAGE` |
-| POST | `/api/v1/admin/safety/reports/{id}/action` | body `{resolution, note}` | updated report | **[PLANNED]** — `→ ACTIONED` + `Resolution` (`WARNING_ISSUED`/`CONTENT_REMOVED`/`ACCOUNT_SUSPENDED`/`NO_ACTION`); resolution execution delegates to §3.1/§3.2/§3.5 actions | high / **yes** | `ADMIN_REPORT_ACTION` |
-| POST | `/api/v1/admin/safety/reports/{id}/dismiss` | body `{note}` | updated report | **[PLANNED]** — `→ DISMISSED` | medium / no | `ADMIN_REPORT_DISMISS` |
-| POST | `/api/v1/admin/safety/appeals/{reportId}/uphold` | body `{note}` | updated report | **[PLANNED]** — `APPEALED → UPHELD` | high / **yes** | `ADMIN_APPEAL_UPHOLD` |
-| POST | `/api/v1/admin/safety/appeals/{reportId}/reverse` | body `{note}` | updated report | **[PLANNED]** — `APPEALED → REVERSED` (+ undo of the original action) | high / **yes** | `ADMIN_APPEAL_REVERSE` |
-| POST | `/api/v1/admin/safety/users/{userId}/strikes` | body `{reportId, reason}` | strike | **[PARTIAL]** — `StrikeService.issueStrike` **[EXISTS]** (90-day decay), zero callers; endpoint **[PLANNED]** | high / **yes** | `ADMIN_STRIKE_ISSUE` |
-| DELETE | `/api/v1/admin/safety/strikes/{strikeId}` | body `{reason}` | 204 | **[PLANNED]** | medium / yes | `ADMIN_STRIKE_REVOKE` |
-| GET | `/api/v1/admin/safety/strikes` | `userId,active` + pageable | strike ledger — `user_strikes` | **[PLANNED]** (self-serve `GET /api/v1/safety/strikes` **[EXISTS]**) | read / no | interceptor |
+| GET | `/api/v1/admin/safety/reports` | `state,targetType,reason,targetId,from,to` + pageable | triage queue — `reports` (grouped, indexes on `target_id,reason` and `group_key`) | **[EXISTS]** (built 2026-08 — `AdminSafetyController`) | read / no | interceptor |
+| GET | `/api/v1/admin/safety/reports/{id}` | — | report detail + frozen evidence + same-target siblings via `group_key` | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| POST | `/api/v1/admin/safety/reports/{id}/triage` | — | updated report | **[EXISTS]** (built 2026-08) — `SUBMITTED → TRIAGED` via `ReportModerationService` | low / no | `ADMIN_REPORT_TRIAGE` |
+| POST | `/api/v1/admin/safety/reports/{id}/action` | body `{resolution, note}` | updated report | **[EXISTS]** (built 2026-08) — `→ ACTIONED` + `Resolution` (`WARNING_ISSUED`/`CONTENT_REMOVED`/`ACCOUNT_SUSPENDED`/`NO_ACTION`); resolution execution delegates to §3.1/§3.2/§3.5 actions | high / **yes** | `ADMIN_REPORT_ACTION` |
+| POST | `/api/v1/admin/safety/reports/{id}/dismiss` | body `{note}` | updated report | **[EXISTS]** (built 2026-08) — `→ DISMISSED` | medium / no | `ADMIN_REPORT_DISMISS` |
+| POST | `/api/v1/admin/safety/appeals/{reportId}/uphold` | body `{note}` | updated report | **[EXISTS]** (built 2026-08) — `APPEALED → UPHELD` | high / **yes** | `ADMIN_APPEAL_UPHOLD` |
+| POST | `/api/v1/admin/safety/appeals/{reportId}/reverse` | body `{note}` | updated report | **[EXISTS]** (built 2026-08) — `APPEALED → REVERSED` (+ undo of the original action) | high / **yes** | `ADMIN_APPEAL_REVERSE` |
+| POST | `/api/v1/admin/safety/users/{userId}/strikes` | body `{reportId, reason}` | strike | **[EXISTS]** (built 2026-08) — `AdminSafetyController.issueStrike` over `StrikeService.issueStrike` (90-day decay) | high / **yes** | `ADMIN_STRIKE_ISSUE` |
+| DELETE | `/api/v1/admin/safety/strikes/{strikeId}` | body `{reason}` | 204 | **[EXISTS]** (built 2026-08) | medium / yes | `ADMIN_STRIKE_REVOKE` |
+| GET | `/api/v1/admin/safety/strikes` | `userId,active` + pageable | strike ledger — `user_strikes` | **[EXISTS]** (built 2026-08; self-serve `GET /api/v1/safety/strikes` **[EXISTS]**) | read / no | interceptor |
 | GET | `/api/v1/admin/safety/analytics` | `from,to` | volume by reason/target, time-to-triage/action SLAs, resolution mix | **[PLANNED]** queries | read / no | interceptor |
 
 ### 3.7 Media & storage
@@ -220,7 +221,7 @@ Views/index health: [search-feed-trending.md](search-feed-trending.md). The 7 re
 | POST | `/api/v1/admin/search/channels/reindex` | `drop` | summary | **[EXISTS]** `SearchAdminController` → `ChannelSearchService.reindexAll` | high / no | interceptor |
 | POST | `/api/v1/admin/search/answers/reindex` | `drop` | summary | **[EXISTS]** `SearchAdminController` → `AnswerSearchService.reindexAll` | high / no | interceptor |
 | POST | `/api/v1/admin/search/sounds/reindex` | `drop` | summary | **[EXISTS]** `SearchAdminController` → `SoundSearchService.reindexAll` (chat-messages has no hook by design) | high / no | interceptor |
-| GET | `/api/v1/admin/search/indices` | — | per-index health/doc-count/mapping-version for the 8 indices | **[PLANNED]** — ES `_cat`/`_count` wrapper | read / no | interceptor |
+| GET | `/api/v1/admin/search/indices` | — | per-index existence + doc count for the 8 `irc-*` indices | **[EXISTS]** (built 2026-08 — `admin/search/AdminSearchOpsController`; store size + canonical-drift counts still missing) | read / no | interceptor |
 | POST | `/api/v1/admin/search/reindex-all` | — | 202 + job id | **[PLANNED]** — sequential orchestration of the 7, async per §2 | high / **yes** | `ADMIN_SEARCH_REINDEX_ALL` |
 | GET | `/api/v1/admin/feed/weights` | — | ranked-feed stage weights (engagement/affinity/freshness/diversity), read-only | **[PLANNED]** — config surface over `FeedRankingService` | read / no | interceptor |
 | GET | `/api/v1/admin/feed/explain/{userId}` | `limit` | scored candidate breakdown for one user's next page (debug) | **[PLANNED]** | read / no | interceptor |
@@ -235,21 +236,21 @@ The full log-store catalog (schemas, writers, retention, gaps): [logs-audit.md](
 | GET | `/api/v1/admin/audit` | `userId` (**required** — 400 without; Cassandra partition scope), `operation,outcome,from,to,cursor,pageSize` | audit page — filters applied in-memory to the fetched slice | **[EXISTS]** `AuditLogController` / `AuditLogByUserRepository.firstPage/nextPage` | read / no | interceptor |
 | GET | `/api/v1/admin/audit/users/{userId}` | `cursor,pageSize` (default 50) | per-user keyset audit history | **[EXISTS]** `AuditLogController` | read / no | interceptor |
 | GET | `/api/v1/admin/audit/stream` | `token` (SSE fallback) | SSE: `connected` / `audit` / `heartbeat` (25s) — global tail via Redis `irc:audit:stream` | **[EXISTS]** `AuditLogController` + `AuditRealtimeService` — the dashboard's live-tile backbone | read / no | n/a (streams are audit-exempt by `SKIP_PATTERN`) |
-| GET | `/api/v1/admin/audit/resources/{resourceType}/{resourceId}` | `cursor,pageSize` | "what happened to this resource" — `audit_log_by_resource` | **[PARTIAL]** — table written on every request, `AuditLogByResourceRepository.firstPage` **[EXISTS]** but has **no endpoint**; the only view that captures anonymous traffic | read / no | interceptor |
+| GET | `/api/v1/admin/audit/resources/{resourceType}/{resourceId}` | `cursor,pageSize` | "what happened to this resource" — `audit_log_by_resource` | **[EXISTS]** (built 2026-08 — `AuditLogController.resourceHistory` over `AuditLogByResourceRepository`); the only view that captures anonymous traffic | read / no | interceptor |
 
 Per-user `settings-audit` and `login-events` readers live in the users table (§3.1) — they are user-detail tabs, catalogued in [logs-audit.md](logs-audit.md).
 
 ### 3.11 Analytics & KPIs
 
-KPI tree + honest sourcing: [analytics-kpis.md](analytics-kpis.md). Hard constraint carried into every row: **no date-bucketed metric store exists** — Cassandra counters are lifetime scalars, point-readable per id only. Phase-1 analytics ship only what is SQL-aggregable today; time-series/DAU/MAU wait for phase-3 collectors.
+KPI tree + honest sourcing: [analytics-kpis.md](analytics-kpis.md). The historical hard constraint (**no date-bucketed metric store**) was removed by the 2026-08 build: an `analytics_events` raw table + catch-all Rabbit tap, daily rollup / weekly cohort / anomaly-scan jobs, and a `user_first_events` funnel tracker now exist. The full suite is `/api/v1/admin/analytics/{overview, content, engagement, trending, export, series, funnel, retention, rollup/{date}/run, backfill, events/sample, alerts-config, alerts/{metric}, anomalies}`.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/analytics/overview` | — | platform stat tiles from computable-today aggregates: users, `SUM` over `research`/`questions` counters, `conversations` totals, `media_assets` bytes, `stream_gift_tallies` coins, follower counts | **[PLANNED]** queries (all sources **[EXISTS]**) | read / no | interceptor |
-| GET | `/api/v1/admin/analytics/content` | `window` | content production counts (posts/reels via Cassandra author counts, research, questions, stories) | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/analytics/engagement` | `window` | DAU/MAU, engagement time-series | **[PLANNED]** — **requires phase-3 collectors** (`login_events` wiring + a date-bucketed rollup table); impossible from today's stores | read / no | interceptor |
-| GET | `/api/v1/admin/analytics/trending` | `scope` | trending leaderboard — reads `trending_tags` snapshot **[EXISTS]** (public variant `GET /api/v1/tags/trending` **[EXISTS]**) | **[PLANNED]** (thin admin wrapper + usage history) | read / no | interceptor |
-| GET | `/api/v1/admin/analytics/export` | `from,to,dataset` | CSV export of any analytics dataset | **[PLANNED]** | read / no | `ADMIN_ANALYTICS_EXPORT` |
+| GET | `/api/v1/admin/analytics/overview` | — | platform stat tiles (incl. `mau30d` + `onlineNow`): users, `SUM` over `research`/`questions` counters, `conversations` totals, `media_assets` bytes, `stream_gift_tallies` coins, follower counts | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/analytics/content` | `window` | content production counts (posts/reels via Cassandra author counts, research, questions, stories) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/analytics/engagement` | `window` | DAU/MAU, engagement time-series | **[EXISTS]** (built 2026-08) — backed by the wired `login_events` + daily rollups | read / no | interceptor |
+| GET | `/api/v1/admin/analytics/trending` | `scope` | trending leaderboard — reads `trending_tags` snapshot **[EXISTS]** (public variant `GET /api/v1/tags/trending` **[EXISTS]**) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/analytics/export` | `from,to,dataset` | CSV export of any analytics dataset | **[EXISTS]** (built 2026-08) | read / no | `ADMIN_ANALYTICS_EXPORT` |
 
 ### 3.12 Operations
 
@@ -257,14 +258,14 @@ Jobs/queues/env registry/runbooks: [operations.md](operations.md).
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/ops/health` | — | dependency rollup: PG, Cassandra, Redis, RabbitMQ, ES, R2, MediaMTX (`:9997` ping) | **[PLANNED]** — only `/actuator/health` **[EXISTS]** (and is chain-ungated; prometheus registry on classpath but not web-exposed) | read / no | interceptor |
-| GET | `/api/v1/admin/ops/jobs` | — | the 16 `@Scheduled` jobs: schedule, last run, outcome | **[PLANNED]** — needs a job-run recorder (none exists; today's evidence is log lines like `[SCHED-PUBLISH]`) | read / no | interceptor |
-| POST | `/api/v1/admin/ops/jobs/{jobKey}/run` | — | 202 | **[PLANNED]** — manual trigger for whitelisted jobs (trending rebuild, digest, purge, cleanup) | high / **yes** | `ADMIN_JOB_RUN` |
-| GET | `/api/v1/admin/ops/queues` | — | RabbitMQ queue depths incl. `irc.queue.dead-letter` (drained-to-log today) — management-API proxy | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/ops/sse` | — | open-emitter counts across the 9 SSE services (generalize `AuditRealtimeService.adminCount()` **[PARTIAL]** — in-memory, log-only) | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/ops/config` | — | sanitized env/flag registry: `permit-all` state, `MEDIA_TRANSCODE_ENABLED`, stream bases — **secrets never rendered** | **[PLANNED]** | read / no | interceptor |
-| GET | `/api/v1/admin/ops/media-plane` | — | MediaMTX status: active paths/sessions via `MediaControlClient` **[EXISTS]** primitive against `:9997` | **[PLANNED]** endpoint | read / no | interceptor |
-| POST | `/api/v1/admin/ops/streams/sweep-orphans` | — | count of LIVE rows with no publisher session, ended | **[PLANNED]** — no cleanup exists for streams orphaned by a crash; pairs `MediaControlClient` session list with `live_streams` | medium / yes | `ADMIN_STREAM_SWEEP` |
+| GET | `/api/v1/admin/ops/health` | — | dependency rollup: PG, Cassandra, Redis, RabbitMQ, ES, R2, MediaMTX (`:9997` ping) | **[EXISTS]** (built 2026-08 — `AdminOpsController`) | read / no | interceptor |
+| GET | `/api/v1/admin/ops/jobs` | — | the `@Scheduled` jobs: schedule, last run, outcome (+ `/jobs/{jobKey}/runs`, pause/resume via Redis flags) | **[EXISTS]** (built 2026-08) — backed by the `admin/ops/{JobRun,JobRunRecorder,JobRunRepository}` ledger | read / no | interceptor |
+| POST | `/api/v1/admin/ops/jobs/{jobKey}/run` | — | 202 | **[EXISTS]** (built 2026-08) — manual trigger for whitelisted jobs (trending rebuild, digest, purge, cleanup) | high / **yes** | `ADMIN_JOB_RUN` |
+| GET | `/api/v1/admin/ops/queues` | — | RabbitMQ queue depths incl. the DLQ parking lot (`/queues/dlq` browse/requeue/discard) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/ops/sse` | — | open-emitter counts across the SSE services (incl. `AuditRealtimeService.adminCount()`) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/ops/config` | — | sanitized env/flag registry: `permit-all` state, `MEDIA_TRANSCODE_ENABLED`, stream bases — **secrets never rendered** (+ `/config/reconciler` enum-check report) | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| GET | `/api/v1/admin/ops/media-plane` | — | MediaMTX status: active paths/sessions via `MediaControlClient` **[EXISTS]** primitive against `:9997` | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| POST | `/api/v1/admin/ops/streams/sweep-orphans` | — | count of LIVE rows with no publisher session, ended (dry-run capable) | **[EXISTS]** (built 2026-08) — pairs `MediaControlClient` session list with `live_streams` | medium / yes | `ADMIN_STREAM_SWEEP` |
 
 ### 3.13 Discovery, PYMK & contact-sync
 
@@ -283,30 +284,30 @@ Knobs/privacy/abuse: [discovery-pymk-privacy.md](discovery-pymk-privacy.md) (§1
 
 ### 3.14 Knowledge vocabulary
 
-Curation console: [knowledge-vocabulary.md](knowledge-vocabulary.md) (§16). Today the `topics`/`madhhabs` tables are **read-only from the app** (migration-managed; repos have no `save`/`delete` callers). Base: `/api/v1/admin/knowledge`.
+Curation console: [knowledge-vocabulary.md](knowledge-vocabulary.md) (§16). Historically the `topics`/`madhhabs` tables were read-only from the app; the 2026-08 build made `AdminKnowledgeController` their **first** save/retire caller (entities gained an `archived_at` column, and the cached pickers filter archived rows). Base: `/api/v1/admin/knowledge`.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/knowledge/{topics\|madhhabs}` | — | rows (trilingual labels) + usage counts | **[PLANNED]** | read / no | interceptor |
-| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}` | body `{nameEn,nameAr,nameCkb}` | created row | **[PLANNED]** — must evict `@Cacheable` region | medium / **yes** | `ADMIN_VOCAB_ADD` |
-| PATCH | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}` | body labels | updated row | **[PLANNED]** — must evict cache | medium / **yes** | `ADMIN_VOCAB_EDIT` |
-| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}/retire` | — | 204 | **[PLANNED]** — soft-retire (hard-delete would fail `findById` profile validation) | high / **yes** | `ADMIN_VOCAB_RETIRE` |
-| POST | `/api/v1/admin/knowledge/cache/evict` | — | 204 | **[PLANNED]** — manual evict of `knowledge-topics`/`knowledge-madhhabs` | low / no | `ADMIN_VOCAB_CACHE_EVICT` |
+| GET | `/api/v1/admin/knowledge/{topics\|madhhabs}` | — | rows (trilingual labels) + usage counts | **[EXISTS]** (built 2026-08) | read / no | interceptor |
+| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}` | body `{nameEn,nameAr,nameCkb}` | created row | **[EXISTS]** (built 2026-08) — evicts the `@Cacheable` region | medium / **yes** | `ADMIN_VOCAB_ADD` |
+| PATCH | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}` | body labels | updated row | **[EXISTS]** (built 2026-08) — evicts cache | medium / **yes** | `ADMIN_VOCAB_EDIT` |
+| POST | `/api/v1/admin/knowledge/{topics\|madhhabs}/{id}/retire` | — | 204 | **[EXISTS]** (built 2026-08) — soft-retire via `archived_at` (hard-delete would fail `findById` profile validation) | high / **yes** | `ADMIN_VOCAB_RETIRE` |
+| POST | `/api/v1/admin/knowledge/cache/evict` | — | 204 | **[EXISTS]** (built 2026-08) — manual evict of `knowledge-topics`/`knowledge-madhhabs` | low / no | `ADMIN_VOCAB_CACHE_EVICT` |
 
 ### 3.15 Activity & engagement
 
-Per-user ledger + reel analytics: [activity-engagement.md](activity-engagement.md) (§17). All data **[EXISTS]** in Cassandra (`activity_by_user*`, `reel_views_by_user`); the module is `me`-scoped today with **no admin surface**, so every row is **[PLANNED]**.
+Per-user ledger + reel analytics: [activity-engagement.md](activity-engagement.md) (§17). All data **[EXISTS]** in Cassandra (`activity_by_user*`, `reel_views_by_user`); the admin surface landed 2026-08 — `admin/activity/AdminActivityController` with the dual-control `BreakGlassCase` lifecycle (`POST /api/v1/admin/breakglass/{targetUserId}`, case approve/close/list).
 
 Per the **privacy contract** ([analytics-kpis.md §12](analytics-kpis.md), [logs-audit.md §3.14](logs-audit.md)), the per-user reads are **break-glass** — an open authorized case + dual-control + step-up, else 403; population metrics use the parallel collector, never the private store.
 
 | Method | Path | Params | Returns | Status | Danger / step-up | Audit action |
 |--------|------|--------|---------|--------|------------------|--------------|
-| GET | `/api/v1/admin/users/{userId}/activity` | `type,types,from,to` + pageable | activity timeline (30 `UserActivityType`s) | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_ACTIVITY_BREAKGLASS_VIEW` |
-| GET | `/api/v1/admin/users/{userId}/activity/summary` | `window` | per-type histogram (corroborates a case: scraper/stalking) | **[PLANNED]** | high / **break-glass** | `ADMIN_ACTIVITY_SUMMARY_VIEW` |
-| GET | `/api/v1/admin/users/{userId}/reels/watched` | pageable | reel-watch history + `watched_seconds` | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_REELVIEWS_BREAKGLASS_VIEW` |
-| POST | `/api/v1/admin/users/{userId}/activity/erase` | body `{type?,reason}` | `{deleted:N}` | **[PLANNED]** — wraps existing batched clear-all (200×≤50); honors user-deletable | high / **yes** | `ADMIN_ACTIVITY_ERASE` |
-| GET | `/api/v1/admin/users/{userId}/activity/export` | `from,to,format` | JSON/CSV | **[PLANNED]** | **critical** / **break-glass** | `ADMIN_ACTIVITY_EXPORT` |
-| GET | `/api/v1/admin/analytics/engagement` | `window` | population engagement rollup | **[PLANNED]** — collector-sourced ([analytics-kpis.md §6](analytics-kpis.md)); never reads the private store | read / no | interceptor |
+| GET | `/api/v1/admin/users/{userId}/activity` | `type,types,from,to` + pageable | activity timeline (30 `UserActivityType`s) | **[EXISTS]** (built 2026-08) | **critical** / **break-glass** | `ADMIN_ACTIVITY_BREAKGLASS_VIEW` |
+| GET | `/api/v1/admin/users/{userId}/activity/summary` | `window` | per-type histogram (corroborates a case: scraper/stalking) | **[EXISTS]** (built 2026-08) | high / **break-glass** | `ADMIN_ACTIVITY_SUMMARY_VIEW` |
+| GET | `/api/v1/admin/users/{userId}/reels/watched` | pageable | reel-watch history + `watched_seconds` | **[EXISTS]** (built 2026-08) | **critical** / **break-glass** | `ADMIN_REELVIEWS_BREAKGLASS_VIEW` |
+| POST | `/api/v1/admin/users/{userId}/activity/erase` | body `{type?,reason}` | `{deleted:N}` | **[EXISTS]** (built 2026-08) — wraps existing batched clear-all (200×≤50); honors user-deletable | high / **yes** | `ADMIN_ACTIVITY_ERASE` |
+| GET | `/api/v1/admin/users/{userId}/activity/export` | `from,to,format` | JSON/CSV | **[EXISTS]** (built 2026-08) | **critical** / **break-glass** | `ADMIN_ACTIVITY_EXPORT` |
+| GET | `/api/v1/admin/analytics/engagement` | `window` | population engagement rollup | **[EXISTS]** (built 2026-08 — `AdminAnalyticsController.engagement`, collector-sourced; never reads the private store) | read / no | interceptor |
 
 ## 4. Admin SSE streams
 
@@ -324,7 +325,7 @@ Each row's Returns cell names its source; the per-section docs carry the full so
 |------|--------|
 | Grammar | `ADMIN_{DOMAIN}_{VERB}` — the exact strings in the tables above; stored via `AuditLogService.record(adminId, username, operation, resourceType, resourceId, summary)` with `operation` = the matching `AuditOperation` (`UPDATE`/`DELETE`/`OTHER`). |
 | Reads | No business row — the HTTP interceptor **[EXISTS]** already writes `audit_log_by_user` + `audit_log_by_resource` for every authenticated `/api/**` request ("interceptor" in the tables). |
-| Mutations | Interceptor row **plus** the named business row. `AuditLogService.record` **[PARTIAL]** — implemented, zero callers; wiring it is deliverable 1b of the build ([architecture.md §11](architecture.md)). |
+| Mutations | Interceptor row **plus** the named business row. `AuditLogService.record` **[EXISTS]** (built 2026-08) — funneled through `admin/support/AdminAuditor` from virtually every admin mutation handler. |
 | Visibility | All admin actions surface in the audit browser (§3.10) and the SSE ticker; staff actions are visible to all staff by design. |
 
 ## 7. Blueprint-level guardrails & alerts
@@ -343,10 +344,15 @@ Each row's Returns cell names its source; the per-section docs carry the full so
 - **Two gates always**: prefix double-gate + `@PreAuthorize` ([architecture.md §2](architecture.md)). All rows here are ADMIN-only until RBAC widening ([architecture.md §6](architecture.md)); the phantom `MODERATOR`/`SUPER_ADMIN` grants get normalized when the strays are re-homed.
 - **Privacy boundary is structural**: no endpoint in this blueprint reads chat/DM content (Cassandra `message_by_conversation`, ES `irc-chat-messages`, R2 media, recordings). The two content-adjacent rows (recording view/delete, §3.5) are step-up-gated and audit-logged precisely because they cross it.
 - **Danger scale**: `low` read-adjacent · `medium` reversible mutation · `high` user-impacting/hard-to-reverse · `critical` irreversible or account/key-level. Step-up (`StepUpService` **[EXISTS]**) is mandatory at `high`/`critical` — no exceptions, including the existing endpoints once retrofitted.
-- **Existing endpoints are under-protected by these rules**: role change, tag backfill, and the 7 reindexes have neither step-up nor business-audit today — retrofit in phase 1b/1c rather than grandfathering.
-- **Self-protection**: admins cannot disable/lock/delete/demote themselves; demoting the last ADMIN is rejected (guard **[PLANNED]** — `AdminUserService.changeRole` has no such check).
+- **Pre-build endpoints were under-protected by these rules**: role change gained `@RequiresStepUp` + business-audit in the 2026-08 build; tag backfill and the 7 reindexes still predate the rules.
+- **Self-protection**: admins cannot disable/lock/delete/demote themselves; demoting the last ADMIN is rejected (guard **[EXISTS]** built 2026-08 — `AdminUserServiceImpl.changeRole`: `requireNotSelf` + "Cannot demote the last ADMIN." `LAST_ADMIN` conflict).
 
 ## 9. Endpoint count summary
+
+> **Historical pre-build snapshot.** The counts below reflect the state before the
+> 2026-08 build, which shipped phases 1–3 + impersonation (~130 endpoints live across
+> ~29 controllers). Rows retagged **[EXISTS]** (built 2026-08) above are not re-counted
+> here; [known-issues.md](known-issues.md) is the freshness overlay.
 
 Rows above, by section (re-home aliases counted; SSE stream counted once):
 

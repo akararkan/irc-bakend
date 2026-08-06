@@ -243,8 +243,17 @@ public class CassandraFeedController {
     @GetMapping("/{id}")
     public ResponseEntity<PostResponse> get(@PathVariable UUID id) {
         PostByIdEntity post = postService.getById(id);
-        return post == null ? ResponseEntity.notFound().build()
-                            : ResponseEntity.ok(hydrator.hydrate(post));
+        if (post == null) return ResponseEntity.notFound().build();
+        // Takedown enforcement on the point read: a non-PUBLISHED post is
+        // visible only to its author and platform admins (appeal/restore UX).
+        if (post.getStatus() != null && !"PUBLISHED".equalsIgnoreCase(post.getStatus())) {
+            var viewer = ak.dev.irc.app.security.SecurityUtils.getCurrentUser().orElse(null);
+            boolean privileged = viewer != null
+                    && (viewer.getId().equals(post.getAuthorId())
+                        || viewer.getRole() == ak.dev.irc.app.user.enums.Role.ADMIN);
+            if (!privileged) return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(hydrator.hydrate(post));
     }
 
     /**

@@ -26,4 +26,10 @@ public class SoundEntity {
     @Column("uploader_id")      private UUID    uploaderId;
     @Column("created_at")       private Instant createdAt;
     @Column("updated_at")       private Instant updatedAt;
+
+    /** First-party "official ✓" flag, distinct from category (sound-library.md §3.5). */
+    @Column("official")         private Boolean official;
+
+    /** Admin pin-out of the trending surface without archiving (§3.6). */
+    @Column("trending_excluded") private Boolean trendingExcluded;
 }

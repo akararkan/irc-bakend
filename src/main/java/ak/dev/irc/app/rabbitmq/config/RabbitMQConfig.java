@@ -42,6 +42,12 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.*;
 @Configuration
 public class RabbitMQConfig {
 
+    /** DLQ parking lot (operations.md §5.2) — field-injected: this is a plain
+     *  {@code @Configuration} without a Lombok constructor, and the listener
+     *  method needs the repository at message time, not bean-definition time. */
+    @org.springframework.beans.factory.annotation.Autowired
+    private ak.dev.irc.app.admin.ops.DeadLetterRepository deadLetterRepository;
+
     // ── Exchanges ─────────────────────────────────────────────────────────────
 
     @Bean
@@ -93,6 +99,25 @@ public class RabbitMQConfig {
         return QueueBuilder
                 .durable(DEAD_LETTER_QUEUE)
                 .build();
+    }
+
+    /**
+     * Analytics tap queue (analytics-kpis.md §6.2): bound {@code #} on the
+     * topic exchange so every event the platform already publishes is
+     * captured with zero touch to domain code. Deliberately NO dead-letter
+     * args — a failing tap must drop, never poison-loop; the consumer also
+     * never throws.
+     */
+    @Bean
+    public Queue analyticsEventsQueue() {
+        return QueueBuilder
+                .durable(ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.ANALYTICS_EVENTS_QUEUE)
+                .build();
+    }
+
+    @Bean
+    public Binding analyticsEventsBinding(Queue analyticsEventsQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(analyticsEventsQueue).to(ircExchange).with("#");
     }
 
     // ── Media pipeline queues (spec §20) ──────────────────────────────────────
@@ -261,10 +286,13 @@ public class RabbitMQConfig {
     }
 
     /**
-     * Dead-letter drain: without a consumer the DLQ is a silent parking lot
-     * with a 24h TTL — permanently-failing messages (poison payloads,
-     * deserialization of a moved event class) vanish unobserved. This logs
-     * each casualty at ERROR with enough envelope detail to reprocess it.
+     * Dead-letter drain → PARKING LOT (operations.md §5.2). The old behavior
+     * — one ERROR line, then ACK-and-discard — made poison messages
+     * unrecoverable. Each dead letter is now persisted to the {@code
+     * dead_letters} table (payload base64'd, envelope headers captured) for
+     * admin browse / requeue / discard; the log line stays as the operational
+     * breadcrumb. Persistence failure falls back to log-only rather than
+     * NACK-looping the broker.
      */
     @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = DEAD_LETTER_QUEUE)
     public void drainDeadLetter(org.springframework.amqp.core.Message message) {
@@ -276,6 +304,27 @@ public class RabbitMQConfig {
                 props.getHeader("__TypeId__"),
                 message.getBody() == null ? 0 : message.getBody().length,
                 props.getHeaders());
+        try {
+            String headersJson;
+            try {
+                headersJson = new com.fasterxml.jackson.databind.ObjectMapper()
+                        .writeValueAsString(props.getHeaders());
+            } catch (Exception jsonEx) {
+                headersJson = String.valueOf(props.getHeaders());
+            }
+            deadLetterRepository.save(ak.dev.irc.app.admin.ops.DeadLetter.builder()
+                    .originalExchange(String.valueOf(props.getHeader("x-first-death-exchange")))
+                    .originalQueue(String.valueOf(props.getHeader("x-first-death-queue")))
+                    .routingKey(props.getReceivedRoutingKey())
+                    .typeId(String.valueOf(props.getHeader("__TypeId__")))
+                    .payloadB64(message.getBody() == null ? null
+                            : java.util.Base64.getEncoder().encodeToString(message.getBody()))
+                    .headersJson(headersJson)
+                    .build());
+        } catch (Exception persistEx) {
+            log.error("[RABBIT-DLQ] parking-lot persist failed — message survives only in this log: {}",
+                    persistEx.getMessage());
+        }
     }
 
     // ── Listener container factory with retry ─────────────────────────────────

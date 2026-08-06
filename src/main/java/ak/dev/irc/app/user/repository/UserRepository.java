@@ -1,12 +1,14 @@
 package ak.dev.irc.app.user.repository;
 
 import ak.dev.irc.app.user.entity.User;
+import ak.dev.irc.app.user.enums.Role;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -14,10 +16,6 @@ import java.util.UUID;
 
 @Repository
 public interface UserRepository extends JpaRepository<User, UUID> {
-
-    Optional<User> findByEmail(String email);
-
-    Optional<User> findByUsername(String username);
 
     /**
      * Batched username lookup — single SQL round-trip via {@code WHERE
@@ -28,14 +26,17 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     List<User> findAllByUsernameIn(Collection<String> usernames);
 
     /** Finds a non-deleted user by email — use for profile lookups and auth. */
-    Optional<User> findByEmailAndDeletedAtIsNull(String email);
+    @Query("SELECT u FROM User u WHERE u.email = :email AND u.deletedAt IS NULL")
+    Optional<User> findByEmailAndDeletedAtIsNull(@Param("email") String email);
 
     /** Finds a non-deleted user by username — use for profile lookups and auth. */
     Optional<User> findByUsernameAndDeletedAtIsNull(String username);
 
-    boolean existsByEmail(String email);
+    @Query("SELECT COUNT(u) > 0 FROM User u WHERE u.email = :email")
+    boolean existsByEmail(@Param("email") String email);
 
-    boolean existsByUsername(String username);
+    @Query("SELECT COUNT(u) > 0 FROM User u WHERE u.username = :username")
+    boolean existsByUsername(@Param("username") String username);
 
     boolean existsByUsernameAndDeletedAtIsNull(String username);
 
@@ -281,4 +282,91 @@ public interface UserRepository extends JpaRepository<User, UUID> {
         LIMIT :limit
         """, nativeQuery = true)
     List<User> findWhoToFollowAnon(@Param("limit") int limit);
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  Admin directory & growth analytics (docs/admin/users-roles.md §3, §6)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * The admin directory query — every filter optional, newest signups
+     * first, soft-deleted rows included ({@code deleted} filter selects them
+     * explicitly). Avatars are hydrated separately via
+     * {@link #findActiveWithProfileByIdIn} (the profile join-fetch gotcha).
+     */
+    @Query(value = """
+            SELECT u FROM User u
+            WHERE (:role IS NULL OR u.role = :role)
+              AND (:enabled IS NULL OR u.isEnabled = :enabled)
+              AND (:deleted IS NULL OR
+                   (CASE WHEN u.deletedAt IS NULL THEN FALSE ELSE TRUE END) = :deleted)
+              AND (:emailVerified IS NULL OR
+                   (CASE WHEN u.emailVerifiedAt IS NULL THEN FALSE ELSE TRUE END) = :emailVerified)
+              AND (CAST(:from AS timestamp) IS NULL OR u.createdAt >= :from)
+              AND (CAST(:to   AS timestamp) IS NULL OR u.createdAt <= :to)
+            ORDER BY u.createdAt DESC, u.id ASC
+            """,
+            countQuery = """
+            SELECT COUNT(u) FROM User u
+            WHERE (:role IS NULL OR u.role = :role)
+              AND (:enabled IS NULL OR u.isEnabled = :enabled)
+              AND (:deleted IS NULL OR
+                   (CASE WHEN u.deletedAt IS NULL THEN FALSE ELSE TRUE END) = :deleted)
+              AND (:emailVerified IS NULL OR
+                   (CASE WHEN u.emailVerifiedAt IS NULL THEN FALSE ELSE TRUE END) = :emailVerified)
+              AND (CAST(:from AS timestamp) IS NULL OR u.createdAt >= :from)
+              AND (CAST(:to   AS timestamp) IS NULL OR u.createdAt <= :to)
+            """)
+    Page<User> adminDirectory(@Param("role") Role role,
+                              @Param("enabled") Boolean enabled,
+                              @Param("deleted") Boolean deleted,
+                              @Param("emailVerified") Boolean emailVerified,
+                              @Param("from") java.time.LocalDateTime from,
+                              @Param("to") java.time.LocalDateTime to,
+                              Pageable pageable);
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.deletedAt IS NULL")
+    long countByDeletedAtIsNull();
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.role = :role AND u.deletedAt IS NULL")
+    long countByRoleAndDeletedAtIsNull(@Param("role") Role role);
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :after AND u.deletedAt IS NULL")
+    long countByCreatedAtGreaterThanEqualAndDeletedAtIsNull(@Param("after") java.time.LocalDateTime after);
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.emailVerifiedAt IS NOT NULL AND u.deletedAt IS NULL")
+    long countByEmailVerifiedAtIsNotNullAndDeletedAtIsNull();
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.phoneVerifiedAt IS NOT NULL AND u.deletedAt IS NULL")
+    long countByPhoneVerifiedAtIsNotNullAndDeletedAtIsNull();
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.twoFactorEnabled = TRUE AND u.deletedAt IS NULL")
+    long countByTwoFactorEnabledTrueAndDeletedAtIsNull();
+
+    @Query("SELECT u.role, COUNT(u) FROM User u WHERE u.deletedAt IS NULL GROUP BY u.role")
+    List<Object[]> countGroupedByRole();
+
+    @Query(value = """
+            SELECT CAST(date_trunc('day', u.created_at) AS date) AS day, COUNT(*) AS n
+            FROM users u
+            WHERE u.created_at >= :from
+            GROUP BY 1 ORDER BY 1
+            """, nativeQuery = true)
+    List<Object[]> signupsPerDay(@Param("from") java.time.LocalDateTime from);
+
+    /** Signup-cohort membership for the retention grid — ids only, index-range scan. */
+    @Query("""
+        SELECT u.id FROM User u
+        WHERE u.createdAt >= :from AND u.createdAt < :to AND u.deletedAt IS NULL
+        ORDER BY u.id ASC
+        """)
+    List<UUID> findIdsCreatedBetween(@Param("from") LocalDateTime from,
+                                     @Param("to") LocalDateTime to,
+                                     Pageable pageable);
+
+    @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :from AND u.createdAt < :to")
+    long countCreatedBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /** Role-only point read — quota/permission checks that must not load the entity. */
+    @Query("SELECT u.role FROM User u WHERE u.id = :id AND u.deletedAt IS NULL")
+    Optional<Role> roleOf(@Param("id") UUID id);
 }

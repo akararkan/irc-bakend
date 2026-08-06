@@ -45,6 +45,27 @@ public class AccountLifecycleService {
     private final AccountDeletionRequestRepository deletionRepo;
     private final DeletedAccountRepository tombstoneRepo;
 
+    // GDPR-cascade collaborators — the purge previously touched ONLY the users
+    // row + tombstone, leaving activity/reel-view/contact-hash/suggestion
+    // personal data behind (the docs/admin TODO flagged exactly this gap).
+    private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
+    private final ak.dev.irc.app.activity.service.ReelViewService reelViewService;
+    private final ak.dev.irc.app.user.repository.UserContactHashRepository contactHashRepo;
+    private final ak.dev.irc.app.post.cassandra.repository.FriendSuggestionRepository friendSuggestionRepo;
+    private final ak.dev.irc.app.user.repository.SuggestionDismissalRepository suggestionDismissalRepo;
+    private final ak.dev.irc.app.admin.ops.JobRunRecorder jobRunRecorder;
+    private final ak.dev.irc.app.admin.ops.JobPauseRegistry jobPause;
+
+    // Log-store GDPR steps (logs-audit.md §8): the purge is the single
+    // choreography point — every log store registers a purge (or a
+    // documented-keep) here. consent_events and reports are KEPT deliberately
+    // (compliance / moderation evidence; ids resolve to the tombstone).
+    private final ak.dev.irc.app.audit.cassandra.repository.AuditLogByUserRepository auditLogByUserRepo;
+    private final ak.dev.irc.app.settings.audit.repository.SettingsAuditRepository settingsAuditRepo;
+    private final ak.dev.irc.app.security.login.repository.LoginEventRepository loginEventRepo;
+    private final ak.dev.irc.app.settings.data.repository.ExportJobRepository exportJobRepo;
+    private final ak.dev.irc.app.audit.service.AuditLogService auditLogService;
+
     @Transactional
     public AccountDeletionRequest requestDeletion(UUID userId) {
         deletionRepo.findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
@@ -86,18 +107,26 @@ public class AccountLifecycleService {
     @Scheduled(cron = "0 30 3 * * *")
     @Transactional
     public void purgeExpired() {
-        List<AccountDeletionRequest> due = deletionRepo.findByStatusAndPurgeAfterBefore(
-                DeletionStatus.PENDING_DELETION, LocalDateTime.now());
-        if (due.isEmpty()) return;
-        log.info("[ACCOUNT-DELETE] purging {} expired deletion(s)", due.size());
-        for (AccountDeletionRequest req : due) {
-            try {
-                anonymizeAndPurge(req);
-            } catch (Exception ex) {
-                log.error("[ACCOUNT-DELETE] purge failed for user {}: {}",
-                        req.getUserId(), ex.getMessage(), ex);
+        if (jobPause.isPaused("account-purge")) return;
+        jobRunRecorder.record("account-purge", null, () -> {
+            List<AccountDeletionRequest> due = deletionRepo.findByStatusAndPurgeAfterBefore(
+                    DeletionStatus.PENDING_DELETION, LocalDateTime.now());
+            if (due.isEmpty()) {
+                return ak.dev.irc.app.admin.ops.JobRunRecorder.JobStats.NONE;
             }
-        }
+            log.info("[ACCOUNT-DELETE] purging {} expired deletion(s)", due.size());
+            int failed = 0;
+            for (AccountDeletionRequest req : due) {
+                try {
+                    anonymizeAndPurge(req);
+                } catch (Exception ex) {
+                    failed++;
+                    log.error("[ACCOUNT-DELETE] purge failed for user {}: {}",
+                            req.getUserId(), ex.getMessage(), ex);
+                }
+            }
+            return new ak.dev.irc.app.admin.ops.JobRunRecorder.JobStats(due.size() - failed, failed);
+        });
     }
 
     private void anonymizeAndPurge(AccountDeletionRequest req) {
@@ -114,6 +143,57 @@ public class AccountLifecycleService {
             // deletedAt stays set — the row remains soft-deleted/anonymized.
             userRepo.save(u);
         });
+        // GDPR cascade — personal-data stores outside Postgres `users`.
+        // Each drop is isolated: a Cassandra hiccup must not abort the purge
+        // (the failed store is retried implicitly on the next nightly run
+        // only if the request row stays PENDING, so log loudly).
+        purgeQuietly("activity ledger", () -> {
+            int deleted = userActivityService.deleteAll(userId, null);
+            log.info("[ACCOUNT-DELETE] user {} activity rows deleted: {}", userId, deleted);
+        });
+        purgeQuietly("reel views", () -> reelViewService.deleteAll(userId));
+        purgeQuietly("contact hashes", () -> {
+            contactHashRepo.deleteByOwnerIdAndKind(userId,
+                    ak.dev.irc.app.user.entity.UserContactHash.KIND_CONTACT);
+            contactHashRepo.deleteByOwnerIdAndKind(userId,
+                    ak.dev.irc.app.user.entity.UserContactHash.KIND_IDENTITY);
+        });
+        purgeQuietly("friend suggestions", () -> friendSuggestionRepo.clearForUser(userId));
+        purgeQuietly("suggestion dismissals", () -> {
+            var dismissed = suggestionDismissalRepo.findDismissedCandidateIds(userId);
+            dismissed.forEach(candidateId -> suggestionDismissalRepo.deleteById(
+                    new ak.dev.irc.app.user.entity.SuggestionDismissal.Key(userId, candidateId)));
+        });
+
+        // Log-store cascade (logs-audit.md §8): remove network identifiers +
+        // per-user trails; deliberately KEEP consent_events (compliance
+        // evidence) and reports/strikes (moderation evidence — ids resolve to
+        // the tombstone).
+        purgeQuietly("audit_log_by_user partition", () -> auditLogByUserRepo.purgePartition(userId));
+        purgeQuietly("settings_audit trail", () -> settingsAuditRepo.purgeForUser(userId));
+        purgeQuietly("login_events trail", () -> loginEventRepo.purgeForUser(userId));
+        purgeQuietly("export jobs + ZIP files", () -> {
+            for (var job : exportJobRepo.findByUserIdOrderByCreatedAtDesc(userId)) {
+                if (job.getFilePath() != null) {
+                    try {
+                        java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(job.getFilePath()));
+                    } catch (Exception ex) {
+                        log.warn("[ACCOUNT-DELETE] export ZIP delete failed ({}): {}",
+                                job.getFilePath(), ex.getMessage());
+                    }
+                }
+                exportJobRepo.delete(job);
+            }
+        });
+
+        // Deleting data is itself an auditable act (§8 principle 3).
+        purgeQuietly("purge audit event", () -> auditLogService.record(
+                null, "system", ak.dev.irc.app.audit.enums.AuditOperation.SYSTEM,
+                "User", userId,
+                "ACCOUNT_PURGED — GDPR cascade complete (relational anonymized; activity, "
+                        + "reel views, contact hashes, suggestions, audit partition, "
+                        + "settings/login trails, export archives removed)"));
+
         // Tombstone prevents id reuse; retained intentionally (§16).
         tombstoneRepo.save(DeletedAccount.builder()
                 .id(userId).deletedAt(LocalDateTime.now()).build());
@@ -121,6 +201,41 @@ public class AccountLifecycleService {
         req.setResolvedAt(LocalDateTime.now());
         deletionRepo.save(req);
         log.info("[ACCOUNT-DELETE] user {} anonymized + purged", userId);
+    }
+
+    private void purgeQuietly(String what, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("[ACCOUNT-DELETE] cascade '{}' failed: {}", what, ex.getMessage());
+        }
+    }
+
+    // ── Admin controls (blueprint §3.1 — ADMIN_PURGE_NOW / ADMIN_PURGE_HOLD) ──
+
+    /** Expedites the purge: runs the full anonymize-and-purge immediately. */
+    @Transactional
+    public AccountDeletionRequest purgeNow(UUID userId) {
+        AccountDeletionRequest req = deletionRepo
+                .findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
+                .orElseThrow(() -> new ResourceNotFoundException("No pending deletion to purge."));
+        anonymizeAndPurge(req);
+        return req;
+    }
+
+    /** Extends the grace window ({@code purge_after}) by the given days. */
+    @Transactional
+    public AccountDeletionRequest holdPurge(UUID userId, int days) {
+        AccountDeletionRequest req = deletionRepo
+                .findFirstByUserIdAndStatus(userId, DeletionStatus.PENDING_DELETION)
+                .orElseThrow(() -> new ResourceNotFoundException("No pending deletion to hold."));
+        int extension = Math.max(1, Math.min(days, 365));
+        LocalDateTime base = req.getPurgeAfter().isAfter(LocalDateTime.now())
+                ? req.getPurgeAfter() : LocalDateTime.now();
+        req.setPurgeAfter(base.plusDays(extension));
+        log.info("[ACCOUNT-DELETE] purge hold for user {} — purge_after now {}",
+                userId, req.getPurgeAfter());
+        return deletionRepo.save(req);
     }
 
     @Transactional(readOnly = true)

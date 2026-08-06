@@ -89,4 +89,45 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("UPDATE Conversation c SET c.postCount = c.postCount + :delta WHERE c.id = :id AND c.postCount + :delta >= 0")
     void adjustPostCount(@Param("id") UUID id, @Param("delta") int delta);
+
+    // ── Admin directory (docs/admin/chat-channels-live.md §6) ─────────────
+    // Metadata browse: projections built from these NEVER include
+    // last_message_preview (the known metadata→content leak edge).
+
+    @Query(value = """
+        SELECT c FROM Conversation c
+        WHERE (:type IS NULL OR c.type = :type)
+          AND (:q IS NULL OR LOWER(c.title) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
+               OR LOWER(c.handle) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
+          AND (:verified IS NULL OR c.verified = :verified)
+          AND (:publicOnly IS NULL OR c.publicChannel = :publicOnly)
+          AND (:category IS NULL OR c.category = :category)
+          AND (:includeDeleted = TRUE OR c.deletedAt IS NULL)
+          AND (:ownerId IS NULL OR c.ownerId = :ownerId)
+        ORDER BY c.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(c) FROM Conversation c
+        WHERE (:type IS NULL OR c.type = :type)
+          AND (:q IS NULL OR LOWER(c.title) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
+               OR LOWER(c.handle) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
+          AND (:verified IS NULL OR c.verified = :verified)
+          AND (:publicOnly IS NULL OR c.publicChannel = :publicOnly)
+          AND (:category IS NULL OR c.category = :category)
+          AND (:includeDeleted = TRUE OR c.deletedAt IS NULL)
+          AND (:ownerId IS NULL OR c.ownerId = :ownerId)
+        """)
+    Page<Conversation> adminBrowse(@Param("type") ConversationType type,
+                                   @Param("q") String q,
+                                   @Param("verified") Boolean verified,
+                                   @Param("publicOnly") Boolean publicOnly,
+                                   @Param("category") String category,
+                                   @Param("includeDeleted") boolean includeDeleted,
+                                   @Param("ownerId") UUID ownerId,
+                                   Pageable pageable);
+
+    @Query("SELECT COUNT(c) FROM Conversation c WHERE c.type = :type AND c.deletedAt IS NULL")
+    long countByTypeAndDeletedAtIsNull(@Param("type") ConversationType type);
+
+    long countByTypeAndVerifiedTrueAndDeletedAtIsNull(ConversationType type);
 }

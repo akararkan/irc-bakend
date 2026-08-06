@@ -28,14 +28,19 @@ Companion docs: [architecture.md](architecture.md) (access model),
 | Env-var/config registry, `EnumCheckConstraintReconciler` | — |
 | Backup/DR posture, deploy topology, incident runbooks, capacity watchpoints | — |
 
-**Honest baseline:** the platform today has **zero ops-specific admin
-endpoints**. `spring-boot-starter-actuator` and `micrometer-registry-prometheus`
-are on the classpath (`pom.xml` lines 131/136-137) **[EXISTS]**, but
+**Baseline (updated 2026-08):** the ops admin surface is **built** —
+`admin/ops/AdminOpsController` serves `/api/v1/admin/ops/{health, jobs,
+jobs/{key}/runs, jobs/{key}/run, jobs/{key}/pause|resume, jobs/paused,
+queues, queues/dlq (+requeue/discard), sse, redis (+DELETE /redis/keys),
+config, config/reconciler, media-plane, es/chat-messages/backfill,
+streams/sweep-orphans}` **[EXISTS (built 2026-08)]**.
+`spring-boot-starter-actuator` and `micrometer-registry-prometheus`
+are on the classpath **[EXISTS]**, but
 `application.yaml` contains **no `management:` block**, so only the Spring
 Boot default is web-exposed: `/actuator/health` (status-only, no details).
 The pom comment promising `/actuator/prometheus` is aspirational — that
-endpoint is **not** exposed today **[PARTIAL]**. Everything else in this doc
-that reads like a dashboard is **[PLANNED]** unless tagged otherwise.
+endpoint is **not** exposed today **[PARTIAL]**, and Micrometer gauges remain
+**[PLANNED]**.
 
 ---
 
@@ -68,11 +73,12 @@ One "Operations" section, seven tabs. What the admin sees on screen:
 | R2 health | — | No health indicator exists for the S3 client |
 | Mail egress | **[PARTIAL]** | Real dispatch path is `ResendEmailSender` (Resend HTTP API) — no indicator. `MAIL_*` SMTP vars exist in yaml; if a spring-mail contributor auto-registers it probes SMTP, *not* the path email actually takes |
 
-### 3.2 Proposed composite health — `GET /api/v1/admin/ops/health` [PLANNED]
+### 3.2 Composite health — `GET /api/v1/admin/ops/health` [EXISTS (built 2026-08) — `OpsHealthService`]
 
 Admin-authenticated (double-gated), returns per-dependency detail the public
-`/health` deliberately hides. One probe per dependency, each with timeout +
-last-success timestamp:
+`/health` deliberately hides. One probe per dependency (PG `SELECT 1`,
+Cassandra `system.local`, Redis PING, RabbitMQ passive declare, ES index op,
+R2 headBucket, MediaMTX control ping, mail enabled-flag):
 
 | Dependency | Probe | Degrades what (see §10) |
 |---|---|---|
@@ -94,7 +100,9 @@ tracked as one build-order item so the two can't ship apart.
 
 ## 4. Scheduled-jobs inventory
 
-**[EXISTS]** — all 16 `@Scheduled` methods in the tree. They share one
+**[EXISTS]** — all `@Scheduled` methods in the tree (16 at recon time; the
+2026-08 build added `RetentionSweepJob`, `LogAlertSweepJob` and the three
+`AnalyticsJobs` sweeps — ~21 now). They share one
 scheduler pool: `spring.task.scheduling.pool.size=4` (deliberately raised from
 Spring's default 1). A slow business job can still delay heartbeat sweeps —
 watchpoint in §11.
@@ -132,14 +140,15 @@ per client); dead emitters are pruned on ping failure. Detail in §5.
 
 | Worker | Trigger | Notes |
 |---|---|---|
-| `rabbitmq.config.RabbitMQConfig.drainDeadLetter` | `@RabbitListener` on `irc.queue.dead-letter` | Consumes + ERROR-logs every dead-lettered message (§5 caveat: the log line is the only surviving record) **[EXISTS]** |
+| `rabbitmq.config.RabbitMQConfig.drainDeadLetter` | `@RabbitListener` on `irc.queue.dead-letter` | Consumes, ERROR-logs, and **parks every dead-lettered message as a `dead_letters` PG row** (built 2026-08 — §5.2) **[EXISTS]** |
 | `RedisMessagingConfig` pub/sub retry loop | private `ScheduledExecutorService` | Reconnect/retry for Redis messaging — invisible to the scheduler pool **[EXISTS]** |
 | Story expiry | Cassandra row TTL (8/16/24h `USING TTL`) | **There is no StoryExpiryJob** — older docs/memory claiming an hourly job are stale; the datastore owns story lifecycle **[EXISTS]** |
 
-### 4.4 `job_runs` ledger [PLANNED]
+### 4.4 `job_runs` ledger [EXISTS (built 2026-08) — `admin/ops/{JobRun, JobRunRecorder, JobRunRepository}`]
 
-No job persists any run record — "did last night's purge run?" is unanswerable
-without console access. Proposed PG table + wrapper:
+Scheduled/manual runs persist a `job_runs` row via `JobRunRecorder.record`;
+backs `GET /ops/jobs` (last run per job) and `GET /ops/jobs/{key}/runs`.
+Table shape as designed:
 
 | Column | Notes |
 |---|---|
@@ -149,20 +158,24 @@ without console access. Proposed PG table + wrapper:
 | `items_processed` int, `items_failed` int | jobs report their own counts |
 | `error` varchar(1000), `host` varchar | instance id for multi-instance deploys |
 
-Implementation: a `JobRunRecorder` decorator each `@Scheduled` method calls
-around its body (or an aspect on a `@RecordedJob` annotation). Retention: 90
-days, purged by the cleanup job itself. Heartbeat sweeps are **excluded** —
-they'd write 4 rows/min of noise; they get gauges instead (§5.3... see §6).
+Implementation: `JobRunRecorder.record(jobName, triggeredBy, body)` wraps each
+job body. Retention: ledger pruned by the notification-cleanup job. Heartbeat
+sweeps are **excluded** — they'd write 4 rows/min of noise; they get gauges
+instead (§5.3... see §6).
 
-### 4.5 Pause / trigger-now controls [PLANNED]
+### 4.5 Pause / trigger-now controls [EXISTS (built 2026-08)]
 
-Endpoints in §9. Design notes: a `JobRegistry` maps job_name → runnable +
-pause flag. **Pause flags must live in Redis, not in-memory** — Railway can
-run >1 instance and an in-memory flag pauses only one. Trigger-now runs the
-same body with a `job_runs` row flagged `triggered_by` (admin id) and must
-take a Redis lock per job_name so a manual run can't overlap the scheduled
-one. Cron/fixedDelay values themselves stay config-only (change = redeploy);
-the dashboard does not edit schedules.
+Endpoints in §9. `POST /ops/jobs/{key}/pause|resume` (+ `GET /ops/jobs/paused`)
+set **Redis flags `ops:job-paused:{name}`** via `JobPauseRegistry` —
+Redis, not in-memory, so the flag holds across all instances. **10 scheduled
+jobs honor the flag** (`retention-sweep`, `log-alert-sweep`,
+`analytics-daily-rollup`, `analytics-weekly-cohorts`, `analytics-anomaly-scan`,
+`trending-rebuild`, `trending-digest`, `notification-cleanup`, `account-purge`,
+`research-scheduled-publish`). Trigger-now (`POST /ops/jobs/{key}/run`,
+step-up, whitelist of 7) runs the same body under a Redis lock
+(`ops:job-lock:{key}`) so a manual run can't overlap the scheduled one, and
+refuses while paused. Cron/fixedDelay values themselves stay config-only
+(change = redeploy); the dashboard does not edit schedules.
 
 ---
 
@@ -181,29 +194,29 @@ the dashboard does not edit schedules.
 | Listener policy | retry 3 attempts (1s → ×2 → cap 10s), `default-requeue-rejected=false` (reject → DLX), prefetch 10, concurrency 2–5 |
 | Publisher safety | correlated publisher confirms + mandatory returns; broker NACK and unroutable returns logged ERROR (`[RABBIT]` prefix) |
 
-### 5.2 The DLQ reality **[EXISTS]** — and why the browser needs a schema change
+### 5.2 The DLQ parking lot **[EXISTS (built 2026-08)]**
 
-`drainDeadLetter` **consumes** every message on `irc.queue.dead-letter` and
-logs one ERROR line (`[RABBIT-DLQ] … originalExchange= originalRoutingKey=
-typeId= bodyBytes= headers=`), after which **the message is gone**. There is
-nothing to browse or requeue today — the DLQ is always near-empty by design.
+`drainDeadLetter` consumes every message on `irc.queue.dead-letter`, logs the
+ERROR line, and **persists it as a `dead_letters` PG row**
+(`admin/ops/DeadLetter`: original exchange/routing key, typeId, base64
+payload, status `PARKED`/`REQUEUED`/`DISCARDED`, resolved_by/at) instead of
+dropping it — a nonzero broker DLQ depth now means the drain consumer itself
+is down. The browser (`GET /ops/queues/dlq`, filter by status/routing key),
+requeue (`POST …/dlq/{id}/requeue`, step-up — republishes to the original
+exchange+routing key with an `x-dlq-replay-of` header; a still-poison message
+re-parks as a NEW row) and discard (`DELETE …/dlq/{id}`, step-up — row kept
+for the audit trail) all operate on this table; rows are pruned at 90 d by
+`RetentionSweepJob`. Payloads may contain user data → browse stays a
+sensitive action (§15).
 
-**[PLANNED] parking-lot store:** replace the drain listener's log-and-drop
-with persist-and-drop into a PG table `dead_letters` (id, original_exchange,
-original_routing_key, type_id, headers jsonb, body bytea, first_death_reason,
-arrived_at, status `PARKED`/`REQUEUED`/`DISCARDED`, actioned_by, actioned_at).
-The DLQ browser, requeue (republish body to original exchange+routing key,
-mark REQUEUED), and discard actions in §9 all read/write this table. Payloads
-may contain user data → treat browse as a sensitive action (§15).
+### 5.3 Depth monitoring [PARTIAL — snapshot built 2026-08; rates/gauges still PLANNED]
 
-### 5.3 Depth monitoring [PLANNED]
-
-The app never asks the broker how deep its queues are. Proposal: poll the
-RabbitMQ management HTTP API (`:15672`, already exposed by the
-`rabbitmq:3-management` compose image; Railway plugin exposes the equivalent)
-every 30s from the backend → gauge per queue (`depth`, `consumers`,
-`publish_rate`, `deliver_rate`) surfaced by `GET /api/v1/admin/ops/queues`
-and as Micrometer gauges once `/actuator/prometheus` is exposed.
+`GET /api/v1/admin/ops/queues` **[EXISTS (built 2026-08)]** reads per-queue
+message + consumer counts for the 5 queues via `RabbitAdmin.getQueueProperties`
+(passive declare — no management-API dependency) and reports the `dead_letters`
+PARKED count. Still [PLANNED]: publish/deliver *rates* (needs the RabbitMQ
+management HTTP API `:15672`) and Micrometer gauges once
+`/actuator/prometheus` is exposed.
 
 ---
 
@@ -231,8 +244,8 @@ design ([logs-audit.md](logs-audit.md)).
 
 | Capability | Status | Detail |
 |---|---|---|
-| `AuditRealtimeService.adminCount()` | **[EXISTS]** | In-memory emitter-map size, logged on subscribe — the *only* connection count in the codebase, and it's not exposed anywhere |
-| Per-service connection gauges | **[PLANNED]** | Add a `size()` accessor per service + Micrometer `Gauge` per service per instance; `GET /api/v1/admin/ops/sse` returns `{service → {connections, lastSweepAt, droppedLastSweep}}`. Multi-instance: counts are per-instance — sum across instances at the dashboard, or publish to a Redis hash keyed by host |
+| Per-service connection counts | **[EXISTS (built 2026-08)]** | `GET /api/v1/admin/ops/sse` exposes `AuditRealtimeService.adminCount()` **plus new size accessors on all 8 other SSE services** (`connectedUserCount` / `topicCount` / `viewerCount`). Counts are per-instance — sum across instances at the dashboard |
+| Micrometer SSE gauges | **[PLANNED]** | Per service per instance, once `/actuator/prometheus` is exposed |
 | Top-N users by concurrent connections | **[PLANNED]** | From the per-user emitter maps; abuse signal (one account holding hundreds of streams) |
 
 ### 6.3 Redis key-prefix registry **[EXISTS]** (the keyspace as actually written)
@@ -261,15 +274,18 @@ design ([logs-audit.md](logs-audit.md)).
 | Pub/sub channels | — | `irc:notifications:{userId}`, `irc:chat:{userId}`, `irc:audit:stream`, activity broadcaster channel | n/a |
 | Spring cache (`spring.cache.type=redis`) | — | default TTL 300s; `user-stats` cache 30s | per-cache |
 
-### 6.4 Redis ops panel [PLANNED]
+### 6.4 Redis ops panel [EXISTS (built 2026-08) — INFO + allowlisted flush]
 
-`GET /api/v1/admin/ops/redis`: `INFO memory` (used, peak, fragmentation),
-`INFO stats` (ops/sec, evictions), key-count per registered prefix via
-cursored `SCAN count 1000` sampling (never `KEYS`), rate-limiter observability
-(instrument `RateLimiter` with a Micrometer counter per action on reject —
-today rejects are invisible). Flush actions are deliberately restricted (§9,
-§15): `sid:denied:*`, `stepup:*`, `otp:*` are **never** flushable from the
-dashboard.
+`GET /api/v1/admin/ops/redis` **[EXISTS]**: `INFO` summary — version, uptime,
+clients, memory (used/peak/maxmemory + policy), ops/sec, keyspace
+hits/misses + hit ratio, evictions, per-db key counts.
+`DELETE /api/v1/admin/ops/redis/keys?prefix=` **[EXISTS]** (step-up, audited
+`ADMIN_REDIS_FLUSH`): cursored `SCAN`-based flush restricted to an
+**allowlist** (`irc:search:top:`, `irc:search:zero:`, `user-profile`,
+`settings:`, `chat:presence:`, `email-ctx:`, `trending:`); auth/abuse prefixes
+(`sid:`, `stepup:`, `otp:`, `rl:`, `ops:job-`) are **never flushable**.
+Still [PLANNED]: per-prefix key-count sampling and rate-limiter reject
+counters (Micrometer).
 
 ---
 
@@ -322,8 +338,9 @@ because `ddl-auto=update` (no Flyway/Liquibase) never drops a stale
 | 1 | `live_streams` | `live_streams_recording_status_check` | `recording_status` gained PAUSED + PROCESSING |
 
 **Rule:** every enum widening adds one row here *and* to this table. The
-dashboard Config tab shows the reconciler's startup report (constraints
-dropped this boot) **[PLANNED]** — today it's a console log line only.
+reconciler's startup report (constraints dropped this boot) is served by
+`GET /api/v1/admin/ops/config/reconciler` **[EXISTS (built 2026-08)]**;
+the masked env registry by `GET /api/v1/admin/ops/config` (step-up).
 
 ---
 
@@ -336,12 +353,12 @@ dropped this boot) **[PLANNED]** — today it's a console log line only.
 | Store | Posture today |
 |---|---|
 | PostgreSQL | No pg_dump/WAL archiving anywhere in repo or deploy docs; Railway plugin snapshots (if any) are outside our control and unverified |
-| Cassandra | No snapshot schedule; `schema-action=create_if_not_exists` recreates schema but **not** the manual bits (audit tables' 180-day TTL must be `ALTER TABLE`d by hand — currently unbounded, see [logs-audit.md](logs-audit.md)) |
+| Cassandra | No snapshot schedule; `schema-action=create_if_not_exists` recreates schema — the audit tables' 180-day TTL is now applied idempotently at startup by `AuditSchemaInitializer` (built 2026-08, see [logs-audit.md](logs-audit.md)) |
 | Redis | No persistence config asserted; treated as volatile (mostly correctly — see loss matrix below) |
-| Elasticsearch | Rebuildable: 7 admin reindexes **[EXISTS]** cover all indices *except* `irc-chat-messages`, which has **no reindex hook** — it self-heals on mutation only, so a lost cluster loses historical chat-message search until messages are next touched. A chat backfill tool is **[PLANNED]** |
+| Elasticsearch | Rebuildable: 7 admin reindexes **[EXISTS]** cover all indices *except* `irc-chat-messages`, which self-heals on mutation — plus the chat backfill tool `POST /api/v1/admin/ops/es/chat-messages/backfill` **[EXISTS (built 2026-08)]** |
 | R2 | No bucket versioning/lifecycle configured (see [media-storage.md](media-storage.md)) |
 | Recordings | Local disk `{STREAM_RECORDINGS_DIR:./recordings}` — **ephemeral on Railway**; a redeploy can destroy every live-stream recording. MediaMTX `recordDeleteAfter: 0s` means the app owns retention and no one implements it |
-| Export ZIPs | `export_jobs.expires_at` exists but **no cleanup job** deletes rows or ZIP files |
+| Export ZIPs | `RetentionSweepJob` (built 2026-08) deletes ZIP + row at `expires_at`; GDPR purge deletes a purged user's exports immediately |
 
 ### 8.2 Redis loss matrix (what a flush actually costs)
 
@@ -372,28 +389,30 @@ dropped this boot) **[PLANNED]** — today it's a console log line only.
 Existing ops-adjacent actions: the 7 reindexes (`SearchAdminController`)
 **[EXISTS]** and `POST /api/v1/admin/tags/backfill-posts` **[EXISTS]** are
 catalogued in [search-feed-trending.md](search-feed-trending.md) /
-[architecture.md](architecture.md). Everything below is **[PLANNED]**, lives
-under `/api/v1/admin/ops/**` (inheriting the filter-chain double gate), and
-**must write an audit row via `AuditLogService.record`** — the service-layer
-audit helper that today has zero callers; ops actions are its first adopters.
+[architecture.md](architecture.md). Everything below is **[EXISTS (built
+2026-08)]** in `admin/ops/AdminOpsController` under `/api/v1/admin/ops/**`
+(inheriting the filter-chain double gate); mutations write explicit audit
+rows through `AdminAuditor` → `AuditLogService.record`.
 
 | Action | Endpoint | Params | Danger | Step-up | Audit action |
 |---|---|---|---|---|---|
 | Composite health | `GET /api/v1/admin/ops/health` | — | none | no | — (read; excluded like other health paths) |
 | List jobs + last runs | `GET /api/v1/admin/ops/jobs` | — | none | no | — |
 | Job run history | `GET /api/v1/admin/ops/jobs/{job}/runs` | page | none | no | — |
-| Trigger job now | `POST /api/v1/admin/ops/jobs/{job}/run` | — | medium (side effects = the job's own) | **yes** | `OPS_JOB_TRIGGERED` |
-| Pause / resume job | `POST /api/v1/admin/ops/jobs/{job}/pause` / `/resume` | — | **high** (paused purge/publish jobs silently accumulate debt; Redis-backed flag, §4.5) | **yes** | `OPS_JOB_PAUSED` / `OPS_JOB_RESUMED` |
+| Trigger job now | `POST /api/v1/admin/ops/jobs/{job}/run` | whitelist of 7; Redis-locked; refused while paused | medium (side effects = the job's own) | **yes** | `ADMIN_JOB_RUN` |
+| Pause / resume job | `POST /api/v1/admin/ops/jobs/{job}/pause` / `/resume` (+ `GET /ops/jobs/paused`) | 10 pausable jobs (§4.5) | **high** (paused purge/retention jobs defer legally-relevant deletion; Redis flag `ops:job-paused:*`) | **yes** | `ADMIN_JOB_PAUSE` / `ADMIN_JOB_RESUME` |
 | Queue depths | `GET /api/v1/admin/ops/queues` | — | none | no | — |
-| Browse DLQ parking lot | `GET /api/v1/admin/ops/queues/dlq` | page, filter by routing key | medium (payloads may contain user data) | no | `OPS_DLQ_VIEWED` |
-| Requeue dead letter | `POST /api/v1/admin/ops/queues/dlq/{id}/requeue` | — | **high** (re-fires side effects; poison message loops back after 3 retries) | **yes** | `OPS_DLQ_REQUEUED` |
-| Discard dead letter | `DELETE /api/v1/admin/ops/queues/dlq/{id}` | — | **high** (permanent) | **yes** | `OPS_DLQ_DISCARDED` |
+| Browse DLQ parking lot | `GET /api/v1/admin/ops/queues/dlq` | page, `status`, `routingKey` | medium (payloads may contain user data) | no | — (interceptor READ) |
+| Requeue dead letter | `POST /api/v1/admin/ops/queues/dlq/{id}/requeue` | — | **high** (re-fires side effects; a still-poison message re-parks as a new row) | **yes** | `ADMIN_DLQ_REQUEUE` |
+| Discard dead letter | `DELETE /api/v1/admin/ops/queues/dlq/{id}` | — | **high** (row kept, marked DISCARDED) | **yes** | `ADMIN_DLQ_DISCARD` |
 | SSE connection summary | `GET /api/v1/admin/ops/sse` | — | none | no | — |
-| Redis panel | `GET /api/v1/admin/ops/redis` | — | none | no | — |
-| Flush cache namespace | `DELETE /api/v1/admin/ops/redis/keys` | `prefix` (allowlist: `c:*`, `settings:*`, `feed:timeline:*`, `storage:usage:*` **only** — never `sid:denied`/`stepup`/`otp`/`rl`) | **critical** | **yes** | `OPS_REDIS_FLUSHED` |
-| Config registry (masked) | `GET /api/v1/admin/ops/config` | — | medium (even masked topology is sensitive) | **yes** | `OPS_CONFIG_VIEWED` |
+| Redis INFO panel | `GET /api/v1/admin/ops/redis` | — | none | no | — |
+| Flush cache namespace | `DELETE /api/v1/admin/ops/redis/keys` | `prefix` (allowlist §6.4 **only** — `sid:`/`stepup:`/`otp:`/`rl:`/`ops:job-` never flushable) | **critical** | **yes** | `ADMIN_REDIS_FLUSH` |
+| Config registry (masked) | `GET /api/v1/admin/ops/config` | — | medium (even masked topology is sensitive) | **yes** | `ADMIN_OPS_CONFIG_VIEW` |
 | Reconciler report | `GET /api/v1/admin/ops/config/reconciler` | — | none | no | — |
-| Chat-search backfill | `POST /api/v1/admin/ops/es/chat-messages/backfill` | since | medium (heavy scan) | **yes** | `OPS_CHAT_BACKFILL` |
+| Media-plane snapshot | `GET /api/v1/admin/ops/media-plane` | — | none | no | — |
+| Sweep orphaned LIVE streams | `POST /api/v1/admin/ops/streams/sweep-orphans` | `graceMinutes=30`, `maxAgeHours=12`, `dryRun` | **high** (ends streams) | **yes** | `ADMIN_STREAM_SWEEP` |
+| Chat-search backfill | `POST /api/v1/admin/ops/es/chat-messages/backfill` | — (idempotent, only-missing walk, async + ledgered) | medium (heavy scan) | **yes** | `ADMIN_CHAT_BACKFILL_RUN` |
 
 ---
 
@@ -408,7 +427,7 @@ audit helper that today has zero callers; ops actions are its first adopters.
 | Redis | Mostly graceful: throttles/dedupe **fail open**, counters fall back to DB, presence blanks — but **cross-instance SSE fan-out dies** (all pub/sub) and rate limiting stops | Accept degraded realtime; watch for overcounting (§8.2); do not restart app instances needlessly |
 | RabbitMQ | **Silent stall**: amqp listener/connection logging is `OFF` (retry-storm silencing) — notifications, analytics, media processing just stop; publisher NACK/returns still log ERROR | Check `[RABBIT]` ERROR lines; broker mgmt UI :15672; messages older than 24h on feeders dead-letter — after recovery expect a DLQ burst |
 | Elasticsearch | All search surfaces error; content mutation paths that index async log and continue | After recovery run reindexes (`?drop=false` unless mappings changed); remember chat index self-heals only |
-| MediaMTX | Live publish/playback dies; **orphaned LIVE rows**: no cleanup job exists — a stream whose publisher vanished stays LIVE until the host ends it | Restart container; manually end orphans (admin force-stop is MISSING — see chat-channels-live.md); check auth hook secret pair (§7.2) |
+| MediaMTX | Live publish/playback dies; **orphaned LIVE rows**: no *scheduled* cleanup — a stream whose publisher vanished stays LIVE until the host ends it or an admin sweeps | Restart container; run `POST /api/v1/admin/ops/streams/sweep-orphans` (step-up, `dryRun=true` first — built 2026-08) to end LIVE rows with no MediaMTX publisher session; check auth hook secret pair (§7.2) |
 | R2 | Media upload-intent/download fail; feeds still render (URLs break) | Check R2 status/credentials; MinIO only in local compose |
 | Mail (Resend) | Emails silently drop; `EmailThrottle` fails open so recovery won't double-send within throttle windows | Check Resend dashboard; in-app notifications unaffected |
 
@@ -417,9 +436,9 @@ audit helper that today has zero callers; ops actions are its first adopters.
 | Log | Where it lives | Surfaced as |
 |---|---|---|
 | Console app log, bracket-tagged: `[SCHED-PUBLISH]` `[ACCOUNT-DELETE]` `[NOTIF-CLEANUP]` `[TRENDING]` `[CHAT-SCHEDULER]` `[SCHEMA]` `[RABBIT]` `[RABBIT-DLQ]` `[AUDIT-*]` `[SETTINGS-AUDIT]` `[LOGIN-ALERT]` | stdout only — **no file appender, no shipping**; `/Users/khi/Desktop/irc/app.log` at repo root is a stale 2026-04 manual capture **[EXISTS]** | Jobs/Queues tabs quote the relevant tags; log shipping itself is a [PLANNED] infra item (out of app scope) |
-| `job_runs` ledger | PG **[PLANNED]** (§4.4) | Jobs tab run history |
-| `dead_letters` parking lot | PG **[PLANNED]** (§5.2) | DLQ browser |
-| Admin audit rows for §9 actions | Cassandra audit tables via `AuditLogService.record` **[PLANNED wiring]** | [logs-audit.md](logs-audit.md) Log Explorer + `GET /api/v1/admin/audit/stream` **[EXISTS]** |
+| `job_runs` ledger | PG **[EXISTS (built 2026-08)]** (§4.4) | Jobs tab run history |
+| `dead_letters` parking lot | PG **[EXISTS (built 2026-08)]** (§5.2) | DLQ browser |
+| Admin audit rows for §9 actions | Cassandra audit tables via `AdminAuditor` → `AuditLogService.record` **[EXISTS (built 2026-08)]** | [logs-audit.md](logs-audit.md) Log Explorer + `GET /api/v1/admin/audit/stream` **[EXISTS]** |
 
 ---
 
@@ -429,15 +448,15 @@ audit helper that today has zero callers; ops actions are its first adopters.
 |---|---|---|---|
 | Dependency availability | % of §3 probes green, per dependency, 24h/7d | composite health poller [PLANNED] | status strip + uptime bars |
 | Probe latency | p50/p95 per dependency | same | small multiples line |
-| Job success rate | SUCCESS / total runs per job, 7d | `job_runs` [PLANNED] | table + trend sparkline |
-| Job duration | p95 `duration_ms` per job | `job_runs` [PLANNED] | line |
+| Job success rate | SUCCESS / total runs per job, 7d | `job_runs` **[EXISTS (built 2026-08)]** | table + trend sparkline |
+| Job duration | p95 `duration_ms` per job | `job_runs` **[EXISTS (built 2026-08)]** | line |
 | Job schedule adherence | runs with no `job_runs` row within 2× period | derived [PLANNED] | red badge count |
-| Queue depth | ready+unacked per queue | RabbitMQ mgmt API [PLANNED] | area, 24h |
-| DLQ arrivals | dead-letters/day (by original routing key) | `dead_letters` [PLANNED]; today only `[RABBIT-DLQ]` grep **[PARTIAL]** | stacked bar |
+| Queue depth | messages+consumers per queue | `GET /ops/queues` snapshot **[EXISTS (built 2026-08)]**; rates via mgmt API [PLANNED] | area, 24h |
+| DLQ arrivals | dead-letters/day (by original routing key) | `dead_letters` **[EXISTS (built 2026-08)]** | stacked bar |
 | Publish failures | broker NACKs + unroutable returns/day | Micrometer counter on callbacks [PLANNED] | bar |
-| SSE concurrent connections | per service per instance | §6.2 gauges [PLANNED] | stacked area |
+| SSE concurrent connections | per service per instance | `GET /ops/sse` **[EXISTS (built 2026-08)]**; Micrometer gauges [PLANNED] | stacked area |
 | Heartbeat prune rate | emitters dropped per sweep | gauges [PLANNED] | line |
-| Redis memory | used/peak/fragmentation | `INFO memory` [PLANNED] | gauge |
+| Redis memory | used/peak/policy | `GET /ops/redis` (`INFO`) **[EXISTS (built 2026-08)]** | gauge |
 | Rate-limit rejects | rejects/min by action | instrumented `RateLimiter` [PLANNED] | bar |
 | Media worker saturation | queue size (cap 64) + CallerRuns events | executor gauges [PLANNED] | line + event marks |
 | Audit executor saturation | queue size (cap 50k) + CallerRuns events | executor gauges [PLANNED] | line |
@@ -459,9 +478,9 @@ audit helper that today has zero callers; ops actions are its first adopters.
 | Redis memory | > 80% of maxmemory, or evictions > 0 on non-cache policy | warn / page |
 | SSE flood | one user > 20 concurrent streams, or instance total > threshold | warn |
 | Executor saturation | media queue > 48/64, audit queue > 25k/50k, any CallerRuns event | warn |
-| Orphaned LIVE streams | LIVE row with zero MediaMTX publisher session > 15 min | warn (no auto-fix until admin force-stop exists) |
+| Orphaned LIVE streams | LIVE row with zero MediaMTX publisher session > 15 min | warn (manual fix exists: `POST /ops/streams/sweep-orphans`, built 2026-08; no *scheduled* auto-sweep) |
 | Recordings disk | > 80% of volume | warn |
-| Unbounded-table growth | audit tables (TTL still unapplied), `activity_by_user`, `export_jobs` past thresholds | weekly report |
+| Unbounded-table growth | `activity_by_user` and other stores without retention (audit tables and `export_jobs` are now bounded — TTL + `RetentionSweepJob`, built 2026-08) | weekly report |
 
 ---
 
@@ -473,8 +492,8 @@ audit helper that today has zero callers; ops actions are its first adopters.
   `PUT /channels/{id}/verified` mistake of annotation-only gating.
 - Mutating actions (trigger/pause, requeue/discard, flush, config view)
   require **step-up** ([../settings/auth-sessions.md](../settings/auth-sessions.md))
-  and write audit rows — adopting `AuditLogService.record`, whose
-  `SYSTEM` operation/outcome values exist precisely for this and are unused today.
+  and write audit rows via `AdminAuditor` → `AuditLogService.record`
+  **[EXISTS (built 2026-08)]**.
 - **Never render secrets**: env values (presence-only), `live_streams.stream_key`,
   `stream_guests.publish_key`, Redis key *values* (keys/counts only — values
   of `otp:*`, `stepup:*`, `idem:*` are sensitive).
@@ -503,13 +522,23 @@ audit helper that today has zero callers; ops actions are its first adopters.
 16 tasks (one slow job delays every heartbeat sweep); media worker
 CallerRunsPolicy blocks request threads when its queue-of-64 fills; audit
 executor CallerRuns at 50k does the same on hot paths; per-instance SSE
-emitter maps are unbounded; unbounded stores — Cassandra audit tables (TTL
-unapplied), `activity_by_user`, `export_jobs` + orphan ZIPs, `otp_challenges`,
-recordings dir; notifications table bounded only for READ rows.
+emitter maps are unbounded; unbounded stores — `activity_by_user` and the
+recordings dir (audit tables, `export_jobs` + ZIPs and `otp_challenges` are
+now bounded by the 180 d TTL / `RetentionSweepJob`, built 2026-08);
+notifications table bounded only for READ rows.
 
 ---
 
 ## 15. Build order / dependencies
+
+> **Status (built 2026-08):** phases 1, 3 and 4 shipped (`job_runs` ledger,
+> composite health, read endpoints, `dead_letters` parking lot +
+> browser/requeue/discard, pause/resume with Redis flags, masked config +
+> reconciler report, allowlisted Redis flush, chat-message ES backfill, plus
+> media-plane snapshot and the orphan-stream sweep). Phase 2
+> (actuator/Micrometer exposure + gauges) and the external "ext" backup items
+> remain open — except the Cassandra audit TTL, now automated by
+> `AuditSchemaInitializer`.
 
 | Phase | Item | Depends on |
 |---|---|---|

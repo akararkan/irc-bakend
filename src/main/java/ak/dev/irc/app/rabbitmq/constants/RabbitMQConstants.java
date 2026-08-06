@@ -76,6 +76,12 @@ public final class RabbitMQConstants {
     public static final String POST_COMMENT_DELETED  = "post.social.comment.deleted";
     public static final String POST_COMMENT_REACTED  = "post.social.comment.reacted";
     public static final String POST_SHARED           = "post.social.shared";
+    public static final String SOUND_APPROVED        = "post.social.sound-approved";
+    public static final String SOUND_REJECTED        = "post.social.sound-rejected";
+
+    /** Analytics tap (analytics-kpis.md §6.2): bound `#` — every event the
+     *  platform publishes lands here with zero touch to domain code. */
+    public static final String ANALYTICS_EVENTS_QUEUE = "irc.queue.analytics-events";
 
     // ── Binding patterns (wildcard) ───────────────────────────
     /** Catches post.lifecycle.* */

@@ -142,6 +142,29 @@ public class MediaControlClient {
 
     /** GET/POST that returns the response body (or null). Best-effort like
      *  {@link #send} — never throws. Used by {@link #kickPublisher}. */
+    // ── Admin/ops read surface (operations.md §3.2, chat-channels-live.md §6) ──
+
+    /** Raw {@code /v3/paths/list} JSON, or null when the control API is down. */
+    public String listPaths() {
+        return sendForBody("GET", "/v3/config/paths/list");
+    }
+
+    /** Raw {@code /v3/webrtcsessions/list} JSON, or null when unreachable. */
+    public String listWebrtcSessions() {
+        return sendForBody("GET", "/v3/webrtcsessions/list");
+    }
+
+    /** Raw {@code /v3/rtmpconns/list} JSON (OBS publishers), or null. */
+    public String listRtmpConns() {
+        return sendForBody("GET", "/v3/rtmpconns/list");
+    }
+
+    /** Health probe: is the MediaMTX control API answering at all? */
+    public boolean ping() {
+        return sendForBody("GET", "/v3/config/global/get") != null
+                || sendForBody("GET", "/v3/paths/list") != null;
+    }
+
     private String sendForBody(String method, String path) {
         try {
             HttpRequest req = HttpRequest.newBuilder()

@@ -252,6 +252,7 @@ public enum NotificationKind {
 
     /** Your uploaded sound passed moderation. One-shot, email-eligible. */
     SOUND_APPROVED      (PrefCategory.SYSTEM, false, true),
+    SOUND_REJECTED      (PrefCategory.SYSTEM, false, true),
 
     /** Generic system message addressed to a single user. Email-eligible. */
     SYSTEM_MESSAGE      (PrefCategory.SYSTEM, false, true),
@@ -304,7 +305,17 @@ public enum NotificationKind {
      *  only ({@code emailEligible=false}) — emailing every follower on each
      *  go-live would spam, same reasoning as {@link #POST_NEW}. One row per
      *  go-live via the {@code STREAM_STARTED:{streamId}} group key. */
-    STREAM_STARTED       (PrefCategory.SOCIAL, false, false);
+    STREAM_STARTED       (PrefCategory.SOCIAL, false, false),
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  ADMIN / OPS — delivered to staff accounts only
+    // ────────────────────────────────────────────────────────────────────────
+
+    /** Nightly anomaly scan flagged a KPI (z-score breach or flatline).
+     *  Sent to every active ADMIN; one row per {@code ANOMALY:{day}:{metric}}
+     *  group key so re-runs never double-ping. Email-eligible — a dead
+     *  pipeline should reach admins even when they're not in the app. */
+    ADMIN_ANOMALY        (PrefCategory.SYSTEM, false, true);
 
     /** Maps to the corresponding {@code user.email*Enabled} toggle. */
     public enum PrefCategory { SOCIAL, MENTIONS, SYSTEM, TRENDING }

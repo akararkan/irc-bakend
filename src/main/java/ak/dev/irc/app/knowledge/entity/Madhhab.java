@@ -26,4 +26,8 @@ public class Madhhab {
 
     @Column(name = "name_ckb", nullable = false, length = 100)
     private String nameCkb;
+
+    /** Soft-retire marker — see {@code Topic.archivedAt} for the rationale. */
+    @Column(name = "archived_at")
+    private java.time.LocalDateTime archivedAt;
 }

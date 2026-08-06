@@ -36,10 +36,21 @@ public interface StreamGiftTallyRepository extends JpaRepository<StreamGiftTally
                  @Param("coins") long coins, @Param("now") Instant now);
 
     /** The stream's leaderboard: biggest supporters first, then most recent. */
-    List<StreamGiftTally> findByStreamIdOrderByCoinsDescLastGiftAtDesc(UUID streamId, Pageable page);
+    @Query("SELECT t FROM StreamGiftTally t WHERE t.streamId = :streamId ORDER BY t.coins DESC, t.lastGiftAt DESC")
+    List<StreamGiftTally> findByStreamIdOrderByCoinsDescLastGiftAtDesc(@Param("streamId") UUID streamId, Pageable page);
 
     /** Purge every tally for a stream — used when the stream is deleted. */
     @Modifying
     @Query("DELETE FROM StreamGiftTally t WHERE t.streamId = :sid")
     int deleteByStreamId(@Param("sid") UUID streamId);
+
+    /** Platform-wide gift rollup (chat-channels-live.md §6 gifts/top). */
+    @Query("""
+        SELECT t.userId, SUM(t.coins), SUM(t.giftCount) FROM StreamGiftTally t
+        GROUP BY t.userId ORDER BY SUM(t.coins) DESC
+        """)
+    java.util.List<Object[]> topGiftersPlatform(org.springframework.data.domain.Pageable pageable);
+
+    @Query("SELECT COALESCE(SUM(t.coins), 0) FROM StreamGiftTally t")
+    long totalCoins();
 }

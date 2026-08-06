@@ -28,12 +28,18 @@ public class KnowledgeVocabularyService {
     @Cacheable("knowledge-topics")
     @Transactional(readOnly = true)
     public List<Topic> allTopics() {
-        return topicRepository.findAll();
+        // Retired rows leave the pickers but stay findById-resolvable, so
+        // existing profile references never orphan (admin soft-retire).
+        return topicRepository.findAll().stream()
+                .filter(t -> t.getArchivedAt() == null)
+                .toList();
     }
 
     @Cacheable("knowledge-madhhabs")
     @Transactional(readOnly = true)
     public List<Madhhab> allMadhhabs() {
-        return madhhabRepository.findAll();
+        return madhhabRepository.findAll().stream()
+                .filter(m -> m.getArchivedAt() == null)
+                .toList();
     }
 }

@@ -76,6 +76,11 @@ public class StoryRealtimeService {
      * which leaked a JVM thread per SSE client (10k connections → 10k threads → OOM).
      * Dead emitters are removed inline so a single bad connection can't accumulate.
      */
+    /** Open story topics — ops SSE fleet visibility (operations.md §6.2). */
+    public int topicCount() {
+        return topics.size();
+    }
+
     @Scheduled(fixedDelay = HEARTBEAT_MS)
     public void heartbeat() {
         if (topics.isEmpty()) return;

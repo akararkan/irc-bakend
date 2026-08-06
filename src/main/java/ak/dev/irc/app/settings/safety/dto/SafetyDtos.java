@@ -16,8 +16,14 @@ public final class SafetyDtos {
 
     private SafetyDtos() {}
 
+    /**
+     * {@code targetId} is optional only for MESSAGE targets, whose chat ids
+     * are Snowflake longs carried in {@code targetRef} (the MESSAGE-target
+     * defect fix); the service enforces that exactly one is present.
+     */
     public record SubmitReportRequest(@NotNull ReportTargetType targetType,
-                                      @NotNull UUID targetId,
+                                      UUID targetId,
+                                      String targetRef,
                                       @NotNull ReportReason reason,
                                       String details) {}
 

@@ -34,10 +34,12 @@ public class ScheduledPublishJob {
 
     private final ResearchRepository researchRepo;
     private final ResearchService    researchService;
+    private final ak.dev.irc.app.admin.ops.JobPauseRegistry jobPause;
 
     @Scheduled(initialDelayString = "${app.research.scheduled-publish-initial-ms:30000}",
                fixedDelayString   = "${app.research.scheduled-publish-ms:60000}")
     public void publishDueResearch() {
+        if (jobPause.isPaused("research-scheduled-publish")) return;
         List<Research> due;
         try {
             due = researchRepo.findDueForScheduledPublish(ResearchStatus.DRAFT, LocalDateTime.now());

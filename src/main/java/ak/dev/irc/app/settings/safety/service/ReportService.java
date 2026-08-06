@@ -35,21 +35,39 @@ public class ReportService {
 
     private final ReportRepository repo;
     private final RateLimiter rateLimiter;
+    private final ReportEvidenceService evidenceService;
 
     @Transactional
     public Report submit(UUID reporterId, ReportTargetType targetType, UUID targetId,
                          ReportReason reason, String details) {
+        return submit(reporterId, targetType, targetId, null, reason, details);
+    }
+
+    /**
+     * Full intake — {@code targetRef} carries non-UUID targets (chat message
+     * Snowflakes), fixing the defect where a MESSAGE report could not
+     * reference its target at all. Exactly one of id/ref must be present.
+     */
+    @Transactional
+    public Report submit(UUID reporterId, ReportTargetType targetType, UUID targetId,
+                         String targetRef, ReportReason reason, String details) {
         rateLimiter.check("safety:report", reporterId, 20, Duration.ofHours(1));
 
-        String groupKey = targetId + ":" + reason.name();
+        if (targetId == null && (targetRef == null || targetRef.isBlank())) {
+            throw new ak.dev.irc.app.common.exception.BadRequestException(
+                    "targetId (or targetRef for MESSAGE targets) is required.", "TARGET_REQUIRED");
+        }
+        String ref = targetId != null ? targetId.toString() : targetRef.trim();
+        String groupKey = ref + ":" + reason.name();
 
         // Dedup: an open report by this reporter for the same group is reused
         // rather than duplicated — one queue item, not many identical rows.
-        return repo.findFirstByReporterIdAndGroupKeyAndStateIn(reporterId, groupKey, OPEN_STATES)
+        Report report = repo.findFirstByReporterIdAndGroupKeyAndStateIn(reporterId, groupKey, OPEN_STATES)
                 .orElseGet(() -> repo.save(Report.builder()
                         .reporterId(reporterId)
                         .targetType(targetType)
                         .targetId(targetId)
+                        .targetRef(targetId == null ? ref : null)
                         .reason(reason)
                         .details(details != null && details.length() > 1000
                                 ? details.substring(0, 1000) : details)
@@ -57,6 +75,11 @@ public class ReportService {
                         .resolution(Resolution.NONE)
                         .groupKey(groupKey)
                         .build()));
+
+        // Evidence freezes at submit — comments hard-delete, stories TTL out,
+        // profiles are editable. One snapshot per group (first report wins).
+        evidenceService.snapshotIfAbsent(report);
+        return report;
     }
 
     @Transactional(readOnly = true)

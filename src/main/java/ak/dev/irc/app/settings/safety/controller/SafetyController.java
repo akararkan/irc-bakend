@@ -35,7 +35,8 @@ public class SafetyController {
     public ResponseEntity<ReportResponse> submit(@Valid @RequestBody SubmitReportRequest req) {
         UUID me = SecurityUtils.requireCurrentUserId();
         return ResponseEntity.ok(ReportResponse.of(
-                reportService.submit(me, req.targetType(), req.targetId(), req.reason(), req.details())));
+                reportService.submit(me, req.targetType(), req.targetId(), req.targetRef(),
+                        req.reason(), req.details())));
     }
 
     @GetMapping("/reports")

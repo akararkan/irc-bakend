@@ -15,7 +15,8 @@ import java.util.UUID;
 @Table(name = "login_events",
        indexes = {
            @Index(name = "idx_login_event_user", columnList = "user_id, ts"),
-           @Index(name = "idx_login_event_outcome", columnList = "user_id, outcome")
+           @Index(name = "idx_login_event_outcome", columnList = "user_id, outcome"),
+           @Index(name = "idx_login_event_ip", columnList = "ip, ts")
        })
 @Getter
 @Setter

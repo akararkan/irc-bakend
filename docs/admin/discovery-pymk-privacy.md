@@ -103,7 +103,8 @@ compliance finding.
 and search can surface the account. **[EXISTS]** (user-scoped).
 
 **QR discovery** — `QrDiscoveryController`: rotating **opaque** QR tokens with a
-**public** resolve endpoint `GET /api/v1/discovery/qr/resolve/{opaque}`. **[EXISTS]**
+resolve endpoint `GET /api/v1/discovery/qr/resolve/{opaque}` — **not public**:
+gated `@PreAuthorize("isAuthenticated()")`, so it requires a logged-in user. **[EXISTS]**
 
 > ⚠️ **Recon flag (verified seam):** the QR *resolve* path does **not** currently
 > honor the `discover.byQr` preference — i.e. a rotated/stale code may still resolve

@@ -14,7 +14,10 @@ import java.util.UUID;
  */
 @Entity
 @Table(name = "user_strikes",
-       indexes = @Index(name = "idx_strike_user", columnList = "user_id, expires_at"))
+       indexes = {
+           @Index(name = "idx_strike_user", columnList = "user_id, expires_at"),
+           @Index(name = "idx_strike_expiry", columnList = "expires_at")
+       })
 @Getter
 @Setter
 @NoArgsConstructor

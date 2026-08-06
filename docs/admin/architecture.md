@@ -26,9 +26,10 @@ section doc — every other doc assumes the conventions defined here.
 
 ## 2. Admin access model — as it EXISTS
 
-The platform has exactly **four roles**: `USER`, `RESEARCHER`, `SCHOLAR`, `ADMIN`
+The platform has **seven roles**: `USER`, `RESEARCHER`, `SCHOLAR`, the staff tiers
+`MODERATOR` / `SUPPORT` / `ANALYST` (the §6 RBAC widening landed 2026-08), and `ADMIN`
 (`user/enums/Role.java`). Badges derive from role; there is no separate verification
-workflow and no moderator tier today.
+workflow.
 
 | Layer | Mechanism | Status |
 |-------|-----------|--------|
@@ -36,14 +37,14 @@ workflow and no moderator tier today.
 | Method security (braces) | `@PreAuthorize("hasRole('ADMIN')")` on every admin controller/method, enforced by `MethodSecurityConfig`. This is the platform-wide convention — the chain stays permissive so optional-auth endpoints keep working. | **[EXISTS]** |
 | Escape hatch | `app.security.permit-all` (env `SECURITY_PERMIT_ALL`, **default `false`**) skips the chain-level admin rule for local testing. `@PreAuthorize` still applies unless method security is bypassed by the same flag's design; treat `SECURITY_PERMIT_ALL=true` as local-only. | **[EXISTS]** |
 | Auth transport | Stateless JWT Bearer (`JwtAuthFilter`), no sessions, CSRF disabled. SSE endpoints accept `?token=` fallback (EventSource cannot set headers). | **[EXISTS]** |
-| Step-up for sensitive ops | `security/stepup/StepUpService` — short-TTL Redis marker `stepup:{userId}` (TTL `STEP_UP_TTL_SECONDS`, default 300s) armed by `POST /api/v1/security/step-up` (fresh password or 2FA code). Used by settings module today; **not yet required by any admin endpoint**. See [../settings/auth-sessions.md](../settings/auth-sessions.md). | **[PARTIAL]** |
+| Step-up for sensitive ops | `security/stepup/StepUpService` — short-TTL Redis marker `stepup:{userId}` (TTL `STEP_UP_TTL_SECONDS`, default 300s) armed by `POST /api/v1/security/step-up` (fresh password or 2FA code). Used by the settings module and — since 2026-08 — required on sensitive admin endpoints via `@RequiresStepUp` (`admin/support/StepUpGuardInterceptor`). See [../settings/auth-sessions.md](../settings/auth-sessions.md). | **[EXISTS]** (built 2026-08) |
 
 ### Known gate defects (fix during phase 1)
 
 | Defect | Detail | Fix |
 |--------|--------|-----|
-| Stray admin endpoints outside the prefix | `PUT /api/v1/channels/{id}/verified` (`ChannelController`) and `POST /api/v1/sounds/{id}/approve` (`CassandraSoundController`) are ADMIN-gated by annotation only — no filter-chain double gate, and both are open under `SECURITY_PERMIT_ALL=true`. | **[PLANNED]** re-home (or alias) under `/api/v1/admin/**`; see §5 |
-| Phantom roles in grants | `AuditLogController` uses `hasAnyRole('ADMIN','SUPER_ADMIN')`; `CassandraSoundController` uses `hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')`. `MODERATOR`/`SUPER_ADMIN` do not exist in `Role` — dead grants, effectively ADMIN-only. Harmless but misleading; becomes **live** the day the enum widens (§6). | **[PLANNED]** normalize during RBAC work |
+| Stray admin endpoints outside the prefix | `PUT /api/v1/channels/{id}/verified` (`ChannelController`) and `POST /api/v1/sounds/{id}/approve` (`CassandraSoundController`) are ADMIN-gated by annotation only — no filter-chain double gate, and both are open under `SECURITY_PERMIT_ALL=true`. | **[EXISTS]** (built 2026-08) — aliases live (`PATCH /api/v1/admin/channels/{id}/verified`, `POST /api/v1/admin/sounds/{id}/approve`); strays deprecated with successor-version `Link` headers |
+| Phantom roles in grants | `AuditLogController` and `CassandraSoundController` were both normalized to `hasRole('ADMIN')` before the enum widened to 7 roles. Residual: ~10 `hasAnyRole(…,'SUPER_ADMIN')` grants linger in `research/controller/ResearchController` (see §6). | **[EXISTS]** (built 2026-08) — normalized, `ResearchController` stragglers remain |
 | Actuator ungated | Filter chain only gates `/api/v1/admin/**`; whatever actuator endpoints are exposed (default: health only) are reachable unauthenticated. | **[PLANNED]** gate `/actuator/**` when exposure widens; see [operations.md](operations.md) |
 
 ### Programmatic admin bypasses (not endpoints) — **[EXISTS]**
@@ -64,7 +65,7 @@ should surface these powers explicitly rather than leaving them as hidden code p
 | Shell layout | Left nav = the 12 sections of the [partition map](#9-partition-map); top strip = dependency health chips ([operations.md](operations.md)) + live audit ticker; global search over users/content ([users-roles.md](users-roles.md)) | — |
 | Auth flow | Normal login → JWT; dashboard checks role claim; destructive screens call `POST /api/v1/security/step-up` and retry with the step-up marker armed (§4) | Reuses the settings module's proven step-up flow |
 
-## 4. API conventions — binding on every new admin endpoint — **[PLANNED]**
+## 4. API conventions — binding on every new admin endpoint — **[EXISTS]** (built 2026-08)
 
 All section docs propose endpoints against these rules; [admin-api-blueprint.md](admin-api-blueprint.md) enforces them across the full list.
 
@@ -75,7 +76,7 @@ All section docs propose endpoints against these rules; [admin-api-blueprint.md]
 | Pagination | Spring `Pageable` (`page`, `size`, `sort`) with **`Pages.clamp`** applied server-side (existing platform pattern) — hard cap `size<=100` for admin lists. Cassandra-backed lists use cursor keyset params (`cursor`, `pageSize`) exactly like `AuditLogController` does today. |
 | Date ranges | `from` / `to` as ISO-8601 instants, both optional, `from<=to` validated, defaulting to last 24h for logs and last 30d for analytics. |
 | Filters | Consistent names across sections: `userId`, `status`, `type`, `q` (free text), `sort`. Enums passed by name, parsed leniently (case-insensitive, 400 with the allowed values on miss). |
-| Audit trail | **Every admin mutation writes an audit row** via `AuditLogService.record(userId, username, operation, resourceType, resourceId, summary)` — the service-layer helper that exists today with zero callers **[PARTIAL]**. The HTTP interceptor already captures the request; the explicit `record` call adds the business-event row (`operation` per action, e.g. `UPDATE`/`DELETE`, summary = human-readable action). Each action table in the section docs names its audit action. |
+| Audit trail | **Every admin mutation writes an audit row** via `AuditLogService.record(userId, username, operation, resourceType, resourceId, summary)` — the service-layer helper, funneled through `admin/support/AdminAuditor` since the 2026-08 build **[EXISTS]**. The HTTP interceptor already captures the request; the explicit `record` call adds the business-event row (`operation` per action, e.g. `UPDATE`/`DELETE`, summary = human-readable action). Each action table in the section docs names its audit action. |
 | Step-up | Every action marked danger **high** or **critical** requires an armed step-up marker (`StepUpService.require(userId)` → 403 `STEP_UP_REQUIRED` when absent) per [../settings/auth-sessions.md](../settings/auth-sessions.md). Read endpoints never require step-up. |
 | Danger levels | `low` = read-only / reversible metadata; `medium` = reversible mutation (mute, unverify); `high` = user-impacting or hard-to-reverse (takedown, force-stop, strike); `critical` = irreversible or account-level (ban, purge, key rotation). Used in every "Admin actions" table platform-wide. |
 | Idempotency | Mutations accept the existing `Idempotency-Key` header (24h replay via `IdempotencyFilter`) — free, already global for mutating methods. |
@@ -87,24 +88,29 @@ Everything an ADMIN can do via HTTP today. "Gate" column: **double** = prefix + 
 
 | # | Surface | Endpoint(s) | Gate | Status | Notes |
 |---|---------|-------------|------|--------|-------|
-| 1 | Role change | `PATCH /api/v1/admin/users/{userId}/role` (`AdminUserController` → `AdminUserService.changeRole`) | double | **[EXISTS]** | Sole user-management control; moves users along the 4-role ladder, badge auto-derives. No suspend/ban/deactivate exists. |
+| 1 | Role change | `PATCH /api/v1/admin/users/{userId}/role` (`AdminUserController` → `AdminUserService.changeRole`) | double | **[EXISTS]** | Now one of ~30 user-management routes (built 2026-08): disable/enable, lock/unlock, admin soft-delete/restore, purge now/hold, and bulk-action all exist on `AdminUserController`; only a distinct "suspend" state is still absent. Moves users along the 7-role ladder, badge auto-derives. |
 | 2 | Search reindex ×7 | `POST /api/v1/admin/search/{research\|posts\|questions\|users\|channels\|answers\|sounds}/reindex?drop=` (`SearchAdminController`) | double | **[EXISTS]** | Synchronous, returns final counts; `drop=true` (default) recreates the index (mapping-repair path). Chat-messages index has no hook by design. |
 | 3 | Tag backfill | `POST /api/v1/admin/tags/backfill-posts` (`TagAdminController`) | double | **[EXISTS]** | Full token-range scan of `posts_by_id` → `content_by_tag`. Trending counter bumps are NOT idempotent — do not re-run casually. |
 | 4 | Audit browser | `GET /api/v1/admin/audit` (requires `?userId`, 400 without — Cassandra partition scope; `operation`/`outcome`/`from`/`to` filtered in-memory), `GET /api/v1/admin/audit/users/{userId}` (cursor keyset) (`AuditLogController`) | double | **[EXISTS]** | Per-user partitions only; the SSE stream is the only global view. `audit_log_by_resource` is written but has **no read endpoint** — see [logs-audit.md](logs-audit.md). |
 | 5 | Audit live stream | `GET /api/v1/admin/audit/stream` (SSE via `AuditRealtimeService`, Redis `irc:audit:stream`) | double | **[EXISTS]** | The dashboard's live-tile backbone (§3). |
-| 6 | Channel verified badge | `PUT /api/v1/channels/{id}/verified?verified=` (`ChannelController` → `ChannelService.setVerified`) | **annotation** | **[EXISTS]** | Outside the prefix — no double gate. **[PLANNED]** alias `PATCH /api/v1/admin/channels/{id}/verified`, deprecate the stray route. |
-| 7 | Sound approval | `POST /api/v1/sounds/{id}/approve` (`CassandraSoundController` → `CassandraSoundService.approve`); upload `autoApprove` honored only for `Role.ADMIN` | **annotation** | **[EXISTS]** | Outside the prefix. No pending-review listing, no reject/archive endpoint (`REJECTED`/`ARCHIVED` never set) — queue built in [content-moderation.md](content-moderation.md). |
+| 6 | Channel verified badge | `PUT /api/v1/channels/{id}/verified?verified=` (`ChannelController` → `ChannelService.setVerified`) | **annotation** | **[EXISTS]** | Outside the prefix — no double gate. Alias `PATCH /api/v1/admin/channels/{id}/verified` **[EXISTS]** (built 2026-08, `AdminChannelController`); stray deprecated with successor-version `Link`. |
+| 7 | Sound approval | `POST /api/v1/sounds/{id}/approve` (`CassandraSoundController` → `CassandraSoundService.approve`); upload `autoApprove` honored only for `Role.ADMIN` | **annotation** | **[EXISTS]** | Outside the prefix; normalized to `hasRole('ADMIN')` + deprecated with successor `Link` → `POST /api/v1/admin/sounds/{id}/approve`. Pending queue + reject/archive/takedown landed 2026-08 under `/api/v1/admin/sounds` ([content-moderation.md](content-moderation.md)). |
 | 8 | Channel stats | `GET /api/v1/channels/{id}/stats` (`ChannelStatsService`) | channel-scoped | **[PARTIAL]** | Gated to that channel's owner/admin **member** — a platform ADMIN who is not a member gets 403; no override path. |
 | 9 | Service-layer bypasses | Research/QnA moderation via `Role.ADMIN` short-circuits (§2) | n/a | **[EXISTS]** | Powers without endpoints; dashboard makes them explicit. |
 | 10 | MediaMTX control API | `:9997` `/v3/...` via `MediaControlClient` (kick publisher, path config); auth hook `POST /internal/media/auth/{secret}` | machine-to-machine | **[EXISTS]** | Backend/localhost only, not role-gated — building blocks for live-stream force-stop ([chat-channels-live.md](chat-channels-live.md)). |
 
-**That is the entire list.** Only four controller prefixes live under `/api/v1/admin/**` today
-(`/admin/users`, `/admin/search`, `/admin/tags`, `/admin/audit`); rows 6-7 are the two strays.
-Everything else in this doc set is **[PLANNED]**.
+**Historical snapshot — superseded by the 2026-08 build.** Originally only four controller
+prefixes lived under `/api/v1/admin/**` (`/admin/users`, `/admin/search`, `/admin/tags`,
+`/admin/audit`), with rows 6-7 as the two strays. Today ~25 admin controllers serve the
+prefix — activity, analytics, chat/channels/streams, content, discovery, feed (×2),
+impersonation, knowledge, logs, media (×2), moderation, notification, ops, qna, research,
+safety, search-ops, sound, support, trending — plus the four originals; the strays are
+deprecated aliases. See [api-controllers.md](api-controllers.md) and
+[known-issues.md](known-issues.md).
 
-## 6. RBAC evolution — sub-admin roles — **[PLANNED]**
+## 6. RBAC evolution — sub-admin roles — **[EXISTS]** (built 2026-08)
 
-Today ADMIN is all-or-nothing. Proposal: widen `Role` with three staff tiers, mapped to dashboard sections.
+`Role` was widened with three staff tiers (built 2026-08), mapped to dashboard sections per the matrix below.
 
 | Role | Dashboard sections (RW) | Sections (RO) | Cannot |
 |------|------------------------|---------------|--------|
@@ -119,10 +125,10 @@ Implementation notes:
 |---------|------|
 | Enum widening | Adding values to `@Enumerated(STRING) Role` on an existing DB trips the stale CHECK constraint — add the `(users, users_role_check)` pair to `EnumCheckConstraintReconciler` (`config/`) in the same change. |
 | Gate layering | Filter chain gains `requestMatchers("/api/v1/admin/**").hasAnyRole("ADMIN","MODERATOR","SUPPORT","ANALYST")`; per-section method grants narrow from there (`hasAnyRole` per controller). Deny-by-default: a new section doc must state its role matrix. |
-| Dead grants become live | The existing `MODERATOR` grant on sound-approve and `SUPER_ADMIN` grants on audit endpoints activate the moment those names exist — audit all `hasAnyRole` usages **before** widening (there are exactly the two from §2). `SUPER_ADMIN` should be deleted, not implemented. |
+| Dead grants become live | The sound-approve and audit-endpoint grants were normalized to `hasRole('ADMIN')` before widening — but the sweep missed `research/controller/ResearchController` (~L103-252), which still carries ~10 `hasAnyRole(…,'SUPER_ADMIN')` grants post-widening (the `Role` javadoc's "were normalized before this enum widened" claim is wrong for that file). `SUPER_ADMIN` stays deleted, not implemented — normalize the stragglers. |
 | Role changes are critical | `PATCH /admin/users/{id}/role` becomes danger **critical** + step-up once it can mint staff; ADMIN-only forever (staff roles cannot grant roles). |
 
-## 7. Impersonation — "view as user" — **[PLANNED]**
+## 7. Impersonation — "view as user" — **[EXISTS]** (built 2026-08)
 
 | Rule | Detail |
 |------|--------|
@@ -141,19 +147,19 @@ Architecture & access is mostly conventions, but it owns the dashboard **shell**
 | Widget | Content | Source | Status |
 |--------|---------|--------|--------|
 | Live audit ticker (shell top strip) | Rolling last-N admin+platform audit events, filter chips by operation/outcome | SSE `GET /api/v1/admin/audit/stream` | **[EXISTS]** (API) / **[PLANNED]** (UI) |
-| Staff roster | All ADMIN (later staff-role) accounts, last login, 2FA on/off, open sessions | `users` table filtered by role; sessions per [../settings/auth-sessions.md](../settings/auth-sessions.md) | **[PLANNED]** (needs `GET /api/v1/admin/users?role=` — [users-roles.md](users-roles.md)) |
-| Gate health card | `permit-all` flag state, stray admin endpoints count, phantom-grant count | Static config surface — [operations.md](operations.md) env registry | **[PLANNED]** |
+| Staff roster | All ADMIN (later staff-role) accounts, last login, 2FA on/off, open sessions | `users` table filtered by role; sessions per [../settings/auth-sessions.md](../settings/auth-sessions.md) | **[PLANNED]** UI (`GET /api/v1/admin/users?role=` **[EXISTS]**, built 2026-08 — [users-roles.md](users-roles.md)) |
+| Gate health card | `permit-all` flag state, stray admin endpoints count, phantom-grant count | Static config surface — [operations.md](operations.md) env registry | **[PLANNED]** UI (`GET /api/v1/admin/ops/config` + `/config/reconciler` **[EXISTS]**, built 2026-08) |
 | Admin action feed | Audit rows where path starts `/api/v1/admin/` — who did what, when | Same audit stream/API, client-filtered | **[EXISTS]** (data) / **[PLANNED]** (UI) |
 
 ### Admin actions owned by this section
 
 | Action | Endpoint | Params | Danger | Step-up | Audit action | Status |
 |--------|----------|--------|--------|---------|--------------|--------|
-| Re-home channel verify | `PATCH /api/v1/admin/channels/{id}/verified` | `verified` bool | medium | no | `UPDATE Channel VERIFY` | **[PLANNED]** (wraps existing `ChannelService.setVerified` **[EXISTS]**) |
-| Re-home sound approve | `POST /api/v1/admin/sounds/{id}/approve` | — | medium | no | `UPDATE Sound APPROVE` | **[PLANNED]** (wraps `CassandraSoundService.approve` **[EXISTS]**) |
-| Grant/revoke staff role | `PATCH /api/v1/admin/users/{userId}/role` | `role` | critical | **yes** (once staff roles exist) | `UPDATE User ROLE_CHANGE` | **[EXISTS]** endpoint / **[PLANNED]** step-up |
-| Start impersonation | `POST /api/v1/admin/users/{userId}/impersonate` | `reason` | critical | **yes** | `OTHER User IMPERSONATE_START` | **[PLANNED]** |
-| End impersonation | `DELETE /api/v1/admin/impersonation` | — | low | no | `OTHER User IMPERSONATE_END` | **[PLANNED]** |
+| Re-home channel verify | `PATCH /api/v1/admin/channels/{id}/verified` | `verified` bool | medium | no | `UPDATE Channel VERIFY` | **[EXISTS]** (built 2026-08 — `AdminChannelController`, wraps `ChannelService.setVerified`) |
+| Re-home sound approve | `POST /api/v1/admin/sounds/{id}/approve` | — | medium | no | `UPDATE Sound APPROVE` | **[EXISTS]** (built 2026-08 — `AdminSoundController`, wraps `CassandraSoundService.approve`) |
+| Grant/revoke staff role | `PATCH /api/v1/admin/users/{userId}/role` | `role` | critical | **yes** | `UPDATE User ROLE_CHANGE` | **[EXISTS]** endpoint + step-up (built 2026-08) |
+| Start impersonation | `POST /api/v1/admin/users/{userId}/impersonate` | `reason` | critical | **yes** | `OTHER User IMPERSONATE_START` | **[EXISTS]** (built 2026-08) |
+| End impersonation | `DELETE /api/v1/admin/impersonation` | — | low | no | `OTHER User IMPERSONATE_END` | **[EXISTS]** (built 2026-08) |
 
 ### Logs surfaced here
 
@@ -167,7 +173,7 @@ writer, retention — is [logs-audit.md](logs-audit.md).
 |--------|------------|--------|-------|--------|
 | Admin actions/day | Count of audit rows with path prefix `/api/v1/admin/` | `audit_log_by_user` (needs aggregate query — per-user partitions today) | bar, 30d | **[PLANNED]** |
 | Actions by admin | Same, grouped by admin userId | `GET /api/v1/admin/audit?userId=` per staff account | stacked bar | **[PARTIAL]** (per-user query exists; rollup manual) |
-| Live audit subscribers | Admins with an open audit SSE connection | `AuditRealtimeService.adminCount()` — in-memory, log-only today | stat tile | **[PARTIAL]** (needs an endpoint) |
+| Live audit subscribers | Admins with an open audit SSE connection | `AuditRealtimeService.adminCount()` — exposed via `GET /api/v1/admin/ops/sse` | stat tile | **[EXISTS]** (built 2026-08) |
 | Step-up challenges (admin) | Step-up arms/denials by staff | `stepup:{userId}` events — not currently logged | line | **[PLANNED]** |
 | Impersonation sessions | Count + total duration per week | impersonation audit rows | table | **[PLANNED]** |
 

@@ -64,6 +64,13 @@ public class UserActivityServiceImpl implements UserActivityService {
     private final ActivityLookupRepository        lookupRepo;
     private final UserActivityMapper              mapper;
     private final UserActivityRealtimeBroadcaster realtimeBroadcaster;
+    private final ak.dev.irc.app.admin.analytics.MetricDailyService metricDaily;
+    private final ak.dev.irc.app.admin.analytics.FunnelTracker funnelTracker;
+
+    /** Activity types that count as "created content" for the activation funnel. */
+    private static final java.util.Set<UserActivityType> CONTENT_CREATION_TYPES = java.util.Set.of(
+            UserActivityType.POST_CREATED, UserActivityType.QNA_QUESTION_CREATED,
+            UserActivityType.QNA_ANSWER_CREATED, UserActivityType.RESEARCH_PUBLISHED);
 
     // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -388,6 +395,16 @@ public class UserActivityServiceImpl implements UserActivityService {
                        Consumer<UserActivityEntity.UserActivityEntityBuilder> customizer) {
         UUID    id  = UUID.randomUUID();
         Instant now = Instant.now();
+
+        // Engagement-telemetry tee (activity-engagement.md §6 option 1): the
+        // SAME event feeds the day-bucketed population collector, so admin
+        // analytics never mine these private per-user partitions.
+        metricDaily.bump("activity." + type.name());
+        metricDaily.bump("activity.total");
+        metricDaily.markActive(userId);
+        if (CONTENT_CREATION_TYPES.contains(type)) {
+            funnelTracker.markFirstContent(userId);
+        }
 
         UserActivityEntity.UserActivityEntityBuilder b = UserActivityEntity.builder()
                 .userId(userId).createdAt(now).activityId(id)

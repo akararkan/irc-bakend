@@ -24,6 +24,9 @@ public class TagCounterService {
     public void increment(String scope, String tag) { add(scope, tag, 1); }
     public void decrement(String scope, String tag) { add(scope, tag, -1); }
 
+    /** Bulk delta — used by the admin tag-merge counter transfer. */
+    public void addDelta(String scope, String tag, long delta) { add(scope, tag, delta); }
+
     private void add(String scope, String tag, long delta) {
         cqlOperations.execute(
                 "UPDATE tag_counters SET usage_count = usage_count + ? WHERE scope = ? AND tag = ?",

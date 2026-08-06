@@ -115,11 +115,21 @@ public class ChannelController {
 
     // ── Verified badge (platform admins only) ────────────────────────────────────
 
+    /**
+     * @deprecated stray admin route outside {@code /api/v1/admin/**} — misses
+     * the filter-chain double gate. Re-homed as
+     * {@code PATCH /api/v1/admin/channels/{id}/verified}; this alias answers
+     * with a {@code Deprecation} header until clients migrate.
+     */
+    @Deprecated
     @PutMapping("/channels/{id}/verified")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ChannelResponse> setVerified(@PathVariable UUID id,
                                                        @RequestParam boolean verified) {
-        return ResponseEntity.ok(channelService.setVerified(id, verified));
+        return ResponseEntity.ok()
+                .header("Deprecation", "true")
+                .header("Link", "</api/v1/admin/channels/" + id + "/verified>; rel=\"successor-version\"")
+                .body(channelService.setVerified(id, verified));
     }
 
     // ── Subscribe / unsubscribe ──────────────────────────────────────────────────

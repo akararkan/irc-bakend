@@ -112,7 +112,7 @@ public class PostHydrator {
         List<PostResponse> out = new ArrayList<>(rows.size());
         for (SaveByUserEntity r : rows) {
             PostByIdEntity p = postsById.get(r.getPostId());
-            if (p == null) continue;
+            if (p == null || !isServable(p)) continue;
             out.add(buildPostResponse(
                     p,
                     counters.get(p.getId()),
@@ -152,8 +152,9 @@ public class PostHydrator {
             if (isPostRow(r)) {
                 PostByIdEntity      live = canonical.get(r.getPostId());
                 // Feed rows can outlive canonical posts (fanout TTL). Once a post
-                // is deleted, hide the stale snapshot immediately.
-                if (live == null) continue;
+                // is deleted, hide the stale snapshot immediately. Same gate for
+                // admin-REMOVED posts — feed-side takedown enforcement.
+                if (live == null || !isServable(live)) continue;
                 PostCounterEntity   c    = counters.get(r.getPostId());
                 out.add(new FeedItemResponse(
                         r.getPostId(),
@@ -217,7 +218,7 @@ public class PostHydrator {
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (PostByAuthorEntity r : rows) {
             PostByIdEntity      live = canonical.get(r.getPostId());
-            if (live == null) continue;
+            if (live == null || !isServable(live)) continue;
             PostCounterEntity   c    = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
@@ -254,7 +255,7 @@ public class PostHydrator {
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (ReelsByDayEntity r : rows) {
             PostByIdEntity live = canonical.get(r.getPostId());
-            if (live == null) continue;
+            if (live == null || !isServable(live)) continue;
             PostCounterEntity c = counters.get(r.getPostId());
             out.add(new FeedItemResponse(
                     r.getPostId(),
@@ -426,6 +427,17 @@ public class PostHydrator {
                 p.getUpdatedAt(),
                 savedAt,
                 savedCollectionName);
+    }
+
+    /**
+     * Feed-side takedown enforcement: only PUBLISHED posts serve on list
+     * surfaces. Legacy rows (null status) predate the status machine and are
+     * treated as published; admin-REMOVED (and any future DRAFT/ARCHIVED
+     * writer) is hidden here — the same states the search layer already
+     * filters via {@code GlobalSearchService.DEAD_STATUSES}.
+     */
+    private static boolean isServable(PostByIdEntity p) {
+        return p.getStatus() == null || "PUBLISHED".equalsIgnoreCase(p.getStatus());
     }
 
     private static long nullSafe(Long v) { return v == null ? 0L : v; }

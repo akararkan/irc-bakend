@@ -18,4 +18,11 @@ public interface AuditLogByResourceRepository extends CassandraRepository<AuditL
     List<AuditLogByResourceEntity> firstPage(@Param("type") String resourceType,
                                              @Param("id") UUID resourceId,
                                              @Param("pageSize") int pageSize);
+
+    @Query("SELECT * FROM audit_log_by_resource WHERE resource_type = :type " +
+           "AND resource_id = :id AND created_at < :cursor LIMIT :pageSize")
+    List<AuditLogByResourceEntity> nextPage(@Param("type") String resourceType,
+                                            @Param("id") UUID resourceId,
+                                            @Param("cursor") java.time.Instant cursor,
+                                            @Param("pageSize") int pageSize);
 }

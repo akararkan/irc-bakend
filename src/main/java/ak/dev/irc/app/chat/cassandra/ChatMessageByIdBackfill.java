@@ -116,6 +116,16 @@ public class ChatMessageByIdBackfill {
         }
     }
 
+    /** Admin re-run support: drop the completion marker so {@link #backfill()}
+     *  executes again. The walk itself is idempotent (only-missing writes). */
+    public void clearMarker() {
+        try {
+            session.execute("DELETE FROM " + keyspace + ".chat_migrations WHERE id = ?", MARKER);
+        } catch (Exception e) {
+            log.warn("[CHAT-BACKFILL] marker clear failed: {}", e.getMessage());
+        }
+    }
+
     /** @return {@code [scanned, rebuilt, truncatedFlag]} for one conversation. */
     private long[] backfillConversation(Conversation c) {
         long scanned = 0, rebuilt = 0;

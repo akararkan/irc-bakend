@@ -15,7 +15,8 @@ import java.util.UUID;
  * captions | hls | original}.</p>
  */
 @Entity
-@Table(name = "media_renditions")
+@Table(name = "media_renditions",
+       indexes = @Index(name = "idx_rendition_object_key", columnList = "object_key"))
 @Getter
 @Setter
 @NoArgsConstructor

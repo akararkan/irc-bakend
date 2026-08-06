@@ -14,7 +14,8 @@ import java.util.UUID;
 @Repository
 public interface PushTokenRepository extends JpaRepository<PushToken, UUID> {
 
-    List<PushToken> findByUserId(UUID userId);
+    @Query("SELECT p FROM PushToken p WHERE p.userId = :userId")
+    List<PushToken> findByUserId(@Param("userId") UUID userId);
 
     Optional<PushToken> findByToken(String token);
 

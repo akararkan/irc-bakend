@@ -19,6 +19,46 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     Page<Question> findByDeletedAtIsNullOrderByCreatedAtDesc(Pageable pageable);
 
+    /** Admin browse (docs/admin/research-qna.md §4) — every filter optional. */
+    @Query(value = """
+        SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
+        WHERE (:status IS NULL OR q.status = :status)
+          AND (:authorId IS NULL OR a.id = :authorId)
+          AND (:text IS NULL OR LOWER(q.title) LIKE LOWER(CONCAT('%', CAST(:text AS string), '%')))
+          AND (:lockedOnly IS NULL OR q.answersLocked = :lockedOnly)
+          AND (:unanswered IS NULL OR (CASE WHEN q.answerCount = 0 THEN TRUE ELSE FALSE END) = :unanswered)
+          AND q.deletedAt IS NULL
+        ORDER BY q.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(q) FROM Question q
+        WHERE (:status IS NULL OR q.status = :status)
+          AND (:authorId IS NULL OR q.author.id = :authorId)
+          AND (:text IS NULL OR LOWER(q.title) LIKE LOWER(CONCAT('%', CAST(:text AS string), '%')))
+          AND (:lockedOnly IS NULL OR q.answersLocked = :lockedOnly)
+          AND (:unanswered IS NULL OR (CASE WHEN q.answerCount = 0 THEN TRUE ELSE FALSE END) = :unanswered)
+          AND q.deletedAt IS NULL
+        """)
+    Page<Question> adminBrowse(@Param("status") ak.dev.irc.app.qna.enums.QuestionStatus status,
+                               @Param("authorId") UUID authorId,
+                               @Param("text") String text,
+                               @Param("lockedOnly") Boolean lockedOnly,
+                               @Param("unanswered") Boolean unanswered,
+                               Pageable pageable);
+
+    @Query("SELECT COUNT(q) FROM Question q WHERE q.deletedAt IS NULL")
+    long countByDeletedAtIsNull();
+
+    @Query(value = """
+            SELECT CAST(date_trunc('day', q.created_at) AS date), COUNT(*)
+            FROM questions q
+            WHERE q.created_at >= :from AND q.deleted_at IS NULL
+            GROUP BY 1 ORDER BY 1
+            """, nativeQuery = true)
+    List<Object[]> createdPerDay(@Param("from") java.time.LocalDateTime from);
+
     // Cursor-paginated feed. Author + profile are fetch-joined on every feed
     // variant: the card mapper reads author.getProfileImage(), and User.profile
     // is a non-proxyable mappedBy 1:1 — without the fetch each card costs an

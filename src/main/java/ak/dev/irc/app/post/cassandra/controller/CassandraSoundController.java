@@ -70,12 +70,24 @@ public class CassandraSoundController {
         return soundService.search(q, category, Math.min(Math.max(limit, 1), 100));
     }
 
-    /** Mark a pending sound as APPROVED → publishes to the category browser. Admin/mod only. */
+    /**
+     * Mark a pending sound as APPROVED → publishes to the category browser.
+     *
+     * @deprecated stray admin route outside {@code /api/v1/admin/**} (misses the
+     * filter-chain double gate). Re-homed as
+     * {@code POST /api/v1/admin/sounds/{id}/approve}; this alias answers with a
+     * {@code Deprecation} header until clients migrate. The phantom
+     * MODERATOR/SUPER_ADMIN grants were normalized to the real ADMIN role.
+     */
+    @Deprecated
     @PostMapping("/{id}/approve")
-    @PreAuthorize("hasAnyRole('ADMIN','MODERATOR','SUPER_ADMIN')")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> approve(@PathVariable UUID id) {
         soundService.approve(id);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.noContent()
+                .header("Deprecation", "true")
+                .header("Link", "</api/v1/admin/sounds/" + id + "/approve>; rel=\"successor-version\"")
+                .build();
     }
 
     /** Browse the library by category, cursor-paginated (newest first). */

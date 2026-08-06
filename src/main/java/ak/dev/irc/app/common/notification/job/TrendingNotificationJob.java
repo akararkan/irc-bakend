@@ -71,6 +71,8 @@ public class TrendingNotificationJob {
     private final TrendingTagRepository       trendingRepo;
     private final UserRepository              userRepository;
     private final CassandraNotificationService notifications;
+    private final ak.dev.irc.app.admin.ops.JobRunRecorder jobRunRecorder;
+    private final ak.dev.irc.app.admin.ops.JobPauseRegistry jobPause;
 
     @Value("${irc.trending.notifications.enabled:true}")
     private boolean enabled;
@@ -81,25 +83,29 @@ public class TrendingNotificationJob {
      */
     @Scheduled(cron = "${irc.trending.notifications.cron:0 0 9 * * *}", zone = "UTC")
     public void fireDailyDigest() {
-        if (!enabled) {
-            log.debug("[TRENDING] job disabled by config — skipping");
-            return;
-        }
-        List<TrendingTagEntity> digest = buildDigest();
-        if (digest.isEmpty()) {
-            log.info("[TRENDING] no qualifying trending tags today (min={}) — skipping fan-out",
-                    MIN_USAGE_FLOOR);
-            return;
-        }
+        if (jobPause.isPaused("trending-digest")) return;
+        jobRunRecorder.record("trending-digest", null, () -> {
+            if (!enabled) {
+                log.debug("[TRENDING] job disabled by config — skipping");
+                return ak.dev.irc.app.admin.ops.JobRunRecorder.JobStats.NONE;
+            }
+            List<TrendingTagEntity> digest = buildDigest();
+            if (digest.isEmpty()) {
+                log.info("[TRENDING] no qualifying trending tags today (min={}) — skipping fan-out",
+                        MIN_USAGE_FLOOR);
+                return ak.dev.irc.app.admin.ops.JobRunRecorder.JobStats.NONE;
+            }
 
-        String today    = LocalDate.now(ZoneOffset.UTC).toString();
-        String groupKey = "TRENDING_DIGEST:" + today;
-        String body     = composeBody(digest);
-        String title    = "Today's trending in scholarship";
+            String today    = LocalDate.now(ZoneOffset.UTC).toString();
+            String groupKey = "TRENDING_DIGEST:" + today;
+            String body     = composeBody(digest);
+            String title    = "Today's trending in scholarship";
 
-        long sent = fanOut(groupKey, title, body);
-        log.info("[TRENDING] dispatched digest [{}] to {} active users — tags={}",
-                today, sent, digest.stream().map(TrendingTagEntity::getTag).toList());
+            long sent = fanOut(groupKey, title, body);
+            log.info("[TRENDING] dispatched digest [{}] to {} active users — tags={}",
+                    today, sent, digest.stream().map(TrendingTagEntity::getTag).toList());
+            return new ak.dev.irc.app.admin.ops.JobRunRecorder.JobStats((int) Math.min(sent, Integer.MAX_VALUE), 0);
+        });
     }
 
     // ── Digest composition ─────────────────────────────────────────────────

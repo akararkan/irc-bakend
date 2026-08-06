@@ -55,13 +55,15 @@ dashboard, not yet built.
 | **Break-glass** per-user timeline access under legal/abuse process (tightly gated) | Routine per-user browsing → **not a thing**; default is no access |
 | Reel-watch history + reel-view analytics (collector-derived) | Notification inbox / delivery → [notifications-email.md](notifications-email.md) |
 
-**The honest starting point:** the entire `activity` module is `me`-scoped. Every
+**The honest starting point:** the `activity` module itself is `me`-scoped. Every
 endpoint resolves `@AuthenticationPrincipal User` and refuses a null principal;
 there is **no `@PreAuthorize`, no `hasRole`, no ADMIN/MODERATOR path** anywhere in
-the module. So *every admin capability in this doc is* **[PLANNED]** — and, per the
-privacy contract above, most of them (the population metrics) are deliberately built
-to *avoid* reading the private store at all. The data already exists and is
-well-structured; the "admin lens" is intentionally narrow.
+that module. The admin lens was **built 2026-08** in a separate package:
+`admin/activity/AdminActivityController` implements A1–A5 plus the break-glass
+case lifecycle (`BreakGlassCase` dual-control entity), and A6 is served by
+`AdminAnalyticsController.engagement` — which, per the privacy contract above,
+avoids reading the private store at all. The "admin lens" remains intentionally
+narrow.
 
 ---
 
@@ -145,17 +147,17 @@ the user afterward. Outside such a context the endpoints (§5 A1–A3, A5) retur
 
 | Widget (visible only in an open case) | Layout / content | Status |
 |--------|------------------|--------|
-| **Activity timeline** | reverse-chron feed of the user's rows: icon per `UserActivityType`, target id + resolved title, timestamp; type filter chips (the six groups above), date-range picker | **[PLANNED]** — data via `activity_by_user`; break-glass read (§5 A1) |
-| **Type histogram** | bar chart: count per activity type over the window — corroborates a report ("99% `PROFILE_VIEW` on one target" = stalking) | **[PLANNED]** — driven by `activity_by_user_and_type` per-type partitions |
-| **Reel-watch history** | table: reel (thumb + author), `watched_seconds`, watched-at; completion ratio if the reel duration is known | **[PLANNED]** — data via `reel_views_by_user` |
-| **Erasure control** | "Erase activity history" button (all / by-type) behind step-up + confirm; shows last-erased marker | **[PLANNED]** — admin wrapper over the existing self-serve clear-all (§5 A4); this one *is* routinely available (erasure honors the user-deletable contract) |
-| **Evidence export** | export the visible window as JSON/CSV to attach to the case record | **[PLANNED]** |
+| **Activity timeline** | reverse-chron feed of the user's rows: icon per `UserActivityType`, target id + resolved title, timestamp; type filter chips (the six groups above), date-range picker | **[EXISTS]** (backend built 2026-08) — `activity_by_user` via break-glass read (§5 A1) |
+| **Type histogram** | bar chart: count per activity type over the window — corroborates a report ("99% `PROFILE_VIEW` on one target" = stalking) | **[EXISTS]** (backend built 2026-08) — `activity_by_user_and_type` per-type partitions (§5 A3) |
+| **Reel-watch history** | table: reel (thumb + author), `watched_seconds`, watched-at; completion ratio if the reel duration is known | **[EXISTS]** (backend built 2026-08) — `reel_views_by_user` (§5 A2) |
+| **Erasure control** | "Erase activity history" button (all / by-type) behind step-up + confirm; shows last-erased marker | **[EXISTS]** (backend built 2026-08) — admin wrapper over the existing self-serve clear-all (§5 A4); this one *is* routinely available (erasure honors the user-deletable contract) |
+| **Evidence export** | export the visible window as JSON/CSV to attach to the case record | **[EXISTS]** (backend built 2026-08 — §5 A5) |
 
 ### 3.2 Tab "Engagement" (population-level)
 
 | Widget | Content | Status |
 |--------|---------|--------|
-| **Activity volume** | total activity rows/day, stacked by the six type groups (90d) | **[PLANNED]** — requires a rollup collector (§6); no population aggregate exists today |
+| **Activity volume** | total activity rows/day, stacked by the six type groups (90d) | **[EXISTS]** (built 2026-08) — `MetricDailyService` `activity.*` daily counters, served by `GET /api/v1/admin/analytics/engagement` |
 | **Reel-view funnel** | views recorded/day, median `watched_seconds`, completion-rate distribution | **[PLANNED]** |
 | **Discovery mix** | share of `GLOBAL_SEARCH` vs `HASHTAG_SEARCH` vs `PROFILE_VIEW` vs `FOLLOWED_USER` — how people find things | **[PLANNED]** |
 | **Active-contributor overlap** | users with ≥1 *create* activity (`POST_CREATED`/`RESEARCH_PUBLISHED`/`QNA_*_CREATED`) in window — feeds the WALC north-star | **[PLANNED]** — see [analytics-kpis.md](analytics-kpis.md) §4.1 |
@@ -167,13 +169,13 @@ the user afterward. Outside such a context the endpoints (§5 A1–A3, A5) retur
 
 | Widget / need | Source | Status |
 |---|---|---|
-| Per-user timeline | `UserActivityCassandraRepository` over `activity_by_user` (keyset by last `created_at`) | **[EXISTS]** data, **[PLANNED]** admin reader |
+| Per-user timeline | `UserActivityCassandraRepository` over `activity_by_user` (keyset by last `created_at`) | **[EXISTS]** (break-glass admin reader built 2026-08) |
 | Per-type histogram | `UserActivityByTypeRepository` over `activity_by_user_and_type` — one partition per `(user_id, type)`; sum via per-partition scans | **[EXISTS]** data |
 | Reel-watch list | `ReelViewCassandraRepository` over `reel_views_by_user` | **[EXISTS]** data |
 | Point delete / erase-one | `activity_lookup` (`ActivityLookupRepository`) — the delete path already reads this to find the `(user_id, type, created_at)` coordinates | **[EXISTS]** |
 | Bulk erase | `UserActivityServiceImpl` clear-all (batched 200 × ≤50) | **[EXISTS]** (self-serve today) |
 | Live stream | Redis pub/sub `irc:activity:{userId}` → SSE | **[EXISTS]** |
-| Population aggregates | **none** — Cassandra can't cheaply count/group across users | **[PLANNED]** — needs the analytics rollup (§6) |
+| Population aggregates | `MetricDailyService` `activity.*` daily counters (bumped at the sink in `UserActivityServiceImpl` — Cassandra itself still can't count/group across users) | **[EXISTS]** (built 2026-08) for volume rollups; richer breakdowns **[PLANNED]** (§6) |
 
 **Hard truth for the population tab:** the storage model is optimized for
 "read one user's feed fast," the exact opposite of "count across all users." There
@@ -184,24 +186,29 @@ Every §3.2 widget therefore depends on the analytics collector, not on this sto
 
 ## 5. Admin actions
 
-All **[PLANNED]** — none exist today. Every endpoint must live under
-`/api/v1/admin/**` to inherit the double gate ([README.md](README.md) ground rules).
-Step-up = `StepUpService.requireRecentStepUp(adminId)` **[EXISTS primitive]**; audit
-row = `AuditLogService.record` **[EXISTS primitive, zero callers]**.
+All **built 2026-08** (`admin/activity/AdminActivityController`). Every endpoint
+lives under `/api/v1/admin/**` and inherits the double gate ([README.md](README.md)
+ground rules). Step-up = `StepUpService.requireRecentStepUp(adminId)` **[EXISTS]**;
+audit row = `AdminAuditor` → `AuditLogService.record` **[EXISTS]**.
 
 Actions A1–A3 and A5 are **break-glass**: they require an open authorized case
 (legal hold / law-enforcement request / active investigation of this user),
 **dual-control** (second-admin approval), mandatory step-up, a required reason, and
 post-hoc disclosure to the user where policy requires. Absent an open case, they 403.
+The case lifecycle is served by `BreakGlassCase` (dual-control entity):
+`POST /api/v1/admin/breakglass/{targetUserId}` (open),
+`POST /api/v1/admin/breakglass/cases/{caseId}/approve` (second admin),
+`POST /api/v1/admin/breakglass/cases/{caseId}/close`, and
+`GET /api/v1/admin/breakglass/cases`.
 
-| # | Action | Proposed endpoint | Danger | Access gate | Audit action |
+| # | Action | Endpoint | Danger | Access gate | Audit action |
 |---|--------|-------------------|--------|-------------|--------------|
 | A1 | Read a user's activity timeline | `GET /api/v1/admin/users/{userId}/activity?type=&types=&from=&to=&page=` | **critical** (private behavioral PII) | **break-glass**: case + dual-control + step-up | `ADMIN_ACTIVITY_BREAKGLASS_VIEW` |
 | A2 | Read a user's reel-watch history | `GET /api/v1/admin/users/{userId}/reels/watched` | **critical** (private PII) | **break-glass** | `ADMIN_REELVIEWS_BREAKGLASS_VIEW` |
 | A3 | Activity type histogram (one user) | `GET /api/v1/admin/users/{userId}/activity/summary?window=90d` | **high** | **break-glass** (aggregate, still per-user private) | `ADMIN_ACTIVITY_SUMMARY_VIEW` |
 | A4 | Erase a user's activity | `POST /api/v1/admin/users/{userId}/activity/erase` body `{type?, reason}` | **high** (irreversible) | step-up (routinely available — honors user-deletable) | `ADMIN_ACTIVITY_ERASE` — wraps the existing batched clear-all |
 | A5 | Export activity for a case | `GET /api/v1/admin/users/{userId}/activity/export?from=&to=&format=json\|csv` | **critical** (PII egress) | **break-glass** | `ADMIN_ACTIVITY_EXPORT` |
-| A6 | Population engagement rollup | `GET /api/v1/admin/analytics/engagement?window=90d` | read | none (aggregate, collector-sourced — never touches the private store) | interceptor — depends on §6 collector |
+| A6 | Population engagement rollup | `GET /api/v1/admin/analytics/engagement?window=90d` | read | none (aggregate, collector-sourced — never touches the private store) | interceptor — live (built 2026-08, `MetricDailyService`-backed via `AdminAnalyticsController`) |
 
 **Deliberate non-actions:** no admin *write/insert* of activity (the ledger is a
 factual record — forging engagement corrupts both analytics and evidence), and no
@@ -216,7 +223,12 @@ surveillance tool; keep it forward-only per user).
 
 ---
 
-## 6. Activity as an engagement-telemetry source **[PLANNED]**
+## 6. Activity as an engagement-telemetry source **[PARTIAL — first collector built 2026-08]**
+
+> **Status (2026-08):** an option-1-style tee shipped — `UserActivityServiceImpl`
+> bumps `MetricDailyService` `activity.*` daily counters at the sink (day-bucketed,
+> not per-user), feeding `GET /api/v1/admin/analytics/engagement`. The fuller
+> `analytics_events` taxonomy below remains open.
 
 This is the highest-leverage idea in the section. The platform has **no unified
 event pipeline** today ([analytics-kpis.md](analytics-kpis.md) §6), yet this ledger

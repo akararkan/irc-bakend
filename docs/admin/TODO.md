@@ -45,24 +45,64 @@ Legend: ✅ done · ⬜ to do · 🔁 needs a quick verify-against-code pass.
 
 ---
 
-## Open follow-ups (do these next)
+## Open follow-ups
 
-Small, real tasks left in the docs — tackle top-down:
+- ✅ **Verify the GDPR purge cascades.** Verified 2026-08-06 — the gap was REAL
+  (the purge touched only the `users` row + tombstone). Fixed in the backend
+  build: `AccountLifecycleService.anonymizeAndPurge` now drops
+  `activity_by_user*` (+lookup), `reel_views_by_user`, `UserContactHash`
+  (both kinds), `FriendSuggestionEntity` and suggestion dismissals, each
+  failure-isolated.
+- ✅ **`role = SCHOLAR` default decision.** RESOLVED 2026-08-06 (second pass):
+  self-registration now grants **USER** (`AuthServiceImpl.register`), matching
+  the doc's fix intent; RESEARCHER/SCHOLAR are admin-elevated tiers. The
+  admin-create form already defaulted to USER.
+- ✅ **Recon flags consolidated** → [known-issues.md](known-issues.md) — every
+  flag with its post-build status (26 resolved/partial, 10 deliberate debts).
+- ⬜ **Anti-abuse / rate-limiting consolidation doc** — still optional; the
+  live signals now surface in `/admin/discovery/contact-sync/stats`,
+  `/admin/chat/message-requests/stats` and `/admin/safety/stats/blocks`.
 
-- 🔁 **Verify the GDPR purge cascades.** Confirm the account-purge job drops
-  `activity_by_user*` + `reel_views_by_user` ([activity-engagement.md](activity-engagement.md) §5)
-  and `UserContactHash` + `FriendSuggestionEntity`
-  ([discovery-pymk-privacy.md](discovery-pymk-privacy.md) §8). Both are flagged
-  `[PLANNED verification]` — if not wired, it's a privacy gap.
-- ⬜ **Confirm the `role = SCHOLAR` default is intended** (registration hardcodes it,
-  not `USER`) and decide what the admin-create form defaults to
-  ([user-administration.md](user-administration.md) §2).
-- ⬜ **Consolidate the recon flags** into one "Known issues" list (dead email-verify
-  scaffolding, dead lock columns, `StrikeService` zero callers, QR-resolve seam,
-  rate-limiter fail-open, the 2 stray endpoints, phantom roles).
-- ⬜ **Anti-abuse / rate-limiting** — a small consolidation doc if wanted (today it's
-  split across [safety-reports.md](safety-reports.md), [operations.md](operations.md) §6,
-  and [discovery-pymk-privacy.md](discovery-pymk-privacy.md) §6).
+## Backend implementation status (2026-08-06, completeness pass)
 
-> Every doc uses **[EXISTS] / [PARTIAL] / [PLANNED]** tags — keep that discipline
-> when editing so nothing planned reads as if it's already built.
+The **admin backend documented here is implemented in full** — blueprint
+phases 1–3 + impersonation (first pass), then the completeness pass closed
+every previously-deferred block:
+
+- **RBAC widening (phases 4–5)** — MODERATOR/SUPPORT/ANALYST staff tiers live
+  with the §6 per-section grant matrix; chain widened; enum-CHECK reconciled.
+- **Log Explorer suite** — `/admin/logs/{explore,login-events,export,views,
+  alerts,alerts/firings,retention,otp-stats}` + 5-min alert sweep (6 seeded
+  rules) + nightly retention sweep + GDPR log-purge cascade.
+- **Full `analytics_events` pipeline** — raw event table + catch-all Rabbit
+  tap, daily rollup / weekly cohort / anomaly-scan jobs, activation funnel
+  (`user_first_events`), retention grid, `metric_alerts` + thresholds,
+  `ADMIN_ANOMALY` notification, `/admin/analytics/{series,funnel,retention,
+  rollup,backfill,events/sample,alerts-config,anomalies}` + MAU/online-now.
+- **Media** — bucket reconcile (S3 LIST diff), per-role daily upload quotas
+  (429 `MEDIA_QUOTA_EXCEEDED`), `/admin/media/{quotas,ops}`.
+- **Search telemetry** — anonymous query-log collector (Redis top/zero +
+  Cassandra 90d), `/admin/search/analytics/*`, `/admin/search/health` drift.
+- **Feed runtime tuning** — `feed_ranking_config` + staged rollout bucketing,
+  `GET/PATCH /admin/feed/config`, `POST /admin/feed/preview` shadow-scoring.
+- **Ops extras** — DLQ parking lot (browse/requeue/discard), job pause/resume,
+  Redis panel + allowlisted flush, chat-ES backfill trigger, reconciler report.
+- **Chat/live** — dual-control legal holds (≤500-message bounded release),
+  recordings fleet view; **sounds** — adoption counter + trending board;
+  **announcements** — scheduling + locale audience; close-friends and
+  sessions-p50/p95 analytics blocks.
+- **Repo hygiene** — zero-caller repository methods removed (verified by
+  caller-grep before every deletion), derived `findBy*` JPA methods converted
+  to explicit `@Query` (equivalent JPQL, same signatures), supporting indexes
+  added (`reports(state,created_at)`, `login_events(ip,ts)`,
+  `media_renditions(object_key)`, `user_strikes(expires_at)`).
+- **Messages catalog** — every user-facing note/warning/error/notification/
+  email/header documented in
+  [`../errors/user-facing-messages.md`](../errors/user-facing-messages.md).
+
+Remaining deliberate debts (rationales in [known-issues.md](known-issues.md)):
+Micrometer/actuator metrics (needs new dependency — build is offline), real
+MediaScanner + Rabbit media workers, sound rights/fingerprint register,
+push-delivery pipeline wiring, MediaMTX kick endpoints, arch-test guardrails
+(test tree is stale by policy). Compile-checked; live verification pending
+(owner runs the app).

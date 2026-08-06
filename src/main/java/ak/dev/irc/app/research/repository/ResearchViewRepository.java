@@ -25,9 +25,4 @@ public interface ResearchViewRepository extends JpaRepository<ResearchView, Rese
         ON CONFLICT (research_id, user_id) DO NOTHING
         """, nativeQuery = true)
     int tryRecord(@Param("researchId") UUID researchId, @Param("userId") UUID userId);
-
-    @Query("SELECT COUNT(v) FROM ResearchView v WHERE v.id.researchId = :researchId")
-    long countByResearchId(@Param("researchId") UUID researchId);
-
-    boolean existsByIdResearchIdAndIdUserId(UUID researchId, UUID userId);
 }

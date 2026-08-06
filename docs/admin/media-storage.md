@@ -38,7 +38,9 @@ sound *moderation* — see [content-moderation.md](content-moderation.md).
 
 1. `POST /api/v1/media/upload-intent` **[EXISTS]** (`MediaUploadController`) —
    body `{mime, sizeBytes, sha256, type}` + header `X-Media-Tier`. Validates the
-   declared size against the type cap, **dedups on `sha256`**, else creates a
+   declared size against the type cap **and the per-role daily quota**
+   (`MediaQuotaService`, `429 MEDIA_QUOTA_EXCEEDED` — built 2026-08),
+   **dedups on `sha256`**, else creates a
    `PENDING` `media_assets` row and returns a **30-min presigned PUT** to key
    `raw/{assetId}` (`S3StorageService.presignPut`).
 2. Client PUTs bytes **directly to R2** (never through the JVM).
@@ -88,8 +90,9 @@ double-counted) plus copied `media_renditions` rows pointing at the **same
 `idx_media_status(status)`; columns incl. `type`, `status`, `content_hash`,
 `original_bytes`, `stored_bytes`, `width/height/duration_ms`, `requested_tier`,
 `blurhash`, `mime`, `error_message`, `purge_original_at`) and `media_renditions`
-(`MediaRendition` — composite PK `(media_id, label)`, `object_key`, `url`,
-`bytes`, `width/height`, `mime`).
+(`MediaRendition` — composite PK `(media_id, label)`, `object_key` (indexed:
+`idx_rendition_object_key`, added 2026-08), `url`, `bytes`, `width/height`,
+`mime`).
 
 **Types & caps** **[EXISTS]** (`MediaAssetType`, `MediaProperties.limits`):
 IMAGE (25 MB, long edge 1920, 100 MP bomb guard, EXIF/GPS stripped), VIDEO /
@@ -159,7 +162,7 @@ does not control.
 | Growth trend | Daily Σ `stored_bytes` of assets by `created_at` day, 90-day line |
 | Top consumers | Top-50 owners by `SUM(stored_bytes)` with asset counts; click-through to the user in [users-roles.md](users-roles.md) |
 | R2 layout | Read-only prefix map (the §3 table) with object-count/bytes per prefix once reconciliation (A9) exists; until then shows "unknown — DB-derived only" for Path A prefixes |
-| raw/ purge | Backlog count `purge_original_at < now` (rows whose original is *due* for deletion), last sweep time/result — **red state today: the purge job does not exist** (§7) |
+| raw/ purge | Backlog count `purge_original_at < now` (rows whose original is *due* for deletion), last sweep time/result — manual sweep endpoint exists (`POST /api/v1/admin/media/purge-raw/run`, built 2026-08); the **scheduled** sweep still does not (§7) |
 | Export & recordings | Pointer tiles: export ZIP count/bytes on app host (`export_jobs`), recordings dir size — links to owning sections |
 
 **View 3 — Transcode ops**
@@ -183,8 +186,8 @@ does not control.
 | Status funnel, failed queues, stuck detector | `media_assets` (`idx_media_status`); new `COUNT … GROUP BY status` + status/age browse queries | **[PARTIAL]** table + index exist; the queries and any admin endpoint do not |
 | Latency, tier, dedup, cap compliance | `media_assets` columns (`created_at/updated_at`, `requested_tier`, `stored_bytes=0` proxy, `width/height`) | **[PARTIAL]** columns exist, no aggregation endpoint |
 | Per-user usage | `MediaAssetRepository.sumStoredBytes(ownerId)` / `sumStoredBytesByType(ownerId)` via `StorageUsageService` (Redis-cached 1 h, key `storage:usage:{userId}`) | **[EXISTS]** |
-| Platform totals / top consumers / growth | same table, owner-unfiltered `SUM` + `GROUP BY owner_id` + `GROUP BY day` | **[PLANNED]** — the unfiltered queries are not written (recon-confirmed) |
-| raw/ purge backlog | `MediaAssetRepository.findByPurgeOriginalAtBefore(cutoff)` | **[PARTIAL]** query **exists with zero callers** — no job, no endpoint |
+| Platform totals / top consumers / growth | `sumStoredBytesPlatform()` + `topOwnersByStoredBytes()` behind `GET /api/v1/admin/storage/usage`; status counts via `GET /api/v1/admin/media/status-summary` | **[EXISTS]** (built 2026-08); per-day growth series still **[PLANNED]** |
+| raw/ purge backlog | `MediaAssetRepository.findByPurgeOriginalAtBefore(cutoff)` | **[PARTIAL]** — called by `AdminMediaController.purgeRaw` (`POST /api/v1/admin/media/purge-raw/run`, built 2026-08, incl. the abandoned-PENDING clause); a **scheduled** job still does not exist |
 | Transcode flags | `MediaProperties` (`media.*` config block) | **[EXISTS]** (needs a read-only exposure endpoint) |
 | Worker pool gauges | private `ThreadPoolExecutor` in `MediaProcessingService` | **[PLANNED]** — not exposed; needs a getter or Micrometer binding (note: `/actuator/prometheus` is not web-exposed today — see [operations.md](operations.md)) |
 | Queue depths | RabbitMQ management API / `RabbitAdmin.getQueueInfo` | **[PLANNED]** exposure; queues themselves **[EXISTS]** (`RabbitMQConfig`) |
@@ -192,33 +195,31 @@ does not control.
 
 ### Admin actions
 
-All **[PLANNED]** unless tagged; all under `/api/v1/admin/media/**` so the
-filter-chain double gate applies; every mutation writes an audit row
-(`AuditLogService.record` — the currently-uncalled business-event writer, see
-[logs-audit.md](logs-audit.md)).
+Built 2026-08 (`AdminMediaController` + `AdminStorageController`) unless noted;
+all under `/api/v1/admin/**` so the filter-chain double gate applies; every
+mutation writes an audit row via `AdminAuditor` → `AuditLogService.record`
+(see [logs-audit.md](logs-audit.md)).
 
-| Action | Endpoint (proposed) | Params | Danger | Step-up? | Audit action |
+| Action | Endpoint | Params | Danger | Step-up? | Audit action |
 |--------|--------------------|--------|--------|----------|--------------|
-| Browse assets | `GET /api/v1/admin/media/assets` | `status`, `type`, `ownerId`, `from`, `to`, keyset page | Low | no | `MEDIA_ADMIN_LIST` |
-| Inspect asset | `GET /api/v1/admin/media/assets/{id}` | — (metadata + renditions + `error_message`; content preview is a separate click, §9) | Low | no | `MEDIA_ADMIN_INSPECT` |
-| Retry failed | `POST /api/v1/admin/media/assets/{id}/retry` | only `FAILED_PROCESSING`/`FAILED_VALIDATION`; 410 if `raw/{id}` already purged/missing | Medium | no | `MEDIA_ADMIN_RETRY` |
-| Admin delete (takedown) | `DELETE /api/v1/admin/media/assets/{id}` | `reason` required | **High** | **yes** | `MEDIA_ADMIN_DELETE` |
-| Run raw purge now | `POST /api/v1/admin/media/purge-raw/run` | `dryRun` (default true) | Medium | no | `MEDIA_RAW_PURGE_RUN` |
-| Storage summary | `GET /api/v1/admin/media/storage/summary` | — | Low | no | — (read) |
-| Top consumers | `GET /api/v1/admin/media/storage/top-consumers` | `limit≤100` | Low | no | — (read) |
-| Ops snapshot | `GET /api/v1/admin/media/ops` | flags + ffmpeg probe + pool + queue depths | Low | no | — (read) |
-| Reconcile orphans | `POST /api/v1/admin/media/reconcile` | `prefix`, `dryRun` (default true), `maxObjects` | **High** (deletes objects when `dryRun=false`) | **yes** | `MEDIA_RECONCILE_RUN` |
-| Quota read/set | `GET/PUT /api/v1/admin/media/quotas` | per-role daily count + bytes budgets | Medium | yes (PUT) | `MEDIA_QUOTA_CHANGE` |
+| Browse assets **[EXISTS]** | `GET /api/v1/admin/media` | `status`, `type`, `ownerId`, page | Low | no | `MEDIA_ADMIN_LIST` |
+| Inspect asset **[EXISTS]** | `GET /api/v1/admin/media/{assetId}` | — (metadata + renditions + `error_message`; content preview is a separate click, §9) | Low | no | `MEDIA_ADMIN_INSPECT` |
+| Retry failed **[EXISTS]** | `POST /api/v1/admin/media/{assetId}/reprocess` | only `FAILED_PROCESSING`/`FAILED_VALIDATION`; 410 if `raw/{id}` already purged/missing | Medium | no | `MEDIA_ADMIN_RETRY` |
+| Admin delete (takedown) **[EXISTS]** | `DELETE /api/v1/admin/media/{assetId}` | `reason` required | **High** | **yes** | `MEDIA_ADMIN_DELETE` |
+| Run raw purge now **[EXISTS]** | `POST /api/v1/admin/media/purge-raw/run` | `dryRun` (default true); also sweeps abandoned PENDING | Medium | no | `MEDIA_RAW_PURGE_RUN` |
+| Storage summary **[EXISTS]** | `GET /api/v1/admin/media/status-summary` | — | Low | no | — (read) |
+| Top consumers **[EXISTS]** | `GET /api/v1/admin/storage/usage` | `top≤` (platform `SUM(stored_bytes)` + top owners) | Low | no | — (read) |
+| Ops snapshot **[EXISTS]** | `GET /api/v1/admin/media/ops` | flags + ffmpeg probe + pool + queue depths | Low | no | — (read) |
+| Reconcile orphans **[EXISTS]** | `POST /api/v1/admin/media/reconcile` | `prefix`, `dryRun` (default true), `maxObjects` — bucket LIST vs DB diff via `S3StorageService.list` | **High** (deletes objects when `dryRun=false`) | **yes** | `MEDIA_RECONCILE_RUN` |
+| Quota read/set **[EXISTS]** | `GET /api/v1/admin/media/quotas`, `PUT /api/v1/admin/media/quotas/{role}` | per-role daily count + bytes budgets (`media_quotas`) | Medium | yes (PUT) | `MEDIA_QUOTA_CHANGE` |
 | Toggle transcode | *deliberately not offered* | flipping `media.processing.enabled` at runtime changes cap enforcement silently; keep it an env change with deploy trail | — | — | — |
 
-**Quotas [PLANNED]** — reuse the existing Redis fixed-window `RateLimiter`
-(`rl:{action}:{actorId}:{bucket}`, the same primitive gating reports at 20/h):
-`media:upload-intent` N/day per user (count quota, one line in
-`MediaAssetService.uploadIntent`), plus a bytes/day budget checked against
-`SUM(original_bytes) WHERE owner_id=? AND created_at >= today` (indexed by
-`idx_media_owner`). Suggested defaults: USER 100 uploads / 2 GB·day, RESEARCHER/
-SCHOLAR 200 / 8 GB·day, ADMIN unlimited. Quota errors reuse the envelope in
-[../errors/error-handling.md](../errors/error-handling.md) (`429 MEDIA_QUOTA_EXCEEDED`).
+**Quotas [EXISTS]** (built 2026-08) — `media_quotas` stores per-role daily
+upload-count and byte budgets (`MediaQuota` + `MediaQuotaService`), enforced at
+upload-intent; breaches reuse the envelope in
+[../errors/error-handling.md](../errors/error-handling.md)
+(`429 MEDIA_QUOTA_EXCEEDED`). Admin read/set via
+`GET /api/v1/admin/media/quotas` + `PUT /api/v1/admin/media/quotas/{role}`.
 
 ---
 
@@ -230,7 +231,7 @@ SCHOLAR 200 / 8 GB·day, ADMIN unlimited. Quota errors reuse the envelope in
 | App-log tags `[MEDIA]`, `[MEDIA-VID]` | console (no file appender) | worker completions, transcode fallbacks ("transcode disabled/unavailable — passthrough"), rendition-delete warnings | **[EXISTS]** (not queryable — see [logs-audit.md](logs-audit.md)) |
 | Request audit rows for `/api/v1/media/**` | Cassandra `audit_log_by_user` / `audit_log_by_resource` | per-user upload activity (intent/complete/delete, `UPLOAD` operation), duration_ms | **[EXISTS]** via `GET /api/v1/admin/audit?userId=…` |
 | `[RABBIT-DLQ]` drain lines | console | future poison messages once media consumers exist | **[EXISTS]** (mechanism), **[PLANNED]** (relevance) |
-| Admin media actions | audit module | every action in §5 writes an `AuditLog` business event | **[PLANNED]** |
+| Admin media actions | audit module | every action in §5 writes an `AuditLog` business event via `AdminAuditor` | **[EXISTS]** (built 2026-08) |
 
 ---
 
@@ -238,12 +239,12 @@ SCHOLAR 200 / 8 GB·day, ADMIN unlimited. Quota errors reuse the envelope in
 
 | # | Issue | Evidence | Severity |
 |---|-------|----------|----------|
-| L1 | **raw/ purge job missing** — `purge_original_at` is set on READY (+7 d) and `findByPurgeOriginalAtBefore` exists, but **nothing calls it**: originals accumulate in `raw/` forever | `MediaAssetRepository` (zero callers, recon-confirmed) | High (cost) |
-| L2 | **Abandoned intents leak** — client PUTs to `raw/{id}` but never calls `complete`: row stays PENDING with `purge_original_at = NULL`, so even a future L1 job won't catch it. Purge sweep must also cover `PENDING AND created_at < now − 7d` | `MediaAssetService.uploadIntent`/`complete` | High (cost) |
+| L1 | **raw/ purge is manual-only** — `purge_original_at` is set on READY (+7 d) and `findByPurgeOriginalAtBefore` now backs the sweep endpoint `POST /api/v1/admin/media/purge-raw/run` (built 2026-08), but no **scheduled** job exists: originals accumulate until an admin runs it | `AdminMediaController.purgeRaw` | Medium (cost) |
+| L2 | **Abandoned intents leak** — client PUTs to `raw/{id}` but never calls `complete`: row stays PENDING with `purge_original_at = NULL`. The manual sweep's abandoned-PENDING clause (`PENDING AND created_at < now − 7d`) covers this since 2026-08 — same manual-only caveat as L1 | `MediaAssetService.uploadIntent`/`complete` | Medium (cost) |
 | L3 | **Dedup delete hazard** — reference rows share `object_key`s with the source asset; `MediaAssetService.delete` deletes those objects from storage. Whichever owner deletes first breaks every other referrer's renditions (dangling URLs). Fix: refcount object keys (count rendition rows per `object_key` before `storage.delete`) — prerequisite for the admin-delete action | `MediaAssetService.dedupReference` + `delete` | High (correctness) |
 | L4 | **Cap not enforced when transcode is off** — default config stores video passthrough at source resolution; 1080 is aspiration until `MEDIA_TRANSCODE_ENABLED=true` + ffmpeg ships in the runtime image | `VideoProcessor.process` | Medium (policy) |
 | L5 | **Moderation scan is a no-op** — `AllowAllScanner`; FAILED_MODERATION queue will stay empty until a real scanner is registered | `MediaScanner` | Medium |
-| L6 | **Crash-orphaned objects** — delete order is objects→rows by design ("a crash orphans an object — cheap, *nightly-reconciled*" per the service javadoc), **but no reconcile job exists**; likewise PROCESSING assets orphaned by an app restart stay PROCESSING forever | `MediaAssetService.delete` javadoc | Medium |
+| L6 | **Crash-orphaned objects** — delete order is objects→rows by design ("a crash orphans an object — cheap, *nightly-reconciled*" per the service javadoc). A **manual** reconcile endpoint now exists (`POST /api/v1/admin/media/reconcile`, dry-run default, built 2026-08); the *nightly* job still doesn't, and PROCESSING assets orphaned by an app restart stay PROCESSING forever | `MediaAssetService.delete` javadoc | Medium |
 | L7 | **Export ZIPs never cleaned** on app-host temp storage despite `export_jobs.expires_at` | `DataExportService` | Medium |
 | L8 | Path A entirely un-accounted (no rows, no bytes, no scan) — quota/usage numbers are misleading until convergence §3 | — | Structural |
 
@@ -259,9 +260,9 @@ SCHOLAR 200 / 8 GB·day, ADMIN unlimited. Quota errors reuse the envelope in
 | `processing_latency_p50/p95` | `updated_at − created_at` for terminal assets. *Caveat: includes client upload dwell between intent and complete; honest fix is dedicated `processing_started_at/ended_at` columns* | `media_assets` | percentile sparkline | **[PLANNED]** (proxy now, columns later) |
 | `dedup_hit_rate` | READY rows with `stored_bytes=0` ÷ READY rows. *Proxy: no explicit reference flag exists — a `dedup_of` column would make this exact* | `media_assets` | line | **[PLANNED]** |
 | `dedup_bytes_saved` | Σ `original_bytes` over reference rows | `media_assets` | big number | **[PLANNED]** |
-| `stored_bytes_total` / `by_type` | owner-unfiltered `SUM(stored_bytes)` (+ `GROUP BY type`) | new repo query (per-user variant **[EXISTS]**: `sumStoredBytes`) | tiles + stacked area | **[PLANNED]** |
+| `stored_bytes_total` / `by_type` | owner-unfiltered `SUM(stored_bytes)` (+ `GROUP BY type`) | `sumStoredBytesPlatform()` behind `GET /api/v1/admin/storage/usage` | tiles + stacked area | **[EXISTS]** (built 2026-08; by-type split **[PLANNED]**) |
 | `storage_growth_daily` | Σ `stored_bytes` by `created_at` day | `media_assets` | line | **[PLANNED]** |
-| `top_consumers` | `SUM(stored_bytes) GROUP BY owner_id ORDER BY DESC LIMIT 50` | `media_assets` (`idx_media_owner`) | table | **[PLANNED]** |
+| `top_consumers` | `SUM(stored_bytes) GROUP BY owner_id ORDER BY DESC LIMIT N` | `topOwnersByStoredBytes()` behind `GET /api/v1/admin/storage/usage` | table | **[EXISTS]** (built 2026-08) |
 | `tier_distribution` | share of `requested_tier` per period | `media_assets` | donut | **[PLANNED]** |
 | `passthrough_share` | renditions labeled `original` ÷ all video renditions | `media_renditions` | line | **[PLANNED]** |
 | `cap_compliance` | READY videos with `min(width,height) ≤ 1080` ÷ READY videos with non-null dims; null-dim bucket reported separately | `media_assets` | gauge + bucket bar | **[PLANNED]** |
@@ -291,8 +292,8 @@ SCHOLAR 200 / 8 GB·day, ADMIN unlimited. Quota errors reuse the envelope in
 
 - Every endpoint here lives under `/api/v1/admin/media/**` → **double-gated**
   (`SecurityConfig` filter-chain `hasRole('ADMIN')` + `@PreAuthorize`) — the
-  platform convention ([architecture.md](architecture.md)). No phantom roles
-  (`MODERATOR`/`SUPER_ADMIN`) in new annotations.
+  platform convention ([architecture.md](architecture.md)). No phantom
+  `SUPER_ADMIN` grants in annotations — only enum-backed roles.
 - **Content vs metadata:** the asset browser shows metadata by default; actually
   *viewing* a user's media is a content access — log it distinctly
   (`MEDIA_ADMIN_CONTENT_VIEW`) and gate the preview behind a click-through with

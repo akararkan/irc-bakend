@@ -97,6 +97,22 @@ public interface S3StorageService {
     }
 
     /**
+     * Lists object keys under a prefix (bucket reconciliation — admin
+     * media-storage.md §7). Returns up to {@code maxKeys} entries; the store
+     * is paged internally.
+     *
+     * <p>Default throws {@link UnsupportedOperationException}; the real R2
+     * impl overrides it. The No-op backend surfaces the clear
+     * storage-unconfigured error instead.</p>
+     */
+    default java.util.List<StoredObject> list(String prefix, int maxKeys) {
+        throw new UnsupportedOperationException("list is not supported by this storage backend");
+    }
+
+    /** One listed bucket object: key, size and last-modified epoch millis. */
+    record StoredObject(String key, long sizeBytes, long lastModifiedEpochMs) {}
+
+    /**
      * Wrapper holding a streamed S3 object and its metadata.
      *
      * @param contentRange the {@code Content-Range} header value when this is a

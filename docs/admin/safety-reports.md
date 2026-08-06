@@ -1,6 +1,6 @@
 # Section 5 — Safety & Reports
 
-Admin side of the Safety Center. The user-facing half already exists and is documented in [../settings/safety-center.md](../settings/safety-center.md) (spec §18): report intake, own-report listing, reporter appeal, strikes view, security score. **The entire moderator/triage surface is the gap** — the state machine, resolution vocabulary, strike ledger and dedup keys are all built and waiting, but nothing today ever moves a report past `SUBMITTED`/`APPEALED`, and `StrikeService.issueStrike` has zero callers. This section designs the console that closes that loop.
+Admin side of the Safety Center. The user-facing half already exists and is documented in [../settings/safety-center.md](../settings/safety-center.md) (spec §18): report intake, own-report listing, reporter appeal, strikes view, security score. **The moderator/triage surface is now built (2026-08)** — `AdminSafetyController` + `ReportModerationService` drive the full state machine (triage / action / dismiss / uphold / reverse), and `StrikeService.issueStrike` has real callers. This section documents that console.
 
 Related sections: [content-moderation.md](content-moderation.md) (content takedown primitives), [users-roles.md](users-roles.md) (account suspension), [logs-audit.md](logs-audit.md) (audit log + consent/settings trails), [architecture.md](architecture.md) (access model), [admin-api-blueprint.md](admin-api-blueprint.md) (all endpoints, phased).
 
@@ -28,20 +28,20 @@ Related sections: [content-moderation.md](content-moderation.md) (content takedo
 | Reporter appeal | **[EXISTS]** | `POST /api/v1/safety/reports/{id}/appeal` — only from ACTIONED\|DISMISSED, only by the reporter → APPEALED |
 | Coarse-outcome projection | **[EXISTS]** | `SafetyDtos.ReportResponse.coarseOutcome(state)` — reporter only ever sees UNDER_REVIEW / ACTION_TAKEN / NO_ACTION / APPEAL_UNDER_REVIEW; the `resolution` column is never serialized to the reporter |
 | Strike ledger + 90-day decay | **[EXISTS]** | `UserStrike` (`user_strikes`, index `(user_id, expires_at)`), `@PrePersist` sets `expiresAt = issuedAt + 90d`; `StrikeService.myStrikes/activeCount` filter by `isActive()` — decay is a read-time filter, rows are never deleted |
-| Strike issuance method | **[EXISTS]** (write-dead) | `StrikeService.issueStrike(userId, reportId, reason)` — implemented, **zero callers anywhere**; the admin action endpoint below is its first caller |
-| Triage/action/dismiss/appeal-resolution transitions | **MISSING** | No code ever sets TRIAGED, ACTIONED, DISMISSED, UPHELD or REVERSED |
-| Moderator read path over reports | **MISSING** | `ReportRepository` has reporter-scoped queries only; no queue listing exists |
-| Reviewer attribution on Report | **MISSING** | `reports` has no `triaged_by / actioned_by / acted_at / moderator_note` columns — required schema addition (below) |
-| Content takedown primitive | **MISSING** | All deletes are author-only; `PostStatus.REMOVED` and search-filtered `REMOVED_BY_MODERATOR` are phantom states no writer produces; `Resolution.CONTENT_REMOVED` has no implementation — see [content-moderation.md](content-moderation.md) |
-| Account suspension primitive | **MISSING** | `Resolution.ACCOUNT_SUSPENDED` has no backing field/endpoint; `AdminUserController` only changes roles — see [users-roles.md](users-roles.md) |
-| Consent evidence log | **[EXISTS]** | `consent_events` (append-only; `user_id, scope, granted, app_version, occurred_at`); user-facing reads `GET /api/v1/settings/consent[/{scope}]`; **no admin read path** |
-| Block/restrict data | **[EXISTS]** | `user_blocks` / `user_restrictions` tables (`UserBlockRepository`, `UserRestrictionRepository`) — per-user queries only, no aggregate/count queries written yet |
+| Strike issuance method | **[EXISTS]** | `StrikeService.issueStrike(userId, reportId, reason)` — three callers since 2026-08: `AdminSafetyController.issueStrike` (`POST /api/v1/admin/safety/users/{userId}/strikes`), `ReportModerationService.action` (inline strike for USER-target reports), and `AdminUserServiceImpl.issueStrike` (`POST /api/v1/admin/users/{userId}/strikes`) |
+| Triage/action/dismiss/appeal-resolution transitions | **[EXISTS]** (built 2026-08) | `ReportModerationService` sets TRIAGED, ACTIONED, DISMISSED, UPHELD and REVERSED behind `/api/v1/admin/safety/**` |
+| Moderator read path over reports | **[EXISTS]** (built 2026-08) | Grouped queue `GET /api/v1/admin/safety/reports` (`ReportRepository.findOpenGroups`) + per-report detail with frozen evidence |
+| Reviewer attribution on Report | **[EXISTS]** (built 2026-08) | `reports` now carries `triaged_by / actioned_by / acted_at / moderator_note` |
+| Content takedown primitive | **[EXISTS]** (built 2026-08) | Admin takedown paths exist for every content type; `PostStatus.REMOVED` is written by `AdminContentService.removePost`, and `Resolution.CONTENT_REMOVED` is implemented in `ReportModerationService.action` — see [content-moderation.md](content-moderation.md) |
+| Account suspension primitive | **[PARTIAL]** | A distinct **timed** suspension state still does not exist, but `AdminUserController` now carries disable/enable, lock/unlock, session revocation, credential resets, provisioning, deletion lifecycle, strikes and impersonation — the untimed account-disable primitive is real — see [users-roles.md](users-roles.md) |
+| Consent evidence log | **[EXISTS]** | `consent_events` (append-only; `user_id, scope, granted, app_version, occurred_at`); user-facing reads `GET /api/v1/settings/consent[/{scope}]`; admin read path (built 2026-08): `GET /api/v1/admin/safety/users/{userId}/consent[?scope=]` |
+| Block/restrict data | **[EXISTS]** | `user_blocks` / `user_restrictions` tables; aggregates built 2026-08 — `UserBlockRepository.blocksPerDay/topBlockedUsers/countAllBlocks`, `UserRestrictionRepository.restrictionsPerDay/countAllRestrictions` → `GET /api/v1/admin/safety/stats/blocks` |
 
 ## 3. Dashboard views / widgets
 
 ### 3.1 Reports queue (landing view)
 
-The queue is **grouped by `group_key`** — one row per (target, reason) with an aggregated report count, not one row per report. The per-reporter dedup that exists today prevents one reporter spamming; the *queue-level* cross-reporter grouping is a new aggregation over the existing `idx_report_group` index **[PLANNED]**.
+The queue is **grouped by `group_key`** — one row per (target, reason) with an aggregated report count, not one row per report. The per-reporter dedup that exists today prevents one reporter spamming; the *queue-level* cross-reporter grouping is served by `ReportRepository.findOpenGroups` behind `GET /api/v1/admin/safety/reports` **[EXISTS]** (built 2026-08).
 
 | Widget | Content |
 |---|---|
@@ -61,9 +61,9 @@ Three-pane layout: **evidence** (center), **reporter context** (left), **target'
 | Report group | Every `reports` row in the group: reporter (pseudonymized handle for L1 moderators — §8), per-reporter `details` free text, submitted-at | `details` is the only reporter-authored text; render escaped, never as HTML |
 | Reporter context | Per reporter: total reports filed, actioned-rate vs dismissed-rate ("reporter accuracy"), account age, active strikes of their own | All derivable from `reports` + `user_strikes` with new queries **[PLANNED]** |
 | Target moderation record | Embedded §3.5 view: active/expired strikes, prior reports against (all states + resolutions), prior takedowns, blocks/restricts received count | The `resolution` column is exactly this "target's private moderation record" per its javadoc |
-| History strip | This group's transition history: who triaged/actioned/dismissed, when, moderator note | Requires the reviewer columns **[PLANNED]** + `settings_audit`-style trail; mutations also land in the platform audit log ([logs-audit.md](logs-audit.md)) |
+| History strip | This group's transition history: who triaged/actioned/dismissed, when, moderator note | Reviewer columns **[EXISTS]** (built 2026-08 — `triaged_by/actioned_by/acted_at/moderator_note`); mutations also land in the platform audit log ([logs-audit.md](logs-audit.md)) |
 
-### 3.3 Evidence snapshot — why capture-at-submit is mandatory **[PLANNED]**
+### 3.3 Evidence snapshot — why capture-at-submit is mandatory **[EXISTS]** (built 2026-08 — `report_evidence` + `ReportEvidenceService`)
 
 Today the evidence panel could only fetch the target *live* from its domain store. That fails for exactly the content most likely to be reported:
 
@@ -75,9 +75,9 @@ Today the evidence panel could only fetch the target *live* from its domain stor
 | RESEARCH / QUESTION / ANSWER | Postgres | Stable, but retract/delete paths exist |
 | USER / CHANNEL | Postgres | Profile fields are freely editable after being reported |
 
-Proposal: `report_evidence` table (PG) written synchronously inside `ReportService.submit` — `report_id FK, captured_at, content_text (truncated), author_id, media_keys jsonb, entity_state`. One snapshot per group (first report wins) is sufficient. Media bytes are *not* copied; R2 keys are recorded and R2 lifecycle rules must exempt evidence-referenced keys — coordinate with [media-storage.md](media-storage.md).
+Built (2026-08): the `report_evidence` table (PG) is written at submit by `ReportEvidenceService` — one snapshot per group (unique `group_key` index; first report wins). Media bytes are *not* copied; R2 keys are recorded and R2 lifecycle rules must exempt evidence-referenced keys — coordinate with [media-storage.md](media-storage.md).
 
-> **Known defect to fix during this build [EXISTS-as-bug]:** `Report.targetId` is `UUID`, but chat message ids are **Snowflake bigints** — a `MESSAGE` report cannot actually reference its target today. Fix options: widen to string target ref, or add a nullable `target_ref varchar` used by MESSAGE (and future non-UUID) targets.
+> **Defect fixed (2026-08):** `Report.targetId` was `UUID`-only, so a `MESSAGE` report could not reference its Snowflake-id target. `targetId` is now nullable with a `target_ref varchar(64)` column for non-UUID targets (exactly one of the two is set); `ReportService.submit` accepts `targetRef`, and `ReportEvidenceService.captureMessage` parses the Snowflake and snapshots via `MessageByIdRepository`.
 
 ### 3.4 Appeals queue
 
@@ -85,15 +85,15 @@ Same workbench as §3.2 filtered to `state = APPEALED`, plus: the original decis
 
 Note the asymmetry, which the console must surface honestly: **only the reporter can appeal** (`ReportService.appeal` checks `reporterId`). The *target* of an action has no visibility into the report and no appeal path today. A target-side strike appeal (`POST /api/v1/safety/strikes/{id}/appeal`) is a recommended follow-on **[PLANNED]** — without it, REVERSED only ever corrects over-dismissal complaints from reporters, never over-enforcement against targets.
 
-### 3.5 Per-user moderation record **[PLANNED]**
+### 3.5 Per-user moderation record **[EXISTS]** (built 2026-08 — `GET /api/v1/admin/safety/users/{userId}/record`)
 
 Single view answering "who is this user, morally": active strikes (with decay countdown), expired strikes, reports **against** them grouped by reason (with resolutions — admin-only column), reports **filed by** them + accuracy rate, content takedowns, suspension history (once [users-roles.md](users-roles.md) builds it), blocks/restricts received counts, consent history (§3.6), link to their audit trail (`GET /api/v1/admin/audit/users/{userId}` **[EXISTS]**).
 
-### 3.6 Consent events viewer **[PLANNED]** (read path; table **[EXISTS]**)
+### 3.6 Consent events viewer **[EXISTS]** (built 2026-08 — `GET /api/v1/admin/safety/users/{userId}/consent[?scope=]`)
 
 Compliance evidence view over `consent_events`: per-user timeline of grant/revoke per scope (CONTACTS/LOCATION/PHOTOS/…), app version, occurred-at; current-state matrix per scope. Strictly read-only — the log is append-only by design and an admin must never be able to fabricate or delete consent evidence. Aggregate widget: grant rate per scope, revocations/week.
 
-### 3.7 Block & restriction aggregates **[PLANNED]** (tables **[EXISTS]**, queries new)
+### 3.7 Block & restriction aggregates **[EXISTS]** (built 2026-08 — `GET /api/v1/admin/safety/stats/blocks`)
 
 | Widget | Source |
 |---|---|
@@ -103,7 +103,7 @@ Compliance evidence view over `consent_events`: per-user timeline of grant/revok
 
 ### 3.8 Strikes ledger
 
-Platform-wide strike view: strikes issued per day, currently-active strike distribution (how many users at 1/2/3+ active strikes — `user_strikes` + `countActive` semantics **[EXISTS]** per user, aggregate query **[PLANNED]**), decay forecast (strikes expiring in next 7/30 days), threshold-automation event log (§5).
+Platform-wide strike view: strikes issued per day, currently-active strike distribution (how many users at 1/2/3+ active strikes — `user_strikes` + `countActive` semantics **[EXISTS]** per user; ledger read `GET /api/v1/admin/safety/strikes` built 2026-08), decay forecast (strikes expiring in next 7/30 days), threshold-automation event log (§5).
 
 ### 3.9 Privacy & discovery posture **[PLANNED]** (tables **[EXISTS]**, aggregates new)
 
@@ -128,33 +128,35 @@ this area is account-level (suspend/delete) in [users-roles.md](users-roles.md).
 
 | Widget | Store | Table / class / endpoint | Status |
 |---|---|---|---|
-| Queue groups | PG | `reports` grouped by `group_key` over `idx_report_group`; new `ReportRepository` queries (`findOpenGroups`, `countByStateIn`, `findOldestOpen`) | Table **[EXISTS]**, queries **[PLANNED]** |
+| Queue groups | PG | `reports` grouped by `group_key` over `idx_report_group`; `ReportRepository.findOpenGroups` | **[EXISTS]** (built 2026-08) |
 | Report rows / detail | PG | `reports` (all columns incl. `resolution` — admin is the only surface allowed to render it) | **[EXISTS]** |
-| Reviewer attribution | PG | `reports` new columns `triaged_by, actioned_by, acted_at, moderator_note varchar(1000)` | **[PLANNED]** migration |
-| Evidence snapshot | PG | `report_evidence` (§3.3) | **[PLANNED]** |
+| Reviewer attribution | PG | `reports` columns `triaged_by, actioned_by, acted_at, moderator_note varchar(1000)` | **[EXISTS]** (built 2026-08) |
+| Evidence snapshot | PG | `report_evidence` (§3.3, `ReportEvidenceService`) | **[EXISTS]** (built 2026-08) |
 | Live target hydration | Cassandra/PG per type | `posts_by_id`, comment tables, `stories_by_author`, `message_by_id`, `research`, `questions`, `question_answers`, `users`, `conversations` | **[EXISTS]**, read-only joins |
 | Reporter context | PG | `reports` by `reporter_id` (`findByReporterIdOrderByCreatedAtDesc` **[EXISTS]**) + accuracy aggregate **[PLANNED]** | mixed |
 | Strikes | PG | `user_strikes`; `StrikeService.myStrikes/activeCount/issueStrike` | **[EXISTS]** |
-| Consent viewer | PG | `consent_events`; reuse `ConsentService.history/currentState` behind an admin controller | Service **[EXISTS]**, admin route **[PLANNED]** |
-| Block/restrict stats | PG | `user_blocks`, `user_restrictions` — new count/group-by queries | **[PLANNED]** queries |
+| Consent viewer | PG | `consent_events`; `ConsentService.history/currentState` behind `GET /api/v1/admin/safety/users/{userId}/consent` | **[EXISTS]** (admin route built 2026-08) |
+| Block/restrict stats | PG | `user_blocks`, `user_restrictions` — `blocksPerDay`, `topBlockedUsers`, `countAllBlocks`, `restrictionsPerDay`, `countAllRestrictions` | **[EXISTS]** (built 2026-08) |
 | Moderation-record audit strip | Cassandra | `GET /api/v1/admin/audit/users/{userId}` (`AuditLogController`) | **[EXISTS]** |
 | Queue health tiles / SLA clocks | PG | Aggregates over `reports` (`state`, `created_at`, `updated_at`) | **[PLANNED]** queries |
 
 ## 5. Admin actions
 
-All routes live under `/api/v1/admin/safety/**` — inheriting the filter-chain double gate (`SecurityConfig` hard-codes `hasRole('ADMIN')` on `/api/v1/admin/**` **[EXISTS]**). Every mutation records an audit action via `AuditLogService.record(...)` (**[EXISTS]** but currently has zero callers outside the audit module — these endpoints become its first real callers) and appears in the admin audit SSE stream. Step-up = re-auth via `StepUpService` (Redis `stepup:{userId}`, TTL 300s **[EXISTS]**, see [../settings/auth-sessions.md](../settings/auth-sessions.md)).
+All routes live under `/api/v1/admin/safety/**` — inheriting the filter-chain double gate (`SecurityConfig` hard-codes `hasRole('ADMIN')` on `/api/v1/admin/**` **[EXISTS]**). Every mutation records an audit action via `AdminAuditor` → `AuditLogService.record(...)` (funnelled from every admin mutation since the 2026-08 build) and appears in the admin audit SSE stream. Step-up = re-auth via `StepUpService` (Redis `stepup:{userId}`, TTL 300s **[EXISTS]**, see [../settings/auth-sessions.md](../settings/auth-sessions.md)).
 
-| Action | Endpoint (all **[PLANNED]**) | Params | Wraps | Danger | Step-up | Audit action |
+**Built 2026-08 (`AdminSafetyController` + `ReportModerationService`)** — every row below is live except the two dependency-noted ones (takedown / suspend-target), flagged inline.
+
+| Action | Endpoint | Params | Wraps | Danger | Step-up | Audit action |
 |---|---|---|---|---|---|---|
 | List queue (grouped) | `GET /api/v1/admin/safety/reports?state=&targetType=&reason=&minAgeHours=&minCount=&page=` | filters + paging | new repo queries | read | no | — (reads land in request audit log anyway) |
 | Report/group detail | `GET /api/v1/admin/safety/reports/{id}` | — | `ReportRepository.findById` + hydration | read | no | — |
-| Mark triaged | `POST /api/v1/admin/safety/reports/{id}/triage` | `{note?}` | new `ReportModerationService.triage` → SUBMITTED→TRIAGED | low | no | `SAFETY_REPORT_TRIAGED` |
+| Mark triaged | `POST /api/v1/admin/safety/reports/{id}/triage` | `{note?}` | `ReportModerationService.triage` → SUBMITTED→TRIAGED | low | no | `SAFETY_REPORT_TRIAGED` |
 | Dismiss | `POST /api/v1/admin/safety/reports/{id}/dismiss` | `{note?, wholeGroup:bool=true}` | →DISMISSED, `resolution=NO_ACTION` | low | no | `SAFETY_REPORT_DISMISSED` |
 | Action + pick resolution | `POST /api/v1/admin/safety/reports/{id}/action` | `{resolution: WARNING_ISSUED\|CONTENT_REMOVED\|ACCOUNT_SUSPENDED\|NO_ACTION, note?, issueStrike:bool, strikeReason?, wholeGroup:bool=true}` | →ACTIONED, sets `resolution`; optionally calls `StrikeService.issueStrike` **[EXISTS]** | medium–high (by resolution) | yes if resolution ≠ NO_ACTION | `SAFETY_REPORT_ACTIONED` |
-| Issue strike (standalone) | `POST /api/v1/admin/safety/users/{userId}/strikes` | `{reportId?, reason}` | `StrikeService.issueStrike` **[EXISTS]**, first caller | medium | yes | `SAFETY_STRIKE_ISSUED` |
+| Issue strike (standalone) | `POST /api/v1/admin/safety/users/{userId}/strikes` | `{reportId?, reason}` | `StrikeService.issueStrike` **[EXISTS]** | medium | yes | `SAFETY_STRIKE_ISSUED` |
 | Revoke strike | `DELETE /api/v1/admin/safety/strikes/{strikeId}` | `{note}` | set `expiresAt = now()` (decay-consistent; never delete the row) | medium | yes | `SAFETY_STRIKE_REVOKED` |
-| Takedown content | `POST /api/v1/admin/safety/reports/{id}/takedown` | `{note}` | **depends on [content-moderation.md](content-moderation.md)** admin-remove primitive (make `PostStatus.REMOVED` real, moderator comment/story/research removal); until built, this button must not exist | high | yes | `SAFETY_CONTENT_TAKEDOWN` |
-| Suspend account | `POST /api/v1/admin/safety/reports/{id}/suspend-target` | `{durationDays?, note}` | **depends on [users-roles.md](users-roles.md)** suspension primitive (`Resolution.ACCOUNT_SUSPENDED` currently has no mechanism) | critical | yes | `SAFETY_ACCOUNT_SUSPENDED` |
+| Takedown content | *(no separate route)* | — | the content-remove primitive now exists (built 2026-08 — [content-moderation.md](content-moderation.md)); takedown is executed via the `action` transition with `resolution=CONTENT_REMOVED` plus the `/api/v1/admin/content/**` endpoints | high | yes | `SAFETY_REPORT_ACTIONED` |
+| Suspend account | `POST /api/v1/admin/safety/reports/{id}/suspend-target` | `{durationDays?, note}` | **still unbuilt** — no timed-suspension primitive exists (untimed disable lives in `AdminUserController` — [users-roles.md](users-roles.md)) | critical | yes | `SAFETY_ACCOUNT_SUSPENDED` |
 | Uphold appeal | `POST /api/v1/admin/safety/appeals/{id}/uphold` | `{note}` | APPEALED→UPHELD (original decision stands) | medium | no | `SAFETY_APPEAL_UPHELD` |
 | Reverse appeal | `POST /api/v1/admin/safety/appeals/{id}/reverse` | `{note}` | APPEALED→REVERSED; auto-revokes the linked strike (via `user_strikes.report_id`); flags any takedown for restore review | high | yes | `SAFETY_APPEAL_REVERSED` |
 | User moderation record | `GET /api/v1/admin/safety/users/{userId}/record` | — | composite read (§3.5) | read | no | — |
@@ -179,10 +181,10 @@ The admin console is therefore the **only** surface that renders `reports.resolu
 |---|---|---|---|
 | `reports` | PG | The queue's system of record; every state/resolution transition is data, not just log | **[EXISTS]** |
 | `user_strikes` | PG | Ledger — rows never deleted; decay + revocation are `expires_at` writes, so the ledger is inherently historical | **[EXISTS]** |
-| Platform audit log (Cassandra `audit_log_by_user` / `by_resource` + SSE) | Cassandra | Every admin mutation above lands via the request interceptor **[EXISTS]**; explicit business events via `AuditLogService.record` **[PLANNED first callers]**. Catalogued in [logs-audit.md](logs-audit.md) | mixed |
-| `consent_events` | PG | Read-only compliance viewer (§3.6) | **[EXISTS]**, viewer **[PLANNED]** |
-| `report_evidence` | PG | Frozen evidence snapshots (§3.3) | **[PLANNED]** |
-| Moderator notes / transition history | PG (`reports` new columns) | Who-did-what strip in the workbench | **[PLANNED]** |
+| Platform audit log (Cassandra `audit_log_by_user` / `by_resource` + SSE) | Cassandra | Every admin mutation above lands via the request interceptor **[EXISTS]**; explicit business events via `AdminAuditor` → `AuditLogService.record` **[EXISTS]** (built 2026-08). Catalogued in [logs-audit.md](logs-audit.md) | **[EXISTS]** |
+| `consent_events` | PG | Read-only compliance viewer (§3.6) | **[EXISTS]** (admin read built 2026-08) |
+| `report_evidence` | PG | Frozen evidence snapshots (§3.3) | **[EXISTS]** (built 2026-08) |
+| Moderator notes / transition history | PG (`reports` reviewer columns) | Who-did-what strip in the workbench | **[EXISTS]** (built 2026-08) |
 
 ## 7. Analytics & KPIs
 
@@ -199,11 +201,11 @@ The admin console is therefore the **only** surface that renders `reports.resolu
 | Active-strike distribution | users at 1 / 2 / ≥3 active strikes | `user_strikes` where `expires_at > now()` | bar |
 | Repeat-target rate | share of new groups whose target already had a prior ACTIONED report | `reports` self-join | line |
 | Reporter accuracy p50 | per-reporter actioned-rate distribution | `reports` | histogram |
-| Blocks+restricts /day | new rows per day | `user_blocks`/`user_restrictions` **[PLANNED]** queries | line |
+| Blocks+restricts /day | new rows per day | `user_blocks`/`user_restrictions` **[EXISTS]** (`blocksPerDay`/`restrictionsPerDay`, built 2026-08) | line |
 | Consent grant rate per scope | granted / total latest-state per scope | `consent_events` | bar |
 | Report→block correlation | % of report groups where reporter also blocked target | join on `user_blocks` | stat tile |
 
-No date-bucketed metrics store exists anywhere in the platform (see [analytics-kpis.md](analytics-kpis.md)) — all of the above are computable with plain PG aggregate queries over small tables, so this section needs **no new collector pipeline**, only queries. Cache the dashboard aggregates in Redis (5-min TTL) like other stat surfaces.
+A date-bucketed metric store now exists (`MetricDailyService`, built 2026-08 — see [analytics-kpis.md](analytics-kpis.md)), but all of the above are computable with plain PG aggregate queries over small tables, so this section needs **no new collector pipeline**, only queries. Cache the dashboard aggregates in Redis (5-min TTL) like other stat surfaces.
 
 ## 8. SLAs, alerts & thresholds
 
@@ -244,7 +246,7 @@ Evaluation runs inside the strike-issuing transaction (issue → `countActive` �
 
 ## 9. Permissions & safety notes
 
-- **Routing**: everything under `/api/v1/admin/safety/**` → double-gated (filter chain + `@PreAuthorize("hasRole('ADMIN')")`). Do not repeat the `PUT /channels/{id}/verified` mistake of annotation-only gating outside the prefix. Only real roles: the platform has exactly USER/RESEARCHER/SCHOLAR/ADMIN — do not reference phantom MODERATOR/SUPER_ADMIN grants like two existing controllers do.
+- **Routing**: everything under `/api/v1/admin/safety/**` → double-gated (filter chain + `@PreAuthorize("hasRole('ADMIN')")`). Do not repeat the `PUT /channels/{id}/verified` mistake of annotation-only gating outside the prefix. Only real roles: the `Role` enum has since widened (see [users-roles.md](users-roles.md)) and the old phantom-grant controllers were normalized (2026-08) — reference only enum-backed roles in `@PreAuthorize`, never `SUPER_ADMIN`.
 - **Step-up**: every action that touches a target (strike, takedown, suspend, action-with-resolution, reverse) requires a fresh `StepUpService` grant; dismiss/triage do not (keeps triage throughput fast).
 - **Coarse outcome**: §5 rule — `resolution`, strikes of others, moderator notes, and reporter identities render **only** inside this console.
 - **Reporter anonymity toward target**: nothing in any target-facing surface (notifications, strike record) may name or count reporters. Strike reason strings are moderator-authored; template them ("Content removed for harassment") rather than echoing reporter `details`.

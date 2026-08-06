@@ -80,6 +80,13 @@ public class ChannelSettings {
     @Builder.Default
     private boolean joinByRequest = false;
 
+    // ── Platform moderation ──────────────────────────────────────────────────
+
+    /** Platform-admin posting freeze — outranks channel-local rights;
+     *  set only via the admin dashboard (never by channel owners). */
+    @Builder.Default
+    private boolean frozenByAdmin = false;
+
     /** Sensible defaults for a freshly created channel. */
     public static ChannelSettings defaults() {
         return ChannelSettings.builder().build();

@@ -244,7 +244,100 @@ public class SoundSearchService {
                 .category(s.getCategory())
                 .status(s.getStatus())
                 .useCount(useCount)
+                .uploaderId(s.getUploaderId() == null ? null : s.getUploaderId().toString())
+                .official(s.getOfficial())
                 .createdAt(s.getCreatedAt())
                 .build();
+    }
+
+    // ── Admin review-queue query (sound-library.md §2.6 option B) ────────────
+
+    /**
+     * Status-keyed listing for the admin queue — the one read
+     * {@code sounds_by_id} cannot serve (no status index). ES already holds
+     * {@code status} as a Keyword; the queue tolerates ES's eventual
+     * consistency by design. Oldest-first for PENDING_REVIEW (queue order),
+     * newest-first otherwise; keyset cursor on {@code createdAt}.
+     */
+    public List<UUID> idsByStatus(String status, UUID uploaderId, Instant cursor, int limit) {
+        boolean oldestFirst = "PENDING_REVIEW".equalsIgnoreCase(status);
+        Query bool = Query.of(qb -> qb.bool(b -> {
+            b.filter(f -> f.term(t -> t.field("status").value(status)));
+            if (uploaderId != null) {
+                b.filter(f -> f.term(t -> t.field("uploaderId").value(uploaderId.toString())));
+            }
+            if (cursor != null) {
+                b.filter(f -> f.range(r -> r.date(d -> {
+                    d.field("createdAt");
+                    if (oldestFirst) d.gt(String.valueOf(cursor.toEpochMilli()));
+                    else d.lt(String.valueOf(cursor.toEpochMilli()));
+                    return d;
+                })));
+            }
+            return b;
+        }));
+
+        NativeQuery query = NativeQuery.builder()
+                .withQuery(bool)
+                .withSort(s -> s.field(f -> f.field("createdAt")
+                        .order(oldestFirst
+                                ? co.elastic.clients.elasticsearch._types.SortOrder.Asc
+                                : co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
+                .withPageable(PageRequest.of(0, limit))
+                .build();
+
+        SearchHits<SoundSearchDocument> hits = EsRetry.call(
+                () -> esOps.search(query, SoundSearchDocument.class),
+                "[SEARCH] sounds by status");
+        List<UUID> ids = new ArrayList<>(hits.getSearchHits().size());
+        for (SearchHit<SoundSearchDocument> h : hits.getSearchHits()) {
+            try { ids.add(UUID.fromString(h.getId())); } catch (Exception ignored) { }
+        }
+        return ids;
+    }
+
+    /** Uploader history — all sounds by one uploader, newest-first. */
+    public List<UUID> idsByUploader(UUID uploaderId, Instant cursor, int limit) {
+        Query bool = Query.of(qb -> qb.bool(b -> {
+            b.filter(f -> f.term(t -> t.field("uploaderId").value(uploaderId.toString())));
+            if (cursor != null) {
+                b.filter(f -> f.range(r -> r.date(d -> d.field("createdAt")
+                        .lt(String.valueOf(cursor.toEpochMilli())))));
+            }
+            return b;
+        }));
+        NativeQuery query = NativeQuery.builder()
+                .withQuery(bool)
+                .withSort(s -> s.field(f -> f.field("createdAt")
+                        .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
+                .withPageable(PageRequest.of(0, limit))
+                .build();
+        SearchHits<SoundSearchDocument> hits = EsRetry.call(
+                () -> esOps.search(query, SoundSearchDocument.class),
+                "[SEARCH] sounds by uploader");
+        List<UUID> ids = new ArrayList<>(hits.getSearchHits().size());
+        for (SearchHit<SoundSearchDocument> h : hits.getSearchHits()) {
+            try { ids.add(UUID.fromString(h.getId())); } catch (Exception ignored) { }
+        }
+        return ids;
+    }
+
+    /** Per-status doc counts for the library-overview tiles. */
+    public java.util.Map<String, Long> countsByStatus() {
+        java.util.Map<String, Long> out = new java.util.LinkedHashMap<>();
+        for (String status : List.of("PENDING_REVIEW", "APPROVED", "REJECTED", "ARCHIVED")) {
+            try {
+                NativeQuery query = NativeQuery.builder()
+                        .withQuery(Query.of(qb -> qb.term(t -> t.field("status").value(status))))
+                        .withMaxResults(0)
+                        .build();
+                out.put(status, EsRetry.call(
+                        () -> esOps.count(query, SoundSearchDocument.class),
+                        "[SEARCH] sound status count"));
+            } catch (Exception e) {
+                out.put(status, -1L);
+            }
+        }
+        return out;
     }
 }

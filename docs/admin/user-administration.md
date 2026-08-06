@@ -9,13 +9,13 @@ impersonating for support, and running the lifecycle. Where the two overlap (the
 per-user detail projection, sessions, deletion pipeline), Section 1 owns the
 *read/inspect* view and this doc owns the *create/mutate* actions and cross-refs it.
 
-> **The one-sentence reality that shapes this whole section:** today the *only*
-> genuine admin-over-another-user primitive that exists is **change role**
-> (`PATCH /api/v1/admin/users/{userId}/role`). Every other capability below —
-> create, invite, edit, password/2FA reset, disable/lock/ban, kill-sessions,
-> delete/restore, impersonate, bulk — is **[PLANNED]**, built on top of `[EXISTS]`
-> services that are currently *self-service only*. This doc says exactly which
-> service each planned action reuses, so the build is wiring, not greenfield.
+> **Update (2026-08): this section is BUILT.** The full C/E/S/X matrix below —
+> create, invite, edit, password/2FA reset, disable/lock, kill-sessions,
+> delete/restore, purge, strikes, impersonate, bulk — is live on
+> `AdminUserController` (~30 routes), with provisioning through
+> `UserProvisioningService.provision` (the shared path extracted from
+> `register`). Only "ban/suspend" as a distinct state remains absent. The
+> per-action notes below retain the original which-service-it-reuses rationale.
 
 Tag legend and ground rules: [README.md](README.md). Related:
 [users-roles.md](users-roles.md) (directory & inspection),
@@ -57,45 +57,45 @@ There is exactly **one** way a `users` row is created: **public self-registratio
 |------|--------|-------------------------------|
 | Required fields | `fname` (≤80), `lname` (≤80), `username` (3–50), `email`, `password` (8–128) — `AuthRequests.RegisterRequest` | The admin "Add User" form mirrors these five; there is **no** `displayName` input — it's derived (`displayName = fname + " " + lname`) |
 | Duplicate guard | `existsByEmail` / `existsByUsername` → `DuplicateResourceException` | Reuse verbatim in admin-create so both paths share one uniqueness rule |
-| Default role | **hardcoded `Role.SCHOLAR`** (`AuthServiceImpl` ~line 90) — *not* `USER` | ⚠️ **Recon flag:** every self-signup becomes an enabled **Scholar** with the `VERIFIED_SCHOLAR` badge. The `Role.USER` doc-comment ("default for every signed-up account") is contradicted by the code. Surface this on the Config/health tab; the admin-create form should default to the *intended* role, not silently SCHOLAR. |
+| Default role | `Role.USER` (`AuthServiceImpl`) — the historical hardcoded-`SCHOLAR` default was **fixed 2026-08** | Admin-create takes an explicit `role`; the form defaults to `USER`, matching registration |
 | `is_enabled` | forced `true` at register (entity default is `false`) | New accounts are immediately usable |
 | Email verified? | **No** — `email_verified_at` is **never written anywhere** | Every account, self-signup or admin-made, has an unverified email today (see §7 "dead scaffolding") |
 | Password | `BCryptPasswordEncoder(12)` | Admin-create/reset reuse the same encoder bean |
 | Companion row | a `UserProfile` is created inline; user indexed for search (`userSearch.indexAsync`) | Admin-create must create the profile + index too, or the account is half-formed |
 | Audit | entity-level `user.audit(CREATE, "User registered")` stamps `last_action`/`action_note` (not the Cassandra audit log) | Admin-create should *also* write a Cassandra audit row (§7) |
 
-**No admin create endpoint exists.** `AdminUserController` exposes only the
-role-change method. So "Add Users" is entirely new surface — but every ingredient
-(validation, encoder, profile creation, search indexing) already exists in
-`register`; the build extracts a shared `provision(...)` and gives it an admin caller.
+**The admin create endpoint now exists (built 2026-08):** `POST /api/v1/admin/users`
+(`AdminUserController.create` → `UserProvisioningService.provision`). Every ingredient
+(validation, encoder, profile creation, search indexing) is the shared `provision(...)`
+extracted from `register`, so admin-made and self-made accounts are structurally identical.
 
 ---
 
 ## 3. Adding users (the centerpiece)
 
-Four provisioning modes, all **[PLANNED]**, all under `/api/v1/admin/**` (double-gated),
+Four provisioning modes, all **[EXISTS]** (built 2026-08), all under `/api/v1/admin/**` (double-gated),
 all **step-up-gated** (creating credentials is a sensitive act) and audited.
 
-### 3.1 Single admin-create — `POST /api/v1/admin/users` **[PLANNED]**
+### 3.1 Single admin-create — `POST /api/v1/admin/users` **[EXISTS]** (built 2026-08)
 
 Body: `{ fname, lname, username, email, role, sendInvite?, temporaryPassword?, markEmailVerified? }`.
 
 | Choice | Behavior |
 |--------|----------|
-| `role` | **explicit** — do not inherit the SCHOLAR default; the form's default should be `USER` (the documented intent) with a clear picker across the 4 real roles |
+| `role` | **explicit** — form default `USER` (registration itself now defaults `USER` too), with a clear picker across the 7 roles |
 | Password | either admin sets a `temporaryPassword` (BCrypt-encoded, `is_credentials_non_expired` **[PLANNED]** forced so the user must change it on first login) **or** `sendInvite=true` mints a one-time set-password link (needs the invite system, §3.4) |
 | `markEmailVerified` | if true, sets `email_verified_at = now()` — the **only** intended writer of that column (§7). Use for trusted provisioning (staff, verified scholars) |
 | Reuses | the extracted `provision(...)` (validation + encoder + `UserProfile` + `indexAsync`) so admin-made and self-made accounts are structurally identical |
 | Audit | `ADMIN_USER_CREATE` Cassandra row + entity `audit(CREATE, "Created by admin {id}")` |
 
-### 3.2 Pre-verified / staff provisioning **[PLANNED]**
+### 3.2 Pre-verified / staff provisioning **[EXISTS]** (built 2026-08)
 
 Same endpoint with `markEmailVerified=true` and an elevated `role` (e.g. `ADMIN`,
 `SCHOLAR`). Because there is **no** working email-verify flow today (§7), this admin
 path is the *only* way an account can ever have a verified email — worth stating
 plainly so ops know pre-verification is an admin act, not a user achievement.
 
-### 3.3 Bulk import — `POST /api/v1/admin/users/bulk` **[PLANNED]**
+### 3.3 Bulk import — `POST /api/v1/admin/users/bulk` **[EXISTS]** (built 2026-08)
 
 CSV/JSON upload (`fname,lname,username,email,role`), server validates every row
 against the same uniqueness + field rules, returns a per-row result
@@ -104,10 +104,11 @@ today — this is new, but it's a loop over `provision(...)` with a summary. Cap
 batch (e.g. 1,000 rows) and rate-limit; every created row is individually audited.
 Pairs naturally with `sendInvite=true` for cohort onboarding (a class, an institution).
 
-### 3.4 Invite-based onboarding **[PLANNED — needs a new token type]**
+### 3.4 Invite-based onboarding **[EXISTS]** (built 2026-08)
 
-Today there is **no user-onboarding invite system** — the only invites in the
-codebase are channel/conversation-scoped (`ConversationInvite`). To offer
+Historically there was **no user-onboarding invite system** — the only invites in the
+codebase were channel/conversation-scoped (`ConversationInvite`); the 2026-08 build
+added one (`POST /api/v1/admin/users/invite` + resend/revoke). To offer
 "invite by email," add a `UserInvite` (email, opaque token, role, expiry, used-at)
 and an endpoint `POST /api/v1/admin/users/invite` that emails a set-password link;
 consuming it creates the account pre-verified with the invited role. This reuses the
@@ -123,30 +124,30 @@ tables with danger/step-up/audit are consolidated in §6.
 
 | Control | Reuses (primitive) | Status | Gap to close |
 |---------|--------------------|--------|--------------|
-| **Inspect** (full projection, PII reveal) | `UserRepository.findActiveWithProfileByIdIn` (avatar join-fetch!), `UserStatsService`, `StorageUsageService` | **[EXISTS]** data | admin read endpoint → owned by [users-roles.md](users-roles.md) §2.3 |
-| **Change role** (promote/demote) | `AdminUserService.changeRole` | **[EXISTS]** | none — the one working admin mutation; badge re-derives on next read |
-| **Edit identity** (fname/lname/username/email) | direct `User` setters + `existsBy*` guards | **[PLANNED]** | no admin edit endpoint; email edit should reset `email_verified_at` |
-| **Reset password** | `BCryptPasswordEncoder`, `RefreshTokenRepository.revokeAllForUser` | **[PLANNED]** | no admin set-password primitive; **forgot-password is intentionally absent** — admin reset fills that hole (set temp + revoke all + force-change) |
-| **Reset 2FA** | `TwoFactorService.disable(userId)` | **[PARTIAL]** | `disable` exists but is self-service + step-up; admin variant is a wrapper — **classic account-takeover vector, mandatory step-up + notify user** |
-| **Enable / disable** | `is_enabled` column; `UserRepository.softDelete` sets it false | **[PLANNED]** | ⚠️ `is_enabled` is flipped false **only** via soft-delete today — no standalone toggle. A true disable/enable needs a dedicated setter path |
-| **Lock / unlock** | `is_account_non_locked` column | **[PLANNED]** | ⚠️ **dead column** — never mutated by any code. `isEnabled()` gates on `is_enabled && deletedAt==null`, not on the lock flag, so a lock has no effect until enforcement is wired |
+| **Inspect** (full projection, PII reveal) | `UserRepository.findActiveWithProfileByIdIn` (avatar join-fetch!), `UserStatsService`, `StorageUsageService` | **[EXISTS]** | admin read endpoints **[EXISTS]** (built 2026-08) — view owned by [users-roles.md](users-roles.md) §2.3 |
+| **Change role** (promote/demote) | `AdminUserService.changeRole` | **[EXISTS]** | step-up + self-guard + last-admin guard added 2026-08; badge re-derives on next read |
+| **Edit identity** (fname/lname/username/email) | direct `User` setters + `existsBy*` guards | **[EXISTS]** (built 2026-08) | `PATCH /api/v1/admin/users/{id}`; email edit resets `email_verified_at` |
+| **Reset password** | `BCryptPasswordEncoder`, `RefreshTokenRepository.revokeAllForUser` | **[EXISTS]** (built 2026-08) | **forgot-password is intentionally absent** — admin reset fills that hole (set temp + revoke all + force-change) |
+| **Reset 2FA** | `TwoFactorService.disable(userId)` | **[EXISTS]** (built 2026-08) | admin wrapper over the self-service `disable` — **classic account-takeover vector, mandatory step-up + notify user** |
+| **Enable / disable** | `is_enabled` column; `UserRepository.softDelete` sets it false | **[EXISTS]** (built 2026-08) | dedicated toggle built — `is_enabled` is no longer flipped only via soft-delete |
+| **Lock / unlock** | `is_account_non_locked` column | **[EXISTS]** (built 2026-08) | column now mutated by the admin lock/unlock endpoints (historically a dead column) |
 | **Ban / suspend** | `Resolution.ACCOUNT_SUSPENDED`, `ReportReason.*` enums | **[PLANNED]** | enums exist, **no backing mechanism** — "suspend" as a distinct state does not exist; disable is the lever until built (→ [safety-reports.md](safety-reports.md)) |
-| **Kill one session** | `SessionService.revoke(userId, sid)` | **[PARTIAL]** | guarded to *self* today; admin variant drops the owner check. Note the denylist seam (§7) |
-| **Kill all sessions** | `RefreshTokenRepository.revokeAllForUser` + `SessionDenylist.deny` per live sid | **[PLANNED]** | primitive exists (used by logout-all); no admin caller |
-| **Soft-delete (admin-initiated)** | `AccountLifecycleService.requestDeletion` | **[PLANNED]** | service exists, **self-service only** — admin caller reuses it (soft-delete + revoke-all + 30d grace) |
-| **Restore (within grace)** | `AccountLifecycleService.cancelDeletion` | **[PLANNED]** | same — reuse for admin restore |
-| **Expedite / hold purge** | `purgeExpired()` nightly cron `0 30 3 * * *`, `anonymizeAndPurge` | **[PLANNED]** | no manual trigger; hold = extend `purge_after` |
-| **Issue strike** | `StrikeService.issueStrike(userId, reportId, reason)` | **[PARTIAL]** | ⚠️ method exists with **zero callers** — the automated moderation write path is unwired; admin "issue strike" would be its first caller (→ [safety-reports.md](safety-reports.md)) |
-| **Impersonate (act-as)** | — | **[PLANNED]** | **no mechanism at all** — fully new (§5) |
-| **Bulk** (role/disable/delete on a set) | the singular primitives above | **[PLANNED]** | no batch user path exists |
+| **Kill one session** | `SessionService.revoke(userId, sid)` | **[EXISTS]** (built 2026-08) | admin variant drops the self-only owner check. Note the denylist seam (§7) |
+| **Kill all sessions** | `RefreshTokenRepository.revokeAllForUser` + `SessionDenylist.deny` per live sid | **[EXISTS]** (built 2026-08) | admin caller wired over the logout-all primitive |
+| **Soft-delete (admin-initiated)** | `AccountLifecycleService.requestDeletion` | **[EXISTS]** (built 2026-08) | admin caller reuses the ONE state machine (soft-delete + revoke-all + 30d grace) |
+| **Restore (within grace)** | `AccountLifecycleService.cancelDeletion` | **[EXISTS]** (built 2026-08) | same — reused for admin restore |
+| **Expedite / hold purge** | `purgeExpired()` nightly cron `0 30 3 * * *`, `anonymizeAndPurge` | **[EXISTS]** (built 2026-08) | `POST .../purge/{now\|hold}`; hold = extend `purge_after` |
+| **Issue strike** | `StrikeService.issueStrike(userId, reportId, reason)` | **[EXISTS]** (built 2026-08) | now called from the admin strike endpoints and `ReportModerationService.action` (→ [safety-reports.md](safety-reports.md)) |
+| **Impersonate (act-as)** | `admin/impersonation` | **[EXISTS]** (built 2026-08) | see §5 |
+| **Bulk** (role/disable/delete on a set) | the singular primitives above | **[EXISTS]** (built 2026-08) | `POST /api/v1/admin/users/bulk-action` |
 
 ---
 
-## 5. Impersonation (act-as for support) **[PLANNED]**
+## 5. Impersonation (act-as for support) **[EXISTS]** (built 2026-08)
 
-There is **no impersonation, act-as, or switch-user mechanism anywhere** in the
-codebase today. It is the single most-requested support capability and the single
-most-dangerous, so design it deliberately:
+Impersonation is now implemented (`admin/impersonation`, built 2026-08). It is the
+single most-requested support capability and the single most-dangerous, so it was
+designed deliberately:
 
 - **Scoped token, not a password.** `POST /api/v1/admin/users/{userId}/impersonate`
   mints a short-TTL (e.g. 10 min) impersonation JWT carrying **both** the admin's id
@@ -160,14 +161,14 @@ most-dangerous, so design it deliberately:
 - **Mandatory step-up + reason**, time-boxed, one target at a time, auto-expiring,
   and surfaced to the user afterward (transparency).
 
-Until built, "support needs to see what the user sees" is served by the read-only
-inspection projection ([users-roles.md](users-roles.md) §2.3), not by act-as.
+For most support cases, "support needs to see what the user sees" is still served
+first by the read-only inspection projection ([users-roles.md](users-roles.md) §2.3).
 
 ---
 
 ## 6. Admin actions — endpoint matrix
 
-All **[PLANNED]** unless the Status column says otherwise. Every route lives under
+All **[EXISTS]** (built 2026-08). Every route lives under
 `/api/v1/admin/**` (inherits `hasRole('ADMIN')` at the chain **and** `@PreAuthorize`).
 Step-up = `StepUpService.requireRecentStepUp(adminId)` **[EXISTS]**; audit = a
 Cassandra row via the audit path (§7).
@@ -185,7 +186,7 @@ Cassandra row via the audit path (§7).
 
 | # | Action | Endpoint | Danger | Step-up | Audit action |
 |---|--------|----------|--------|---------|--------------|
-| E1 | Change role | `PATCH /api/v1/admin/users/{id}/role` | medium | yes¹ | `ADMIN_ROLE_CHANGE` — **[EXISTS]** (¹ step-up not enforced today; add it) |
+| E1 | Change role | `PATCH /api/v1/admin/users/{id}/role` | medium | yes¹ | `ADMIN_ROLE_CHANGE` — **[EXISTS]** (¹ step-up enforced via `@RequiresStepUp`, built 2026-08) |
 | E2 | Edit identity | `PATCH /api/v1/admin/users/{id}` `{fname?,lname?,username?,email?}` | **high** (email = recovery vector) | **yes** | `ADMIN_USER_EDIT` |
 | E3 | Reset password | `POST /api/v1/admin/users/{id}/password/reset` `{temp?|sendLink}` | **critical** | **yes** | `ADMIN_PASSWORD_RESET` (+ revoke-all + notify) |
 | E4 | Reset 2FA | `POST /api/v1/admin/users/{id}/2fa/reset` `{reason}` | **critical** (takeover vector) | **yes, mandatory** | `ADMIN_2FA_RESET` (+ security email, bypass DND) |
@@ -232,12 +233,12 @@ admin edit; **read-only** = system-managed; **derived** = never stored.
 | `email` | unique, ≤255 | **editable** (E2 — resets `email_verified_at`) |
 | `password` | ≤255, nullable | never shown; E3 only; nulled on purge |
 | `phone_e164`, `phone_hmac`, `phone_verified_at` | phone | read-only (set by verified OTP via `PhoneService`) |
-| `role` | enum, default **SCHOLAR** | E1 only (4 real roles) |
+| `role` | enum, default **USER** (since 2026-08) | E1 only (7 roles) |
 | `orcid_id`, `preferred_language`, `timezone` | | **editable** |
-| `is_enabled` | default `false`, forced `true` at register | S1 (today only soft-delete flips it) |
-| `is_account_non_locked` | default true | S2 — **dead column** (never mutated; not enforced) |
+| `is_enabled` | default `false`, forced `true` at register | S1 — admin disable/enable toggle (built 2026-08) |
+| `is_account_non_locked` | default true | S2 — mutated by admin lock/unlock since 2026-08 |
 | `is_account_non_expired`, `is_credentials_non_expired` | default true | **dead columns** — never mutated (force-change would use `credentials_non_expired`) |
-| `email_verified_at` | nullable | **never written today** — E5 is the only intended writer |
+| `email_verified_at` | nullable | written by E5 admin verify / `markEmailVerified` provisioning (built 2026-08) — still no user-facing verify flow |
 | `two_factor_enabled`, `two_factor_secret` (AES-GCM), `two_factor_last_step` | 2FA | read-only status; E4 to reset |
 | `email_*_enabled` (notifications/social/mentions/system/trending) | all default true | mirror in [notifications-email.md](notifications-email.md); read-only here |
 | `last_login_at` | | read-only (updated on login) |
@@ -278,33 +279,33 @@ No badge column, no verification queue. The role picker **is** the badge control
 - **Entity audit [EXISTS]:** `BaseAuditEntity.audit(action, note)` stamps
   `last_action`/`action_note` + `updated_by/ip/device` on the row (role change,
   register, password change all use it).
-- ⚠️ **`AuditLogService.record(...)` [EXISTS but zero callers]** — the explicit
-  "record this business action" helper is unused. Wiring it for the named
-  `ADMIN_*` actions above (so the audit reason/summary is meaningful, not just
-  "PATCH /role 200") is part of the build.
+- **`AuditLogService.record(...)` [EXISTS]** — the explicit "record this business
+  action" helper is now funneled through `admin/support/AdminAuditor`, which writes
+  the named `ADMIN_*` rows on every admin mutation (built 2026-08).
 
 **Recon flags to surface on the Config/health tab (all verified against source):**
 
-1. **Registration hardcodes `role = SCHOLAR` and `isEnabled = true`** — every signup
-   is an enabled Scholar with an unverified email. Fix intent: default to `USER`.
+1. **Fixed 2026-08:** registration now grants `Role.USER` (still `isEnabled = true`,
+   email unverified) — the historical hardcoded-`SCHOLAR` default is gone.
 2. **Email verification is dead scaffolding** — `VerificationToken` + repo exist with
    `TokenType.EMAIL_VERIFY`, but **zero injectors**; `email_verified_at` is never set;
    `isEmailVerified()` always returns false. Admin E5 (or reviving the token flow) is
    the only path to a verified email.
-3. **`is_account_non_locked` / `is_account_non_expired` / `is_credentials_non_expired`
-   are dead columns** — never mutated; `isEnabled()` doesn't consult the lock flag. A
-   lock/suspend feature needs *both* a setter and enforcement wiring, not just an endpoint.
-4. **`StrikeService.issueStrike` has zero callers** — moderation strikes never fire
-   automatically today; X3 would be the first caller.
+3. **`is_account_non_locked` is now mutated by the admin lock/unlock endpoints
+   (2026-08)**; `is_account_non_expired` / `is_credentials_non_expired` remain dead
+   columns — never mutated. `isEnabled()` still doesn't consult the lock flag.
+4. **Fixed 2026-08:** `StrikeService.issueStrike` now has callers — the admin strike
+   endpoints (X3, `AdminSafetyController`) and `ReportModerationService.action`.
 5. **`SessionDenylist` seam [PARTIAL]** — `isDenied(sid)` is **not** checked in
    `JwtAuthenticationFilter`, so revoking a session closes the *refresh* path
    immediately but the stateless access-JWT stays valid until expiry (~15 min).
    Admin "kill session" must set the user's expectation accordingly (or the build
    closes the seam).
-6. **Phantom roles in `@PreAuthorize`** — `SUPER_ADMIN` / `MODERATOR` appear in some
-   annotation strings (e.g. `AuditLogController`) but `Role` only defines
-   `USER/RESEARCHER/SCHOLAR/ADMIN`; those branches can never match. Never render them
-   as grantable roles.
+6. **Phantom roles — largely resolved 2026-08.** `Role` widened to seven values
+   (`MODERATOR`/`SUPPORT`/`ANALYST` staff tiers are live) and `AuditLogController` was
+   normalized to `hasRole('ADMIN')`. `SUPER_ADMIN` remains phantom — residual
+   `hasAnyRole(…,'SUPER_ADMIN')` grants linger in `ResearchController`; never render
+   `SUPER_ADMIN` as a grantable role.
 
 ---
 
@@ -313,9 +314,9 @@ No badge column, no verification queue. The role picker **is** the badge control
 - **Double-gate everything.** All routes here are `/api/v1/admin/**` → `hasRole('ADMIN')`
   at the chain (`SecurityConfig`) **plus** `@PreAuthorize` on the method. A forgotten
   annotation can't leak an admin route, but never rely on the chain alone.
-- **Step-up on state & credentials.** Role change today is *not* step-up-gated —
-  the build should add it (E1). Everything critical (create, edit-email, password/2FA
-  reset, disable/lock, delete/purge, impersonate, bulk) is mandatory step-up.
+- **Step-up on state & credentials.** Role change is step-up-gated via
+  `@RequiresStepUp` (built 2026-08, E1). Everything critical (create, edit-email,
+  password/2FA reset, disable/lock, delete/purge, impersonate, bulk) is mandatory step-up.
 - **Notify the user on takeover-relevant actions** (password reset, 2FA reset, email
   change) via the security-email path that bypasses DND, so a hijacked-admin scenario
   is visible to the account owner.

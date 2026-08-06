@@ -61,6 +61,17 @@ public class PostEventPublisher {
                 "POST_COMMENT_DELETED postId=" + postId + " commentId=" + commentId);
     }
 
+    /** Wires the (previously dead) sound-approval event so uploaders get notified. */
+    public void publishSoundApproved(ak.dev.irc.app.rabbitmq.event.post.SoundApprovedEvent event) {
+        publish(RabbitMQConstants.SOUND_APPROVED, event,
+                "SOUND_APPROVED soundId=" + event.getSoundId());
+    }
+
+    public void publishSoundRejected(ak.dev.irc.app.rabbitmq.event.post.SoundRejectedEvent event) {
+        publish(RabbitMQConstants.SOUND_REJECTED, event,
+                "SOUND_REJECTED soundId=" + event.getSoundId());
+    }
+
     private void publish(String routingKey, Object event, String label) {
         Runnable publishAction = () -> {
             try {

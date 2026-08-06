@@ -18,6 +18,10 @@ public interface AuditLogByUserRepository extends CassandraRepository<AuditLogBy
     List<AuditLogByUserEntity> firstPage(@Param("userId") UUID userId,
                                          @Param("pageSize") int pageSize);
 
+    /** GDPR purge (logs-audit.md §8): single-partition delete — cheap. */
+    @Query("DELETE FROM audit_log_by_user WHERE user_id = :userId")
+    void purgePartition(@Param("userId") UUID userId);
+
     @Query("SELECT * FROM audit_log_by_user WHERE user_id = :userId " +
            "AND created_at < :cursor LIMIT :pageSize")
     List<AuditLogByUserEntity> nextPage(@Param("userId") UUID userId,

@@ -44,6 +44,8 @@ public class CassandraSoundService {
     private final SoundCounterRepository    soundCounterRepo;
     private final CounterService            counterService;
     private final ak.dev.irc.app.post.search.service.SoundSearchService soundSearch;
+    private final SoundAdoptionCounter soundAdoptionCounter;
+    private final ak.dev.irc.app.post.cassandra.repository.PostByIdRepository postByIdRepo;
 
     // ── Create / approve ────────────────────────────────────────────────────
 
@@ -143,10 +145,162 @@ public class CassandraSoundService {
                     .authorId(authorId)
                     .build());
             counterService.incrementSoundUse(soundId);
+            soundAdoptionCounter.bump(soundId);  // day-bucketed trending tee
             soundSearch.refreshAsync(soundId);   // keep popularity ranking fresh
         } catch (Exception e) {
             log.warn("[SOUND] usage record failed for sound {} post {}: {}",
                     soundId, postId, e.getMessage());
+        }
+    }
+
+    // ── Admin state machine (sound-library.md §5-6) ─────────────────────────
+    // The enum always declared PENDING_REVIEW → APPROVED | REJECTED | ARCHIVED
+    // but only the approve transition had a writer. These complete it.
+
+    /** PENDING_REVIEW → REJECTED. Row retained for audit; ES doc removed. */
+    public SoundEntity reject(UUID soundId) {
+        SoundEntity s = requireSound(soundId);
+        s.setStatus("REJECTED");
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        removeCategoryRow(s);
+        soundSearch.deleteAsync(soundId);
+        return s;
+    }
+
+    /** APPROVED → ARCHIVED: stops NEW adoption; existing posts keep their audio. */
+    public SoundEntity archive(UUID soundId) {
+        SoundEntity s = requireSound(soundId);
+        s.setStatus("ARCHIVED");
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        removeCategoryRow(s);
+        soundSearch.deleteAsync(soundId);
+        return s;
+    }
+
+    /** REJECTED/ARCHIVED → APPROVED (re-review override / counter-notice restore). */
+    public SoundEntity restore(UUID soundId) {
+        SoundEntity s = requireSound(soundId);
+        s.setStatus("APPROVED");
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        writeCategoryRow(s);
+        soundSearch.refreshAsync(soundId);
+        return s;
+    }
+
+    /**
+     * Rights/safety takedown: archive + optionally strip the audio from every
+     * adopting post (the TikTok "muted audio" behaviour), walking
+     * {@code posts_by_sound} as the work-list. Returns muted-post count.
+     */
+    public int takedown(UUID soundId, boolean muteAdoptingPosts,
+                        java.util.function.Consumer<ak.dev.irc.app.post.cassandra.entity.PostByIdEntity> onMuted) {
+        archive(soundId);
+        if (!muteAdoptingPosts) return 0;
+
+        int muted = 0;
+        final int page = 500, maxPosts = 20_000;
+        List<PostBySoundEntity> batch = postBySoundRepo.firstPage(soundId, page);
+        while (!batch.isEmpty() && muted < maxPosts) {
+            for (PostBySoundEntity use : batch) {
+                try {
+                    var post = postByIdRepo.findById(use.getPostId()).orElse(null);
+                    if (post == null) continue;
+                    if (post.getAudioTrackUrl() == null && post.getAudioTrackName() == null) continue;
+                    post.setAudioTrackUrl(null);
+                    post.setAudioTrackName(null);
+                    post.setUpdatedAt(Instant.now());
+                    postByIdRepo.save(post);
+                    if (onMuted != null) onMuted.accept(post);
+                    muted++;
+                } catch (Exception e) {
+                    log.warn("[SOUND] mute of post {} failed: {}", use.getPostId(), e.getMessage());
+                }
+            }
+            if (batch.size() < page) break;
+            Instant cursor = batch.get(batch.size() - 1).getCreatedAt();
+            batch = postBySoundRepo.nextPage(soundId, cursor, page);
+        }
+        log.info("[SOUND] takedown of {} muted {} adopting post(s)", soundId, muted);
+        return muted;
+    }
+
+    /** Move a sound to another category — rewrites its category-browse row. */
+    public SoundEntity recategorize(UUID soundId, String newCategory) {
+        SoundEntity s = requireSound(soundId);
+        removeCategoryRow(s);
+        s.setCategory(newCategory);
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        if ("APPROVED".equals(s.getStatus())) writeCategoryRow(s);
+        soundSearch.refreshAsync(soundId);
+        return s;
+    }
+
+    public SoundEntity editMetadata(UUID soundId, String title, String artistName, String coverArtUrl) {
+        SoundEntity s = requireSound(soundId);
+        if (title != null && !title.isBlank()) s.setTitle(title);
+        if (artistName != null) s.setArtistName(artistName);
+        if (coverArtUrl != null) s.setCoverArtUrl(coverArtUrl);
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        if ("APPROVED".equals(s.getStatus())) writeCategoryRow(s);
+        soundSearch.refreshAsync(soundId);
+        return s;
+    }
+
+    public SoundEntity setOfficial(UUID soundId, boolean official) {
+        SoundEntity s = requireSound(soundId);
+        s.setOfficial(official);
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        soundSearch.refreshAsync(soundId);
+        return s;
+    }
+
+    public SoundEntity setTrendingExcluded(UUID soundId, boolean excluded) {
+        SoundEntity s = requireSound(soundId);
+        s.setTrendingExcluded(excluded);
+        s.setUpdatedAt(Instant.now());
+        soundRepo.save(s);
+        soundSearch.refreshAsync(soundId);
+        return s;
+    }
+
+    /** GDPR-grade purge of every sound store + adoption detach. */
+    public void hardDelete(UUID soundId) {
+        SoundEntity s = soundRepo.findById(soundId).orElse(null);
+        if (s != null) removeCategoryRow(s);
+        soundRepo.deleteById(soundId);
+        try {
+            soundCounterRepo.deleteBySoundId(soundId);
+        } catch (Exception e) {
+            log.warn("[SOUND] counter purge failed for {}: {}", soundId, e.getMessage());
+        }
+        try {
+            postBySoundRepo.deleteAllForSound(soundId);
+        } catch (Exception e) {
+            log.warn("[SOUND] posts_by_sound purge failed for {}: {}", soundId, e.getMessage());
+        }
+        soundSearch.deleteAsync(soundId);
+    }
+
+    private SoundEntity requireSound(UUID soundId) {
+        SoundEntity s = soundRepo.findById(soundId).orElse(null);
+        if (s == null) {
+            throw new ak.dev.irc.app.common.exception.ResourceNotFoundException("Sound", "id", soundId);
+        }
+        return s;
+    }
+
+    private void removeCategoryRow(SoundEntity s) {
+        if (s.getCategory() == null || s.getCreatedAt() == null) return;
+        try {
+            soundByCategoryRepo.deleteRow(s.getCategory(), s.getCreatedAt(), s.getId());
+        } catch (Exception e) {
+            log.warn("[SOUND] category-row delete failed for {}: {}", s.getId(), e.getMessage());
         }
     }
 }

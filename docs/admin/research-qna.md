@@ -24,9 +24,9 @@ The academic heart of the platform: the research pipeline (drafts → scheduled/
 | Download logging | **[EXISTS]** dual-store: PG `research_downloads` + Cassandra `research_downloads_by_research` |
 | Top-downloaded / top-cited views | **[PLANNED]** (data columns exist; no query/endpoint) |
 | Plagiarism / quality flags | **[PLANNED]** (nothing exists) |
-| Q&A admin moderation | **[PARTIAL]** — `Role.ADMIN` bypass inside `canManageQuestion`/`canManageAnswer` lets admins edit/delete/lock via the *normal* endpoints; no admin browse/queue |
-| Question CLOSED / ARCHIVED | **[PARTIAL]** — enum values enforced as answer-blocking (`QuestionServiceImpl` L465) but **no code ever sets them** |
-| Tag admin | **[PARTIAL]** — only `POST /api/v1/admin/tags/backfill-posts`; no merge/block/rename |
+| Q&A admin moderation | **[EXISTS (built 2026-08)]** — `admin/qna/AdminQnaController`: admin browse/queue (`GET /api/v1/admin/qna/questions`) plus close/reopen/archive and question/answer delete; the `Role.ADMIN` bypass inside `canManageQuestion`/`canManageAnswer` still covers the *normal* endpoints |
+| Question CLOSED / ARCHIVED | **[EXISTS (built 2026-08)]** — answer-blocking enforcement (`QuestionServiceImpl`) plus real writers: `POST /api/v1/admin/qna/questions/{id}/close` / `/reopen` / `/archive` |
+| Tag admin | **[EXISTS (built 2026-08)]** — `POST /api/v1/admin/tags/backfill-posts` plus `POST /api/v1/admin/tags/merge` and `POST/DELETE /api/v1/admin/tags/{tag}/hide` (no rename) |
 | ES reindex for research/qna/answers | **[EXISTS]** `SearchAdminController` |
 
 ## 2. Dashboard views & widgets
@@ -126,7 +126,7 @@ Existing actions first, then proposals. All proposed routes live under `/api/v1/
 | `research_downloads` / `research_downloads_by_research` | PG + Cassandra | Download analytics widgets (§2.2) | **[EXISTS]** |
 | `[RABBIT-DLQ]` drain lines | app log | Dead-lettered `research.analytics.downloaded` events = silently lost download counts; see [operations.md](operations.md) | **[EXISTS]** (log-only) |
 | `activity_by_user` QnA/research event types | Cassandra | **Not surfaced** — per-user private history, partitioned by user; unusable for admin aggregation by design ([logs-audit.md](logs-audit.md)) | boundary note |
-| Business-event audit (`AuditLogService.record`) | Cassandra | Proposed writer for `RESEARCH_ADMIN_*`, `QUESTION_CLOSED`, `TAG_MERGED` rows with reasons — helper **[EXISTS]** but has zero callers today; this section's mutations should be its first | **[PLANNED]** usage |
+| Business-event audit (`AuditLogService.record`) | Cassandra | Typed `ADMIN_*` rows with reasons — written via `admin/support/AdminAuditor`, which funnels every admin mutation (incl. the research/QnA/tag admin controllers) through `AuditLogService.record` | **[EXISTS (built 2026-08)]** |
 
 ## 6. Analytics & KPIs
 

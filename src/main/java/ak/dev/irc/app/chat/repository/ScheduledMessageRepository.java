@@ -4,6 +4,8 @@ import ak.dev.irc.app.chat.entity.ScheduledMessage;
 import ak.dev.irc.app.chat.enums.ScheduledMessageStatus;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -14,10 +16,25 @@ import java.util.UUID;
 public interface ScheduledMessageRepository extends JpaRepository<ScheduledMessage, UUID> {
 
     /** Due, still-pending scheduled messages — the scheduler's poll query. */
+    @Query("""
+        SELECT m FROM ScheduledMessage m
+        WHERE m.status = :status
+          AND m.scheduledAt <= :cutoff
+        ORDER BY m.scheduledAt ASC
+        """)
     List<ScheduledMessage> findByStatusAndScheduledAtLessThanEqualOrderByScheduledAtAsc(
-            ScheduledMessageStatus status, LocalDateTime cutoff, Pageable pageable);
+            @Param("status") ScheduledMessageStatus status,
+            @Param("cutoff") LocalDateTime cutoff, Pageable pageable);
 
     /** A user's pending scheduled messages in a conversation (the "Scheduled" tray). */
+    @Query("""
+        SELECT m FROM ScheduledMessage m
+        WHERE m.conversationId = :conversationId
+          AND m.senderId = :senderId
+          AND m.status = :status
+        ORDER BY m.scheduledAt ASC
+        """)
     List<ScheduledMessage> findByConversationIdAndSenderIdAndStatusOrderByScheduledAtAsc(
-            UUID conversationId, UUID senderId, ScheduledMessageStatus status);
+            @Param("conversationId") UUID conversationId, @Param("senderId") UUID senderId,
+            @Param("status") ScheduledMessageStatus status);
 }

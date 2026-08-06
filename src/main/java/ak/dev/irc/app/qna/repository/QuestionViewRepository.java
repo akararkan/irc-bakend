@@ -26,11 +26,6 @@ public interface QuestionViewRepository extends JpaRepository<QuestionView, Ques
         """, nativeQuery = true)
     int tryRecord(@Param("questionId") UUID questionId, @Param("userId") UUID userId);
 
-    @Query("SELECT COUNT(v) FROM QuestionView v WHERE v.id.questionId = :questionId")
-    long countByQuestionId(@Param("questionId") UUID questionId);
-
-    boolean existsByIdQuestionIdAndIdUserId(UUID questionId, UUID userId);
-
     /** Cascade purge — used when the parent question is hard-deleted. */
     @Modifying
     @Query("DELETE FROM QuestionView v WHERE v.id.questionId = :questionId")

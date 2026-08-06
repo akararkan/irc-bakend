@@ -41,13 +41,19 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/admin/audit")
 @RequiredArgsConstructor
-@PreAuthorize("hasAnyRole('ADMIN','SUPER_ADMIN')")
+// The historical SUPER_ADMIN phantom grant was normalized away BEFORE the
+// Role enum widened, so nothing dormant activated. With the staff tiers live,
+// logs are readable by every tier per the §6 matrix (SUPPORT nominally
+// own-scope — refinement noted in known-issues).
+@PreAuthorize("hasAnyRole('ADMIN','MODERATOR','SUPPORT','ANALYST')")
 public class AuditLogController {
 
     private static final int DEFAULT_PAGE = 50;
 
     private final AuditLogByUserRepository userRepo;
+    private final ak.dev.irc.app.audit.cassandra.repository.AuditLogByResourceRepository resourceRepo;
     private final AuditRealtimeService     realtimeService;
+    private final ak.dev.irc.app.audit.service.AuditLogService auditLogService;
 
     @GetMapping
     public ResponseEntity<List<AuditLogResponse>> search(
@@ -95,9 +101,61 @@ public class AuditLogController {
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream() {
-        UUID adminId = SecurityUtils.getCurrentUserId()
+        ak.dev.irc.app.user.entity.User admin = SecurityUtils.getCurrentUser()
                 .orElseThrow(() -> new UnauthorizedException("Admin authentication required"));
-        return realtimeService.subscribe(adminId);
+        // `*/stream` paths are excluded from the request interceptor by
+        // SKIP_PATTERN, so the connect itself would otherwise leave no trace —
+        // record it explicitly (logs-audit.md E3 mitigation).
+        auditLogService.record(admin.getId(), admin.getUsername(),
+                AuditOperation.READ, "AuditStream", null, "ADMIN_AUDIT_STREAM_SUBSCRIBE");
+        return realtimeService.subscribe(admin.getId());
+    }
+
+    /**
+     * "What happened to this resource" — the {@code audit_log_by_resource}
+     * pivot, written on every request since the audit module shipped but
+     * never readable until now. The only audit view that captures anonymous
+     * traffic (rows with {@code userId=null}).
+     */
+    @GetMapping("/resources/{resourceType}/{resourceId}")
+    public ResponseEntity<List<AuditLogResponse>> resourceHistory(
+            @PathVariable String resourceType,
+            @PathVariable UUID resourceId,
+            @RequestParam(defaultValue = "" + DEFAULT_PAGE) int pageSize,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor) {
+        int size = ak.dev.irc.app.common.util.Pages.clamp(pageSize);
+        var rows = cursor == null
+                ? resourceRepo.firstPage(resourceType, resourceId, size)
+                : resourceRepo.nextPage(resourceType, resourceId,
+                        cursor.toInstant(ZoneOffset.UTC), size);
+        return ResponseEntity.ok(rows.stream()
+                .map(r -> toResponse(r, resourceType, resourceId))
+                .toList());
+    }
+
+    private static AuditLogResponse toResponse(
+            ak.dev.irc.app.audit.cassandra.entity.AuditLogByResourceEntity r,
+            String resourceType, UUID resourceId) {
+        return new AuditLogResponse(
+                r.getAuditId(),
+                r.getUserId(),
+                r.getUsername(),
+                r.getOperation() == null ? null : AuditOperation.valueOf(r.getOperation()),
+                r.getOutcome()   == null ? null : AuditOutcome.valueOf(r.getOutcome()),
+                resourceType,
+                resourceId,
+                r.getHttpMethod(),
+                r.getPath(),
+                r.getQueryString(),
+                r.getStatusCode(),
+                r.getDurationMs(),
+                r.getIpAddress(),
+                r.getUserAgent(),
+                r.getSummary(),
+                r.getErrorCode(),
+                r.getCreatedAt() == null ? null
+                        : LocalDateTime.ofInstant(r.getCreatedAt(), ZoneOffset.UTC));
     }
 
     private static AuditLogResponse toResponse(AuditLogByUserEntity r) {

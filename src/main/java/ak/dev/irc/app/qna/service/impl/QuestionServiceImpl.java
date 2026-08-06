@@ -15,6 +15,7 @@ import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.qna.dto.response.*;
 import ak.dev.irc.app.qna.entity.*;
 import ak.dev.irc.app.qna.enums.AnswerReactionType;
+import ak.dev.irc.app.qna.enums.QuestionStatus;
 import ak.dev.irc.app.qna.mapper.QuestionMapper;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeBroadcaster;
 import ak.dev.irc.app.qna.realtime.QnaRealtimeEvent;
@@ -759,6 +760,49 @@ public class QuestionServiceImpl implements QuestionService {
      *       notifications, RabbitMQ event, realtime broadcast</li>
      * </ol>
      */
+    @Override
+    @Transactional
+    public void closeQuestion(UUID questionId, UUID requesterId, String reason) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("You cannot close this question");
+        }
+        question.setStatus(QuestionStatus.CLOSED);
+        question.audit(AuditAction.UPDATE, reason == null || reason.isBlank()
+                ? "Question closed" : "Question closed: " + reason);
+        questionRepository.save(question);
+        qnaSearch.indexAsync(question);
+    }
+
+    @Override
+    @Transactional
+    public void reopenQuestion(UUID questionId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("You cannot reopen this question");
+        }
+        // Same revert rule the delete-answer path uses: answered questions
+        // reopen to ANSWERED, empty ones to OPEN.
+        question.setStatus(question.getAnswerCount() != null && question.getAnswerCount() > 0
+                ? QuestionStatus.ANSWERED : QuestionStatus.OPEN);
+        question.audit(AuditAction.UPDATE, "Question reopened");
+        questionRepository.save(question);
+        qnaSearch.indexAsync(question);
+    }
+
+    @Override
+    @Transactional
+    public void archiveQuestion(UUID questionId, UUID requesterId) {
+        Question question = findQuestionOrThrow(questionId);
+        if (!canManageQuestion(question, requesterId)) {
+            throw new ForbiddenException("You cannot archive this question");
+        }
+        question.setStatus(QuestionStatus.ARCHIVED);
+        question.audit(AuditAction.UPDATE, "Question archived");
+        questionRepository.save(question);
+        qnaSearch.indexAsync(question);
+    }
+
     @Override
     @Transactional
     public void deleteQuestion(UUID questionId, UUID requesterId) {

@@ -72,6 +72,7 @@ public class GlobalSearchService {
             List.of(IDX_USERS, IDX_CHANNELS, IDX_SOUNDS, IDX_ANSWERS);
 
     private final ElasticsearchOperations esOps;
+    private final SearchQueryLogService   queryLog;
     private final ObjectMapper            objectMapper = new ObjectMapper();
 
     /**
@@ -125,9 +126,12 @@ public class GlobalSearchService {
                 return new Result(List.of(), null, false);
             }
             log.warn("[SEARCH] global search failed: {}", e.getMessage());
+            queryLog.record(query, types, 0, true);
             return new Result(List.of(), null, true);
         }
-        return new Result(toItems(hits, expand), null, false);
+        List<GlobalSearchHit> items = toItems(hits, expand);
+        if (page == 0) queryLog.record(query, types, items.size(), false);
+        return new Result(items, null, false);
     }
 
     /**
@@ -176,6 +180,10 @@ public class GlobalSearchService {
         }
 
         List<GlobalSearchHit> items = toItems(hits, expand);
+        // Only the head request counts — follow-up cursor pages are the same search.
+        if (cursor == null || cursor.isBlank()) {
+            queryLog.record(query, types, items.size(), false);
+        }
         String nextCursor = Cursor.encode(lastSortValues(hits));
         return new Result(items, nextCursor, false);
     }

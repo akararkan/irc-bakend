@@ -13,6 +13,12 @@ import java.util.List;
 @Repository
 public interface SoundByCategoryRepository extends CassandraRepository<SoundByCategoryEntity, MapId> {
 
+    @Query("DELETE FROM sounds_by_category WHERE category = :category " +
+           "AND created_at = :createdAt AND sound_id = :soundId")
+    void deleteRow(@Param("category") String category,
+                   @Param("createdAt") java.time.Instant createdAt,
+                   @Param("soundId") java.util.UUID soundId);
+
     @Query("SELECT * FROM sounds_by_category WHERE category = :category LIMIT :pageSize")
     List<SoundByCategoryEntity> firstPage(@Param("category") String category,
                                           @Param("pageSize") int pageSize);

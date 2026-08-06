@@ -4,9 +4,10 @@ The platform's **controlled reference vocabulary** — the two curated lookup li
 that power the profile "specialization" and "madhhab" pickers: **Topics** (fields of
 knowledge) and **Madhhabs** (schools of Islamic jurisprudence). Both are trilingual
 (English / Arabic / Central Kurdish `ckb`). This is a small, high-trust taxonomy that
-sits at the identity core of a scholarship platform — and today it can **only** be
-changed by a database migration (a code deploy). This section designs the admin
-**vocabulary-curation console** that lets a trusted admin manage it directly.
+sits at the identity core of a scholarship platform — historically changeable only by
+a database migration (a code deploy). Since 2026-08 the admin
+**vocabulary-curation console** is built (`admin/knowledge/AdminKnowledgeController`);
+this section documents it.
 
 Tag legend and ground rules: [README.md](README.md). Underlying mechanics:
 `app/knowledge` (`KnowledgeVocabularyService`, `Topic`, `Madhhab`,
@@ -38,19 +39,21 @@ missing · **[PLANNED]** = proposed here.
 
 ## 2. Ground truth — how the vocabulary works today
 
-Two JPA tables, both trivially shaped, both **read-only from the app's perspective**:
+Two JPA tables, both trivially shaped:
 
 | Table | Entity | Columns |
 |-------|--------|---------|
-| `topics` | `knowledge/entity/Topic` | `id`, `name_en`, `name_ar`, `name_ckb` |
-| `madhhabs` | `knowledge/entity/Madhhab` (`@BatchSize(50)`) | `id`, `name_en`, `name_ar`, `name_ckb` |
+| `topics` | `knowledge/entity/Topic` | `id`, `name_en`, `name_ar`, `name_ckb`, `archived_at` (added 2026-08) |
+| `madhhabs` | `knowledge/entity/Madhhab` (`@BatchSize(50)`) | `id`, `name_en`, `name_ar`, `name_ckb`, `archived_at` (added 2026-08) |
 
-- **No write path exists.** `TopicRepository` / `MadhhabRepository` are plain
-  `JpaRepository`s with **no custom methods and no `save`/`delete` callers anywhere**.
-  The only writes to these tables are **DB migrations**. **[EXISTS — read-only]**
+- **Admin write path (built 2026-08).** `AdminKnowledgeController` is the first
+  `save`/retire caller of `TopicRepository` / `MadhhabRepository`; migrations
+  remain the seed source. **[EXISTS]**
 - **Reads are cached in Redis:** `KnowledgeVocabularyService` —
-  `@Cacheable("knowledge-topics")` / `@Cacheable("knowledge-madhhabs")`. The service
-  Javadoc notes both vocabularies "change only via migrations." **[EXISTS]**
+  `@Cacheable("knowledge-topics")` / `@Cacheable("knowledge-madhhabs")`; it now
+  filters `archived_at` rows out of the cached pickers. (Its Javadoc still says
+  both vocabularies "change only via migrations" — stale since the admin build.)
+  **[EXISTS]**
 - **Public endpoints** (no auth): `GET /api/v1/topics?q=` and `GET /api/v1/madhhabs?q=`
   (`KnowledgeController`) — optional `q` does an in-memory `contains` match across
   en/ar/ckb over the ≈dozens of rows (deliberately not Elasticsearch). Blank `q`
@@ -59,23 +62,24 @@ Two JPA tables, both trivially shaped, both **read-only from the app's perspecti
   a profile's `madhhab` and topic `specializations` selections (a user can only pick a
   real row). So editing this vocabulary directly changes what identities users can
   express. **[EXISTS]**
-- **No `@Scheduled`, no events, no `@PreAuthorize`, no admin/moderation surface** of
-  any kind in the module.
+- **No `@Scheduled` and no events** in the `knowledge` module itself; the admin
+  surface lives in `admin/knowledge/AdminKnowledgeController` (built 2026-08).
 
 ---
 
-## 3. The gap & why it deserves an admin surface
+## 3. The gap & why it deserved an admin surface (closed 2026-08)
 
-Adding a school of thought, a field of knowledge, or fixing an Arabic label today
-requires **writing a migration and deploying** — a developer task on a domain
+Adding a school of thought, a field of knowledge, or fixing an Arabic label used to
+require **writing a migration and deploying** — a developer task on a domain
 (Islamic scholarship taxonomy) where the *right* editor is a knowledgeable admin, not
 an engineer. Because the tables are tiny and the reads are cached, a safe admin CRUD
-is low-risk to build and high-value: it moves curation from the deploy pipeline to a
+was low-risk to build and high-value: it moves curation from the deploy pipeline to a
 governed dashboard action, with audit and cache-invalidation handled for the admin.
+**Built 2026-08 as designed in §5.**
 
 ---
 
-## 4. Dashboard views / widgets **[PLANNED]**
+## 4. Dashboard views / widgets **[EXISTS — backend built 2026-08]** (UI pending)
 
 | Widget | Content |
 |--------|---------|
@@ -86,10 +90,11 @@ governed dashboard action, with audit and cache-invalidation handled for the adm
 
 ---
 
-## 5. Admin actions **[PLANNED]**
+## 5. Admin actions **[EXISTS]** (built 2026-08 — `AdminKnowledgeController`)
 
 All under `/api/v1/admin/**` (double-gated). This is high-trust curation — step-up on
-writes and a full audit row each.
+writes and a full audit row each. All five actions below are live; retire is a soft
+archive (`archived_at`), and archived rows are filtered from the cached pickers.
 
 | # | Action | Endpoint | Danger | Step-up | Audit action |
 |---|--------|----------|--------|---------|--------------|
@@ -105,9 +110,9 @@ writes and a full audit row each.
   is the one non-obvious correctness requirement. K2–K4 should evict automatically;
   K5 is the manual escape hatch.
 - **Prefer retire over delete.** A hard delete of an in-use row would fail the
-  `findById` validation on every profile that references it. Add an `active` flag
-  (or an `archived_at`) and filter it out of the pickers while keeping existing
-  references valid — mirror the "don't orphan" discipline used elsewhere on the platform.
+  `findById` validation on every profile that references it. Built as an
+  `archived_at` column (2026-08), filtered out of the pickers while keeping existing
+  references valid — mirrors the "don't orphan" discipline used elsewhere on the platform.
 - Uniqueness/normalization: trim + case-fold `name_en` on add to avoid duplicate
   "Hanafi"/"hanafi" rows.
 

@@ -39,6 +39,7 @@ public enum NotificationType {
     STORY_REACTED,        // someone reacted to your story
     STORY_REPLIED,        // someone replied to your story
     SOUND_APPROVED,       // your uploaded sound was approved
+    SOUND_REJECTED,       // your uploaded sound was rejected by moderation
 
     // ── Chat / Messaging ─────────────────────────────────────
     NEW_MESSAGE,          // a new message for an offline recipient
@@ -60,5 +61,8 @@ public enum NotificationType {
     ACCOUNT_WARNING,
 
     // ── Trending digest (X-style daily push) ─────────────────
-    TRENDING_DIGEST
+    TRENDING_DIGEST,
+
+    // ── Admin / ops (staff recipients only) ──────────────────
+    ADMIN_ANOMALY         // nightly KPI anomaly scan flagged a metric
 }
