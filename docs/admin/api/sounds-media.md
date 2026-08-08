@@ -4,11 +4,11 @@ Complete request/response reference for three controllers:
 
 | Controller | Base path | Concepts |
 |---|---|---|
-| `AdminSoundController` | `/api/v1/admin/sounds` | [Sound library](../sound-library.md) |
-| `AdminMediaController` | `/api/v1/admin/media` | [Media & storage](../media-storage.md) |
-| `AdminStorageController` | `/api/v1/admin/storage` | [Media & storage](../media-storage.md) |
+| `AdminSoundController` | `/api/v1/admin/sounds` | [Sound library](../content/sound-library.md) |
+| `AdminMediaController` | `/api/v1/admin/media` | [Media & storage](../content/media-storage.md) |
+| `AdminStorageController` | `/api/v1/admin/storage` | [Media & storage](../content/media-storage.md) |
 
-UI wiring lives in the [frontend dashboard guide](../frontend-dashboard-guide.md).
+UI wiring lives in the [frontend dashboard guide](../frontend/README.md).
 
 **Conventions used throughout:**
 
@@ -46,6 +46,47 @@ The review queue and library browse are served from the sound search index (Elas
 ```
 
 `status` ∈ `PENDING_REVIEW | APPROVED | REJECTED | ARCHIVED` (`SoundStatus`). `category` ∈ `NASHEED | QURAN_RECITATION | LECTURE_CLIP | NATURE | ORIGINAL | PLATFORM_MUSIC` (`SoundCategory`). `useCount` is the monotonic adoption counter.
+
+> **Sounds are admin-curated only.** There is no end-user upload flow — the
+> sound library only grows through the two endpoints in this section
+> ([create](#post-apiv1adminsounds) and [import](#post-apiv1adminsoundsimport)).
+> Both land on `status=APPROVED` immediately; `PENDING_REVIEW` is no longer
+> a state new sounds normally pass through (see the [state machine](#sound-state-machine)
+> note below for the one legacy exception).
+
+### POST /api/v1/admin/sounds
+
+Add a single sound to the library. This — plus [bulk import](#post-apiv1adminsoundsimport)
+for seeding many at once — is the **only** way a new sound enters the
+library. There is no user-facing upload endpoint; a regular user's account
+cannot add sounds at all.
+
+**Access**: `ADMIN` or `MODERATOR`.
+
+**Request body** (required — `CreateBody`; `title` and `audioUrl` mandatory,
+`title`/`artistName` ≤ 200 chars, `category` defaults to `PLATFORM_MUSIC`,
+`official` defaults to `false`):
+
+```json
+{
+  "title": "Evening Adhan",
+  "artistName": "Platform Audio",
+  "audioUrl": "https://cdn.example.com/sounds/evening-adhan.mp3",
+  "coverArtUrl": "https://cdn.example.com/sounds/evening-adhan.jpg",
+  "durationSeconds": 38,
+  "category": "QURAN_RECITATION",
+  "official": true
+}
+```
+
+**Response**: `201` — the created `AdminSoundRow`, always `"status": "APPROVED"`
+and `uploaderId` set to the creating admin. It goes straight into the
+category-browse row and the search index — no separate publish step.
+
+**Errors**
+- `INVALID_IMPORT_ITEM` — 400 — missing/blank `title` or `audioUrl` (shared
+  validation with the bulk-import path).
+- `INVALID_CATEGORY` — 400 — `category` is not a `SoundCategory`.
 
 ### GET /api/v1/admin/sounds
 
@@ -157,6 +198,28 @@ Single sound + its most recent adopting posts.
 ## Sound state machine
 
 Transitions: `PENDING_REVIEW → APPROVED` (approve) or `→ REJECTED` (reject); `APPROVED → ARCHIVED` (archive, takedown); `REJECTED/ARCHIVED → APPROVED` (restore); hard delete removes the record entirely. Approve/restore (re)write the category-browse row and the search doc; reject/archive/takedown remove both, so the sound disappears from the user-facing picker while existing posts keep their audio (except takedown's optional mute). Every decision is recorded via `ModerationRecorder` + `AdminAuditor` (`ADMIN_SOUND_*`), snapshotting `useCount` as blast radius.
+
+> **`PENDING_REVIEW` is now effectively legacy.** Both creation paths
+> ([`POST /sounds`](#post-apiv1adminsounds), [`POST /sounds/import`](#post-apiv1adminsoundsimport))
+> always create `APPROVED`. The only way a row can still land in
+> `PENDING_REVIEW` is the deprecated `POST /api/v1/sounds` alias (below) when
+> called without `autoApprove: true` — kept only for backward compatibility,
+> not part of the intended flow. Approve/reject stay fully functional for
+> anything already sitting in the queue from before this change.
+
+### POST /api/v1/sounds *(deprecated)*
+
+The original end-user upload path. **`ADMIN`/`MODERATOR` only now** — a
+regular user's request is rejected with `403`. Kept solely as a backward-compatible
+alias; new integrations should call [`POST /api/v1/admin/sounds`](#post-apiv1adminsounds)
+directly. Responses carry `Deprecation: true` and
+`Link: </api/v1/admin/sounds>; rel="successor-version"`.
+
+Unlike the canonical create endpoint, this one still honors the legacy
+`autoApprove` flag — omit or set it `false` and the sound is created
+`PENDING_REVIEW` instead of `APPROVED`, same as the old behaviour.
+
+**Access**: `ADMIN` or `MODERATOR` (was: any authenticated user).
 
 ### POST /api/v1/admin/sounds/{id}/approve
 

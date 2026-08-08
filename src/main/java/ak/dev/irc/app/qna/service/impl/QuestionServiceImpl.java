@@ -10,6 +10,10 @@ import ak.dev.irc.app.common.messages.QnaMessages;
 import ak.dev.irc.app.common.service.FollowingIdsCache;
 import ak.dev.irc.app.common.service.MentionService;
 import ak.dev.irc.app.common.service.SocialGuard;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.post.dto.CursorPage;
 import ak.dev.irc.app.qna.dto.request.*;
 import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
@@ -85,6 +89,8 @@ public class QuestionServiceImpl implements QuestionService {
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
     private final ak.dev.irc.app.qna.repository.QuestionViewRepository questionViewRepository;
     private final ak.dev.irc.app.user.repository.NotificationRepository notificationRepository;
+    /** Automated text moderation (docs/moderation/) — questions and answers both go through it. */
+    private final ContentModerationService contentModeration;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -117,37 +123,119 @@ public class QuestionServiceImpl implements QuestionService {
                 .maxAnswers(request.getMaxAnswers())
                 .build();
 
+        // Hibernate's UUID generator ignores hand-assigned ids, so unlike the
+        // Cassandra surfaces we cannot mint the ref before the row exists. We do
+        // not have to: submission runs REQUIRES_NEW, so the case row and the
+        // evidence it holds survive while a CONTENT_REJECTED unwinds this
+        // transaction and leaves no question behind at all.
         question = questionRepository.save(question);
-        eventPublisher.publishQuestionCreated(question);
 
-        // Fan out tags to the Cassandra trending/tag-feed subsystem.
-        contentTagService.tag(
-                ak.dev.irc.app.common.tag.ContentType.QUESTION,
-                question.getId(), authorId, question.getTitle(),
-                tagInstant(question), normTags);
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.QNA_QUESTION,
+                                question.getId().toString(), authorId)
+                        .field("title", question.getTitle())
+                        .field("body", question.getBody())
+                        .field("keywords", question.getKeywords())
+                        .fields("tag", normTags));
+        question.setModerationStatus(moderation.status());
+        question.setModerationDecidedAt(LocalDateTime.now());
 
-        userActivityService.recordQnaQuestionCreated(authorId, question.getId());
-
-        // @mentions in the question title + body — @followers fan-out allowed
-        // because creating a question is a top-level publication.
-        StringBuilder mentionText = new StringBuilder();
-        if (question.getTitle() != null) mentionText.append(question.getTitle());
-        if (question.getBody() != null) {
-            if (mentionText.length() > 0) mentionText.append(' ');
-            mentionText.append(question.getBody());
+        if (moderation.held()) {
+            // Written, not published. Nothing below has run, so there is nothing
+            // to unwind — QnaQuestionModerationApplier runs the whole block when
+            // the verdict lands.
+            log.debug("[QNA] question {} held for moderation ({}), publication deferred",
+                    question.getId(), moderation.status());
+            return mapper.toQuestionResponse(question);
         }
-        mentionService.scanAndPublish(
-                mentionText.toString(),
-                MentionSource.QUESTION,
-                question.getId(),
-                null,
-                authorId,
-                author.getUsername(),
-                /* allowFollowersToken */ true);
+
+        publishQuestion(question);
+        return mapper.toQuestionResponse(question);
+    }
+
+    /**
+     * Everything that makes a question visible beyond its author: the
+     * {@code QuestionCreatedEvent}, the Cassandra tag fan-out, the activity
+     * record, the @mention pings and the Elasticsearch document.
+     *
+     * <p>Extracted so {@code QnaQuestionModerationApplier} runs the identical
+     * steps when a held question clears later, rather than a second copy that
+     * can drift.</p>
+     */
+    @Override
+    @Transactional
+    public void publishQuestionSideEffects(UUID questionId) {
+        Question question = questionRepository.findById(questionId).orElse(null);
+        if (question == null) return;
+        publishQuestion(question);
+    }
+
+    private void publishQuestion(Question question) {
+        User author = question.getAuthor();
+        UUID authorId = author.getId();
+        // Force-init the lazy tag collection inside the tx: the async indexer
+        // runs on another thread with no session and would blow up on it.
+        java.util.Set<String> tags = new java.util.LinkedHashSet<>(question.getTags());
+
+        if (question.getPublishedAt() == null) {
+            eventPublisher.publishQuestionCreated(question);
+
+            // Fan out tags to the Cassandra trending/tag-feed subsystem.
+            contentTagService.tag(
+                    ak.dev.irc.app.common.tag.ContentType.QUESTION,
+                    question.getId(), authorId, question.getTitle(),
+                    tagInstant(question), tags);
+
+            userActivityService.recordQnaQuestionCreated(authorId, question.getId());
+
+            // @mentions in the question title + body — @followers fan-out allowed
+            // because creating a question is a top-level publication.
+            String mentionText = joinForMention(question.getTitle(), question.getBody());
+            if (mentionText != null) {
+                mentionService.scanAndPublish(
+                        mentionText,
+                        MentionSource.QUESTION,
+                        question.getId(),
+                        null,
+                        authorId,
+                        author.getUsername(),
+                        /* allowFollowersToken */ true);
+            }
+
+            question.setPublishedAt(LocalDateTime.now());
+            questionRepository.save(question);
+        } else {
+            // Released from a hold an edit caused. The create-time announcements
+            // already went out once; what is stale is the tag feed and whatever
+            // the live viewers of this question are still rendering.
+            contentTagService.retag(
+                    ak.dev.irc.app.common.tag.ContentType.QUESTION,
+                    question.getId(), authorId, question.getTitle(),
+                    tagInstant(question), tags);
+            realtime.broadcast(QnaRealtimeEvent.builder()
+                    .eventType(QnaRealtimeEventType.QUESTION_UPDATED)
+                    .questionId(question.getId())
+                    .actorId(authorId)
+                    .actorUsername(author.getUsername())
+                    .actorAvatarUrl(author.getProfileImage())
+                    .body(question.getBody())
+                    .build());
+        }
 
         qnaSearch.indexAsync(question);
+    }
 
-        return mapper.toQuestionResponse(question);
+    /**
+     * Everything written before the moderation pipeline existed carries no
+     * publication stamp even though it is plainly published. Backfill it on the
+     * way into an edit, or a hold on that edit would let the applier mistake the
+     * eventual re-approval for a first publication and re-announce the question.
+     */
+    private static void backfillPublishedAt(Question question) {
+        if (question.getPublishedAt() == null && !question.isModerationHeld()) {
+            question.setPublishedAt(question.getCreatedAt() != null
+                    ? question.getCreatedAt() : LocalDateTime.now());
+        }
     }
 
     @Override
@@ -196,8 +284,50 @@ public class QuestionServiceImpl implements QuestionService {
             tagsChanged = true;
         }
 
+        // §5.5 — the edited text re-enters moderation. Without this, blocked
+        // wording could be laundered in by posting something benign and
+        // immediately PATCHing it. A rejection throws CONTENT_REJECTED, which
+        // rolls this transaction back and leaves the stored question untouched —
+        // the closest honest equivalent of "keep serving the old revision", since
+        // questions carry no version history to fall back on.
+        boolean textTouched = titleChanged || request.getBody() != null
+                || request.getKeywords() != null || tagsChanged;
+        if (textTouched) {
+            backfillPublishedAt(question);
+            ModerationOutcome moderation = contentModeration.submitOrThrow(
+                    ModerationSubmission.of(ModeratedEntityType.QNA_QUESTION,
+                                    question.getId().toString(), question.getAuthor().getId())
+                            .field("title", question.getTitle())
+                            .field("body", question.getBody())
+                            .field("keywords", question.getKeywords())
+                            .fields("tag", question.getTags()));
+            question.setModerationStatus(moderation.status());
+            question.setModerationDecidedAt(LocalDateTime.now());
+        }
+
         question.audit(AuditAction.UPDATE, "Edited question");
         question = questionRepository.save(question);
+
+        if (question.isModerationHeld()) {
+            // The edit is stored but announces nothing: no retag, no broadcast of
+            // the new body, no mention pings. indexAsync sees the held state and
+            // pulls the now-stale document rather than refreshing it, so search
+            // cannot serve text nobody is allowed to read yet.
+            log.info("[QNA] question {} edit re-entered moderation ({})",
+                    questionId, question.getModerationStatus());
+            question.getTags().size();
+            qnaSearch.indexAsync(question);
+            return mapper.toQuestionResponse(question);
+        }
+
+        if (question.getPublishedAt() == null) {
+            // The question was still held from its create and this edit is what
+            // cleared it. What it needs is the create-time announcements that
+            // never fired, not the edit ones — nobody has seen it yet, so there
+            // is no "updated" for them to hear about.
+            publishQuestion(question);
+            return mapper.toQuestionResponse(question);
+        }
 
         // Rebuild the Cassandra tag index only when the tag set actually changed.
         if (tagsChanged) {
@@ -255,6 +385,7 @@ public class QuestionServiceImpl implements QuestionService {
             // Hide existence — same shape as a missing question for blocked viewers.
             throw new ResourceNotFoundException("Question", "id", questionId);
         }
+        requireModerationVisible(q, viewerId);
         return mapper.toQuestionResponse(q, isQuestionSaved(questionId, viewerId));
     }
 
@@ -267,10 +398,27 @@ public class QuestionServiceImpl implements QuestionService {
                 && socialGuard.isBlockedBetween(viewerId, q.getAuthor().getId())) {
             throw new ResourceNotFoundException("Question", "id", questionId);
         }
+        requireModerationVisible(q, viewerId);
         // View bump runs in a separate write tx so the read path stays readOnly.
         // Routed through the proxy so REQUIRES_NEW actually applies.
         self.recordView(questionId, viewerId, viewerKey);
         return mapper.toQuestionResponse(q, isQuestionSaved(questionId, viewerId));
+    }
+
+    /**
+     * Detail-page equivalent of the moderation predicate the feed queries carry.
+     * {@code findQuestionOrThrow} is shared with the author-only write paths, so
+     * the gate sits here rather than in the finder. A held question 404s for
+     * everyone but its author — the same shape a blocked viewer already gets, so
+     * the response never reveals that something is sitting in review.
+     */
+    private static void requireModerationVisible(Question question, UUID viewerId) {
+        if (!question.isModerationHeld()) return;
+        if (viewerId != null && question.getAuthor() != null
+                && viewerId.equals(question.getAuthor().getId())) {
+            return;
+        }
+        throw new ResourceNotFoundException("Question", "id", question.getId());
     }
 
     private boolean isQuestionSaved(UUID questionId, UUID viewerId) {
@@ -330,8 +478,8 @@ public class QuestionServiceImpl implements QuestionService {
     public Page<QuestionResponse> getFeed(UUID viewerId, Pageable pageable) {
         List<UUID> blocked = viewerId == null ? List.of() : socialGuard.findRelatedBlockedIds(viewerId);
         Page<Question> page = blocked.isEmpty()
-                ? questionRepository.findByDeletedAtIsNullOrderByCreatedAtDesc(pageable)
-                : questionRepository.findFeedExcluding(blocked, pageable);
+                ? questionRepository.findFeed(viewerId, pageable)
+                : questionRepository.findFeedExcluding(viewerId, blocked, pageable);
         return mapQuestionsWithSaves(page, viewerId);
     }
 
@@ -350,12 +498,12 @@ public class QuestionServiceImpl implements QuestionService {
         List<Question> rows;
         if (blocked.isEmpty()) {
             rows = (cursor == null)
-                    ? questionRepository.findFeedFirstPage(pageReq)
-                    : questionRepository.findFeedAfter(cursor, pageReq);
+                    ? questionRepository.findFeedFirstPage(viewerId, pageReq)
+                    : questionRepository.findFeedAfter(viewerId, cursor, pageReq);
         } else {
             rows = (cursor == null)
-                    ? questionRepository.findFeedFirstPageExcluding(blocked, pageReq)
-                    : questionRepository.findFeedAfterExcluding(cursor, blocked, pageReq);
+                    ? questionRepository.findFeedFirstPageExcluding(viewerId, blocked, pageReq)
+                    : questionRepository.findFeedAfterExcluding(viewerId, cursor, blocked, pageReq);
         }
 
         boolean hasMore = rows.size() > safeLimit;
@@ -396,7 +544,7 @@ public class QuestionServiceImpl implements QuestionService {
             authorIds.add(userId);
         }
         return mapQuestionsWithSaves(
-                questionRepository.findFollowingFeed(authorIds, pageable), userId);
+                questionRepository.findFollowingFeed(userId, authorIds, pageable), userId);
     }
 
     @Override
@@ -499,9 +647,8 @@ public class QuestionServiceImpl implements QuestionService {
             if (parent.getParentAnswer() != null) parent = parent.getParentAnswer();
             socialGuard.requireNotBlockedBetween(
                     authorId, parent.getAuthor().getId(), QnaMessages.REANSWER_BLOCKED_RELATIONSHIP);
-            // Bump the parent's denormalised replyCount up front so it's
-            // visible immediately on the parent's row in the listing query.
-            answerRepository.updateReplyCount(parent.getId(), 1);
+            // The parent's replyCount is bumped in publishAnswer, not here: it is
+            // a public number and a reanswer nobody can read yet must not move it.
             // Reanswers do not count toward maxAnswers — only top-level answers do.
         } else {
             if (question.getMaxAnswers() != null && question.getAnswerCount() >= question.getMaxAnswers()) {
@@ -546,52 +693,181 @@ public class QuestionServiceImpl implements QuestionService {
             }
         }
 
-        // Only top-level answers move the question into ANSWERED and bump the count.
-        if (parent == null) {
-            // Atomic — entity setter + save was racy under concurrent answer creates.
-            questionRepository.adjustAnswerCount(question.getId(), 1);
-            // Refresh FIRST (pull the post-increment count into the managed
-            // entity), THEN flip the status. The old order — setStatus, save,
-            // refresh — let refresh() overwrite the entity from the DB and
-            // silently DISCARD the un-flushed ANSWERED transition. (The
-            // deleteAnswer path always did it in this order.)
-            entityManager.refresh(question);
-            question.setStatus(ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED);
-            questionRepository.save(question);
-            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
-                    question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
-                    question.getAnswerCount());
-        } else {
-            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER,
-                    parent.getId(), ak.dev.irc.app.common.cache.CounterCache.F_REPLIES,
-                    parent.getReplyCount() != null ? parent.getReplyCount() : 0L);
+        // Automated moderation sits HERE, below the dedup guard, and that
+        // placement is the point: the guard's early return above never publishes
+        // new text — it replays a row that already carries its own verdict — so
+        // every genuinely new body still has to pass through this call. Putting
+        // it above the guard would instead re-score (and re-case) the same text
+        // on every double-click. A rejection throws, unwinding the answer row and
+        // its sources with the transaction; the case row survives on its own.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                answerSubmission(answer, parent));
+        answer.setModerationStatus(moderation.status());
+        answer.setModerationDecidedAt(LocalDateTime.now());
+
+        if (moderation.held()) {
+            log.debug("[QNA] answer {} held for moderation ({}), publication deferred",
+                    answer.getId(), moderation.status());
+            return mapper.toAnswerResponse(answer);
         }
 
-        eventPublisher.publishQuestionAnswered(question, answer);
+        publishAnswer(answer);
+        return mapper.toAnswerResponse(answer);
+    }
 
-        userActivityService.recordQnaAnswerCreated(
-                authorId, question.getId(), answer.getId(),
-                parent != null ? parent.getId() : null);
+    /**
+     * The answer's text surface, as one submission. Body, links, every inline
+     * citation and every attachment caption are separate fields rather than one
+     * concatenation, so the review queue can point at the exact one that fired.
+     * A reanswer declares its parent so the queue can render the thread it sits
+     * in.
+     */
+    /**
+     * Moderates free text written onto an answer's <em>sub-resources</em> —
+     * attachment captions, source titles and citation text.
+     *
+     * <p>{@link #answerSubmission} already declares these as scored fields when
+     * they arrive inline at answer-create. Each also has its own POST/PATCH
+     * endpoint afterwards, and without this call "post a clean answer, then PATCH
+     * the citation text" bypasses the answer gate entirely — the fields render to
+     * every reader through {@code getSources} / {@code getAttachments}, which do
+     * nothing but an existence check.</p>
+     *
+     * <p>Terminal verdict rather than held: neither {@code AnswerSource} nor
+     * {@code AnswerAttachment} has a visibility column, so there is nothing to
+     * hold them in, and taking a live answer down over a caption edit would be a
+     * worse outcome than refusing the edit (the §5.5 "lightweight" option).</p>
+     */
+    private void moderateAnnotation(UUID answerId, UUID actorId,
+                                    String firstName, String firstText,
+                                    String secondName, String secondText) {
+        if ((firstText == null || firstText.isBlank())
+                && (secondText == null || secondText.isBlank())) {
+            return;
+        }
+        contentModeration.submitOrRefuse(
+                ModerationSubmission.of(ModeratedEntityType.CONTENT_ANNOTATION,
+                                answerId + ":" + firstName, actorId)
+                        .parent(answerId.toString())
+                        .field(firstName, firstText)
+                        .field(secondName == null ? "secondary" : secondName, secondText));
+    }
 
-        // @mentions in the answer body — no @followers fan-out from answers.
-        mentionService.scanAndPublish(
-                answer.getBody(),
-                MentionSource.QUESTION_ANSWER,
-                answer.getId(),
-                question.getId(),
-                authorId,
-                author.getUsername(),
-                /* allowFollowersToken */ false);
+    private static ModerationSubmission answerSubmission(QuestionAnswer answer, QuestionAnswer parent) {
+        ModerationSubmission submission = ModerationSubmission.of(
+                        ModeratedEntityType.QNA_ANSWER,
+                        answer.getId().toString(),
+                        answer.getAuthor() == null ? null : answer.getAuthor().getId())
+                .parent(parent != null ? parent.getId().toString()
+                        : (answer.getQuestion() == null ? null : answer.getQuestion().getId().toString()))
+                .field("body", answer.getBody())
+                .field("links", answer.getLinks());
 
+        if (answer.getSources() != null) {
+            List<String> titles = new java.util.ArrayList<>();
+            List<String> citations = new java.util.ArrayList<>();
+            for (AnswerSource source : answer.getSources()) {
+                titles.add(source.getTitle());
+                citations.add(source.getCitationText());
+            }
+            submission.fields("source_title", titles).fields("source_citation", citations);
+        }
+        if (answer.getAttachments() != null) {
+            submission.fields("attachment_caption",
+                    answer.getAttachments().stream().map(AnswerAttachment::getCaption).toList());
+        }
+        return submission;
+    }
+
+    /**
+     * Everything that makes an answer visible beyond its author: the public
+     * counters, the {@code QuestionAnsweredEvent}, the activity record, the
+     * @mention pings, the SSE broadcast on {@code GET /{questionId}/stream} and
+     * the Elasticsearch document.
+     *
+     * <p><b>Counters publish, they do not insert.</b> {@code answerCount} and the
+     * parent's {@code replyCount} are read by everyone, so bumping them for an
+     * answer nobody can see yet would show a question with three answers and one
+     * visible. Same for the {@code OPEN → ANSWERED} flip, which badges the
+     * question as having been answered. The cost is that a held answer does not
+     * consume a {@code maxAnswers} slot, so an author can queue more drafts than
+     * the cap — they still cannot make more than the cap visible.</p>
+     *
+     * <p>Extracted so {@code QnaAnswerModerationApplier} runs the identical steps
+     * on a deferred approval. {@code publishedAt} keeps that idempotent: a
+     * re-approval after an edit-triggered hold skips the counters (already
+     * counted) and broadcasts an edit rather than a second create.</p>
+     */
+    @Override
+    @Transactional
+    public void publishAnswerSideEffects(UUID answerId) {
+        QuestionAnswer answer = answerRepository.findById(answerId).orElse(null);
+        if (answer == null) return;
+        publishAnswer(answer);
+    }
+
+    private void publishAnswer(QuestionAnswer answer) {
+        Question question = answer.getQuestion();
+        QuestionAnswer parent = answer.getParentAnswer();
+        User author = answer.getAuthor();
+        UUID authorId = author.getId();
         boolean isReanswer = parent != null;
-        // Re-read the parent so the broadcast carries the post-increment count.
-        Long replyCount = isReanswer
-                ? answerRepository.findById(parent.getId())
-                        .map(QuestionAnswer::getReplyCount).orElse(null)
-                : 0L;
+        boolean firstPublication = answer.getPublishedAt() == null;
+
+        Long replyCount = 0L;
+        long answerCount = question.getAnswerCount() == null ? 0L : question.getAnswerCount();
+        if (firstPublication) {
+            if (!isReanswer) {
+                // Both writes are atomic UPDATEs and the fresh value is read back
+                // with a scalar query rather than entityManager.refresh(): the
+                // applier reaches this method with the question as a lazy
+                // association, and never touching the managed entity keeps a
+                // stale in-memory copy from being flushed back over the counter.
+                questionRepository.adjustAnswerCount(question.getId(), 1);
+                // OPEN → ANSWERED only. A question closed or archived while the
+                // answer sat in review must not be quietly reopened by its release.
+                questionRepository.markAnsweredIfOpen(question.getId());
+                Long fresh = questionRepository.findAnswerCount(question.getId());
+                answerCount = fresh == null ? answerCount + 1 : fresh;
+                counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
+                        question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
+                        answerCount);
+            } else {
+                answerRepository.updateReplyCount(parent.getId(), 1);
+                replyCount = answerRepository.findReplyCount(parent.getId());
+                counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.ANSWER,
+                        parent.getId(), ak.dev.irc.app.common.cache.CounterCache.F_REPLIES,
+                        replyCount != null ? replyCount : 0L);
+            }
+
+            eventPublisher.publishQuestionAnswered(question, answer);
+
+            userActivityService.recordQnaAnswerCreated(
+                    authorId, question.getId(), answer.getId(),
+                    isReanswer ? parent.getId() : null);
+
+            // @mentions in the answer body — no @followers fan-out from answers.
+            mentionService.scanAndPublish(
+                    answer.getBody(),
+                    MentionSource.QUESTION_ANSWER,
+                    answer.getId(),
+                    question.getId(),
+                    authorId,
+                    author.getUsername(),
+                    /* allowFollowersToken */ false);
+
+            answer.setPublishedAt(LocalDateTime.now());
+            answerRepository.save(answer);
+        } else if (isReanswer) {
+            replyCount = answerRepository.findReplyCount(parent.getId());
+        }
+
         realtime.broadcast(QnaRealtimeEvent.builder()
-                .eventType(isReanswer ? QnaRealtimeEventType.REANSWER_CREATED
-                                      : QnaRealtimeEventType.ANSWER_CREATED)
+                // A re-approval is an edit landing late, not a new answer — every
+                // subscriber already has the row and would otherwise duplicate it.
+                .eventType(!firstPublication ? QnaRealtimeEventType.ANSWER_EDITED
+                        : isReanswer ? QnaRealtimeEventType.REANSWER_CREATED
+                                     : QnaRealtimeEventType.ANSWER_CREATED)
                 .questionId(question.getId())
                 .actorId(authorId)
                 .actorUsername(author.getUsername())
@@ -600,13 +876,19 @@ public class QuestionServiceImpl implements QuestionService {
                 .parentAnswerId(isReanswer ? parent.getId() : null)
                 .answer(answerEventDto(answer))
                 .body(answer.getBody())
-                .questionAnswerCount(question.getAnswerCount())
+                .questionAnswerCount(answerCount)
                 .answerReplyCount(replyCount)
                 .build());
 
         answerSearch.indexAsync(answer);   // reanswers included — they're content
+    }
 
-        return mapper.toAnswerResponse(answer);
+    /** {@link #backfillPublishedAt(Question)} for answers — same legacy-row reasoning. */
+    private static void backfillPublishedAt(QuestionAnswer answer) {
+        if (answer.getPublishedAt() == null && !answer.isModerationHeld()) {
+            answer.setPublishedAt(answer.getCreatedAt() != null
+                    ? answer.getCreatedAt() : LocalDateTime.now());
+        }
     }
 
     @Override
@@ -654,8 +936,39 @@ public class QuestionServiceImpl implements QuestionService {
         answer.setBody(request.getBody().trim());
         answer.setEdited(true);
         answer.setEditedAt(LocalDateTime.now());
+
+        // §5.5 — re-score the edited body, so text that would have been blocked
+        // on create cannot be introduced by editing a clean answer afterwards. A
+        // rejection throws and the rollback restores the previous wording.
+        backfillPublishedAt(answer);
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                answerSubmission(answer, answer.getParentAnswer()));
+        answer.setModerationStatus(moderation.status());
+        answer.setModerationDecidedAt(LocalDateTime.now());
+
         answer.audit(AuditAction.UPDATE, "Edited answer");
         answer = answerRepository.save(answer);
+
+        if (answer.isModerationHeld()) {
+            // Back under review: the edit is stored but nothing announces it —
+            // no SSE push of the new body to the question's stream, no mention
+            // pings. indexAsync sees the held state and pulls the stale document
+            // instead of refreshing it. The counters stay as they are: the answer
+            // was already counted, and a few seconds of review should not make
+            // the question's answerCount flicker down and back up.
+            log.info("[QNA] answer {} edit re-entered moderation ({})",
+                    answerId, answer.getModerationStatus());
+            answerSearch.indexAsync(answer);
+            return mapper.toAnswerResponse(answer);
+        }
+
+        if (answer.getPublishedAt() == null) {
+            // Held from its create and released by this edit: it needs the
+            // first-publication block (counters, event, mentions), not an
+            // "edited" broadcast for a row nobody has ever seen.
+            publishAnswer(answer);
+            return mapper.toAnswerResponse(answer);
+        }
 
         User actor = answer.getAuthor();
         realtime.broadcast(QnaRealtimeEvent.builder()
@@ -918,8 +1231,13 @@ public class QuestionServiceImpl implements QuestionService {
 
         eventPublisher.publishAnswerDeleted(question.getId(), answer.getId(), parentId, requesterId);
 
+        // Counters only ever moved for an answer that was actually published, so
+        // deleting one still held in moderation must not move them back — that
+        // would drive the question's answerCount below its real number.
+        boolean wasCounted = answer.getPublishedAt() != null || answer.getModerationStatus() == null;
+
         // Reanswers don't count toward the question's answerCount, so only adjust for top-level deletions.
-        if (answer.getParentAnswer() == null) {
+        if (wasCounted && answer.getParentAnswer() == null) {
             // Atomic clamp-at-zero — entity setter + save was racy under concurrent deletes.
             questionRepository.adjustAnswerCount(question.getId(), -1);
             entityManager.refresh(question);
@@ -931,7 +1249,7 @@ public class QuestionServiceImpl implements QuestionService {
             counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.QUESTION,
                     question.getId(), ak.dev.irc.app.common.cache.CounterCache.F_ANSWERS,
                     remainingAnswers);
-        } else {
+        } else if (wasCounted) {
             // Reanswer deletion drops the parent's denormalised counter.
             answerRepository.updateReplyCount(parentId, -1);
             entityManager.flush(); entityManager.refresh(answer.getParentAnswer());
@@ -1080,6 +1398,8 @@ public class QuestionServiceImpl implements QuestionService {
             throw new ForbiddenException(QnaMessages.ATTACHMENT_UPLOAD_OWN_ANSWER_MSG);
         }
 
+        moderateAnnotation(answerId, requesterId, "attachment_caption", caption, null, null);
+
         String prefix = "qna/" + questionId + "/answers/" + answerId + "/attachments";
         String s3Key = storageService.upload(file, prefix);
         String fileUrl = storageService.getPublicUrl(s3Key);
@@ -1131,6 +1451,8 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException(QnaMessages.ATTACHMENT_MISMATCH_MSG, QnaMessages.ATTACHMENT_MISMATCH);
         }
 
+        moderateAnnotation(answerId, requesterId, "attachment_caption", request.getCaption(), null, null);
+
         if (request.getCaption() != null) {
             attachment.setCaption(request.getCaption().isBlank() ? null : request.getCaption().trim());
         }
@@ -1180,6 +1502,9 @@ public class QuestionServiceImpl implements QuestionService {
         if (!canManageAnswer(question, answer, requesterId)) {
             throw new ForbiddenException(QnaMessages.SOURCE_ADD_OWN_ANSWER_MSG);
         }
+
+        moderateAnnotation(answerId, requesterId, "source_title", request.getTitle(),
+                "source_citation", request.getCitationText());
 
         int nextOrder = answer.getSources() != null ? answer.getSources().size() : 0;
 
@@ -1253,6 +1578,9 @@ public class QuestionServiceImpl implements QuestionService {
         if (!source.getAnswer().getId().equals(answerId)) {
             throw new BadRequestException(QnaMessages.SOURCE_MISMATCH_MSG, QnaMessages.SOURCE_MISMATCH);
         }
+
+        moderateAnnotation(answerId, requesterId, "source_title", request.getTitle(),
+                "source_citation", request.getCitationText());
 
         if (request.getSourceType() != null) source.setSourceType(request.getSourceType());
         if (request.getTitle() != null) {
@@ -1565,7 +1893,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(readOnly = true)
     public Page<QuestionResponse> getSavedQuestions(UUID userId, Pageable pageable) {
-        return saveRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable)
+        return saveRepository.findVisibleByUserId(userId, pageable)
                 .map(s -> mapper.toQuestionResponse(s.getQuestion(), true, s.getCreatedAt()));
     }
 
@@ -1576,7 +1904,7 @@ public class QuestionServiceImpl implements QuestionService {
         if (collectionName == null || collectionName.isBlank()) {
             throw new BadRequestException(QnaMessages.MISSING_COLLECTION_NAME_MSG, QnaMessages.MISSING_COLLECTION_NAME);
         }
-        return saveRepository.findByUserIdAndCollectionNameOrderByCreatedAtDesc(
+        return saveRepository.findVisibleByUserIdAndCollectionName(
                         userId, collectionName.trim(), pageable)
                 .map(s -> mapper.toQuestionResponse(s.getQuestion(), true, s.getCreatedAt()));
     }

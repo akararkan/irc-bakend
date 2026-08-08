@@ -313,9 +313,13 @@ public class ResearchMapper {
     public CommentResponse toCommentResponse(ResearchComment c, boolean canViewHidden,
                                               ak.dev.irc.app.research.enums.ReactionType myReaction) {
         User u = c.getUser();
+        // Replies come off the lazy collection, so the moderation predicate the
+        // top-level query applies never touched them — a held reply would ride
+        // into every reader's thread nested under an approved parent.
         List<CommentResponse> replies = c.getReplies() != null
                 ? c.getReplies().stream()
-                .filter(r -> !r.isDeleted() && (canViewHidden || !r.isHidden()))
+                .filter(r -> !r.isDeleted()
+                        && (canViewHidden || (!r.isHidden() && !r.isHeldForModeration())))
                 .map(r -> toCommentResponse(r, canViewHidden))
                 .toList()
                 : Collections.emptyList();

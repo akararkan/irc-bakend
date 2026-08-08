@@ -1067,6 +1067,74 @@ Everything below arrives inside the standard error envelope with the listed stat
 | 400 | `INVALID_INPUT` | keyword is required | Blank keyword on blocklist add | POST /api/v1/admin/content/blocklist |
 | 400 | `INVALID_KEYWORD` | Keyword normalizes to nothing. | Keyword empty after normalization | POST /api/v1/admin/content/blocklist |
 
+### 1.103a `moderation (automated text moderation)`
+
+Registry: `ak.dev.irc.app.common.messages.ModerationMessages`. Full design +
+admin guide: [`../moderation/`](../moderation/README.md) — this entry only
+catalogs the strings; see `../moderation/api.md` for request/response shapes.
+
+**How the codes map to what actually happened.** Every text-bearing create/edit
+(post, comment, reply, story, story poll, research + comments, Q&A question +
+answer, chat message, channel/group, live-stream title, share caption, highlight
+title) is scored before it is ever shown to anyone but its author. Three
+outcomes, and only one of them is visible to the calling client as an error:
+
+| Outcome | HTTP response | What the client sees |
+|---|---|---|
+| **Clean** | normal 200/201, as if moderation didn't exist | nothing — post/comment/etc. is live immediately |
+| **Clearly bad** (blocklist hit, or a label at/above its block threshold) | `400 CONTENT_REJECTED` | the create/edit is refused, **nothing is persisted**, draft is preserved client-side |
+| **Borderline, or the model was unreachable** | normal 200/201, but the returned entity's `status` is `PENDING_REVIEW` | content exists but is hidden from everyone except its author until a human or the automatic re-check clears it |
+
+So `CONTENT_REJECTED` is the **only** moderation error code an ordinary user
+ever sees. Its copy deliberately names no label and quotes no text back —
+telling an author exactly which word tripped which threshold would hand them a
+working oracle for probing the classifier until something gets through. Never
+decorate this message client-side with a category or a highlighted phrase.
+
+`CONTENT_UNDER_REVIEW` is a secondary, rarer case: re-submitting something that
+is already sitting in `PENDING_REVIEW` (e.g. a double-click race). Treat both
+identically on the client — show the message, keep the draft, no retry button.
+Full client contract (held-state UI, notification copy, support answers):
+[`../moderation/frontend/README.md`](../moderation/frontend/README.md).
+
+| HTTP | Code | Message | Trigger | Surface |
+|---|---|---|---|---|
+| 400 | `CONTENT_REJECTED` | This content was blocked because it appears to violate the community guidelines. If you believe this is a mistake, you can appeal from your account settings. | END-USER facing: the classifier scored a field at/above its auto-block threshold, or a hard blocklist hit. Nothing is persisted. | every content create/edit: POST/PATCH /api/v1/posts, comments, replies, /api/v1/stories (+poll), /api/v1/questions (+answers), research publish, chat send/edit, channel + group create/update, POST /api/v1/streams, share captions, highlight titles |
+| 400 | `CONTENT_UNDER_REVIEW` | This content is still being reviewed. You will be notified once a decision is made. | Re-submitting something already held | content create endpoints |
+| 400 | `MODERATION_CASE_NOT_FOUND` | Moderation case not found: {caseId} | Unknown case id | /api/v1/admin/moderation/review/** |
+| 400 | `MODERATION_CASE_DECIDED` | This case has already been decided ({status}) and cannot be decided again. | Deciding an already-decided case | POST /api/v1/admin/moderation/review/{caseId}/decide |
+| 400 | `INVALID_MODERATION_ACTION` | Unknown action. Allowed: APPROVE, REJECT. | Action other than APPROVE/REJECT | POST /api/v1/admin/moderation/review/{caseId}/decide, /review/bulk |
+| 400 | `INVALID_MODERATION_SETTING` | Unknown moderation setting key: {key} | Unknown settings key, entity type, label or training source | /api/v1/admin/moderation/settings/**, /review, /model/training-examples |
+| 400 | `INVALID_THRESHOLD` | Thresholds must be between 0 and 1, and 'high' must not be below 'low'. | Out-of-range or inverted band | PUT /api/v1/admin/moderation/settings/thresholds, POST /settings/dry-run |
+| 400 | `INVALID_TRAINING_EXAMPLE` | A training example needs non-empty text. | Blank text on example/word/golden add | POST /api/v1/admin/moderation/model/training-examples(/word), /golden-cases |
+| 400 | `INVALID_IMPORT_FILE` | The import file could not be processed: {detail} | Unreadable/empty CSV, unknown or missing column, unknown `kind`, > 5000 rows, unterminated quoted field | POST /api/v1/admin/moderation/model/training-examples/import |
+| 400 | `TRAINING_DATASET_TOO_SMALL` | The training dataset has {n} examples; at least {min} are needed for a meaningful run. | Below app.moderation.retrain.min-examples | POST /api/v1/admin/moderation/model/retrain |
+| 400 | `TRAINING_ALREADY_RUNNING` | A training run is already in progress. Wait for it to finish before starting another. | A job is TRAINING or EVALUATING | POST /api/v1/admin/moderation/model/retrain |
+| 400 | `TRAINING_SERVICE_UNAVAILABLE` | The training service is not reachable. Start the model-training container and try again. | model-training :8001 unreachable | POST /api/v1/admin/moderation/model/retrain |
+| 400 | `INFERENCE_UNAVAILABLE` | The moderation model service is not reachable. | model-inference :8000 unreachable — admin surfaces only; the content path never surfaces this to a user, it applies the fallback policy instead | POST /api/v1/admin/moderation/model/score-probe, /versions/{id}/promote |
+| 400 | `MODEL_VERSION_NOT_FOUND` | Model version not found: {id} | Unknown version, or rollback with no retired version | /api/v1/admin/moderation/model/** |
+| 400 | `MODEL_NOT_PROMOTABLE` | Only READY, SHADOW or RETIRED versions can be promoted; this one is {status}. | Promoting a TRAINING/EVALUATING/FAILED/ACTIVE row | POST /api/v1/admin/moderation/model/versions/{id}/promote |
+| 400 | `MODEL_GATE_FAILED` | This version failed the promotion gate: {detail}. Override deliberately if you still want it live. | Golden regression failure or per-label F1 drop beyond the limit, and `force` was not set | POST /api/v1/admin/moderation/model/versions/{id}/promote |
+| 401 | `INVALID_CALLBACK_TOKEN` | Invalid training callback token. | Bad X-Training-Token on the training webhook | POST /api/v1/admin/moderation/model/train-callback |
+
+**Every new admin endpoint these codes belong to**, grouped by controller — full
+shapes in [`../moderation/api.md`](../moderation/api.md):
+
+| Base path | Controller | Purpose |
+|---|---|---|
+| `GET/POST /api/v1/admin/moderation/review**` | `AdminAutoModerationController` | The proactive queue — content the classifier could not decide on its own. List, inspect (per-label scores + the threshold band that applied), approve/reject (single + bulk, bulk is step-up), force a re-score, `/metrics` for volume/SLA/model-health dashboards. |
+| `GET/PUT/POST /api/v1/admin/moderation/settings**` | `AdminModerationSettingsController` | Runtime policy — no redeploy needed. Read the effective thresholds/holds/fallback; `PUT /thresholds` and `/hold-durations` (step-up); `POST /dry-run` replays a proposed threshold against real stored scores with **nothing written** and no model call, so you see the blast radius before committing; `PUT/DELETE /raw*` + `POST /reset` are the ADMIN-only escape hatch including the master `enabled` switch. |
+| `GET/POST/DELETE /api/v1/admin/moderation/model/training-examples**`, `/golden-cases**` | `AdminModerationModelController` | The "teach it" surface (§12.3) — add a labeled sentence, add a single word (auto-expanded into template sentences), or a golden regression case (never trained on, only used to catch regressions before a promote). |
+| `POST /api/v1/admin/moderation/model/retrain`, `/versions/{id}/promote`, `/versions/{id}/shadow`, `/rollback` | `AdminModerationModelController` | The retrain → evaluate → gate → promote/rollback lifecycle (§12.4). A retrain never auto-promotes; `promote` reloads the live inference container **before** the registry is flipped, so a bad artifact can never be marked active. |
+| `POST /api/v1/admin/moderation/model/train-callback` | `AdminModerationModelController` | Not staff-facing — the `model-training` container's own completion webhook, authenticated by a shared token instead of a login. |
+| `POST /api/v1/admin/moderation/model/score-probe` | `AdminModerationModelController` | Score arbitrary text against the live model on demand — the fastest way to answer "why did/didn't this get flagged?" |
+
+**Privacy note that affects what this catalog can show:** chat/DM and
+live-stream-chat bodies are **redacted** in the review queue and are never
+eligible for the "teach the model" training-example flow — staff see the
+per-label scores and which field tripped, never the message text. That is an
+absolute boundary in this codebase, not a moderation-specific choice.
+
 ### 1.104 `admin/notification`
 
 | HTTP | Code | Message | Trigger | Surface |
@@ -1189,6 +1257,10 @@ Successful (2xx) responses that still carry a caveat the client should surface o
 | NOTE | Authentication required. Pass access token as ?token=<jwt>. | SSE stream opened without resolvable user (plain-text body written directly; bypasses JSON envelope because response is text/event-stream) | GET /api/v1/notifications/stream |
 | NOTE | "{actor} created the group" \| "{actor} changed the group name to \"{title}\"" \| "{actor} changed the group description" \| "{actor} changed the group photo" \| "{actor} turned off disappearing messages" \| "{actor} set disappearing messages to {Nd\|Nh\|Nm\|Ns}" \| "{actor} added {user}" \| "{actor} removed {user}" \| "{actor} made {user} an admin" \| "{actor} removed {user} as admin" \| "{user} left" \| "{actor} transferred ownership to {user}" \| "{user} joined via invite link" \| "{user} joined" (join-request approved) \| "{user} pinned a message" | group/channel lifecycle events; written by SystemMessageService as MessageType.SYSTEM rows with systemEvent enum (GROUP_CREATED, TITLE_CHANGED, DESCRIPTION_CHANGED, AVATAR_CHANGED, DISAPPEARING_CHANGED, MEMBER_ADDED, MEMBER_REMOVED, ROLE_CHANGED, MEMBER_LEFT, OWNERSHIP_TRANSFERRED, PINNED); actor labels are @username | conversation timeline (inline SYSTEM messages), inbox preview, and MESSAGE_NEW SSE event on /api/v1/messaging/stream |
 | NOTE | Rejected by moderation scan. | async worker: MediaScanner flags the upload | GET /api/v1/media/{id} → MediaStatusResponse.errorMessage |
+| NOTE | Your content was posted and is being checked automatically. It becomes visible to others as soon as it clears — usually within a few seconds. | automated text moderation held the content: the classifier could not settle it inline, so it is written but not published (docs/moderation/) | content create responses whose status is PENDING_REVIEW |
+| NOTE | Automatic checking took longer than expected, so a moderator is reviewing this. It stays hidden from others until then. | the hold window expired with no verdict and the fallback policy is fail-closed | content status reads after an SLA breach |
+| WARN | The inference service is not answering. Content is following the configured fallback policy per entity type — check the ops board. | model-inference unreachable when an admin opens the moderation settings screen | GET /api/v1/admin/moderation/settings (`warning` key) |
+| WARN | Automated moderation is DISABLED (app.moderation.enabled=false). Only the keyword blocklist is enforced. | the master switch is off — the local-testing escape hatch, never production | GET /api/v1/admin/moderation/settings (`warning` key) |
 | NOTE | {raw exception message, truncated to 300 chars} — e.g. "ffmpeg timed out", "ffmpeg exit {code}", storage errors | async worker: unexpected processing/upload exception (video transcode failures normally fall back to passthrough first) | GET /api/v1/media/{id} → MediaStatusResponse.errorMessage |
 | NOTE | Image exceeds the {N} MP decode limit. | async worker: decompression-bomb guard (default N=100 megapixels) | GET /api/v1/media/{id} → MediaStatusResponse.errorMessage |
 | NOTE | Unsupported or corrupt image. | async worker: image bytes not decodable | GET /api/v1/media/{id} → MediaStatusResponse.errorMessage |
@@ -1240,6 +1312,9 @@ Rows in the notification inbox (and their SSE push). Title/body templates; `{bra
 | Type / group key | Title & body | Trigger | Delivery |
 |---|---|---|---|
 | `SYSTEM_MESSAGE` | title: "Account warning" — body: "A moderation strike was recorded on your account: {reason}. Strikes expire automatically after 90 days." | admin issues a moderation strike | in-app notification, after POST /api/v1/admin/users/{userId}/strikes |
+| `SYSTEM_MESSAGE` | title: "Your content was removed" — body: "Your {post\|comment\|story\|research paper\|question\|answer\|message\|channel details\|stream details} was removed because it appears to violate the community guidelines. You can appeal this decision from your account settings." | automated text moderation rejected the content, or a moderator rejected it in the review queue | in-app notification (docs/moderation/) |
+| `SYSTEM_MESSAGE` | title: "Your content is being reviewed" — body: "Your {entity} is waiting on a moderator and is not visible to others yet. We will let you know as soon as it is reviewed." | the classifier landed in the uncertain band, or the hold window expired fail-closed | in-app notification |
+| `SYSTEM_MESSAGE` | title: "Your content is live" — body: "Your {entity} cleared review and is now visible to everyone." | a held item was approved after actually waiting — content that cleared inline never fires this | in-app notification |
 | `SYSTEM_MESSAGE` | title: "Two-factor authentication was reset" — body: "An administrator reset the two-factor authentication on your account. If you did not request this, contact support immediately." | admin 2FA reset | in-app notification, after POST /api/v1/admin/users/{userId}/2fa/reset |
 | `SYSTEM_MESSAGE` | title: "Your account has been disabled" — body: "Your account was disabled by an administrator. Contact support if you believe this is a mistake." | admin disables the account | in-app notification, after POST /api/v1/admin/users/{userId}/disable |
 | `SYSTEM_MESSAGE` | title: "Your account has been re-enabled" — body: "Your account was re-enabled by an administrator. You can log in again." | admin re-enables the account | in-app notification, after POST /api/v1/admin/users/{userId}/enable |

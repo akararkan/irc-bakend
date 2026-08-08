@@ -84,4 +84,19 @@ public class LiveStream extends BaseAuditEntity {
     @Column(name = "recording_status", length = 12)
     @Builder.Default
     private RecordingStatus recordingStatus = RecordingStatus.DISABLED;
+
+    /**
+     * Automated-moderation state of the title/description
+     * ({@code ModerationStatus} name; docs/moderation/). NULL reads as approved.
+     * A held stream still broadcasts — only its <em>text</em> is unverified — but
+     * it is kept out of the live directory, its metadata is blanked for anyone but
+     * the host, and the "@host is live" follower fan-out (which copies the raw
+     * title into up to 50k persisted notifications) does not run until it clears.
+     *
+     * <p>A plain text column, not an enum: adding a new {@code @Enumerated} column
+     * is safe, but this is the pattern the other chat surfaces use for the same
+     * flag and it keeps {@code ChatModeration} the single reader.</p>
+     */
+    @Column(name = "moderation_status", length = 20)
+    private String moderationStatus;
 }

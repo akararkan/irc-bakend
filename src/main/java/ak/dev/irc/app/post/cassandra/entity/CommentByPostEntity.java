@@ -34,4 +34,13 @@ public class CommentByPostEntity {
     @Column("media_type")   private String mediaType;
     @Column("is_deleted")   private Boolean deleted;
     @Column("is_edited")    private Boolean edited;
+
+    /**
+     * Automated-moderation state — {@code PENDING}/{@code IN_REVIEW}/{@code REJECTED}
+     * hide the row from everyone but its author (MODERATION_ROADMAP.md §5.1).
+     * NULL means the row predates moderation and reads as approved, matching the
+     * null-status convention {@code PostHydrator.isServable} already uses.
+     * Column added by {@code ModerationSchemaInitializer}.
+     */
+    @Column("moderation_status") private String moderationStatus;
 }

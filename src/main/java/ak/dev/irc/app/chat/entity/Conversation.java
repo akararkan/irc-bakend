@@ -140,6 +140,21 @@ public class Conversation extends BaseAuditEntity {
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 
+    /**
+     * Automated-moderation state of the title/description
+     * ({@code ModerationStatus} name; docs/moderation/). NULL means "predates
+     * moderation or has cleared" and reads as approved. A held channel is not
+     * indexed for discovery and does not appear in the directory — its creator
+     * still owns it and can post to it, exactly like a held post is still the
+     * author's.
+     *
+     * <p>Deliberately a NEW column rather than a widening of {@code type} or any
+     * existing enum: adding one avoids the stale {@code *_check} constraint that
+     * {@code ddl-auto: update} will not drop on an existing database.</p>
+     */
+    @Column(name = "moderation_status", length = 20)
+    private String moderationStatus;
+
     public boolean isGroup() {
         return type == ConversationType.GROUP;
     }

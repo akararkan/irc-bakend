@@ -5,7 +5,10 @@ import ak.dev.irc.app.chat.cassandra.entity.MessageByConversationEntity;
 import ak.dev.irc.app.chat.cassandra.entity.MessageByIdEntity;
 import ak.dev.irc.app.chat.cassandra.repository.MessageByConversationRepository;
 import ak.dev.irc.app.chat.cassandra.repository.MessageByIdRepository;
+import ak.dev.irc.app.chat.dto.request.ContactDto;
+import ak.dev.irc.app.chat.dto.request.LocationDto;
 import ak.dev.irc.app.chat.dto.request.MediaRefDto;
+import ak.dev.irc.app.chat.dto.request.PollCreateDto;
 import ak.dev.irc.app.chat.dto.request.SendMessageRequest;
 import ak.dev.irc.app.chat.dto.response.MessageResponse;
 import ak.dev.irc.app.chat.dto.response.ReactionSummary;
@@ -28,8 +31,13 @@ import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.repository.MessageRequestRepository;
 import ak.dev.irc.app.chat.search.service.ChatSearchService;
 import ak.dev.irc.app.chat.util.ChatBuckets;
+import ak.dev.irc.app.chat.util.ChatModeration;
 import ak.dev.irc.app.chat.util.Hashtags;
 import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
@@ -100,6 +108,10 @@ public class MessageService {
     private final ak.dev.irc.app.chat.cassandra.repository.ChatCommentByPostRepository commentRepo;
     private final ak.dev.irc.app.chat.repository.ConversationDraftRepository draftRepo;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    /** Automated text moderation (docs/moderation/) — every user-authored message
+     *  body, poll, location label and contact name passes through it before the
+     *  Cassandra write. */
+    private final ContentModerationService contentModeration;
 
     // ── SEND ──────────────────────────────────────────────────────────────────
 
@@ -169,19 +181,37 @@ public class MessageService {
             List<MediaRef> media = buildMedia(req.getMedia());
             Set<UUID> mentions = resolveMentions(req.getBody());
 
+            // Automated moderation runs BEFORE the Cassandra write, so a blocked
+            // message leaves no row anywhere — the same contract createPost has.
+            // It is placed after the permission gates: there is no point scoring
+            // text from someone who was never allowed to send it.
+            ModerationOutcome moderation = contentModeration.submitOrThrow(
+                    submissionFor(messageId, senderId, convo, req.getBody(),
+                            req.getPoll(), req.getLocation(), req.getContact()));
+
             MessageResponse response = persist(convo, senderId, messageId, type,
                     req.getBody(), media, mentions, req.getReplyToId(), null, pollJson,
-                    locationJson, contactJson);
+                    locationJson, contactJson, moderation);
+
+            // Sending clears the user's draft for this conversation (Telegram).
+            try { draftRepo.deleteByUserIdAndConversationId(senderId, conversationId); }
+            catch (Exception ignored) { /* best-effort */ }
+
+            if (moderation.held()) {
+                // Everything below publishes the text — comment indexing bumps a
+                // public counter and broadcasts, dispatch delivers the body to every
+                // member and fires bells. ChatMessageModerationApplier runs the same
+                // block if and when the verdict clears.
+                log.debug("[CHAT] message {} held for moderation ({}), delivery deferred",
+                        messageId, moderation.status());
+                return response;
+            }
 
             // Discussion-group comments: a reply in a channel's linked group to one
             // of that channel's posts is a comment — index it and bump the count.
             if (convo.isGroup() && req.getReplyToId() != null) {
                 indexCommentIfDiscussionReply(convo, req.getReplyToId(), messageId);
             }
-
-            // Sending clears the user's draft for this conversation (Telegram).
-            try { draftRepo.deleteByUserIdAndConversationId(senderId, conversationId); }
-            catch (Exception ignored) { /* best-effort */ }
 
             // Redact the notification/inbox preview for disappearing conversations so
             // the body doesn't linger in a push notification either.
@@ -195,6 +225,14 @@ public class MessageService {
         } catch (RuntimeException e) {
             // Freed so a legitimate retry re-attempts rather than echoing a message
             // that was never written (send rejected before persistence).
+            //
+            // A moderation rejection deliberately takes this same path. Holding the
+            // nonce would be worse than useless: the retry would resolve it to the
+            // claimed id, find no row behind it, and echoExisting would synthesise a
+            // success response for a message that does not exist — the client would
+            // believe a blocked message had been delivered. Re-scoring the retry
+            // costs one inference call, and chat-send rate limiting already bounds
+            // how often that can happen.
             idempotency.release(senderId, req.getClientNonce());
             throw e;
         }
@@ -258,14 +296,35 @@ public class MessageService {
                 requestJustCreated = ro.justCreated();
             }
 
+            // A forward re-publishes the text to a new audience, so it is scored as
+            // its own unit against the new message id — the source's verdict was
+            // reached in a different conversation and does not carry over.
+            ModerationOutcome moderation = contentModeration.submitOrThrow(
+                    ModerationSubmission.of(ModeratedEntityType.CHAT_MESSAGE,
+                                    Long.toString(messageId), senderId)
+                            .parent(targetConversationId.toString())
+                            .field("body", src.getBody()));
+
             MessageResponse response = persist(target, senderId, messageId, src.getType(),
                     src.getBody(), src.getMedia(), null, null, src.getConversationId(),
                     src.getPoll(), // forwarded poll keeps the definition; votes start fresh
-                    src.getLocation(), src.getContact());
+                    src.getLocation(), src.getContact(), moderation);
 
-            // Channel forward counter (the source post's "shares").
+            // Channel forward counter (the source post's "shares"). Bumped even when
+            // the copy is held: the applier CANNOT defer it. It resolves the message
+            // from message_by_id, and that row records only forwardedFrom — the
+            // source CONVERSATION — never the source message id, so once this frame
+            // returns the counter's subject is unrecoverable. Crediting a share for a
+            // forward that is later rejected overstates a cosmetic counter by one;
+            // deferring it to a hook that does not exist loses it on every held
+            // forward instead.
             if (sourceIsChannel) {
                 channelMetrics.onForwarded(src.getConversationId(), sourceMessageId);
+            }
+            if (moderation.held()) {
+                log.debug("[CHAT] forward {} held for moderation ({}), delivery deferred",
+                        messageId, moderation.status());
+                return response;
             }
 
             String preview = target.getDisappearingSeconds() > 0
@@ -305,6 +364,15 @@ public class MessageService {
                         ChatMessages.EDIT_OWN_MESSAGES_ONLY_MSG, ChatMessages.ACCESS_FORBIDDEN);
             }
         }
+        // §5.5 — an edit re-enters moderation. Without this, blocked text could be
+        // laundered in by sending something benign and immediately PATCHing it.
+        // Scored before the write, so a rejection leaves the old body in place.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.CHAT_MESSAGE,
+                                Long.toString(messageId), m.getSenderId())
+                        .parent(m.getConversationId().toString())
+                        .field("body", body));
+
         Instant now = Instant.now();
         // Preserve the disappearing guarantee: an edit must NOT resurrect a TTL'd
         // message. Re-apply the remaining TTL so the edited body expires with the rest
@@ -327,15 +395,50 @@ public class MessageService {
             messageByIdRepo.updateTags(messageId, tags);
             m.setTags(tags);
         }
-        if (ttl <= 0) chatSearch.indexAsync(m); // re-index the edited body (never a disappearing one)
+        // Cassandra keeps exactly one revision of the body, so a borderline edit
+        // cannot keep serving the previously approved wording — the roadmap's
+        // "strict" option has nothing to serve. The edit is applied and the message
+        // drops back into the held state (APPROVED → IN_REVIEW of §5.1): everyone
+        // but its sender sees it blank until the verdict lands.
+        String marker = ChatModeration.marker(moderation);
+        boolean held = moderation.held();
+        if (held || ChatModeration.held(m.getModerationStatus())) {
+            messageRepo.setModerationStatus(m.getConversationId(), m.getBucket(), messageId, marker);
+            messageByIdRepo.setModerationStatus(messageId, marker);
+            m.setModerationStatus(marker);
+        }
 
-        List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
-        broadcaster.broadcast(recipients, ChatRealtimeEvent.builder()
-                .eventType(ChatRealtimeEventType.MESSAGE_EDITED)
-                .conversationId(m.getConversationId())
-                .messageId(messageId).body(body).editedAt(now)
-                .build());
+        if (ttl <= 0 && !held) chatSearch.indexAsync(m); // never index a disappearing or held body
+        if (held) {
+            // The edited body must not be pushed to anyone yet, but live clients are
+            // still holding the previous text that no longer exists anywhere — so
+            // they are told the message is now blank rather than left showing it.
+            chatSearch.deleteAsync(messageId);
+            broadcastEdit(m.getConversationId(), messageId, null, now);
+            log.debug("[CHAT] edit of {} held for moderation ({})", messageId, moderation.status());
+            return mapById(messageId, userId);
+        }
+
+        // A message that was held at send has never been fanned out, so an edit
+        // that finally clears it is its FIRST delivery, not an edit broadcast.
+        // Sending only MESSAGE_EDITED here would leave it readable on refresh but
+        // never actually delivered: no bell, no inbox preview, no channel counter.
+        if (Boolean.FALSE.equals(m.getDelivered())) {
+            publishModeratedMessage(messageId);
+            return mapById(messageId, userId);
+        }
+
+        broadcastEdit(m.getConversationId(), messageId, body, now);
         return mapById(messageId, userId);
+    }
+
+    private void broadcastEdit(UUID conversationId, long messageId, String body, Instant editedAt) {
+        broadcaster.broadcast(memberRepo.findReadableMemberIds(conversationId),
+                ChatRealtimeEvent.builder()
+                        .eventType(ChatRealtimeEventType.MESSAGE_EDITED)
+                        .conversationId(conversationId)
+                        .messageId(messageId).body(body).editedAt(editedAt)
+                        .build());
     }
 
     // ── DELETE (soft) ─────────────────────────────────────────────────────────────
@@ -377,8 +480,12 @@ public class MessageService {
         dropCommentLinks(convo, m);              // discussion-comment index rows
         if (convo != null && convo.isChannel() && !MessageType.SYSTEM.name().equals(m.getType())) {
             channelMetrics.clear(m.getConversationId(), messageId);          // views/forwards
-            channelMetrics.postTypeAdjust(m.getConversationId(), m.getType(), -1);
-            conversationRepo.adjustPostCount(m.getConversationId(), -1);
+            // Only a post that actually counted may be decremented — a post deleted
+            // while still held for moderation was never added to either counter.
+            if (!ChatModeration.held(m.getModerationStatus())) {
+                channelMetrics.postTypeAdjust(m.getConversationId(), m.getType(), -1);
+                conversationRepo.adjustPostCount(m.getConversationId(), -1);
+            }
         }
 
         List<UUID> recipients = memberRepo.findReadableMemberIds(m.getConversationId());
@@ -547,11 +654,23 @@ public class MessageService {
 
     // ── internals ────────────────────────────────────────────────────────────────────
 
-    /** Writes the twin Cassandra rows and advances the inbox pointer. Returns the mapped response. */
+    /**
+     * Writes the twin Cassandra rows and advances the inbox pointer. Returns the
+     * mapped response.
+     *
+     * <p>{@code moderation} decides whether this is a publication or a hold. On a
+     * hold the rows are written with the held marker and every step that pushes
+     * the text outward — search indexing, the shared-media gallery, the real inbox
+     * preview, the channel post counters — is skipped;
+     * {@code ChatMessageModerationApplier} runs them if the verdict clears.</p>
+     */
     private MessageResponse persist(Conversation convo, UUID senderId, long messageId, String type,
                                     String body, List<MediaRef> media, Set<UUID> mentions,
                                     Long replyToId, UUID forwardedFrom, String pollJson,
-                                    String locationJson, String contactJson) {
+                                    String locationJson, String contactJson,
+                                    ModerationOutcome moderation) {
+        boolean held = moderation != null && moderation.held();
+        String moderationMarker = ChatModeration.marker(moderation);
         int bucket = ChatBuckets.bucketOf(messageId);
         Instant now = Instant.now();
 
@@ -574,7 +693,9 @@ public class MessageService {
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
                 .tags(tags).authorSignature(signature).poll(pollJson)
                 .location(locationJson).contact(contactJson)
-                .deleted(false).createdAt(now)
+                .deleted(false).createdAt(now).moderationStatus(moderationMarker)
+                // A held row has not been fanned out; the applier flips this when it is.
+                .delivered(!held)
                 .build();
         MessageByIdEntity byId = MessageByIdEntity.builder()
                 .messageId(messageId).conversationId(convo.getId()).bucket(bucket)
@@ -584,7 +705,9 @@ public class MessageService {
                 .mentions(mentions == null || mentions.isEmpty() ? null : mentions)
                 .tags(tags).authorSignature(signature).poll(pollJson)
                 .location(locationJson).contact(contactJson)
-                .deleted(false).createdAt(now)
+                .deleted(false).createdAt(now).moderationStatus(moderationMarker)
+                // A held row has not been fanned out; the applier flips this when it is.
+                .delivered(!held)
                 .build();
         // Disappearing messages: write with a Cassandra TTL so the rows auto-delete.
         int ttl = convo.getDisappearingSeconds();
@@ -599,8 +722,12 @@ public class MessageService {
         }
 
         // For a disappearing conversation the Postgres inbox preview must not persist
-        // the body (no TTL there) — store a non-revealing placeholder instead.
-        String inboxPreview = ttl > 0 ? disappearingPreview(type, media) : previewOf(body, type, media);
+        // the body (no TTL there) — store a non-revealing placeholder instead. A held
+        // message uses the same placeholder for the same reason: the pointer still
+        // has to advance (it drives ordering, gap sync and hasUnread) but the text
+        // is not cleared to leave Cassandra yet.
+        String inboxPreview = (ttl > 0 || held)
+                ? disappearingPreview(type, media) : previewOf(body, type, media);
         conversationRepo.advanceLastMessage(convo.getId(), messageId,
                 LocalDateTime.ofInstant(now, ZoneOffset.UTC), inboxPreview);
 
@@ -613,15 +740,16 @@ public class MessageService {
         // Index for full-text search (async, best-effort — never blocks the send).
         // Never index a disappearing message: Elasticsearch has no TTL, so its body
         // would outlive the Cassandra row it "disappears" with.
-        if (ttl <= 0) chatSearch.indexAsync(byId);
+        if (ttl <= 0 && !held) chatSearch.indexAsync(byId);
 
         // Shared-media gallery index (one row per attachment + a LINK row for
         // bodies carrying a URL). Skipped for disappearing conversations: the
         // gallery table has no TTL, so its rows must not outlive the message.
-        if (ttl <= 0) writeGalleryRows(convo.getId(), messageId, body, media, now);
+        if (ttl <= 0 && !held) writeGalleryRows(convo.getId(), messageId, body, media, now);
 
-        // Channel post accounting — live post count + per-type breakdown.
-        if (channelPost) {
+        // Channel post accounting — live post count + per-type breakdown. Both are
+        // publicly rendered counts of *live* posts, so a held post is not one yet.
+        if (channelPost && !held) {
             conversationRepo.adjustPostCount(convo.getId(), +1);
             channelMetrics.postTypeAdjust(convo.getId(), type, +1);
         }
@@ -633,7 +761,129 @@ public class MessageService {
         ChatMapper.MessageExtras extras = new ChatMapper.MessageExtras(
                 channelPost ? 0L : null, channelPost ? 0L : null, channelPost ? 0L : null,
                 pollJson != null ? pollService.renderFor(byId, senderId) : null);
-        return mapper.toMessage(row, users, List.of(), replyPreview, false, extras);
+        // The echo goes back to the sender, who always sees their own text even
+        // while it is held.
+        return mapper.toMessage(row, users, List.of(), replyPreview, false, extras, senderId);
+    }
+
+    /**
+     * Every user-authored text field of a send, as one submission. Poll questions,
+     * option labels, venue names and contact names are all free text a sender
+     * controls, so they are all scored — separately, never concatenated, so the
+     * review queue can point at the exact field that tripped.
+     *
+     * <p>{@code SystemMessageService.write} is deliberately absent from this
+     * pipeline. It bypasses {@link #persist} and its bodies are platform-composed,
+     * with the only user-controlled part being an embedded group/channel title —
+     * and that title is moderated where it is set ({@code ConversationService} /
+     * {@code ChannelService}), so scoring it again here would double-charge the
+     * same text and produce a second case nobody can act on.</p>
+     */
+    private ModerationSubmission submissionFor(long messageId, UUID senderId, Conversation convo,
+                                               String body, PollCreateDto poll,
+                                               LocationDto location, ContactDto contact) {
+        ModerationSubmission submission = ModerationSubmission.of(
+                        ModeratedEntityType.CHAT_MESSAGE, Long.toString(messageId), senderId)
+                .parent(convo.getId().toString())
+                .field("body", body);
+        if (poll != null) {
+            submission.field("poll_question", poll.getQuestion())
+                    .fields("poll_option", poll.getOptions());
+        }
+        if (location != null) {
+            submission.field("location_name", location.getName())
+                    .field("location_address", location.getAddress());
+        }
+        if (contact != null) {
+            submission.field("contact_first_name", contact.getFirstName())
+                    .field("contact_last_name", contact.getLastName());
+        }
+        return submission;
+    }
+
+    /**
+     * Runs the publication side effects {@link #persist} skipped while a message
+     * was held for automated moderation: search indexing, the shared-media gallery,
+     * the real inbox preview, channel post accounting, discussion-comment indexing,
+     * delivery and bells.
+     *
+     * <p>Called by {@code ChatMessageModerationApplier} once a deferred verdict
+     * lands, so there is exactly one implementation of the delivery fan-out rather
+     * than two that can drift. The send context is re-derived from the persisted
+     * rows instead of being stored; the one thing that cannot be recovered is
+     * whether a DM was routed to the requests tray, so an approved held message is
+     * dispatched as a normal delivery. The request row was created before the
+     * Cassandra write, so the tray placement is right either way — only the bell
+     * kind differs.</p>
+     *
+     * <p>Whether this is a first delivery or the release of an edit comes from the
+     * row's own {@code delivered} flag, not from the case revision or
+     * {@code editedAt}. Neither of those can tell apart "held at send, then
+     * edited" from "delivered, then edited into a hold" — and the two need
+     * opposite treatment. Getting it wrong either double-fans-out a message or,
+     * worse, never delivers one at all.</p>
+     */
+    @Transactional
+    public void publishModeratedMessage(long messageId) {
+        MessageByIdEntity m = messageByIdRepo.findById(messageId).orElse(null);
+        if (m == null || Boolean.TRUE.equals(m.getDeleted())) return;   // deleted while held
+        // NULL means the row predates moderation, and those were all delivered.
+        boolean edited = m.getDelivered() == null || Boolean.TRUE.equals(m.getDelivered());
+        Conversation convo = conversationRepo.findById(m.getConversationId())
+                .filter(c -> c.getDeletedAt() == null).orElse(null);
+        if (convo == null) return;
+
+        // Elasticsearch has no TTL, so a disappearing message is never indexed and
+        // never gets gallery rows — clearing moderation does not change that.
+        boolean disappearing = convo.getDisappearingSeconds() > 0;
+        if (!disappearing) chatSearch.indexAsync(m);
+
+        if (edited) {
+            broadcastEdit(m.getConversationId(), messageId, m.getBody(),
+                    m.getEditedAt() != null ? m.getEditedAt() : Instant.now());
+            return;
+        }
+
+        Instant createdAt = m.getCreatedAt() != null ? m.getCreatedAt() : Instant.now();
+        if (!disappearing) {
+            writeGalleryRows(convo.getId(), messageId, m.getBody(), m.getMedia(), createdAt);
+        }
+        if (convo.isChannel() && !MessageType.SYSTEM.name().equals(m.getType())) {
+            conversationRepo.adjustPostCount(convo.getId(), +1);
+            channelMetrics.postTypeAdjust(convo.getId(), m.getType(), +1);
+        }
+        if (convo.isGroup() && m.getReplyToId() != null) {
+            indexCommentIfDiscussionReply(convo, m.getReplyToId(), messageId);
+        }
+
+        String preview = disappearing
+                ? disappearingPreview(m.getType(), m.getMedia())
+                : previewOf(m.getBody(), m.getType(), m.getMedia());
+        // advanceLastMessage cannot be reused here: the pointer already moved to
+        // this message at hold time, so its "only move forward" guard makes it a
+        // no-op and the placeholder preview would stick. This swaps the preview in
+        // place, and only while this message is still the newest one.
+        conversationRepo.refreshLastMessagePreview(convo.getId(), messageId, preview);
+
+        MessageResponse response = mapById(messageId, m.getSenderId());
+        if (response == null) return;
+        UUID directPeer = convo.isDirect() ? directPeerOrNull(convo.getId(), m.getSenderId()) : null;
+        dispatch(convo, m.getSenderId(), directPeer, SendDecision.ALLOW, null, false,
+                response, preview, false);
+
+        // Stamped only after the fan-out actually ran, so a failure mid-dispatch
+        // leaves the row re-drivable rather than silently marked delivered.
+        markDelivered(m);
+    }
+
+    /** Flips both denormalised rows' {@code delivered} flag. */
+    private void markDelivered(MessageByIdEntity m) {
+        try {
+            messageByIdRepo.setDelivered(m.getMessageId(), true);
+            messageRepo.setDelivered(m.getConversationId(), m.getBucket(), m.getMessageId(), true);
+        } catch (Exception ex) {
+            log.warn("[CHAT] could not stamp delivered on {}: {}", m.getMessageId(), ex.getMessage());
+        }
     }
 
     /** Write the (conversation, kind)-partitioned gallery rows for a new message. */
@@ -956,6 +1206,15 @@ public class MessageService {
         return m;
     }
 
+    /** Like {@link #otherDirectMember} but tolerant of a peer that is gone — the
+     *  deferred publication path must not fail over a half-emptied DM. */
+    private UUID directPeerOrNull(UUID conversationId, UUID me) {
+        return memberRepo.findAllByConversation(conversationId).stream()
+                .map(m -> m.getId().getUserId())
+                .filter(id -> !id.equals(me))
+                .findFirst().orElse(null);
+    }
+
     private UUID otherDirectMember(UUID conversationId, UUID me) {
         return memberRepo.findAllByConversation(conversationId).stream()
                 .map(m -> m.getId().getUserId())
@@ -1016,7 +1275,8 @@ public class MessageService {
         Map<UUID, User> users = loadUsers(Set.of(m.getSenderId()));
         ReplyPreview reply = m.getReplyToId() == null ? null
                 : mapper.toReplyPreview(messageByIdRepo.findById(m.getReplyToId()).orElse(null));
-        return mapper.toMessage(m, users, reactionService.detailFor(messageId, viewerId), reply);
+        return mapper.toMessage(m, users, reactionService.detailFor(messageId, viewerId), reply,
+                false, null, viewerId);
     }
 
     private MessageResponse echoExisting(long existingId, UUID senderId, UUID conversationId, SendMessageRequest req) {

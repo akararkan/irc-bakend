@@ -284,6 +284,7 @@ public class PostHydrator {
     public CommentResponse hydrate(CommentByPostEntity c) {
         if (c == null) return null;
         UUID viewerId = currentViewerId();
+        if (!visibleToViewer(c.getModerationStatus(), c.getAuthorId(), viewerId)) return null;
         CommentCounterEntity counters = commentCounterRepo.findByCommentId(c.getCommentId()).orElse(null);
         return new CommentResponse(
                 c.getCommentId(),
@@ -312,6 +313,7 @@ public class PostHydrator {
 
         List<CommentResponse> out = new ArrayList<>(rows.size());
         for (CommentByPostEntity c : rows) {
+            if (!visibleToViewer(c.getModerationStatus(), c.getAuthorId(), viewerId)) continue;
             CommentCounterEntity ctr = counters.get(c.getCommentId());
             out.add(new CommentResponse(
                     c.getCommentId(),
@@ -335,6 +337,7 @@ public class PostHydrator {
     public ReplyResponse hydrate(ReplyByCommentEntity r) {
         if (r == null) return null;
         UUID viewerId = currentViewerId();
+        if (!visibleToViewer(r.getModerationStatus(), r.getAuthorId(), viewerId)) return null;
         CommentCounterEntity counters = commentCounterRepo.findByCommentId(r.getReplyId()).orElse(null);
         return new ReplyResponse(
                 r.getReplyId(),
@@ -362,6 +365,7 @@ public class PostHydrator {
 
         List<ReplyResponse> out = new ArrayList<>(rows.size());
         for (ReplyByCommentEntity r : rows) {
+            if (!visibleToViewer(r.getModerationStatus(), r.getAuthorId(), viewerId)) continue;
             CommentCounterEntity ctr = counters.get(r.getReplyId());
             out.add(new ReplyResponse(
                     r.getReplyId(),
@@ -438,6 +442,25 @@ public class PostHydrator {
      */
     private static boolean isServable(PostByIdEntity p) {
         return p.getStatus() == null || "PUBLISHED".equalsIgnoreCase(p.getStatus());
+    }
+
+    /**
+     * Automated-moderation gate for comments and replies
+     * (docs/moderation/MODERATION_ROADMAP.md §5.1).
+     *
+     * <p>Held content stays visible to its own author — §5.1 recommends showing
+     * authors their own pending content rather than silently swallowing it,
+     * which is indistinguishable from the platform losing the comment. Everyone
+     * else does not see the row at all.</p>
+     *
+     * <p>A NULL status means the row predates moderation, or has been cleared;
+     * both read as approved. That is the same convention {@link #isServable}
+     * already applies to a null post status.</p>
+     */
+    private static boolean visibleToViewer(String moderationStatus, UUID authorId, UUID viewerId) {
+        if (moderationStatus == null || moderationStatus.isBlank()) return true;
+        if ("APPROVED".equalsIgnoreCase(moderationStatus)) return true;
+        return authorId != null && authorId.equals(viewerId);
     }
 
     private static long nullSafe(Long v) { return v == null ? 0L : v; }

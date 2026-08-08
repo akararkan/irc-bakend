@@ -6,7 +6,7 @@ Complete request/response reference for three admin controllers:
 - **`AdminActivityController`** (`app/admin/activity`) — break-glass activity forensics: dual-control case lifecycle plus the per-user reads it gates, and the routinely-available activity erasure.
 - **`AdminDiscoveryController`** (`app/admin/discovery`) — PYMK inspection/recompute, contact-sync stats and consent compliance, GDPR contact-hash purge, discovery flags, forced QR rotation.
 
-Concept docs: [operations.md](../operations.md) · [activity-engagement.md](../activity-engagement.md) · [discovery-pymk-privacy.md](../discovery-pymk-privacy.md) · [frontend-dashboard-guide.md](../frontend-dashboard-guide.md).
+Concept docs: [operations.md](../platform/operations.md) · [activity-engagement.md](../users/activity-engagement.md) · [discovery-pymk-privacy.md](../users/discovery-privacy.md) · [frontend-dashboard-guide.md](../frontend/README.md).
 
 ## Conventions
 

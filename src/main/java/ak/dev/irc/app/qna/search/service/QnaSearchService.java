@@ -43,10 +43,15 @@ public class QnaSearchService {
     @Async
     public void indexAsync(Question question) {
         if (question == null) return;
-        if (question.getDeletedAt() != null) {
+        // Soft-deleted and not-yet-cleared questions are both "must not be
+        // findable". Handling the moderation case here rather than at every call
+        // site means an edit that drops an approved question back into review
+        // also pulls its stale document, which skipping the call would not.
+        if (question.getDeletedAt() != null || question.isModerationHeld()) {
+            String why = question.getDeletedAt() != null ? "soft" : "held";
             try {
                 EsRetry.run(() -> searchRepo.deleteById(QnaSearchDocument.idOf(question.getId())),
-                        "[SEARCH] delete (soft) question " + question.getId());
+                        "[SEARCH] delete (" + why + ") question " + question.getId());
             } catch (Exception e) {
                 log.warn("[SEARCH] index question {} failed: {}", question.getId(), e.getMessage());
             }
@@ -115,8 +120,7 @@ public class QnaSearchService {
         long indexed = 0;
         int pages = 0, page = 0;
         while (true) {
-            Page<Question> slice = questionRepo
-                    .findByDeletedAtIsNullOrderByCreatedAtDesc(PageRequest.of(page, PAGE_SIZE));
+            Page<Question> slice = questionRepo.findIndexable(PageRequest.of(page, PAGE_SIZE));
             if (slice.isEmpty()) break;
             List<QnaSearchDocument> docs = new ArrayList<>(slice.getNumberOfElements());
             for (Question q : slice.getContent()) docs.add(buildDoc(q));

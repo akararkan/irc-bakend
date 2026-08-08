@@ -25,6 +25,13 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.messages.ChannelStreamMessages;
+import ak.dev.irc.app.common.messages.ModerationMessages;
+import ak.dev.irc.app.chat.util.ChatModeration;
+import ak.dev.irc.app.moderation.engine.ModerationSettingsService;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -76,6 +83,10 @@ public class LiveStreamService {
     private final LiveStreamFanoutService streamFanout;
     private final RecordingStorageService recordings;
     private final MediaControlClient mediaControl;
+    /** Automated text moderation: stream metadata (§5 pipeline) and live chat
+     *  lines (the §6 real-time exception). */
+    private final ContentModerationService contentModeration;
+    private final ModerationSettingsService moderationSettings;
 
     /** Default recording choice when {@code StartStreamRequest.record} is absent. */
     @Value("${app.streaming.recording.default-on:false}")
@@ -121,6 +132,21 @@ public class LiveStreamService {
                 .recordingStatus(record ? RecordingStatus.RECORDING : RecordingStatus.DISABLED)
                 .build());
 
+        /* Automated moderation of the discovery metadata. The stream id is
+           JPA-generated, so the row exists first; a rejection throws out of this
+           @Transactional method and rolls the insert back before a media path or a
+           single follower notification exists.
+
+           This is the §5 pipeline, not the §6 real-time one: a title is written
+           once and then persisted into every follower's inbox, so it can afford to
+           wait for a verdict in a way a live chat line cannot. */
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.STREAM_META,
+                                s.getId().toString(), hostId)
+                        .field("title", s.getTitle())
+                        .field("description", s.getDescription()));
+        s.setModerationStatus(ChatModeration.marker(moderation));
+
         /* Create the per-path config before the browser publishes, ALWAYS — with
            `record` set to the host's opening choice.
 
@@ -145,10 +171,35 @@ public class LiveStreamService {
         // row prepends the ring with no extra fetch. Host is loaded once here and
         // reused for the label, the fan-out card, and the host's own response.
         User host = loadHost(hostId);
-        String hostLabel = host != null ? "@" + host.getUsername() : "Someone";
-        streamFanout.fanoutStreamStarted(toResponse(s, false, host), hostId, hostLabel);
+        // A held title must not reach the fan-out at all: it copies the raw title
+        // into up to 50,000 persisted notification rows and push payloads seconds
+        // after this method returns, and none of that is retractable.
+        // StreamMetaModerationApplier runs it if and when the verdict clears.
+        if (moderation.held()) {
+            log.debug("[LIVE] stream {} title held for moderation ({}), fan-out deferred",
+                    s.getId(), moderation.status());
+        } else {
+            String hostLabel = host != null ? "@" + host.getUsername() : "Someone";
+            streamFanout.fanoutStreamStarted(toResponse(s, false, host), hostId, hostLabel);
+        }
 
-        return toResponse(s, true, host); // host gets the ingest URLs (WHIP + RTMP)
+        // The host always sees their own metadata, held or not (§5.1).
+        return toResponse(s, true, host, false); // host gets the ingest URLs (WHIP + RTMP)
+    }
+
+    /**
+     * Runs the "@host is live" follower fan-out that {@link #start} skipped while
+     * the title was held. Called by {@code StreamMetaModerationApplier} once the
+     * verdict clears; a no-op for a stream that has already ended, because a card
+     * that appears after the broadcast is over is worse than no card at all.
+     */
+    @Transactional(readOnly = true)
+    public void fanoutHeldStreamStarted(UUID streamId) {
+        LiveStream s = streamRepo.findById(streamId).orElse(null);
+        if (s == null || s.getStatus() != LiveStreamStatus.LIVE) return;
+        User host = loadHost(s.getHostId());
+        String hostLabel = host != null ? "@" + host.getUsername() : "Someone";
+        streamFanout.fanoutStreamStarted(toResponse(s, false, host), s.getHostId(), hostLabel);
     }
 
     @Transactional
@@ -196,7 +247,7 @@ public class LiveStreamService {
     @Transactional
     public LiveStreamResponse startRecording(UUID streamId, UUID hostId) {
         LiveStream s = requireOwnedLiveStream(streamId, hostId);
-        if (s.getRecordingStatus() == RecordingStatus.RECORDING) return toResponse(s, true); // idempotent
+        if (s.getRecordingStatus() == RecordingStatus.RECORDING) return toResponse(s, true, null, false); // idempotent
         mediaControl.resumeRecording(streamId);
         s.setRecordingEnabled(true);
         s.setRecordingStatus(RecordingStatus.RECORDING);
@@ -212,7 +263,7 @@ public class LiveStreamService {
     @Transactional
     public LiveStreamResponse stopRecording(UUID streamId, UUID hostId) {
         LiveStream s = requireOwnedLiveStream(streamId, hostId);
-        if (s.getRecordingStatus() != RecordingStatus.RECORDING) return toResponse(s, true); // idempotent
+        if (s.getRecordingStatus() != RecordingStatus.RECORDING) return toResponse(s, true, null, false); // idempotent
         mediaControl.pauseRecording(streamId);
         s.setRecordingStatus(RecordingStatus.PAUSED);
         streamRepo.save(s);
@@ -333,7 +384,9 @@ public class LiveStreamService {
             broadcastViewer(s, viewers, userId, "JOINED");
         }
         // The viewer opens the watch page — enrich with the host's identity.
-        return toResponse(s, s.getHostId().equals(userId), loadHost(s.getHostId()));
+        boolean viewerIsHost = s.getHostId().equals(userId);
+        return toResponse(s, viewerIsHost, loadHost(s.getHostId()),
+                !viewerIsHost && ChatModeration.held(s.getModerationStatus()));
     }
 
     @Transactional
@@ -367,16 +420,54 @@ public class LiveStreamService {
         }
         String username = userRepository.findById(userId).map(User::getUsername).orElse("user");
         String text = req.getText().length() <= 500 ? req.getText() : req.getText().substring(0, 500);
+
+        /* §6, the real-time exception. LIVE_CHAT is ephemeral(): the core resolves
+           the verdict inline against a short budget and never queues it, because
+           there is no row to hold and no catch-up queue to release into.
+
+           A blocked line is dropped and the request still returns 200. Answering
+           400 would tell the sender exactly which wording tripped the classifier,
+           which is a free probing oracle — the same reason ModerationMessages
+           never quotes the offending text back. Borderline follows the configured
+           policy, defaulting to hidden. */
+        ModerationOutcome verdict = contentModeration.submit(
+                ModerationSubmission.of(ModeratedEntityType.LIVE_CHAT,
+                                liveChatRef(streamId), userId)
+                        .parent(streamId.toString())
+                        .field("body", text));
+        if (verdict.rejected()) return;
+        if (verdict.held() && moderationSettings.liveChatBorderlineHidden()) return;
+
         LiveChatMessage msg = new LiveChatMessage(streamId, userId, username, text, Instant.now());
         broadcaster.broadcast(withHost(activeViewerIds(streamId), s.getHostId()),
                 ChatRealtimeEvent.builder().eventType(ChatRealtimeEventType.STREAM_CHAT).streamChat(msg).build());
+    }
+
+    /**
+     * A synthetic ref for a live-chat line, which has no id of its own. The
+     * {@code moderation_cases.entity_ref} column is varchar(64), so this is the
+     * stream id plus a hex nanoTime (53 chars) — enough to point a moderator at
+     * the stream and order the lines within it; the author is already its own
+     * column on the case.
+     */
+    private static String liveChatRef(UUID streamId) {
+        return streamId + ":" + Long.toHexString(System.nanoTime());
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
     public List<LiveStreamResponse> listLive() {
-        return toResponses(streamRepo.findByStatusOrderByViewerCountDesc(LiveStreamStatus.LIVE));
+        return toResponses(discoverable(streamRepo.findByStatusOrderByViewerCountDesc(LiveStreamStatus.LIVE)));
+    }
+
+    /** Drops streams whose metadata has not cleared automated moderation. They are
+     *  still watchable by anyone holding the link — the video was never in
+     *  question — but they do not appear in a browsable directory. */
+    private List<LiveStream> discoverable(List<LiveStream> streams) {
+        return streams.stream()
+                .filter(s -> !ChatModeration.held(s.getModerationStatus()))
+                .toList();
     }
 
     /**
@@ -389,14 +480,16 @@ public class LiveStreamService {
     public List<LiveStreamResponse> listFollowingLive(UUID userId) {
         List<UUID> followingIds = userFollowRepo.findFollowingIds(userId);
         if (followingIds.isEmpty()) return List.of();   // no IN () — nobody followed
-        return toResponses(streamRepo.findByStatusAndHostIdInOrderByStartedAtDesc(
-                LiveStreamStatus.LIVE, followingIds));
+        return toResponses(discoverable(streamRepo.findByStatusAndHostIdInOrderByStartedAtDesc(
+                LiveStreamStatus.LIVE, followingIds)));
     }
 
     @Transactional(readOnly = true)
     public LiveStreamResponse get(UUID streamId, UUID userId) {
         LiveStream s = requireStream(streamId);
-        return toResponse(s, s.getHostId().equals(userId), loadHost(s.getHostId()));
+        boolean viewerIsHost = s.getHostId().equals(userId);
+        return toResponse(s, viewerIsHost, loadHost(s.getHostId()),
+                !viewerIsHost && ChatModeration.held(s.getModerationStatus()));
     }
 
     // ── Management (owner-only) ──────────────────────────────────────────────────
@@ -412,7 +505,7 @@ public class LiveStreamService {
         Page<LiveStream> streams = streamRepo.findByHostIdOrderByStartedAtDesc(
                 hostId, PageRequest.of(Math.max(0, page), Pages.clamp(size)));
         // Ingest URLs only make sense while a stream is still LIVE.
-        return streams.map(s -> toResponse(s, s.getStatus() == LiveStreamStatus.LIVE, host));
+        return streams.map(s -> toResponse(s, s.getStatus() == LiveStreamStatus.LIVE, host, false));
     }
 
     /**
@@ -423,13 +516,37 @@ public class LiveStreamService {
     @Transactional
     public LiveStreamResponse update(UUID streamId, UUID hostId, UpdateStreamRequest req) {
         LiveStream s = requireOwnedStream(streamId, hostId);
+        String newTitle = s.getTitle();
+        String newDescription = s.getDescription();
         if (req.getTitle() != null) {
             if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.TITLE_BLANK_MSG);
-            s.setTitle(req.getTitle().trim());
+            newTitle = req.getTitle().trim();
         }
         if (req.getDescription() != null) {
             String d = req.getDescription().trim();
-            s.setDescription(d.isEmpty() ? null : d);
+            newDescription = d.isEmpty() ? null : d;
+        }
+        if (!java.util.Objects.equals(newTitle, s.getTitle())
+                || !java.util.Objects.equals(newDescription, s.getDescription())) {
+            // §5.5 STRICT. A stream is minutes long — by the time a deferred verdict
+            // landed the broadcast would be over — so an edit that does not clear
+            // outright is refused and the already-approved metadata keeps serving.
+            ModerationOutcome moderation = contentModeration.submit(
+                    ModerationSubmission.of(ModeratedEntityType.STREAM_META,
+                                    streamId.toString(), hostId)
+                            .field("title", newTitle)
+                            .field("description", newDescription));
+            if (moderation.rejected()) {
+                throw new BadRequestException(ModerationMessages.CONTENT_REJECTED_MSG,
+                        ModerationMessages.CONTENT_REJECTED);
+            }
+            if (moderation.held()) {
+                throw new BadRequestException(ModerationMessages.CONTENT_UNDER_REVIEW_MSG,
+                        ModerationMessages.CONTENT_UNDER_REVIEW);
+            }
+            s.setTitle(newTitle);
+            s.setDescription(newDescription);
+            s.setModerationStatus(null);   // an edit that cleared releases a held start
         }
         streamRepo.save(s);
         if (s.getStatus() == LiveStreamStatus.LIVE) {
@@ -438,7 +555,7 @@ public class LiveStreamService {
                             .eventType(ChatRealtimeEventType.STREAM_UPDATED)
                             .stream(toResponse(s, false)).build());
         }
-        return toResponse(s, s.getHostId().equals(hostId), loadHost(hostId));
+        return toResponse(s, true, loadHost(hostId), false);
     }
 
     /**
@@ -689,7 +806,11 @@ public class LiveStreamService {
      *  broadcasts (viewer / chat / ended), where the client already holds the
      *  host's identity from when it joined and only the counters change. */
     private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest) {
-        return toResponse(s, includeIngest, null);
+        return toResponse(s, includeIngest, null, ChatModeration.held(s.getModerationStatus()));
+    }
+
+    private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest, User host) {
+        return toResponse(s, includeIngest, host, ChatModeration.held(s.getModerationStatus()));
     }
 
     /**
@@ -697,8 +818,15 @@ public class LiveStreamService {
      * {@code null} to skip it). Used by the read/discovery endpoints and the
      * go-live / join responses so a card or live-row ring renders straight from
      * this one payload.
+     *
+     * <p>{@code redactMeta} blanks the title and description of a stream whose
+     * metadata has not cleared automated moderation. The two shorter overloads
+     * default it to "redact whenever held", which is the right answer for every
+     * broadcast and list; the host's own views pass {@code false} explicitly,
+     * because an author always sees their own text (§5.1).</p>
      */
-    private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest, User host) {
+    private LiveStreamResponse toResponse(LiveStream s, boolean includeIngest, User host,
+                                          boolean redactMeta) {
         // Publish and playback share the public stream-id path. Playback is public
         // (HLS at :8888, WebRTC/WHEP at :8889). The publish URLs additionally carry
         // the secret streamKey as a ?pass= credential, which the media server forwards
@@ -726,7 +854,9 @@ public class LiveStreamService {
         boolean recAvailable   = rec == RecordingStatus.AVAILABLE;
         String  recDownloadUrl = recAvailable ? "/api/v1/streams/" + id + "/recording/download" : null;
         return new LiveStreamResponse(s.getId(), s.getHostId(), hostUsername, hostDisplayName,
-                hostAvatarUrl, s.getTitle(), s.getDescription(),
+                hostAvatarUrl,
+                redactMeta ? null : s.getTitle(),
+                redactMeta ? null : s.getDescription(),
                 s.getStatus().name(), playbackUrl, whepUrl, whipUrl, ingestUrl, s.getViewerCount(),
                 s.getStartedAt(), s.getEndedAt(), shareUrl,
                 recStatus, recAvailable, recDownloadUrl);

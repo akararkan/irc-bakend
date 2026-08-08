@@ -56,22 +56,38 @@ shapes, error codes, and side effects, verified against the source.
 | [email-preferences.md](notifications/email-preferences.md) | Email toggles, test send, unsubscribe-all |
 
 ### Admin Documentation — `admin/`
+
+Organised one directory per topic. Start at
+[admin/README.md](admin/README.md) — it maps all of them.
+
+| Directory | Covers |
+|------|--------|
+| [foundation/](admin/foundation/README.md) | Access model & RBAC, step-up, API conventions, the endpoint blueprint, the controller reference |
+| [users/](admin/users/README.md) | Directory & roles, the user-administration action surface (add/disable/impersonate), discovery & PYMK privacy, the activity ledger |
+| [trust-safety/](admin/trust-safety/README.md) | **Automated (AI) moderation**, the reports/keyword inbox, report triage & strikes & appeals |
+| [content/](admin/content/README.md) | Research & Q&A, the **admin-curated** sound library, media pipeline & storage, knowledge vocabulary |
+| [communication/](admin/communication/README.md) | Chat/channels/live (+ the privacy boundary), notifications & email |
+| [platform/](admin/platform/README.md) | Search/feed/trending, **the complete log catalog**, analytics & KPIs, operations & runbooks |
+| [api/](admin/api/README.md) | **Request/response JSON for all 271 admin endpoints**, one file per domain |
+| [frontend/](admin/frontend/README.md) | Dashboard UI build guide — auth & roles, page maps, conventions, danger-zone rules, nav tree |
+| [known-issues.md](admin/known-issues.md) · [TODO.md](admin/TODO.md) | Freshness overlay and build status |
+
+### Automated Moderation — `moderation/`
+Quarantine-then-publish for every surface that carries user text, backed by a
+fine-tuned toxicity classifier running as its own container.
+
 | File | Covers |
 |------|--------|
-| [README.md](admin/README.md) | Admin Dashboard plan — partition map, EXISTS/PARTIAL/PLANNED tagging rules |
-| [architecture.md](admin/architecture.md) | Access model, API conventions, existing-admin inventory, RBAC evolution |
-| [users-roles.md](admin/users-roles.md) | User directory/inspection, roles, account controls, growth analytics |
-| [content-moderation.md](admin/content-moderation.md) | Moderation queues, post/story/reel takedown, **sound approval**, keyword blocklist |
-| [research-qna.md](admin/research-qna.md) | Research pipeline/downloads, QnA oversight, tags & trending admin |
-| [chat-channels-live.md](admin/chat-channels-live.md) | Privacy boundaries, channel verification/stats, live-stream control, gifts |
-| [safety-reports.md](admin/safety-reports.md) | Report triage, strikes, appeals, consent viewer, privacy posture |
-| [media-storage.md](admin/media-storage.md) | Pipeline status board, failed queues, storage usage, R2 lifecycle |
-| [notifications-email.md](admin/notifications-email.md) | Volume dashboards, email health, digest monitor, announcement composer |
-| [search-feed-trending.md](admin/search-feed-trending.md) | ES health/reindexes, trending controls, feed ranking + fan-out observability |
-| [logs-audit.md](admin/logs-audit.md) | **The complete log catalog** + unified Log Explorer plan |
-| [analytics-kpis.md](admin/analytics-kpis.md) | KPI tree, per-module metrics, event-collection proposal |
-| [operations.md](admin/operations.md) | Dependency health, jobs inventory, queue/SSE/Redis ops, backup/DR |
-| [admin-api-blueprint.md](admin/admin-api-blueprint.md) | Every admin endpoint (existing + proposed) + phased build order |
+| [README.md](moderation/README.md) | Overview, the pipeline in one diagram, running it locally |
+| [MODERATION_ROADMAP.md](moderation/MODERATION_ROADMAP.md) | The design document — cited from the code as `§n` |
+| [architecture.md](moderation/architecture.md) | Packages, tables, call paths, held representation per surface, **deviations from the design and why** |
+| [admin-guide.md](moderation/admin-guide.md) | Review queue, thresholds + dry-run, teaching the model, retrain/promote/rollback |
+| [api.md](moderation/api.md) | Every `/api/v1/admin/moderation/*` endpoint + the two Python contracts |
+| [frontend/](moderation/frontend/README.md) | **Client & support contract** — held/blocked UX, client rendering, notification copy, support answers |
+| [user-guide/](moderation/user-guide/README.md) | **Plain-language end-user guide**, per content type — posts/comments, stories/polls, research/Q&A, chat/channels/live |
+| [operations.md](moderation/operations.md) | Container topology, failure modes, safe promotion, what to watch |
+| [../model-inference/README.md](model-inference/README.md) | The scoring container (`:8000`) |
+| [../model-training/README.md](model-training/README.md) | The fine-tuning container (`:8001`) |
 
 ### Settings — `settings/`
 | File | Covers |

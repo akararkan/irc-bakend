@@ -34,4 +34,12 @@ public class StoryByAuthorEntity {
     @Column("thumbnail_url") private String  thumbnailUrl;
     @Column("text_content")  private String  textContent;
     @Column("expires_at")    private Instant expiresAt;
+
+    /**
+     * Automated-moderation state. Stories are ephemeral, so the hold ceiling is
+     * deliberately short and the fallback is fail-open-shadow — a 24h story that
+     * spends its whole life in a queue has effectively been deleted
+     * (MODERATION_ROADMAP.md §5.3, §5.6). NULL reads as approved.
+     */
+    @Column("moderation_status") private String moderationStatus;
 }

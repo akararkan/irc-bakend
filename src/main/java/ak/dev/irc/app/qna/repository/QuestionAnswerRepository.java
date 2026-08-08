@@ -19,8 +19,19 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     Page<QuestionAnswer> findByQuestionIdAndDeletedAtIsNullOrderByCreatedAtAsc(UUID questionId, Pageable pageable);
 
-    /** All live answers, any question — feeds the {@code irc-answers} ES reindex. */
-    Page<QuestionAnswer> findByDeletedAtIsNull(Pageable pageable);
+    /**
+     * Every answer the {@code irc-answers} index may legitimately hold. There is
+     * one document per answer and no viewer to grant an author carve-out to, so
+     * held and rejected rows are excluded outright; the null case is the
+     * pre-pipeline archive, which stays indexed.
+     */
+    @Query("""
+        SELECT a FROM QuestionAnswer a
+        WHERE a.deletedAt IS NULL
+          AND (a.moderationStatus IS NULL
+               OR a.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED)
+        """)
+    Page<QuestionAnswer> findIndexable(Pageable pageable);
 
     /** Used by the dedup window to recover the original write on a duplicate submission. */
     @Query("""
@@ -66,6 +77,12 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
      * The viewer always sees their own answers and the question author always
      * sees every answer, regardless of restriction. Block is enforced even on
      * the question author when the answer author has them in a block edge.
+     *
+     * <p>Moderation (docs/moderation/) rides on the same clause but with a
+     * <b>narrower</b> carve-out than restriction: only the answer's own author
+     * sees it while it is held. The question author is explicitly not included —
+     * restriction is their own decision about someone else's answer, whereas a
+     * held answer has not cleared the platform's checks for anyone yet.</p>
      */
     @EntityGraph(attributePaths = {"author", "author.profile", "parentAnswer"})
     @Query("""
@@ -74,6 +91,9 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
           AND a.parentAnswer IS NULL
           AND a.deletedAt IS NULL
           AND (:blockedIds IS NULL OR a.author.id NOT IN :blockedIds)
+          AND (a.moderationStatus IS NULL
+               OR a.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:requesterId IS NOT NULL AND a.author.id = :requesterId))
           AND (
             (:requesterId IS NOT NULL AND a.question.author.id = :requesterId)
             OR (:requesterId IS NOT NULL AND a.author.id = :requesterId)
@@ -96,6 +116,9 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         WHERE a.parentAnswer.id = :parentAnswerId
           AND a.deletedAt IS NULL
           AND (:blockedIds IS NULL OR a.author.id NOT IN :blockedIds)
+          AND (a.moderationStatus IS NULL
+               OR a.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:requesterId IS NOT NULL AND a.author.id = :requesterId))
           AND (
             (:requesterId IS NOT NULL AND a.question.author.id = :requesterId)
             OR (:requesterId IS NOT NULL AND a.author.id = :requesterId)
@@ -127,6 +150,15 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
     void updateReplyCount(@Param("id") UUID id, @Param("delta") long delta);
 
     /**
+     * Post-update read of the denormalised {@code replyCount}. Scalar select
+     * rather than {@code entityManager.refresh}, for the same reason as
+     * {@code QuestionRepository.findAnswerCount}: the publication path can run
+     * from the moderation applier, where the parent is a lazy association.
+     */
+    @Query("SELECT a.replyCount FROM QuestionAnswer a WHERE a.id = :id")
+    Long findReplyCount(@Param("id") UUID id);
+
+    /**
      * Atomic clamp-at-zero increment/decrement of the denormalised
      * {@code reactionCount}. Mirrors {@code PostCommentRepository.updateReactionCount}
      * — using entity setter + save was racy and would silently lose updates
@@ -144,20 +176,28 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     // ── Reconciliation source-of-truth queries ─────────────────────────────
 
-    /** Live (non-deleted) top-level answers on a question. Used to rebuild {@code question.answerCount}. */
+    // Both counters are maintained at publication, not at insert, so the
+    // source-of-truth rebuild has to apply the same moderation filter — otherwise
+    // a reconcile would fold every held answer back into the public count.
+
+    /** Live, published top-level answers on a question. Used to rebuild {@code question.answerCount}. */
     @Query("""
         SELECT COUNT(a) FROM QuestionAnswer a
         WHERE a.question.id = :questionId
           AND a.parentAnswer IS NULL
           AND a.deletedAt IS NULL
+          AND (a.moderationStatus IS NULL
+               OR a.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED)
         """)
     long countLiveTopLevelByQuestionId(@Param("questionId") UUID questionId);
 
-    /** Live (non-deleted) reanswers under a parent answer. Used to rebuild {@code answer.replyCount}. */
+    /** Live, published reanswers under a parent answer. Used to rebuild {@code answer.replyCount}. */
     @Query("""
         SELECT COUNT(a) FROM QuestionAnswer a
         WHERE a.parentAnswer.id = :parentId
           AND a.deletedAt IS NULL
+          AND (a.moderationStatus IS NULL
+               OR a.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED)
         """)
     long countLiveRepliesByParentId(@Param("parentId") UUID parentId);
 
@@ -176,6 +216,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         UPDATE question_answers parent SET reply_count = (
             SELECT COUNT(*) FROM question_answers a
             WHERE a.parent_answer_id = parent.id AND a.deleted_at IS NULL
+              AND (a.moderation_status IS NULL OR a.moderation_status = 'APPROVED')
         )
         """, nativeQuery = true)
     int bulkReconcileReplyCount();
@@ -221,6 +262,7 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
         WHERE a.deleted_at IS NULL
           AND to_tsvector('simple', coalesce(a.body, ''))
               @@ websearch_to_tsquery('simple', :q)
+          AND (a.moderation_status IS NULL OR a.moderation_status = 'APPROVED')
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR a.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, a.created_at DESC

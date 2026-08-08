@@ -2,8 +2,14 @@ package ak.dev.irc.app.research.service.impl;
 
 import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.*;
+import ak.dev.irc.app.common.messages.ModerationMessages;
 import ak.dev.irc.app.common.messages.ResearchMessages;
 import ak.dev.irc.app.common.service.MentionService;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.enums.ModerationStatus;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.rabbitmq.event.user.MentionSource;
 import ak.dev.irc.app.rabbitmq.publisher.ResearchEventPublisher;
 import ak.dev.irc.app.research.dto.request.*;
@@ -95,6 +101,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final ak.dev.irc.app.common.cache.DedupGuard dedupGuard;
     private final ak.dev.irc.app.activity.service.UserActivityService userActivityService;
     private final ak.dev.irc.app.common.text.RichTextService richText;
+    private final ContentModerationService contentModeration;
 
     // Cassandra cleanup — partition-level deletes invoked during cascade.
     private final ak.dev.irc.app.research.cassandra.repository.ResearchReactionByResearchRepository cassReactionByResearchRepo;
@@ -350,22 +357,60 @@ public class ResearchServiceImpl implements ResearchService {
                         .forEach(c -> notifyContributorAdded(notifyRef, c.getUser(), c.getRole()));
             }
 
+            // ── §5.5: an edit re-enters moderation ────────────────────────
+            // Only once the paper is public. A draft has no audience to protect,
+            // and worse, a deferred approval landing on a draft would push it
+            // live — the author never asked to publish. Without this gate a
+            // researcher could publish a clean paper and immediately PATCH the
+            // abstract to whatever the classifier would have refused.
+            // A paper with a verdict still in flight is re-scored too: its open
+            // case carries the OLD text, and the applier publishes whatever the
+            // row says when that verdict lands. Without this, "publish → get
+            // held → PATCH the abstract" hands the pending approval a body no
+            // classifier and no reviewer ever saw. REJECTED is deliberately not
+            // included — nothing is going to auto-publish it, and re-scoring
+            // every keystroke of a rewrite would make a refused draft unsavable.
+            boolean heldByEdit = false;
+            if ((research.isPublished() || verdictInFlight(research.getModerationStatus()))
+                    && moderatedTextChanged(previousMentionText, research, req)) {
+                ModerationOutcome moderation = contentModeration.submitOrThrow(
+                        moderationSubmissionFor(research, researcherId));
+                research.setModerationStatus(moderation.status());
+                research.setModerationDecidedAt(LocalDateTime.now());
+                if (moderation.held()) {
+                    // The edit is kept; the paper leaves the public surface until
+                    // the verdict lands. publishedAt is deliberately left intact
+                    // so the applier restores the original publication date
+                    // instead of back-dating the paper to the day it cleared.
+                    research.setStatus(ResearchStatus.DRAFT);
+                    heldByEdit = true;
+                }
+            }
+
             research = researchRepo.save(research);
 
             // Mention delta — pings only handles freshly introduced by the edit.
-            mentionService.scanAndPublishDelta(
-                    previousMentionText,
-                    joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription()),
-                    MentionSource.RESEARCH,
-                    research.getId(),
-                    null,
-                    researcherId,
-                    research.getResearcher() != null ? research.getResearcher().getUsername() : null);
+            // Suppressed while held: a mention ping carries the new text into
+            // someone else's inbox, which is publication by another name.
+            if (!heldByEdit) {
+                mentionService.scanAndPublishDelta(
+                        previousMentionText,
+                        joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription()),
+                        MentionSource.RESEARCH,
+                        research.getId(),
+                        null,
+                        researcherId,
+                        research.getResearcher() != null ? research.getResearcher().getUsername() : null);
+            }
 
+            // indexAsync deletes the document for anything that isn't PUBLISHED,
+            // so a paper just pulled back to DRAFT drops out of the catalog here.
             researchSearch.indexAsync(research);
 
             // Keep Cassandra trending in sync only while the paper is live.
-            if (req.tags() != null && research.isPublished()) {
+            if (heldByEdit) {
+                contentTagService.untag(researchId);
+            } else if (req.tags() != null && research.isPublished()) {
                 indexTagsToCassandra(research);
             }
             broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_UPDATED, researcherId);
@@ -379,6 +424,30 @@ public class ResearchServiceImpl implements ResearchService {
             if (msg.contains("slug")) throw new DuplicateResourceException("Research", "slug", "conflict");
             throw new BadRequestException(ResearchMessages.CONSTRAINT_VIOLATION_MSG, ResearchMessages.CONSTRAINT_VIOLATION);
         }
+    }
+
+    /**
+     * Did this PATCH touch anything a classifier would score? Structural lists
+     * (tags, sources, contributors) count as changed whenever they are present
+     * at all — diffing them costs more than the re-score it would save, and
+     * over-scoring is the safe direction to err in.
+     *
+     * @param previousText the pre-edit title/abstract/description join
+     */
+    /**
+     * PENDING or IN_REVIEW — a case is open and an applier will act on the row
+     * when it settles. REJECTED and APPROVED are settled: nothing will move the
+     * paper without the author asking again.
+     */
+    private static boolean verdictInFlight(ModerationStatus status) {
+        return status == ModerationStatus.PENDING || status == ModerationStatus.IN_REVIEW;
+    }
+
+    private boolean moderatedTextChanged(String previousText, Research research, UpdateResearchRequest req) {
+        if (req.tags() != null || req.sources() != null || req.contributors() != null) return true;
+        if (req.keywords() != null || req.citation() != null) return true;
+        return !Objects.equals(previousText,
+                joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription()));
     }
 
     private void updateResearchFields(Research research, UpdateResearchRequest req) {
@@ -524,8 +593,10 @@ public class ResearchServiceImpl implements ResearchService {
         downloadRepo.deleteAllByResearchId(researchId);
         reactionRepo.deleteAllByResearchId(researchId);
         saveRepo.deleteAllByResearchId(researchId);
-        // Comments first — research_comment_likes have ON DELETE CASCADE FK
-        // pointing at research_comments, so they go with them.
+        // Comment likes BEFORE comments: the research_comment_likes →
+        // research_comments FK is NO ACTION, so leaving them behind fails the
+        // comment purge with a constraint violation.
+        commentRepo.deleteAllLikesByResearchId(researchId);
         commentRepo.deleteAllByResearchId(researchId);
         contributorRepo.deleteAllByResearchId(researchId);
         sourceRepo.deleteAllByResearchId(researchId);
@@ -601,6 +672,16 @@ public class ResearchServiceImpl implements ResearchService {
      * that are pure post-commit notifications (search index, lifecycle
      * broadcast, RabbitMQ event, activity log) are wrapped in try/catch so a
      * flaky downstream can't undo a clean publish.
+     *
+     * <p>This is also the single moderation gate for a paper (docs/moderation/
+     * §5.2). {@code create()} only ever writes a DRAFT and fans nothing out, so
+     * scoring here — rather than at create time — means an author can keep
+     * revising private text without burning inference calls, and every route to
+     * public visibility, including {@code ScheduledPublishJob}, funnels through
+     * one check. A blocked verdict throws before the status flip, so the paper
+     * simply stays a draft; a held verdict records the state and returns without
+     * publishing, and {@code ResearchModerationApplier} finishes the job when the
+     * verdict lands.</p>
      */
     @Override
     @Caching(evict = {
@@ -618,6 +699,36 @@ public class ResearchServiceImpl implements ResearchService {
         if (research.getAbstractText() == null || research.getAbstractText().isBlank())
             throw new BadRequestException(ResearchMessages.MISSING_ABSTRACT_MSG, ResearchMessages.MISSING_ABSTRACT);
 
+        // A verdict is already coming for this exact paper — do not open a second
+        // case. ScheduledPublishJob re-scans every DRAFT whose scheduledPublishAt
+        // has passed, and a held paper is still a DRAFT, so without this guard a
+        // scheduled paper burns a fresh inference batch and a fresh case row once
+        // a minute for as long as it sits in the review queue — and each of those
+        // rolls of the dice is another chance for the same text to slip through.
+        if (verdictInFlight(research.getModerationStatus())) {
+            throw new BadRequestException(ModerationMessages.CONTENT_UNDER_REVIEW_MSG,
+                    ModerationMessages.CONTENT_UNDER_REVIEW);
+        }
+
+        // Every author-written string on the paper, scored as separate fields so
+        // the review queue can point at the one that tripped rather than a wall
+        // of concatenated text.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                moderationSubmissionFor(research, researcherId));
+
+        research.setModerationStatus(moderation.status());
+        research.setModerationDecidedAt(LocalDateTime.now());
+
+        if (moderation.held()) {
+            // Nothing flips and nothing fans out. The paper is still a DRAFT, so
+            // it is already absent from every feed, the ES catalog and the tag
+            // index; the extra column is what closes the id/slug/token reads.
+            researchRepo.save(research);
+            log.info("[RESEARCH] publish of {} held for moderation ({}) — fan-out deferred",
+                    researchId, moderation.status());
+            return mapper.toResponse(research, researcherId);
+        }
+
         research.setStatus(ResearchStatus.PUBLISHED);
         research.setPublishedAt(LocalDateTime.now());
         research = researchRepo.save(research);
@@ -626,10 +737,27 @@ public class ResearchServiceImpl implements ResearchService {
         // when half the fan-out below would already have run.
         entityManager.flush();
 
-        // ── Critical side effects: if these throw, roll the publish back ──
-        // Mention scan + Cassandra tag indexing are part of the publication
-        // contract — a paper that doesn't fan out to its tag/mention surface
-        // isn't really "published".
+        publishFanout(research, researcherId);
+
+        log.info("Research published: {} [{}]", research.getId(), research.getIrcId());
+        return mapper.toResponse(research, researcherId);
+    }
+
+    /**
+     * Everything that makes a paper public beyond its own row: mention pings,
+     * the Cassandra tag/trending feed, the RabbitMQ lifecycle event, the
+     * activity log, the ES catalog entry and the realtime status pill.
+     *
+     * <p>Public because {@code ResearchModerationApplier} runs the identical
+     * steps when a held paper clears later. Two copies of a fan-out that drifted
+     * apart would leave approved papers missing from search or trending — the
+     * exact failure the note above {@code ScheduledPublishJob} warns about.</p>
+     *
+     * <p>Mention scan and tag indexing stay uncaught on purpose: they are part of
+     * the publication contract, and a paper that never reached its tag feed
+     * should roll the status flip back rather than sit half-published.</p>
+     */
+    public void publishFanout(Research research, UUID researcherId) {
         String mentionSource = joinNonBlank(research.getTitle(), research.getAbstractText(), research.getDescription());
         mentionService.scanAndPublish(
                 mentionSource,
@@ -654,9 +782,55 @@ public class ResearchServiceImpl implements ResearchService {
 
         try { broadcastLifecycle(research, ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.RESEARCH_PUBLISHED, researcherId); }
         catch (Exception e) { log.warn("[RESEARCH] lifecycle broadcast failed for {}: {}", research.getId(), e.getMessage()); }
+    }
 
-        log.info("Research published: {} [{}]", research.getId(), research.getIrcId());
-        return mapper.toResponse(research, researcherId);
+    /**
+     * Drops the three Redis caches a paper appears in. Every owner-path
+     * transition (update, publish, archive, retract, unpublish, delete) evicts
+     * them through {@code @CacheEvict}; the moderation applier flips the same
+     * row from outside the service, so it needs the same eviction or an
+     * anonymous {@code getById} keeps serving a paper that was just taken down
+     * for the rest of the 5-minute TTL.
+     *
+     * <p>Empty body on purpose — the annotations are the whole method. It must
+     * be called through the Spring proxy (the applier's {@code ObjectProvider}),
+     * never as a self-invocation.</p>
+     */
+    @Caching(evict = {
+            @CacheEvict(value = "research-by-id",   key = "#researchId"),
+            @CacheEvict(value = "research-by-slug", allEntries = true),
+            @CacheEvict(value = "research-feed",    allEntries = true)
+    })
+    public void evictResearchCaches(UUID researchId) {
+        // no-op: the eviction is the point
+    }
+
+    /**
+     * Collects every author-authored string hanging off a paper into one
+     * submission. Sources, media and contributors carry free text too, and text
+     * nobody scores is the obvious place to hide a payload.
+     */
+    private ModerationSubmission moderationSubmissionFor(Research research, UUID authorId) {
+        return ModerationSubmission
+                .of(ModeratedEntityType.RESEARCH, research.getId().toString(), authorId)
+                .field("title", research.getTitle())
+                .field("abstract", research.getAbstractText())
+                .field("body", research.getDescription())
+                .field("keywords", research.getKeywords())
+                .field("citation", research.getCitation())
+                .fields("tag", research.getTags() == null ? List.of()
+                        : research.getTags().stream().map(ResearchTag::getTagName).toList())
+                .fields("source_title", research.getSources() == null ? List.of()
+                        : research.getSources().stream().map(ResearchSource::getTitle).toList())
+                .fields("source_citation", research.getSources() == null ? List.of()
+                        : research.getSources().stream().map(ResearchSource::getCitationText).toList())
+                .fields("media_caption", research.getMediaFiles() == null ? List.of()
+                        : research.getMediaFiles().stream().map(ResearchMedia::getCaption).toList())
+                .fields("media_alt", research.getMediaFiles() == null ? List.of()
+                        : research.getMediaFiles().stream().map(ResearchMedia::getAltText).toList())
+                .fields("contributor_note", research.getContributors() == null ? List.of()
+                        : research.getContributors().stream()
+                                .map(ResearchContributor::getContributionNote).toList());
     }
 
     @Override
@@ -840,6 +1014,9 @@ public class ResearchServiceImpl implements ResearchService {
                                       String altText, Integer displayOrder, UUID researcherId) {
         validateFile(file, "file", null);
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+        // Outside the try: this throws BadRequestException on a block, and the
+        // catch below would turn a deliberate 400 into a 500.
+        moderateAnnotation(researchId, researcherId, "media_caption", caption, "media_alt_text", altText);
         try {
             String s3Key     = uploadFileToS3(file, "research/" + researchId + "/media", ResearchMessages.MEDIA_UPLOAD_FAILED);
             String publicUrl = getPublicUrlFromS3(s3Key);
@@ -869,6 +1046,8 @@ public class ResearchServiceImpl implements ResearchService {
                 .orElseThrow(() -> new ResourceNotFoundException("Media", "id", mediaId));
         if (!media.getResearch().getId().equals(researchId))
             throw new ForbiddenException(ResearchMessages.MEDIA_NOT_IN_RESEARCH_MSG);
+        moderateAnnotation(researchId, researcherId,
+                "media_caption", request.caption(), "media_alt_text", request.altText());
         if (request.caption() != null)         media.setCaption(request.caption());
         if (request.altText() != null)         media.setAltText(request.altText());
         if (request.displayOrder() != null)    media.setDisplayOrder(request.displayOrder());
@@ -903,6 +1082,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (!source.getResearch().getId().equals(researchId)) {
             throw new BadRequestException(ResearchMessages.SOURCE_MISMATCH_MSG, ResearchMessages.SOURCE_MISMATCH);
         }
+
+        moderateAnnotation(researchId, researcherId,
+                "source_title", req.title(), "source_citation", req.citationText());
 
         if (req.sourceType() != null)    source.setSourceType(req.sourceType());
         if (req.title() != null)         source.setTitle(req.title());
@@ -956,6 +1138,10 @@ public class ResearchServiceImpl implements ResearchService {
                 && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
             throw new ResourceNotFoundException("Research", "id", researchId);
         }
+        // Source titles and citation text are submitted to the classifier as
+        // their own fields, so serving them off a held paper would publish the
+        // exact strings the hold is holding — by a different URL.
+        requireModerationVisible(research, currentUserId, "id", researchId);
         return sourceRepo.findByResearchIdOrderByDisplayOrderAsc(researchId).stream()
                 .map(mapper::toSourceResponse)
                 .toList();
@@ -978,9 +1164,62 @@ public class ResearchServiceImpl implements ResearchService {
                 && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
             throw new ResourceNotFoundException("Research", "id", researchId);
         }
+        requireModerationVisible(research, currentUserId, "id", researchId);
         return mapper.toResponse(research, currentUserId,
                 resolveSavedFlag(researchId, currentUserId),
                 resolveReactedFlag(researchId, currentUserId));
+    }
+
+    /**
+     * Refuses a paper the classifier is holding to everyone but its author.
+     * Direct id / slug / share-token reads bypass every feed and search filter,
+     * so without this a held paper is one guessable URL away from being fully
+     * public — the hold would only ever have slowed it down.
+     *
+     * <p>Throwing rather than returning a stripped body is what keeps the
+     * {@code @Cacheable(condition = "#currentUserId == null")} reads honest:
+     * Spring caches return values, never exceptions, so an anonymous hit on a
+     * held paper leaves nothing behind to serve after it clears.</p>
+     */
+    private void requireModerationVisible(Research research, UUID currentUserId,
+                                          String refName, Object refValue) {
+        if (!research.isHeldForModeration()) return;
+        boolean isOwner = currentUserId != null
+                && research.getResearcher() != null
+                && research.getResearcher().getId().equals(currentUserId);
+        if (!isOwner) throw new ResourceNotFoundException("Research", refName, refValue);
+    }
+
+    /**
+     * Moderates free text written onto a paper's <em>sub-resources</em> — media
+     * captions and alt-text, source titles and citation text, contributor notes.
+     *
+     * <p>{@code publish()} scores every one of these strings, but each also has
+     * its own PATCH endpoint outside {@code UpdateResearchRequest}. Without this
+     * call, "publish something clean, then edit the source title" is a complete
+     * bypass of the paper gate — text nobody scores is the obvious place to hide
+     * a payload.</p>
+     *
+     * <p>The verdict is deliberately terminal (cleared or refused) rather than
+     * held: none of these rows has a visibility column of its own, and pulling a
+     * live paper back to DRAFT over an alt-text tweak would be a worse outcome
+     * than refusing the tweak. This is the "lightweight" edit option §5.5
+     * sanctions — the paper stays up, the bad edit does not land.</p>
+     */
+    private void moderateAnnotation(UUID researchId, UUID actorId,
+                                    String firstName, String firstText,
+                                    String secondName, String secondText) {
+        if ((firstText == null || firstText.isBlank())
+                && (secondText == null || secondText.isBlank())) {
+            return;
+        }
+        contentModeration.submitOrRefuse(
+                ak.dev.irc.app.moderation.service.ModerationSubmission.of(
+                                ak.dev.irc.app.moderation.enums.ModeratedEntityType.CONTENT_ANNOTATION,
+                                researchId + ":" + firstName, actorId)
+                        .parent(researchId.toString())
+                        .field(firstName, firstText)
+                        .field(secondName == null ? "secondary" : secondName, secondText));
     }
 
     @Override
@@ -996,6 +1235,7 @@ public class ResearchServiceImpl implements ResearchService {
                 && socialGuard.isBlockedBetween(currentUserId, research.getResearcher().getId())) {
             throw new ResourceNotFoundException("Research", "slug", slug);
         }
+        requireModerationVisible(research, currentUserId, "slug", slug);
         UUID researchId = research.getId();
         return mapper.toResponse(research, currentUserId,
                 resolveSavedFlag(researchId, currentUserId),
@@ -1009,6 +1249,9 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException(ResearchMessages.MISSING_TOKEN_MSG, ResearchMessages.MISSING_TOKEN);
         Research research = researchRepo.findByShareTokenAndDeletedAtIsNull(shareToken)
                 .orElseThrow(() -> new ResourceNotFoundException("Research", "token", shareToken));
+        // The share token is the widest door of the three — it is designed to be
+        // handed around — so it gets the same hold check as id and slug.
+        requireModerationVisible(research, currentUserId, "token", shareToken);
         UUID researchId = research.getId();
         return mapper.toResponse(research, currentUserId,
                 resolveSavedFlag(researchId, currentUserId),
@@ -1291,61 +1534,40 @@ public class ResearchServiceImpl implements ResearchService {
                 // and prevents a misbehaving client from producing depth-2 trees.
                 if (parent.getParent() != null) parent = parent.getParent();
                 comment.setParent(parent);
-                // Atomic — entity setter + save was racy and lost concurrent reply bumps.
-                commentRepo.updateReplyCount(parent.getId(), 1);
             }
 
             comment = commentRepo.save(comment);
-            researchRepo.adjustCommentCount(researchId, 1);
-            // JPQL bulk UPDATE bypassed the L1 cache; refresh so the broadcast
-            // carries the post-increment commentCount, then write the whole
-            // counter set through to Redis so feed cards re-render the new
-            // number without an extra Postgres trip.
-            entityManager.refresh(research);
-            counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId,
-                    ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS, research.getCommentCount());
-            researchEventPublisher.publishCommented(research, user, comment);
 
-            // Realtime — broadcast on the research stream so every reader
-            // sees the new comment + fresh comment count live.
-            ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.ResearchRealtimeEventBuilder evt =
-                    ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
-                            .eventType(comment.getParent() == null
-                                    ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_CREATED
-                                    : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REPLY_CREATED)
-                            .researchId(researchId)
-                            .actorId(user.getId())
-                            .actorUsername(user.getUsername())
-                            .actorAvatarUrl(user.getProfileImage())
-                            .commentId(comment.getId())
-                            .body(comment.getContent())
-                            .mediaUrl(comment.getMediaUrl())
-                            .mediaType(comment.getMediaType())
-                            .mediaThumbnailUrl(comment.getMediaThumbnailUrl());
-            if (comment.getParent() != null) {
-                evt.parentCommentId(comment.getParent().getId())
-                        .commentReplyCount(comment.getParent().getReplyCount());
+            // Moderation runs before anything that makes the comment count or
+            // travel. The id only exists after save() (@GeneratedValue mints it
+            // on persist), but a rejection throws inside this same transaction,
+            // so the INSERT and the parent's replyCount bump both roll back and
+            // no comment row survives. The case row does — it is written in its
+            // own REQUIRES_NEW transaction.
+            ModerationOutcome moderation = contentModeration.submitOrThrow(
+                    ModerationSubmission.of(ModeratedEntityType.RESEARCH_COMMENT,
+                                    comment.getId().toString(), userId)
+                            .parent(researchId.toString())
+                            .field("body", comment.getContent()));
+            comment.setModerationStatus(moderation.status());
+            comment.setModerationDecidedAt(LocalDateTime.now());
+
+            if (moderation.held()) {
+                // Everything below pushes the raw body at other people — the
+                // RabbitMQ notification, the SSE broadcast, the mention pings —
+                // so none of it may run before a verdict.
+                //
+                // The visible counters are deferred to the applier rather than
+                // bumped-then-corrected: research.commentCount and the parent's
+                // replyCount are read by feed cards and thread headers, and a
+                // count that includes a comment nobody but its author can open
+                // is a worse lie than a count that lags by a few seconds.
+                log.debug("[RESEARCH] comment {} on {} held for moderation ({})",
+                        comment.getId(), researchId, moderation.status());
+                return mapper.toCommentResponse(comment, true);
             }
-            // Counts already on `research` are fresh (we refreshed above).
-            evt.commentCount(research.getCommentCount())
-               .reactionCount(research.getReactionCount())
-               .shareCount(research.getShareCount())
-               .saveCount(research.getSaveCount())
-               .viewCount(research.getViewCount())
-               .downloadCount(research.getDownloadCount())
-               .citationCount(research.getCitationCount());
-            evt.comment(mapper.toCommentResponse(comment, false, null));   // A1: patch row in place
-            researchRealtime.broadcast(evt.build());
 
-            // @mentions in research comments — no @followers fan-out from comments.
-            mentionService.scanAndPublish(
-                    comment.getContent(),
-                    MentionSource.RESEARCH_COMMENT,
-                    comment.getId(),
-                    researchId,
-                    userId,
-                    user.getUsername(),
-                    /* allowFollowersToken */ false);
+            publishCommentSideEffects(comment);
 
             // return full view for the commenter (they should see their own comment even if hidden)
             return mapper.toCommentResponse(comment, true);
@@ -1354,6 +1576,100 @@ public class ResearchServiceImpl implements ResearchService {
         catch (DataIntegrityViolationException e) {
             throw new BadRequestException(ResearchMessages.COMMENT_DATA_ERROR_MSG, ResearchMessages.COMMENT_DATA_ERROR);
         }
+    }
+
+    /**
+     * Everything a comment does once it is allowed to exist for other people:
+     * the two visible counters, the Redis write-through feed cards read, the
+     * RabbitMQ notification to the researcher, the SSE broadcast and the mention
+     * pings.
+     *
+     * <p>Public because {@code ResearchCommentModerationApplier} replays exactly
+     * this when a held comment clears. Keeping it in one place is what stops the
+     * deferred path from silently dropping, say, the counter bump — the bug that
+     * would leave a visible comment the feed card never counts.</p>
+     */
+    public void publishCommentSideEffects(ResearchComment comment) {
+        Research research = comment.getResearch();
+        UUID researchId = research.getId();
+        User user = comment.getUser();
+
+        if (comment.getParent() != null) {
+            // Atomic — entity setter + save was racy and lost concurrent reply bumps.
+            commentRepo.updateReplyCount(comment.getParent().getId(), 1);
+        }
+        researchRepo.adjustCommentCount(researchId, 1);
+        // JPQL bulk UPDATE bypassed the L1 cache; refresh so the broadcast
+        // carries the post-increment commentCount, then write the whole
+        // counter set through to Redis so feed cards re-render the new
+        // number without an extra Postgres trip.
+        entityManager.refresh(research);
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId,
+                ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS, research.getCommentCount());
+        researchEventPublisher.publishCommented(research, user, comment);
+
+        // Realtime — broadcast on the research stream so every reader
+        // sees the new comment + fresh comment count live.
+        ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.ResearchRealtimeEventBuilder evt =
+                ak.dev.irc.app.research.realtime.ResearchRealtimeEvent.builder()
+                        .eventType(comment.getParent() == null
+                                ? ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.COMMENT_CREATED
+                                : ak.dev.irc.app.research.realtime.ResearchRealtimeEventType.REPLY_CREATED)
+                        .researchId(researchId)
+                        .actorId(user.getId())
+                        .actorUsername(user.getUsername())
+                        .actorAvatarUrl(user.getProfileImage())
+                        .commentId(comment.getId())
+                        .body(comment.getContent())
+                        .mediaUrl(comment.getMediaUrl())
+                        .mediaType(comment.getMediaType())
+                        .mediaThumbnailUrl(comment.getMediaThumbnailUrl());
+        if (comment.getParent() != null) {
+            evt.parentCommentId(comment.getParent().getId())
+                    .commentReplyCount(comment.getParent().getReplyCount());
+        }
+        // Counts already on `research` are fresh (we refreshed above).
+        evt.commentCount(research.getCommentCount())
+           .reactionCount(research.getReactionCount())
+           .shareCount(research.getShareCount())
+           .saveCount(research.getSaveCount())
+           .viewCount(research.getViewCount())
+           .downloadCount(research.getDownloadCount())
+           .citationCount(research.getCitationCount());
+        evt.comment(mapper.toCommentResponse(comment, false, null));   // A1: patch row in place
+        researchRealtime.broadcast(evt.build());
+
+        // @mentions in research comments — no @followers fan-out from comments.
+        mentionService.scanAndPublish(
+                comment.getContent(),
+                MentionSource.RESEARCH_COMMENT,
+                comment.getId(),
+                researchId,
+                user.getId(),
+                user.getUsername(),
+                /* allowFollowersToken */ false);
+    }
+
+    /**
+     * The counter half of {@link #publishCommentSideEffects} run backwards, for
+     * the narrow case where a comment was already released and a later verdict
+     * pulls it back — an SLA fail-open the model then refuses, or an admin
+     * reversing an approval.
+     *
+     * <p>Only the counters and their Redis mirror are undone. The mention pings
+     * and the RabbitMQ notification have already been delivered and cannot be
+     * recalled; the read paths are what stop the body itself from being served.</p>
+     */
+    public void unpublishCommentCounters(ResearchComment comment) {
+        UUID researchId = comment.getResearch().getId();
+        if (comment.getParent() != null) {
+            commentRepo.updateReplyCount(comment.getParent().getId(), -1);
+        }
+        researchRepo.adjustCommentCount(researchId, -1);
+        entityManager.refresh(comment.getResearch());
+        counterCache.set(ak.dev.irc.app.common.cache.CounterCache.Kind.RESEARCH, researchId,
+                ak.dev.irc.app.common.cache.CounterCache.F_COMMENTS,
+                comment.getResearch().getCommentCount());
     }
 
     @Override
@@ -1417,11 +1733,51 @@ public class ResearchServiceImpl implements ResearchService {
             throw new BadRequestException(ResearchMessages.COMMENT_DELETED_EDIT_MSG, ResearchMessages.COMMENT_DELETED);
 
         String previousContent = comment.getContent();
+        boolean wasHeld = comment.isHeldForModeration();
         comment.setContent(request.content().trim());
         comment.setEdited(true);
         comment.setEditedAt(LocalDateTime.now());
         comment.audit(AuditAction.UPDATE, "Edited comment");
+
+        // §5.5 — re-score the new wording. Without this, "post something bland,
+        // then edit it" is a complete bypass of the create-time check. A refusal
+        // throws, which rolls the whole edit back and leaves the original text
+        // in place; a hold keeps the edit but pulls the comment back out of
+        // everyone else's view until the verdict lands.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.RESEARCH_COMMENT,
+                                comment.getId().toString(), userId)
+                        .parent(researchId.toString())
+                        .field("body", comment.getContent()));
+        comment.setModerationStatus(moderation.status());
+        comment.setModerationDecidedAt(LocalDateTime.now());
+
         ResearchComment saved = commentRepo.save(comment);
+
+        if (moderation.held()) {
+            if (!wasHeld) {
+                // It was live, so it IS in research.commentCount and the parent's
+                // replyCount. Everything downstream keys off the invariant
+                // "held ⇒ not counted": the applier's onApproved replays
+                // publishCommentSideEffects (a second +1), its onRejected and
+                // deleteComment both skip their -1 for a held row. Leaving the
+                // bump in place is what turns one comment into two in the header
+                // and leaves the count permanently inflated if it is refused.
+                unpublishCommentCounters(saved);
+            }
+            log.debug("[RESEARCH] comment {} edit held for moderation ({})",
+                    saved.getId(), moderation.status());
+            return mapper.toCommentResponse(saved, true);
+        }
+
+        if (wasHeld) {
+            // The comment was invisible to everyone else and its counters were
+            // never bumped; the rewrite is what finally cleared it. For the rest
+            // of the platform this is the comment ARRIVING, not being edited —
+            // an "edited" event for a row no reader ever saw would patch nothing.
+            publishCommentSideEffects(saved);
+            return mapper.toCommentResponse(saved, true);
+        }
 
         // Realtime — push the edited body on the research stream so every
         // viewer sees the change live. Mirrors PostCommentService.editComment.
@@ -1479,10 +1835,15 @@ public class ResearchServiceImpl implements ResearchService {
         commentReactionRepo.deleteAllByCommentId(commentId);
         comment.setLikeCount(0L);
 
+        // A comment still held by moderation was never added to either counter
+        // (addComment defers both to the applier), so decrementing here would
+        // silently eat somebody else's comment from the total.
+        boolean wasCounted = !comment.isHeldForModeration();
+
         comment.setDeletedAt(LocalDateTime.now());
         comment.audit(AuditAction.DELETE, "Deleted comment");
         commentRepo.save(comment);
-        researchRepo.adjustCommentCount(researchId, -1);
+        if (wasCounted) researchRepo.adjustCommentCount(researchId, -1);
         // Refresh the research row + write through to Redis so the broadcast
         // and feed cards reflect the post-decrement commentCount.
         Research research = comment.getResearch();
@@ -1501,7 +1862,7 @@ public class ResearchServiceImpl implements ResearchService {
             ResearchComment parent = comment.getParent();
             parentId = parent.getId();
             // Atomic clamp-at-zero — entity setter + save was racy.
-            commentRepo.updateReplyCount(parentId, -1);
+            if (wasCounted) commentRepo.updateReplyCount(parentId, -1);
             entityManager.refresh(parent);
             parentReplyCount = parent.getReplyCount();
         }
@@ -1593,9 +1954,12 @@ public class ResearchServiceImpl implements ResearchService {
             isResearchOwner = research.getResearcher() != null && research.getResearcher().getId().equals(currentUserId);
         }
 
+        // The non-owner query carries the viewer so a held comment still renders
+        // for whoever wrote it — hiding an author's own comment from them looks
+        // like the platform ate it, which §5.1 explicitly rules out.
         Page<ResearchComment> page = isResearchOwner
                 ? commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullOrderByCreatedAtDesc(researchId, pageable)
-                : commentRepo.findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(researchId, pageable);
+                : commentRepo.findVisibleTopLevel(researchId, currentUserId, pageable);
 
         final boolean canViewHidden = isResearchOwner;
 
@@ -2302,6 +2666,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (contributorRepo.existsByResearchIdAndUserId(researchId, request.userId()))
             throw new ConflictException(ResearchMessages.CONTRIBUTOR_ALREADY_EXISTS_MSG);
 
+        moderateAnnotation(researchId, researcherId,
+                "contributor_note", request.contributionNote(), null, null);
+
         User contributor = findContributorCandidateOrThrow(request.userId());
 
         int displayOrder = request.displayOrder() != null
@@ -2336,6 +2703,13 @@ public class ResearchServiceImpl implements ResearchService {
                                                           List<ContributorRequest> contributors,
                                                           UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
+
+        if (!CollectionUtils.isEmpty(contributors)) {
+            for (ContributorRequest candidate : contributors) {
+                moderateAnnotation(researchId, researcherId,
+                        "contributor_note", candidate.contributionNote(), null, null);
+            }
+        }
 
         // Snapshot prior contributors so we only notify users who are NEWLY
         // being added — re-ordering or note edits via a full replace shouldn't
@@ -2377,6 +2751,9 @@ public class ResearchServiceImpl implements ResearchService {
         if (!row.getResearch().getId().equals(researchId))
             throw new BadRequestException(ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH_MSG,
                     ResearchMessages.CONTRIBUTOR_RESEARCH_MISMATCH);
+
+        moderateAnnotation(researchId, researcherId,
+                "contributor_note", request.contributionNote(), null, null);
 
         if (request.role() != null)             row.setRole(request.role());
         if (request.displayOrder() != null)     row.setDisplayOrder(request.displayOrder());

@@ -25,6 +25,12 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.messages.ChatMessages;
+import ak.dev.irc.app.common.messages.ModerationMessages;
+import ak.dev.irc.app.chat.util.ChatModeration;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -61,6 +67,8 @@ public class ConversationService {
     private final UserRepository userRepository;
     private final UnreadBadgeCache unreadBadge;
     private final ChatSettingsService chatSettings;
+    /** Automated text moderation of the group's title/description (docs/moderation/). */
+    private final ContentModerationService contentModeration;
 
     // ── Create ─────────────────────────────────────────────────────────────────
     // NOTE: the controller calls createDirect / createGroup directly (not a single
@@ -126,18 +134,35 @@ public class ConversationService {
                 .memberCount(1 + toAdd.size())
                 .build());
 
+        // Group titles and descriptions are moderated as CHANNEL units — same
+        // long-lived, widely-rendered piece of text, same policy. The id is
+        // JPA-generated so the row exists first; a rejection throws out of this
+        // @Transactional method and takes the insert with it, before any member row
+        // or notification exists.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.CHANNEL, c.getId().toString(), creatorId)
+                        .field("title", c.getTitle())
+                        .field("description", c.getDescription()));
+        c.setModerationStatus(ChatModeration.marker(moderation));
+
         List<ConversationMember> rows = new ArrayList<>(toAdd.size() + 1);
         rows.add(ConversationMember.of(c, creatorId, MemberRole.OWNER));
         for (UUID id : toAdd) rows.add(ConversationMember.of(c, id, MemberRole.MEMBER));
         memberRepo.saveAll(rows);
 
         String creatorLabel = label(creatorId, users);
+        // The GROUP_CREATED system line carries no title, so it is safe to write
+        // even while the title is held.
         systemMessages.write(c.getId(), SystemEventType.GROUP_CREATED, creatorId,
                 creatorLabel + " created the group");
 
-        // Notify + realtime the added members.
+        // Notify + realtime the added members. The invite notification quotes the
+        // title into an inbox row and a push payload, which is exactly the kind of
+        // one-way delivery a held title must not get; the invite itself still goes
+        // out, just without the wording.
+        String notifiableTitle = moderation.held() ? null : c.getTitle();
         for (UUID id : toAdd) {
-            chatNotifications.notifyAddedToGroup(id, creatorId, c.getId(), c.getTitle(), creatorLabel);
+            chatNotifications.notifyAddedToGroup(id, creatorId, c.getId(), notifiableTitle, creatorLabel);
             broadcaster.broadcastTo(id, ChatRealtimeEvent.builder()
                     .eventType(ChatRealtimeEventType.MEMBER_CHANGED)
                     .conversationId(c.getId())
@@ -231,13 +256,28 @@ public class ConversationService {
                 throw new ForbiddenException(
                         ChatMessages.EDIT_GROUP_INFO_FORBIDDEN_MSG, ChatMessages.ADMINS_ONLY);
             }
-            if (req.getTitle() != null && !req.getTitle().equals(c.getTitle())) {
+            boolean titleChanged = req.getTitle() != null && !req.getTitle().equals(c.getTitle());
+            boolean descriptionChanged = req.getDescription() != null
+                    && !req.getDescription().equals(c.getDescription());
+            if (titleChanged || descriptionChanged) {
+                // §5.5 STRICT, as for channels: the TITLE_CHANGED system message
+                // quotes the new name into every member's timeline the instant it is
+                // applied, so an unresolved verdict refuses the change rather than
+                // publishing text nobody has cleared.
+                requireModeratedInfo(conversationId, userId,
+                        titleChanged ? req.getTitle().trim() : c.getTitle(),
+                        descriptionChanged
+                                ? (req.getDescription().isBlank() ? null : req.getDescription().trim())
+                                : c.getDescription());
+                c.setModerationStatus(null);
+            }
+            if (titleChanged) {
                 c.setTitle(req.getTitle().trim());
                 systemMessages.write(conversationId, SystemEventType.TITLE_CHANGED, userId,
                         label(userId, Map.of()) + " changed the group name to \"" + c.getTitle() + "\"");
                 touchedInfo = true;
             }
-            if (req.getDescription() != null && !req.getDescription().equals(c.getDescription())) {
+            if (descriptionChanged) {
                 c.setDescription(req.getDescription().isBlank() ? null : req.getDescription().trim());
                 systemMessages.write(conversationId, SystemEventType.DESCRIPTION_CHANGED, userId,
                         label(userId, Map.of()) + " changed the group description");
@@ -433,6 +473,29 @@ public class ConversationService {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Scores a proposed group title/description and refuses the edit unless it
+     * clears outright. Only the caller's own transaction is rolled back — the case
+     * row survives in its REQUIRES_NEW transaction, so the refusal stays
+     * explainable.
+     */
+    private void requireModeratedInfo(UUID conversationId, UUID actorId,
+                                      String title, String description) {
+        ModerationOutcome moderation = contentModeration.submit(
+                ModerationSubmission.of(ModeratedEntityType.CHANNEL,
+                                conversationId.toString(), actorId)
+                        .field("title", title)
+                        .field("description", description));
+        if (moderation.rejected()) {
+            throw new BadRequestException(ModerationMessages.CONTENT_REJECTED_MSG,
+                    ModerationMessages.CONTENT_REJECTED);
+        }
+        if (moderation.held()) {
+            throw new BadRequestException(ModerationMessages.CONTENT_UNDER_REVIEW_MSG,
+                    ModerationMessages.CONTENT_UNDER_REVIEW);
+        }
+    }
 
     private Conversation requireGroup(UUID conversationId) {
         Conversation c = conversationRepo.findById(conversationId)

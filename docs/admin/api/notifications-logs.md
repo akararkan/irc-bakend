@@ -5,7 +5,7 @@ Complete request/response reference for two controllers:
 - `AdminNotificationController` — `/api/v1/admin/notifications/**` — notification volume/read-rate stats, the `NotificationType` registry, the platform-announcement composer (dry-run → confirm → send/schedule), the manual trending-digest trigger, the email send-ledger health strip, admin self-test email, and push-token purge.
 - `AdminLogsController` — `/api/v1/admin/logs/**` — the unified Log Explorer (grammar over per-store adapters), the global login-events reader, the step-up-gated CSV export, per-admin saved views, alert-rule CRUD + the firings feed, the retention status board, and aggregate OTP telemetry.
 
-Concept docs: [notifications-email.md](../notifications-email.md), [logs-audit.md](../logs-audit.md), UI wiring: [frontend-dashboard-guide.md](../frontend-dashboard-guide.md).
+Concept docs: [notifications-email.md](../communication/notifications-email.md), [logs-audit.md](../platform/logs-audit.md), UI wiring: [frontend-dashboard-guide.md](../frontend/README.md).
 
 **Conventions used below**
 

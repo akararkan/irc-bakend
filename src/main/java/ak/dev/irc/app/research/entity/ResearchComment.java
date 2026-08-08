@@ -123,8 +123,30 @@ public class ResearchComment extends BaseAuditEntity {
     @JoinColumn(name = "hidden_by_user_id", foreignKey = @ForeignKey(name = "fk_rcomment_hidden_by"))
     private ak.dev.irc.app.user.entity.User hiddenBy;
 
+    // ── Automated moderation (docs/moderation/) ──────────────────────────────
+
+    /**
+     * Verdict of the automated text pass. Deliberately separate from
+     * {@link #isHidden}: hiding is a human act by the research owner and is
+     * reversible from the UI, while this column is machine state the moderation
+     * applier owns. Null means the row predates moderation or carried no text
+     * to score.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", length = 20)
+    private ak.dev.irc.app.moderation.enums.ModerationStatus moderationStatus;
+
+    @Column(name = "moderation_decided_at")
+    private LocalDateTime moderationDecidedAt;
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     public boolean isDeleted()    { return deletedAt != null; }
     public boolean isTopLevel()   { return parent == null; }
+
+    /** Held or refused by the classifier — readable by its author and the research owner only. */
+    public boolean isHeldForModeration() {
+        return moderationStatus != null
+                && moderationStatus != ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED;
+    }
 }

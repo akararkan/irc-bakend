@@ -39,4 +39,7 @@ public class StoryLookupEntity {
     @Column("created_at") private Instant createdAt;
     @Column("visibility") private String  visibility;
     @Column("expires_at") private Instant expiresAt;
+
+    /** Mirror of {@code stories_by_author.moderation_status}; NULL reads as approved. */
+    @Column("moderation_status") private String moderationStatus;
 }

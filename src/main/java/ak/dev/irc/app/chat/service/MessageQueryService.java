@@ -18,6 +18,7 @@ import ak.dev.irc.app.chat.repository.ConversationPinRepository;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.search.service.ChatSearchService;
 import ak.dev.irc.app.chat.util.ChatBuckets;
+import ak.dev.irc.app.chat.util.ChatModeration;
 import ak.dev.irc.app.chat.util.SnowflakeIdGenerator;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
@@ -139,12 +140,19 @@ public class MessageQueryService {
         if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) {
             throw new ResourceNotFoundException("Message", "id", messageId);
         }
+        // Held for automated moderation: nobody but its sender may open it. A 404
+        // rather than a redacted body, so this endpoint cannot be used to confirm
+        // that a specific message exists and is being reviewed.
+        if (ChatModeration.hiddenFrom(m.getModerationStatus(), m.getSenderId(), userId)) {
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
         Map<UUID, User> users = loadUsers(Set.of(m.getSenderId()));
         ReplyPreview reply = m.getReplyToId() == null ? null
                 : mapper.toReplyPreview(messageByIdRepo.findById(m.getReplyToId()).orElse(null));
         boolean starred = starRepo.findByUserIdAndMessageId(userId, messageId).isPresent();
         ChatMapper.MessageExtras extras = extrasForOne(m, userId, convo.isChannel());
-        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply, starred, extras);
+        return mapper.toMessage(m, users, reactionService.detailFor(messageId, userId), reply,
+                starred, extras, userId);
     }
 
     /** Views/forwards (channels) + live poll state for one message. */
@@ -204,6 +212,9 @@ public class MessageQueryService {
             throw new ResourceNotFoundException("Message", "id", messageId);
         }
         if (hiddenRepo.existsByUserIdAndMessageId(userId, messageId)) {  // "delete for me" → not visible
+            throw new ResourceNotFoundException("Message", "id", messageId);
+        }
+        if (ChatModeration.hiddenFrom(m.getModerationStatus(), m.getSenderId(), userId)) {
             throw new ResourceNotFoundException("Message", "id", messageId);
         }
         return reactionService.detailFor(messageId, userId);
@@ -451,6 +462,9 @@ public class MessageQueryService {
             if (hidden.contains(id)) continue;       // per-user "delete for me"
             if (Boolean.TRUE.equals(m.getDeleted())) continue;
             if (MessageType.SYSTEM.name().equals(m.getType())) continue;
+            // Held for automated moderation — dropped outright rather than returned
+            // blank, so a search hit or a pinned entry can't advertise its existence.
+            if (ChatModeration.hiddenFrom(m.getModerationStatus(), m.getSenderId(), viewerId)) continue;
             ReplyPreview reply = m.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(m.getReplyToId()));
             var pm = metrics.get(id);
@@ -458,7 +472,7 @@ public class MessageQueryService {
                     pm == null ? null : pm.views(), pm == null ? null : pm.forwards(),
                     pm == null ? null : pm.comments(), polls.get(id));
             out.add(mapper.toMessage(m, users, reactions.getOrDefault(id, List.of()), reply,
-                    starred.contains(id), extras));
+                    starred.contains(id), extras, viewerId));
         }
         return out;
     }
@@ -503,6 +517,11 @@ public class MessageQueryService {
         List<MessageResponse> out = new ArrayList<>(rows.size());
         for (MessageByConversationEntity r : rows) {
             if (hidden.contains(r.getMessageId())) continue; // per-user hide
+            // A message still held for automated moderation is not in this reader's
+            // timeline at all unless they wrote it. Dropping the row (rather than
+            // blanking it) is safe for pagination: the cursor comes from the raw
+            // Cassandra slice, which is computed before hydration.
+            if (ChatModeration.hiddenFrom(r.getModerationStatus(), r.getSenderId(), viewerId)) continue;
             ReplyPreview reply = r.getReplyToId() == null ? null
                     : mapper.toReplyPreview(replies.get(r.getReplyToId()));
             ChatMapper.MessageExtras extras;
@@ -515,7 +534,7 @@ public class MessageQueryService {
                 extras = new ChatMapper.MessageExtras(null, null, null, polls.get(r.getMessageId()));
             }
             out.add(mapper.toMessage(r, users, reactions.getOrDefault(r.getMessageId(), List.of()), reply,
-                    starred.contains(r.getMessageId()), extras));
+                    starred.contains(r.getMessageId()), extras, viewerId));
         }
         return out;
     }

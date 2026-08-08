@@ -49,6 +49,14 @@ public interface MessageByConversationRepository
                                                 @Param("after") long after,
                                                 @Param("limit") int limit);
 
+    /** Stamped once the message has actually been fanned out — see the entity field. */
+    @Query("UPDATE messages_by_conversation SET delivered = :delivered " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    void setDelivered(@Param("cid") UUID conversationId,
+                      @Param("bucket") int bucket,
+                      @Param("messageId") long messageId,
+                      @Param("delivered") boolean delivered);
+
     /** Edit: rewrite the body + stamp {@code edited_at}. */
     @Query("UPDATE messages_by_conversation SET body = :body, edited_at = :editedAt " +
            "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
@@ -85,6 +93,19 @@ public interface MessageByConversationRepository
                     @Param("bucket") int bucket,
                     @Param("messageId") long messageId,
                     @Param("poll") String poll);
+
+    /**
+     * Flip the automated-moderation flag. An approval passes {@code null} rather
+     * than {@code "APPROVED"}: writing null deletes the cell, so a message living
+     * under a disappearing-messages TTL is not resurrected as a row carrying one
+     * live, never-expiring column after the rest of it has gone.
+     */
+    @Query("UPDATE messages_by_conversation SET moderation_status = :status " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    void setModerationStatus(@Param("cid") UUID conversationId,
+                             @Param("bucket") int bucket,
+                             @Param("messageId") long messageId,
+                             @Param("status") String status);
 
     /** Soft delete: tombstone the row and null its content, keeping ordering intact. */
     @Query("UPDATE messages_by_conversation SET deleted = true, body = null, media = null " +

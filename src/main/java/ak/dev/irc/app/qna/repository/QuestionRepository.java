@@ -14,10 +14,18 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * <h3>Moderation visibility</h3>
+ * Every public read below carries the same predicate: a question is visible when
+ * it was never scored ({@code moderationStatus IS NULL} — the pre-pipeline
+ * archive and anything written while the classifier was off), when it cleared,
+ * or when the viewer is its own author. Held and rejected questions are
+ * therefore hidden from feeds, search and detail without a second filtering pass
+ * in the service layer. {@link #adminBrowse} deliberately omits it: the review
+ * queue exists precisely to look at what nobody else can see.
+ */
 @Repository
 public interface QuestionRepository extends JpaRepository<Question, UUID> {
-
-    Page<Question> findByDeletedAtIsNullOrderByCreatedAtDesc(Pageable pageable);
 
     /** Admin browse (docs/admin/research-qna.md §4) — every filter optional. */
     @Query(value = """
@@ -51,6 +59,44 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Query("SELECT COUNT(q) FROM Question q WHERE q.deletedAt IS NULL")
     long countByDeletedAtIsNull();
 
+    /**
+     * Offset feed. Split out from the old derived finder so the moderation
+     * predicate has a {@code viewerId} to grant the author-sees-own carve-out;
+     * an anonymous viewer passes null and sees published questions only.
+     */
+    @Query(value = """
+        SELECT q FROM Question q
+        JOIN FETCH q.author a
+        LEFT JOIN FETCH a.profile
+        WHERE q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
+        ORDER BY q.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(q) FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND q.author.id = :viewerId))
+        """)
+    Page<Question> findFeed(@Param("viewerId") UUID viewerId, Pageable pageable);
+
+    /**
+     * Every question the {@code irc-qna} index may legitimately hold. The
+     * author-sees-own carve-out has no meaning here — Elasticsearch has one copy
+     * per document and no viewer — so held and rejected rows are simply excluded.
+     */
+    @Query("""
+        SELECT q FROM Question q
+        WHERE q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED)
+        ORDER BY q.createdAt DESC
+        """)
+    Page<Question> findIndexable(Pageable pageable);
+
     @Query(value = """
             SELECT CAST(date_trunc('day', q.created_at) AS date), COUNT(*)
             FROM questions q
@@ -71,9 +117,12 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         JOIN FETCH q.author a
         LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """)
-    List<Question> findFeedFirstPage(Pageable pageable);
+    List<Question> findFeedFirstPage(@Param("viewerId") UUID viewerId, Pageable pageable);
 
     @Query("""
         SELECT q FROM Question q
@@ -81,9 +130,14 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
           AND q.createdAt < :cursor
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """)
-    List<Question> findFeedAfter(@Param("cursor") java.time.LocalDateTime cursor, Pageable pageable);
+    List<Question> findFeedAfter(@Param("viewerId") UUID viewerId,
+                                 @Param("cursor") java.time.LocalDateTime cursor,
+                                 Pageable pageable);
 
     // ── Block-aware feed variants ────────────────────────────────────
     // Drop questions whose author is in any block-relationship with the
@@ -95,14 +149,22 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
           AND a.id NOT IN :blockedIds
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """,
         countQuery = """
         SELECT COUNT(q) FROM Question q
         WHERE q.deletedAt IS NULL
           AND q.author.id NOT IN :blockedIds
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND q.author.id = :viewerId))
         """)
-    Page<Question> findFeedExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+    Page<Question> findFeedExcluding(@Param("viewerId") UUID viewerId,
+                                     @Param("blockedIds") List<UUID> blockedIds,
+                                     Pageable pageable);
 
     @Query("""
         SELECT q FROM Question q
@@ -110,9 +172,14 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         LEFT JOIN FETCH a.profile
         WHERE q.deletedAt IS NULL
           AND a.id NOT IN :blockedIds
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """)
-    List<Question> findFeedFirstPageExcluding(@Param("blockedIds") List<UUID> blockedIds, Pageable pageable);
+    List<Question> findFeedFirstPageExcluding(@Param("viewerId") UUID viewerId,
+                                              @Param("blockedIds") List<UUID> blockedIds,
+                                              Pageable pageable);
 
     @Query("""
         SELECT q FROM Question q
@@ -121,9 +188,13 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         WHERE q.deletedAt IS NULL
           AND q.createdAt < :cursor
           AND a.id NOT IN :blockedIds
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """)
-    List<Question> findFeedAfterExcluding(@Param("cursor") java.time.LocalDateTime cursor,
+    List<Question> findFeedAfterExcluding(@Param("viewerId") UUID viewerId,
+                                          @Param("cursor") java.time.LocalDateTime cursor,
                                           @Param("blockedIds") List<UUID> blockedIds,
                                           Pageable pageable);
 
@@ -134,14 +205,22 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         LEFT JOIN FETCH a.profile
         WHERE a.id IN :authorIds
           AND q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND a.id = :viewerId))
         ORDER BY q.createdAt DESC
         """,
         countQuery = """
         SELECT COUNT(q) FROM Question q
         WHERE q.author.id IN :authorIds
           AND q.deletedAt IS NULL
+          AND (q.moderationStatus IS NULL
+               OR q.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR (:viewerId IS NOT NULL AND q.author.id = :viewerId))
         """)
-    Page<Question> findFollowingFeed(@Param("authorIds") List<UUID> authorIds, Pageable pageable);
+    Page<Question> findFollowingFeed(@Param("viewerId") UUID viewerId,
+                                     @Param("authorIds") List<UUID> authorIds,
+                                     Pageable pageable);
 
     Page<Question> findByAuthorIdAndDeletedAtIsNullOrderByCreatedAtDesc(UUID authorId, Pageable pageable);
 
@@ -170,6 +249,25 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
     @Query("UPDATE Question q SET q.answerCount = CASE WHEN q.answerCount + :delta < 0 THEN 0 ELSE q.answerCount + :delta END WHERE q.id = :id")
     void adjustAnswerCount(@Param("id") UUID id, @Param("delta") long delta);
 
+    /**
+     * Post-update read of the denormalised count. A scalar select rather than
+     * {@code entityManager.refresh}: the publication path can be driven by the
+     * moderation applier, where the question arrives as a lazy association and
+     * refreshing it is both awkward and unnecessary.
+     */
+    @Query("SELECT q.answerCount FROM Question q WHERE q.id = :id")
+    Long findAnswerCount(@Param("id") UUID id);
+
+    /**
+     * Atomic {@code OPEN → ANSWERED}. Conditional in SQL so a question the author
+     * closed or archived while an answer sat in moderation is not reopened when
+     * that answer is finally released.
+     */
+    @Modifying
+    @Query("UPDATE Question q SET q.status = ak.dev.irc.app.qna.enums.QuestionStatus.ANSWERED "
+            + "WHERE q.id = :id AND q.status = ak.dev.irc.app.qna.enums.QuestionStatus.OPEN")
+    void markAnsweredIfOpen(@Param("id") UUID id);
+
     /** Atomic clamp-at-zero adjust of the denormalised {@code acceptedAnswerCount} (D2). */
     @Modifying
     @Query("UPDATE Question q SET q.acceptedAnswerCount = CASE WHEN q.acceptedAnswerCount + :delta < 0 THEN 0 ELSE q.acceptedAnswerCount + :delta END WHERE q.id = :id")
@@ -196,6 +294,7 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
             WHERE a.question_id = questions.id
               AND a.parent_answer_id IS NULL
               AND a.deleted_at IS NULL
+              AND (a.moderation_status IS NULL OR a.moderation_status = 'APPROVED')
         )
         """, nativeQuery = true)
     int bulkReconcileAnswerCount();
@@ -210,6 +309,9 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
 
     // ── Full-text search (block-aware) ─────────────────────────────────
     // Per-query block exclusion — pass null/empty for anonymous viewers.
+    // No author carve-out on these three: search is a discovery surface, and a
+    // question that has not cleared is not discoverable even by the person who
+    // wrote it — they reach it from their own profile instead.
     @Query(value = """
         SELECT q.id, ts_rank_cd(to_tsvector('simple',
                   coalesce(q.title,'') || ' ' || coalesce(q.body,'')),
@@ -218,6 +320,7 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         WHERE q.deleted_at IS NULL
           AND to_tsvector('simple', coalesce(q.title,'') || ' ' || coalesce(q.body,''))
               @@ websearch_to_tsquery('simple', :q)
+          AND (q.moderation_status IS NULL OR q.moderation_status = 'APPROVED')
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, q.created_at DESC
@@ -232,6 +335,7 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         FROM questions q
         WHERE q.deleted_at IS NULL
           AND coalesce(q.title,'') % :q
+          AND (q.moderation_status IS NULL OR q.moderation_status = 'APPROVED')
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, q.created_at DESC
@@ -251,6 +355,7 @@ public interface QuestionRepository extends JpaRepository<Question, UUID> {
         WHERE q.deleted_at IS NULL
           AND (LOWER(q.title) LIKE LOWER(:q || '%')
             OR coalesce(q.title,'') % :q)
+          AND (q.moderation_status IS NULL OR q.moderation_status = 'APPROVED')
           AND (CAST(:blockedIds AS uuid[]) IS NULL
                OR q.author_id <> ALL(CAST(:blockedIds AS uuid[])))
         ORDER BY score DESC, q.created_at DESC

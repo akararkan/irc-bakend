@@ -273,16 +273,27 @@ public class CassandraFeedController {
             PostByIdEntity updated = postService.editPost(id, user.getId(), body);
             if (updated == null) return ResponseEntity.notFound().build();
 
-            // Realtime: notify every open viewer that the post body changed.
-            try {
-                postRealtimeService.broadcast(id,
-                        ak.dev.irc.app.post.realtime.PostRealtimeEvent.builder()
-                                .eventType(ak.dev.irc.app.post.realtime.PostRealtimeEventType.POST_UPDATED)
-                                .postId(id)
-                                .actorId(user.getId())
-                                .textContent(updated.getTextContent())
-                                .build());
-            } catch (Exception ignore) { /* realtime is best-effort */ }
+            // Realtime: notify every open viewer that the post body changed —
+            // but only when the post is actually servable. The realtime plane
+            // PUSHES, so it bypasses every read-path gate: broadcasting the body
+            // of a post that moderation is holding would ship un-cleared text
+            // straight into open clients while all REST reads correctly hide it.
+            // Skipping (rather than sending a null body) leaves viewers showing
+            // the previously approved text, which is not a leak; the applier
+            // re-broadcasts when the verdict clears.
+            boolean servable = updated.getStatus() == null
+                    || "PUBLISHED".equalsIgnoreCase(updated.getStatus());
+            if (servable) {
+                try {
+                    postRealtimeService.broadcast(id,
+                            ak.dev.irc.app.post.realtime.PostRealtimeEvent.builder()
+                                    .eventType(ak.dev.irc.app.post.realtime.PostRealtimeEventType.POST_UPDATED)
+                                    .postId(id)
+                                    .actorId(user.getId())
+                                    .textContent(updated.getTextContent())
+                                    .build());
+                } catch (Exception ignore) { /* realtime is best-effort */ }
+            }
 
             return ResponseEntity.ok(hydrator.hydrate(updated));
         } catch (SecurityException e) {

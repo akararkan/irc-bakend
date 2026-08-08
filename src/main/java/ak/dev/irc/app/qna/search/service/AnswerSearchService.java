@@ -44,8 +44,13 @@ public class AnswerSearchService {
     @Async
     public void indexAsync(QuestionAnswer answer) {
         if (answer == null) return;
-        if (answer.getDeletedAt() != null) {
-            deleteQuietly(answer.getId(), "soft-deleted");
+        // A held or rejected answer must not be findable, and the document
+        // carries a hardcoded status of ACTIVE that would otherwise claim
+        // otherwise. Enforced here rather than at each call site so an edit that
+        // sends a live answer back into review also pulls its stale document.
+        if (answer.getDeletedAt() != null || answer.isModerationHeld()) {
+            deleteQuietly(answer.getId(),
+                    answer.getDeletedAt() != null ? "soft-deleted" : "held for moderation");
             return;
         }
         try {
@@ -110,8 +115,7 @@ public class AnswerSearchService {
         long indexed = 0;
         int pages = 0, page = 0;
         while (true) {
-            Page<QuestionAnswer> slice =
-                    answerRepo.findByDeletedAtIsNull(PageRequest.of(page, PAGE_SIZE));
+            Page<QuestionAnswer> slice = answerRepo.findIndexable(PageRequest.of(page, PAGE_SIZE));
             if (slice.isEmpty()) break;
 
             List<AnswerSearchDocument> docs = new ArrayList<>(slice.getNumberOfElements());

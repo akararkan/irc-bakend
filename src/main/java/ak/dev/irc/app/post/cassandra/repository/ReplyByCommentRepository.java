@@ -38,6 +38,14 @@ public interface ReplyByCommentRepository extends CassandraRepository<ReplyByCom
                   @Param("replyId") UUID replyId,
                   @Param("text") String text);
 
+    /** See {@link CommentByPostRepository#setModerationStatus} — NULL is cleared. */
+    @Query("UPDATE replies_by_comment SET moderation_status = :status " +
+           "WHERE parent_id = :parentId AND created_at = :createdAt AND reply_id = :replyId")
+    void setModerationStatus(@Param("parentId") UUID parentId,
+                             @Param("createdAt") Instant createdAt,
+                             @Param("replyId") UUID replyId,
+                             @Param("status") String status);
+
     /**
      * Hard delete the reply row. Same rationale as
      * {@link CommentByPostRepository#hardDelete}: a single row tombstone

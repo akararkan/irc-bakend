@@ -49,6 +49,18 @@ public interface CommentByPostRepository extends CassandraRepository<CommentByPo
                   @Param("text") String text);
 
     /**
+     * Flips the automated-moderation flag without touching the body. A NULL
+     * status is the cleared state — the hydrator reads null as "predates
+     * moderation / approved", matching the null-status convention posts use.
+     */
+    @Query("UPDATE comments_by_post SET moderation_status = :status " +
+           "WHERE post_id = :postId AND created_at = :createdAt AND comment_id = :commentId")
+    void setModerationStatus(@Param("postId") UUID postId,
+                             @Param("createdAt") Instant createdAt,
+                             @Param("commentId") UUID commentId,
+                             @Param("status") String status);
+
+    /**
      * Hard delete the comment row. Replaces the legacy {@code softDelete}
      * pattern (UPDATE … SET is_deleted=true), which left the row in place
      * forever and caused thread-partition bloat. A DELETE writes one row

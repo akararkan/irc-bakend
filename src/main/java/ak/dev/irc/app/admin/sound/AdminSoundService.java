@@ -65,6 +65,31 @@ public class AdminSoundService {
 
     // ── reads ───────────────────────────────────────────────────────────
 
+    /**
+     * The single-sound admin-dashboard create path (sound-library.md §5). Sounds
+     * are no longer user-uploadable — this is the only way a new sound enters the
+     * library — so an admin add is trusted by construction: it lands straight on
+     * APPROVED, skipping the PENDING_REVIEW queue that exists for the (now
+     * removed) end-user upload flow.
+     */
+    public AdminSoundRow create(String title, String artistName, String audioUrl,
+                                String coverArtUrl, Integer durationSeconds,
+                                String category, boolean official) {
+        if (title == null || title.isBlank() || audioUrl == null || audioUrl.isBlank()) {
+            throw new BadRequestException(AdminContentMessages.INVALID_IMPORT_ITEM_MSG,
+                    AdminContentMessages.INVALID_IMPORT_ITEM);
+        }
+        UUID adminId = SecurityUtils.requireCurrentUserId();
+        String parsedCategory = parseCategory(category == null
+                ? SoundCategory.PLATFORM_MUSIC.name() : category);
+        SoundEntity created = soundService.createSound(title, artistName, audioUrl, coverArtUrl,
+                durationSeconds, parsedCategory, adminId, true);
+        if (official) created = soundService.setOfficial(created.getId(), true);
+        adminAuditor.record(AuditOperation.CREATE, "Sound", created.getId(),
+                "ADMIN_SOUND_CREATE", created.getTitle());
+        return toRow(created);
+    }
+
     public List<AdminSoundRow> queue(String status, UUID uploaderId, Instant cursor, int pageSize) {
         String normalized = parseStatus(status == null || status.isBlank()
                 ? "PENDING_REVIEW" : status);

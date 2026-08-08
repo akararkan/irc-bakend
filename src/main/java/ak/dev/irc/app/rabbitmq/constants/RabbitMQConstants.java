@@ -33,6 +33,9 @@ public final class RabbitMQConstants {
     /** Media pipeline: delete-all-renditions worker. */
     public static final String MEDIA_DELETE_QUEUE  = "irc.queue.media.delete";
 
+    /** Automated text moderation (MODERATION_ROADMAP.md §11): re-scores held content. */
+    public static final String MODERATION_QUEUE    = "irc.queue.moderation";
+
     // ── Routing keys — User Social ────────────────────────────────────────────
 
     public static final String USER_FOLLOWED   = "user.social.followed";
@@ -104,4 +107,14 @@ public final class RabbitMQConstants {
     public static final String MEDIA_PROCESS_PATTERN = "media.process.#";
     /** Catches media.delete.* */
     public static final String MEDIA_DELETE_PATTERN  = "media.delete.#";
+
+    // ════════════════════════════════════════════════════════════
+    //  Automated text moderation  (MODERATION_ROADMAP.md §11)
+    // ════════════════════════════════════════════════════════════
+
+    /** A held content unit needs a verdict — carries only the case id, never the text. */
+    public static final String MODERATION_REQUESTED = "moderation.requested";
+
+    /** Catches moderation.* */
+    public static final String MODERATION_PATTERN   = "moderation.#";
 }

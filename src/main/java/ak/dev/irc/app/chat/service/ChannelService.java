@@ -26,6 +26,12 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
 import ak.dev.irc.app.common.messages.ChannelStreamMessages;
+import ak.dev.irc.app.common.messages.ModerationMessages;
+import ak.dev.irc.app.chat.util.ChatModeration;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -70,6 +76,8 @@ public class ChannelService {
     private final S3StorageService storageService;
     private final UserRepository userRepository;
     private final ak.dev.irc.app.chat.search.service.ChannelSearchService channelSearch;
+    /** Automated text moderation of the channel's title/description (docs/moderation/). */
+    private final ContentModerationService contentModeration;
 
     /** Web origin the share links point at (frontend routes /c/{handle}). */
     @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
@@ -104,8 +112,24 @@ public class ChannelService {
                 .channelSettings(req.getSettings() != null ? req.getSettings() : ChannelSettings.defaults())
                 .memberCount(1)
                 .build());
+
+        // The channel id is JPA-generated, so the row has to exist before the
+        // submission can name it. A rejection throws out of this @Transactional
+        // method and rolls the insert back, so a blocked channel leaves nothing
+        // behind — submitOrThrow's own REQUIRES_NEW transaction keeps the case row
+        // and its evidence regardless. Nothing published has happened yet: the
+        // owner membership and the discovery index write both come after this.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.CHANNEL, c.getId().toString(), ownerId)
+                        .field("title", c.getTitle())
+                        .field("description", c.getDescription()));
+        c.setModerationStatus(ChatModeration.marker(moderation));
+
         memberRepo.save(ConversationMember.of(c, ownerId, MemberRole.OWNER, "OWNER"));
-        channelSearch.indexAsync(c);
+        // A held channel is never indexed — ChannelSearchService treats "held" like
+        // "private" and de-indexes, so this call is safe either way, but skipping it
+        // avoids a pointless ES round trip.
+        if (!moderation.held()) channelSearch.indexAsync(c);
         return toResponse(c, memberRepo.findMember(c.getId(), ownerId).orElse(null), false);
     }
 
@@ -117,12 +141,40 @@ public class ChannelService {
         requireRight(channelId, actorId, AdminRights::isCanChangeInfo,
                 ChannelStreamMessages.CHANNEL_EDIT_INFO_FORBIDDEN_MSG);
 
+        String newTitle = c.getTitle();
+        String newDescription = c.getDescription();
         if (req.getTitle() != null) {
             if (!StringUtils.hasText(req.getTitle())) throw new BadRequestException(ChannelStreamMessages.TITLE_BLANK_MSG);
-            c.setTitle(req.getTitle().trim());
+            newTitle = req.getTitle().trim();
         }
         if (req.getDescription() != null) {
-            c.setDescription(StringUtils.hasText(req.getDescription()) ? req.getDescription().trim() : null);
+            newDescription = StringUtils.hasText(req.getDescription()) ? req.getDescription().trim() : null;
+        }
+        boolean textChanged = !java.util.Objects.equals(newTitle, c.getTitle())
+                || !java.util.Objects.equals(newDescription, c.getDescription());
+        if (textChanged) {
+            // §5.5 STRICT edit policy. A channel is long-lived and its title is on
+            // every post it has ever published, so an unresolved verdict must not
+            // blank a live channel or leave unreviewed text on it: the previously
+            // approved wording stays and the change is refused. The author retries
+            // once the case settles.
+            ModerationOutcome moderation = contentModeration.submit(
+                    ModerationSubmission.of(ModeratedEntityType.CHANNEL,
+                                    channelId.toString(), actorId)
+                            .field("title", newTitle)
+                            .field("description", newDescription));
+            if (moderation.rejected()) {
+                throw new BadRequestException(ModerationMessages.CONTENT_REJECTED_MSG,
+                        ModerationMessages.CONTENT_REJECTED);
+            }
+            if (moderation.held()) {
+                throw new BadRequestException(ModerationMessages.CONTENT_UNDER_REVIEW_MSG,
+                        ModerationMessages.CONTENT_UNDER_REVIEW);
+            }
+            c.setTitle(newTitle);
+            c.setDescription(newDescription);
+            // The edit cleared, so a channel still held from its create is released.
+            c.setModerationStatus(null);
         }
         if (req.getCategory() != null) {
             c.setCategory(normalizeCategory(req.getCategory()));
@@ -262,6 +314,19 @@ public class ChannelService {
             // admins; they can never touch the owner (handled above).
             // (Kept permissive by design — Telegram tracks promoter chains, we don't.)
         }
+        // customTitle is owner-authored free text rendered to every subscriber in
+        // listAdmins, so it is user content and goes through moderation. There is
+        // no held representation for a rights blob — the verdict has to be
+        // terminal, cleared or refused.
+        if (req != null && req.getCustomTitle() != null && !req.getCustomTitle().isBlank()) {
+            contentModeration.submitOrRefuse(
+                    ak.dev.irc.app.moderation.service.ModerationSubmission.of(
+                                    ak.dev.irc.app.moderation.enums.ModeratedEntityType.CONTENT_ANNOTATION,
+                                    channelId + ":" + targetId, actorId)
+                            .parent(channelId.toString())
+                            .field("admin_custom_title", req.getCustomTitle()));
+        }
+
         target.setRole(MemberRole.ADMIN);
         target.setAdminRights(toRights(req));
         memberRepo.save(target);
@@ -389,7 +454,8 @@ public class ChannelService {
         }
         if (ids.isEmpty()) return null;
         Map<UUID, Conversation> byId = conversationRepo.findAllById(ids).stream()
-                .filter(c -> c.isChannel() && c.isPublicChannel() && c.getDeletedAt() == null)
+                .filter(c -> c.isChannel() && c.isPublicChannel() && c.getDeletedAt() == null
+                        && !ChatModeration.held(c.getModerationStatus()))
                 .collect(java.util.stream.Collectors.toMap(Conversation::getId, c -> c));
         List<Conversation> ordered = new ArrayList<>(ids.size());
         for (UUID id : ids) {
@@ -489,8 +555,17 @@ public class ChannelService {
         String shareUrl = c.isPublicChannel() && c.getHandle() != null
                 ? ak.dev.irc.app.chat.util.ShareLinks.of(baseUrl, "/c/" + c.getHandle()) : null;
         boolean subscribed = me != null && me.isActive();
+        // De-indexing keeps a held channel out of discovery, but the detail endpoints
+        // (GET /channels/{id}, GET /channels/by-handle/{h}) are reachable by anyone
+        // holding the link, so the unreviewed wording has to be withheld here too.
+        // The owner authored it and keeps seeing it (§5.1).
+        boolean redactInfo = ChatModeration.held(c.getModerationStatus())
+                && (me == null || !me.isOwner());
         return new ChannelResponse(
-                c.getId(), c.getHandle(), c.getTitle(), c.getDescription(), c.getCategory(),
+                c.getId(), c.getHandle(),
+                redactInfo ? null : c.getTitle(),
+                redactInfo ? null : c.getDescription(),
+                c.getCategory(),
                 c.isPublicChannel(), c.isVerified(),
                 c.getMemberCount(), c.getPostCount(), c.getOwnerId(),
                 subscribed, pendingJoinRequest,

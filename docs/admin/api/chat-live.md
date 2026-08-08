@@ -10,8 +10,8 @@ Endpoint-level reference for the four chat-plane admin controllers under
 | `AdminStreamController` | `/api/v1/admin/streams` | Stream fleet browse/detail, force-stop, key rotation, guest removal, recordings, gift rollup |
 | `LegalHoldController` | `/api/v1/admin/chat/legal-holds` | Dual-controlled message-content release (the only sanctioned path to chat content) |
 
-Design context and privacy rationale: [chat-channels-live.md](../chat-channels-live.md).
-UI build guide: [frontend-dashboard-guide.md](../frontend-dashboard-guide.md).
+Design context and privacy rationale: [chat-channels-live.md](../communication/chat-channels-live.md).
+UI build guide: [frontend-dashboard-guide.md](../frontend/README.md).
 
 ## Conventions
 

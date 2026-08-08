@@ -46,6 +46,15 @@ public interface MessageByIdRepository extends CassandraRepository<MessageByIdEn
     @Query("UPDATE message_by_id SET poll = :poll WHERE message_id = :messageId")
     void updatePoll(@Param("messageId") long messageId, @Param("poll") String poll);
 
+    /** Twin of {@code MessageByConversationRepository.setModerationStatus} — see
+     *  there for why an approval writes null instead of {@code "APPROVED"}. */
+    @Query("UPDATE message_by_id SET moderation_status = :status WHERE message_id = :messageId")
+    void setModerationStatus(@Param("messageId") long messageId, @Param("status") String status);
+
+    /** Stamped once the message has actually been fanned out — see the entity field. */
+    @Query("UPDATE message_by_id SET delivered = :delivered WHERE message_id = :messageId")
+    void setDelivered(@Param("messageId") long messageId, @Param("delivered") boolean delivered);
+
     @Query("UPDATE message_by_id SET deleted = true, body = null, media = null WHERE message_id = :messageId")
     void tombstone(@Param("messageId") long messageId);
 }

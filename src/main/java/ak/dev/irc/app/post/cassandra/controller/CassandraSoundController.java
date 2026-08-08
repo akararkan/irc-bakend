@@ -26,7 +26,7 @@ public class CassandraSoundController {
 
     private final CassandraSoundService soundService;
 
-    private static final Set<Role> MODERATION_ROLES = Set.of(Role.ADMIN);
+    private static final Set<Role> MODERATION_ROLES = Set.of(Role.ADMIN, Role.MODERATOR);
 
     /** {@code uploaderId} is ignored — the uploader is always the authenticated caller. */
     public record UploadSoundRequest(String title, String artistName, String audioUrl,
@@ -34,20 +34,29 @@ public class CassandraSoundController {
                                      String category, UUID uploaderId, Boolean autoApprove) {}
 
     /**
-     * Upload a sound. The uploader is taken from the JWT (never the body).
-     * {@code autoApprove=true} skips moderation and is honored <strong>only</strong>
-     * for admins/moderators — a regular user's request is created PENDING regardless.
+     * @deprecated Sounds are admin-curated only now — regular users can no
+     * longer add to the library, closing what used to be an open, unmoderated
+     * upload path into a picker every post/reel/story can use. Re-homed as
+     * {@code POST /api/v1/admin/sounds}; this alias answers with a
+     * {@code Deprecation} header until clients migrate. {@code ADMIN}/
+     * {@code MODERATOR} only — a regular user's request is now rejected with
+     * 403 rather than silently landing in PENDING_REVIEW.
      */
+    @Deprecated
     @PostMapping
-    @PreAuthorize("isAuthenticated()")
-    public SoundEntity upload(@RequestBody UploadSoundRequest req,
-                              @AuthenticationPrincipal User user) {
+    @PreAuthorize("hasAnyRole('ADMIN','MODERATOR')")
+    public ResponseEntity<SoundEntity> upload(@RequestBody UploadSoundRequest req,
+                                              @AuthenticationPrincipal User user) {
         boolean privileged  = user.getRole() != null && MODERATION_ROLES.contains(user.getRole());
         boolean autoApprove = Boolean.TRUE.equals(req.autoApprove()) && privileged;
-        return soundService.createSound(
+        SoundEntity created = soundService.createSound(
                 req.title(), req.artistName(), req.audioUrl(),
                 req.coverArtUrl(), req.durationSeconds(), req.category(),
                 user.getId(), autoApprove);
+        return ResponseEntity.status(201)
+                .header("Deprecation", "true")
+                .header("Link", "</api/v1/admin/sounds>; rel=\"successor-version\"")
+                .body(created);
     }
 
     @GetMapping("/{id}")

@@ -7,6 +7,7 @@ import ak.dev.irc.app.chat.dto.response.*;
 import ak.dev.irc.app.chat.entity.Conversation;
 import ak.dev.irc.app.chat.entity.ConversationMember;
 import ak.dev.irc.app.chat.entity.MessageRequest;
+import ak.dev.irc.app.chat.util.ChatModeration;
 import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
 import lombok.RequiredArgsConstructor;
@@ -92,7 +93,7 @@ public class ChatMapper {
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
-        return toMessage(e, users, reactions, replyTo, false, null);
+        return toMessage(e, users, reactions, replyTo, false, null, null);
     }
 
     public MessageResponse toMessage(MessageByConversationEntity e,
@@ -100,7 +101,7 @@ public class ChatMapper {
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo,
                                      boolean starred) {
-        return toMessage(e, users, reactions, replyTo, starred, null);
+        return toMessage(e, users, reactions, replyTo, starred, null, null);
     }
 
     public MessageResponse toMessage(MessageByConversationEntity e,
@@ -109,9 +110,30 @@ public class ChatMapper {
                                      ReplyPreview replyTo,
                                      boolean starred,
                                      MessageExtras extras) {
+        return toMessage(e, users, reactions, replyTo, starred, extras, null);
+    }
+
+    /**
+     * {@code viewerId} drives the moderation redaction: a message still held for
+     * automated review is blanked exactly like a deleted one for everyone except
+     * its own sender. Omitting the viewer redacts — the safe default for the
+     * handful of call sites that map without a reader in hand.
+     */
+    public MessageResponse toMessage(MessageByConversationEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred,
+                                     MessageExtras extras,
+                                     UUID viewerId) {
         User sender = users == null ? null : users.get(e.getSenderId());
         MessageExtras x = extras == null ? MessageExtras.NONE : extras;
         boolean deleted = Boolean.TRUE.equals(e.getDeleted());
+        // Redaction and the tombstone flag are separate on purpose: a held message
+        // is not deleted, and telling the client it was would be a lie the sender
+        // could see contradicted the moment it clears.
+        boolean redacted = deleted
+                || ChatModeration.hiddenFrom(e.getModerationStatus(), e.getSenderId(), viewerId);
         return new MessageResponse(
                 e.getMessageId(),
                 e.getConversationId(),
@@ -119,8 +141,8 @@ public class ChatMapper {
                 sender != null ? sender.getUsername() : null,
                 sender != null ? sender.getFullName() : null,
                 e.getType(),
-                deleted ? null : e.getBody(),
-                deleted ? List.of() : toMediaList(e.getMedia()),
+                redacted ? null : e.getBody(),
+                redacted ? List.of() : toMediaList(e.getMedia()),
                 e.getReplyToId(),
                 replyTo,
                 e.getForwardedFrom(),
@@ -131,21 +153,21 @@ public class ChatMapper {
                 e.getSystemEvent(),
                 e.getCreatedAt(),
                 starred,
-                deleted ? null : e.getTags(),
+                redacted ? null : e.getTags(),
                 e.getAuthorSignature(),
                 x.views(),
                 x.forwards(),
                 x.comments(),
-                deleted ? null : x.poll(),
-                deleted ? null : parseLocation(e.getLocation()),
-                deleted ? null : parseContact(e.getContact()));
+                redacted ? null : x.poll(),
+                redacted ? null : parseLocation(e.getLocation()),
+                redacted ? null : parseContact(e.getContact()));
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
                                      Map<UUID, User> users,
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo) {
-        return toMessage(e, users, reactions, replyTo, false, null);
+        return toMessage(e, users, reactions, replyTo, false, null, null);
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
@@ -153,7 +175,7 @@ public class ChatMapper {
                                      List<ReactionSummary> reactions,
                                      ReplyPreview replyTo,
                                      boolean starred) {
-        return toMessage(e, users, reactions, replyTo, starred, null);
+        return toMessage(e, users, reactions, replyTo, starred, null, null);
     }
 
     public MessageResponse toMessage(MessageByIdEntity e,
@@ -162,9 +184,22 @@ public class ChatMapper {
                                      ReplyPreview replyTo,
                                      boolean starred,
                                      MessageExtras extras) {
+        return toMessage(e, users, reactions, replyTo, starred, extras, null);
+    }
+
+    /** See the {@link MessageByConversationEntity} overload for {@code viewerId}. */
+    public MessageResponse toMessage(MessageByIdEntity e,
+                                     Map<UUID, User> users,
+                                     List<ReactionSummary> reactions,
+                                     ReplyPreview replyTo,
+                                     boolean starred,
+                                     MessageExtras extras,
+                                     UUID viewerId) {
         User sender = users == null ? null : users.get(e.getSenderId());
         MessageExtras x = extras == null ? MessageExtras.NONE : extras;
         boolean deleted = Boolean.TRUE.equals(e.getDeleted());
+        boolean redacted = deleted
+                || ChatModeration.hiddenFrom(e.getModerationStatus(), e.getSenderId(), viewerId);
         return new MessageResponse(
                 e.getMessageId(),
                 e.getConversationId(),
@@ -172,8 +207,8 @@ public class ChatMapper {
                 sender != null ? sender.getUsername() : null,
                 sender != null ? sender.getFullName() : null,
                 e.getType(),
-                deleted ? null : e.getBody(),
-                deleted ? List.of() : toMediaList(e.getMedia()),
+                redacted ? null : e.getBody(),
+                redacted ? List.of() : toMediaList(e.getMedia()),
                 e.getReplyToId(),
                 replyTo,
                 e.getForwardedFrom(),
@@ -184,24 +219,31 @@ public class ChatMapper {
                 e.getSystemEvent(),
                 e.getCreatedAt(),
                 starred,
-                deleted ? null : e.getTags(),
+                redacted ? null : e.getTags(),
                 e.getAuthorSignature(),
                 x.views(),
                 x.forwards(),
                 x.comments(),
-                deleted ? null : x.poll(),
-                deleted ? null : parseLocation(e.getLocation()),
-                deleted ? null : parseContact(e.getContact()));
+                redacted ? null : x.poll(),
+                redacted ? null : parseLocation(e.getLocation()),
+                redacted ? null : parseContact(e.getContact()));
     }
 
+    /**
+     * Reply previews quote someone else's body into a third party's timeline, so
+     * a held message's snippet is dropped for every reader including the quoted
+     * sender — the preview lives in someone else's message, and there is no
+     * viewer-vs-author distinction that makes it safe to render.
+     */
     public ReplyPreview toReplyPreview(MessageByIdEntity e) {
         if (e == null) return null;
         boolean deleted = Boolean.TRUE.equals(e.getDeleted());
+        boolean redacted = deleted || ChatModeration.held(e.getModerationStatus());
         return new ReplyPreview(
                 e.getMessageId(),
                 e.getSenderId(),
                 e.getType(),
-                deleted ? null : snippet(e.getBody(), e.getType()),
+                redacted ? null : snippet(e.getBody(), e.getType()),
                 deleted);
     }
 
@@ -236,11 +278,19 @@ public class ChatMapper {
         boolean marked = me != null && me.isMarkedUnread();
         boolean hasUnread = marked || (me != null && c.getLastMessageId() != null
                 && c.getLastMessageId() > me.getLastReadMessageId());
+        // A group's title/description is held for automated moderation exactly like
+        // a message body. Unlike a channel — whose audience only ever arrives through
+        // discovery, and so is fully gated by de-indexing — a group's members are
+        // added directly by its creator and see the row in their inbox the instant
+        // it exists. Suppressing the title in the invite notification is not enough:
+        // this list is where they would read it. Its author still sees their own text.
+        boolean redactInfo = ChatModeration.held(c.getModerationStatus())
+                && (me == null || !me.isOwner());
         return new ConversationResponse(
                 c.getId(),
                 c.getType().name(),
-                c.getTitle(),
-                c.getDescription(),
+                redactInfo ? null : c.getTitle(),
+                redactInfo ? null : c.getDescription(),
                 c.getAvatarKey(),
                 resolveUrl(null, c.getAvatarKey()),
                 c.getOwnerId(),

@@ -3,45 +3,53 @@
 What to document **first**, sorted as a simple task list. Everything here is docs
 only (no code). Check items off as you go. Full map: [README.md](README.md).
 
+> **Reorganised 2026-08-08.** These 24 flat files became seven topic
+> directories — `foundation/`, `users/`, `trust-safety/`, `content/`,
+> `communication/`, `platform/`, plus `api/` and `frontend/`. Every link below
+> was rewritten to the new paths; nothing was deleted. The one removal was the
+> stale duplicate of the messages catalog, replaced by a redirect stub.
+
 Legend: ✅ done · ⬜ to do · 🔁 needs a quick verify-against-code pass.
 
 ---
 
 ## Do first — the foundation (read/build in this order)
 
-1. ✅ **Architecture & access** — [architecture.md](architecture.md) — the access
+1. ✅ **Architecture & access** — [architecture.md](foundation/architecture.md) — the access
    model + inventory of what already exists. *Everything else assumes this.*
-2. ✅ **API blueprint** — [admin-api-blueprint.md](admin-api-blueprint.md) — every
+2. ✅ **API blueprint** — [admin-api-blueprint.md](foundation/api-blueprint.md) — every
    endpoint in one table, danger levels, phased build order.
-3. ✅ **API controllers** — [api-controllers.md](api-controllers.md) — the real
+3. ✅ **API controllers** — [api-controllers.md](foundation/api-controllers.md) — the real
    `@RestController`s + the build map (which controller each route belongs on).
-4. ✅ **Logs & audit** — [logs-audit.md](logs-audit.md) — the complete log catalog
+4. ✅ **Logs & audit** — [logs-audit.md](platform/logs-audit.md) — the complete log catalog
    (the flagship "what gets recorded" doc).
 
 ## Then — the core admin sections
 
-5. ✅ **Users & roles** — [users-roles.md](users-roles.md) — directory + inspection.
-6. ✅ **User administration (add & full control)** — [user-administration.md](user-administration.md)
+5. ✅ **Users & roles** — [users-roles.md](users/directory-and-roles.md) — directory + inspection.
+6. ✅ **User administration (add & full control)** — [user-administration.md](users/administration.md)
    — **the priority action surface**: adding users + full lifecycle control.
-7. ✅ **Content moderation** — [content-moderation.md](content-moderation.md).
-8. ✅ **Safety & reports** — [safety-reports.md](safety-reports.md).
+7. ✅ **Content moderation** — [content-moderation.md](trust-safety/content-moderation.md).
+8. ✅ **Safety & reports** — [safety-reports.md](trust-safety/safety-reports.md).
 
 ## Next — the remaining sections
 
-9.  ✅ **Research & Q&A** — [research-qna.md](research-qna.md)
-10. ✅ **Chat, channels & live** — [chat-channels-live.md](chat-channels-live.md)
-11. ✅ **Sound library** — [sound-library.md](sound-library.md)
-12. ✅ **Media & storage** — [media-storage.md](media-storage.md)
-13. ✅ **Notifications & email** — [notifications-email.md](notifications-email.md)
-14. ✅ **Search, feed & trending** — [search-feed-trending.md](search-feed-trending.md)
-15. ✅ **Discovery, PYMK & privacy** — [discovery-pymk-privacy.md](discovery-pymk-privacy.md)
-16. ✅ **Knowledge vocabulary** — [knowledge-vocabulary.md](knowledge-vocabulary.md)
-17. ✅ **Activity & engagement** — [activity-engagement.md](activity-engagement.md)
+9.  ✅ **Research & Q&A** — [research-qna.md](content/research-qna.md)
+10. ✅ **Chat, channels & live** — [chat-channels-live.md](communication/chat-channels-live.md)
+11. ✅ **Sound library** — [sound-library.md](content/sound-library.md)
+12. ✅ **Media & storage** — [media-storage.md](content/media-storage.md)
+13. ✅ **Notifications & email** — [notifications-email.md](communication/notifications-email.md)
+14. ✅ **Search, feed & trending** — [search-feed-trending.md](platform/search-feed-trending.md)
+15. ✅ **Discovery, PYMK & privacy** — [discovery-pymk-privacy.md](users/discovery-privacy.md)
+16. ✅ **Knowledge vocabulary** — [knowledge-vocabulary.md](content/knowledge-vocabulary.md)
+17. ✅ **Activity & engagement** — [activity-engagement.md](users/activity-engagement.md)
+18. ✅ **Automated moderation** — [automated-moderation.md](trust-safety/automated-moderation.md)
+    — the AI classifier's dashboard surface (built 2026-08-08).
 
 ## Last — the cross-cutting sections
 
-18. ✅ **Analytics & KPIs** — [analytics-kpis.md](analytics-kpis.md)
-19. ✅ **Operations** — [operations.md](operations.md)
+19. ✅ **Analytics & KPIs** — [analytics-kpis.md](platform/analytics-kpis.md)
+20. ✅ **Operations** — [operations.md](platform/operations.md)
 
 ---
 
@@ -101,10 +109,39 @@ every previously-deferred block:
   [`../errors/user-facing-messages.md`](../errors/user-facing-messages.md)
   — and now implemented as centralized constants in
   `ak.dev.irc.app.common.messages.*`.
-- **API wire reference** — request/response JSON for all ~247 admin endpoints
-  in [api/](api/README.md) (9 per-domain files, every key traced to code);
-  frontend build guides: [frontend-dashboard-guide.md](frontend-dashboard-guide.md)
+- **API wire reference** — request/response JSON for all **271** admin
+  endpoints in [api/](api/README.md) (10 per-domain files, every key traced to
+  code); frontend build guide split into [frontend/](frontend/README.md)
   + [`../errors/frontend-error-handling.md`](../errors/frontend-error-handling.md).
+
+## 2026-08-08 — automated moderation + docs reorganisation
+
+- **Automated text moderation shipped** — quarantine-then-publish across all 13
+  text-bearing surfaces, backed by a fine-tuned toxicity classifier in its own
+  container. 29 new admin endpoints across three controllers: the proactive
+  review queue, runtime threshold tuning with a **dry-run against stored
+  scores**, the training-data manager, and the model registry
+  (retrain → gate → promote → rollback). Docs:
+  [trust-safety/automated-moderation.md](trust-safety/automated-moderation.md)
+  (dashboard) · [api/automated-moderation.md](api/automated-moderation.md)
+  (wire) · [`../moderation/`](../moderation/README.md) (whole subsystem).
+- **Sounds became admin-curated only** — the open end-user upload path is
+  closed (`403` for regular users, deprecated staff-only alias). New canonical
+  `POST /api/v1/admin/sounds`. See
+  [content/sound-library.md](content/sound-library.md).
+- **These docs were reorganised** into topic directories, and the endpoint
+  count was re-derived from source (271, not ~247).
+- **CSV bulk training import shipped** —
+  `POST /admin/moderation/model/training-examples/import` (multipart,
+  `kind=sentences|words`, `dryRun`, `allowPartial`, step-up): admin curates a
+  file in Excel → exports CSV UTF-8 → uploads; word rows with `blocklist=yes`
+  also land on the platform blocklist (instant exact-word ban — real words and
+  invented obfuscations alike). New `TrainingExampleSource.ADMIN_IMPORT`
+  (+ enum-CHECK reconciler line), new `INVALID_IMPORT_FILE` code, pure-JDK
+  RFC-4180 parser (no new deps). The moderation on/off surface was also
+  re-documented as global + per-surface toggles
+  ([trust-safety/automated-moderation.md](trust-safety/automated-moderation.md)
+  §3.5) — backend levers (`enabled`, `enabled.<type>`) already existed.
 
 Remaining deliberate debts (rationales in [known-issues.md](known-issues.md)):
 Micrometer/actuator metrics (needs new dependency — build is offline), real

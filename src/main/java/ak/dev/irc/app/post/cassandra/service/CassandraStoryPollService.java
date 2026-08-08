@@ -1,6 +1,8 @@
 package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.common.messages.PostMessages;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.post.cassandra.entity.PollVoteEntity;
 import ak.dev.irc.app.post.cassandra.entity.PollVoterByChoiceEntity;
 import ak.dev.irc.app.post.cassandra.entity.StoryPollEntity;
@@ -61,6 +63,8 @@ public class CassandraStoryPollService {
      *  time — they keep the table default and are wiped by the explicit
      *  {@link #deletePollFor} when the story is hard-deleted. */
     private final CassandraOperations          cassandraOps;
+    /** Automated text moderation for the poll's question/option prose (docs/moderation/). */
+    private final ak.dev.irc.app.moderation.service.ContentModerationService contentModeration;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -75,6 +79,19 @@ public class CassandraStoryPollService {
 
         UUID    pollId = UUID.randomUUID();
         Instant now    = Instant.now();
+
+        // Poll prose used to bypass content checks entirely, which meant a
+        // blocked payload could ride in as a poll question on an otherwise clean
+        // story. Polls are read through unauthenticated endpoints
+        // (GET /polls/{id}/results) that apply no story-visibility check, so
+        // there is no held state that would actually hide one — the verdict has
+        // to be terminal here: cleared or refused.
+        contentModeration.submitOrRefuse(
+                ModerationSubmission.of(ModeratedEntityType.STORY_POLL, pollId.toString(), authorId)
+                        .parent(storyId.toString())
+                        .field("question", question)
+                        .field("option_a", optionA)
+                        .field("option_b", optionB));
         int     ttl    = remainingTtlSeconds(storyExpiresAt, now);
         InsertOptions ttlOpts = InsertOptions.builder().ttl(ttl).build();
 

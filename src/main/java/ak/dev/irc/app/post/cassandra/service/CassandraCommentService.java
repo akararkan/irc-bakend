@@ -6,6 +6,10 @@ import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
 import ak.dev.irc.app.post.cassandra.entity.ReplyByCommentEntity;
 import ak.dev.irc.app.common.messages.PostMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.post.cassandra.repository.CommentByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.CommentLookupRepository;
@@ -72,13 +76,21 @@ public class CassandraCommentService {
     private final DedupGuard                   dedupGuard;
     private final ak.dev.irc.app.common.service.MentionService mentionService;
     private final AuthorAffinityService        affinityService;
-    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
+    /**
+     * Automated text moderation (docs/moderation/). Replaces the direct
+     * {@code PlatformKeywordService} calls that used to sit at the top of
+     * create/reply — the deny-list still runs, inside the gateway, followed by
+     * the model, and the edit path is now covered too.
+     */
+    private final ContentModerationService     contentModeration;
 
     // ── Create top-level comment ─────────────────────────────────────────────
 
     public CommentByPostEntity createComment(UUID postId, UUID authorId,
                                              String text, String mediaUrl, String mediaType) {
-        String flaggedKeyword = platformKeywords.blockOrFlag(text);
+        // Dedup BEFORE moderation: a client retry must not open a second
+        // moderation case for text that already has a verdict, and returning the
+        // stored row is the whole point of the guard.
         if (dedupGuard.isDuplicate("post-comment", postId, authorId, text)) {
             log.debug("[COMMENT] dedup hit — author={} post={} skipping duplicate", authorId, postId);
             CommentByPostEntity existing = mostRecentMatchingComment(postId, authorId, text);
@@ -87,40 +99,81 @@ public class CassandraCommentService {
 
         UUID    commentId = UUID.randomUUID();
         Instant now       = Instant.now();
-        if (flaggedKeyword != null) {
-            platformKeywords.recordHit("COMMENT", commentId.toString(), authorId, flaggedKeyword);
-        }
+
+        // Automated moderation (docs/moderation/) — throws CONTENT_REJECTED
+        // before any row exists when the verdict blocks.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.POST_COMMENT, commentId.toString(), authorId)
+                        .parent(postId.toString())
+                        .field("body", text));
 
         CommentByPostEntity row = CommentByPostEntity.builder()
                 .postId(postId).createdAt(now).commentId(commentId)
                 .authorId(authorId).textContent(text)
                 .mediaUrl(mediaUrl).mediaType(mediaType)
                 .deleted(false).edited(false)
+                .moderationStatus(heldMarker(moderation))
                 .build();
         commentRepo.save(row);
 
         lookupRepo.save(CommentLookupEntity.builder()
                 .commentId(commentId).postId(postId).parentId(null)
                 .authorId(authorId).createdAt(now).reply(false)
+                .moderationStatus(heldMarker(moderation))
                 .build());
 
+        // The counter is bumped even while held. It is a thread-size hint the
+        // author can already see on their own comment, and leaving it until
+        // approval would make the count jump around as held comments clear —
+        // worse than being off by one for a few seconds. The applier does not
+        // re-bump it.
         counterService.incrementPostComments(postId);
-        broadcast(postId, commentId, null, authorId, text, mediaUrl, mediaType,
-                  PostRealtimeEventType.COMMENT_CREATED);
-        notifyPostCommented(postId, commentId, authorId, text);
-        scanMentions(null, text, commentId, postId, authorId);
         affinityService.recordForPost(authorId, postId, AuthorAffinityService.WEIGHT_COMMENT);
+
+        // Broadcast and @mention pings push the raw body to other users
+        // regardless of any read-path filter, so they wait for a verdict.
+        if (moderation.held()) {
+            log.debug("[COMMENT] {} held for moderation ({})", commentId, moderation.status());
+            return row;
+        }
+        publishComment(postId, commentId, null, authorId, text, mediaUrl, mediaType);
         return row;
+    }
+
+    /**
+     * The outward-facing half of a comment create: realtime broadcast, author
+     * notification, @mention scan.
+     *
+     * <p>Split out so {@code PostCommentModerationApplier} runs the identical
+     * steps when a held comment is approved later.</p>
+     */
+    public void publishComment(UUID postId, UUID commentId, UUID parentId, UUID authorId,
+                               String text, String mediaUrl, String mediaType) {
+        if (parentId == null) {
+            broadcast(postId, commentId, null, authorId, text, mediaUrl, mediaType,
+                      PostRealtimeEventType.COMMENT_CREATED);
+            notifyPostCommented(postId, commentId, authorId, text);
+        } else {
+            broadcast(postId, commentId, parentId, authorId, text, mediaUrl, null,
+                      PostRealtimeEventType.REPLY_CREATED);
+            notifyReply(postId, parentId, commentId, authorId, text);
+        }
+        scanMentions(null, text, commentId, postId, authorId);
+    }
+
+    /**
+     * {@code null} once a comment is cleared — the column doubles as the read
+     * gate, and a null there is the "predates moderation / approved" case every
+     * other status column in this package already uses.
+     */
+    private static String heldMarker(ModerationOutcome moderation) {
+        return moderation.held() ? moderation.status().name() : null;
     }
 
     // ── Create reply (flat-at-1 enforcement) ────────────────────────────────
 
     public ReplyByCommentEntity replyTo(UUID targetCommentId, UUID authorId,
                                         String text, String mediaUrl) {
-        String flaggedKeyword = platformKeywords.blockOrFlag(text);
-        if (flaggedKeyword != null) {
-            platformKeywords.recordHit("COMMENT", targetCommentId.toString(), authorId, flaggedKeyword);
-        }
         CommentLookupEntity target = lookupRepo.findById(targetCommentId).orElse(null);
         if (target == null) {
             throw new IllegalArgumentException(PostMessages.COMMENT_NOT_FOUND_MSG.formatted(targetCommentId));
@@ -145,46 +198,80 @@ public class CassandraCommentService {
         UUID    replyId  = UUID.randomUUID();
         Instant now      = Instant.now();
 
+        // The keyword hit this replaces was recorded against targetCommentId —
+        // the PARENT — so the queue row pointed at the wrong content. The case
+        // is keyed on the new reply's own id.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.POST_COMMENT, replyId.toString(), authorId)
+                        .parent(truParentId.toString())
+                        .field("body", text));
+
         ReplyByCommentEntity row = ReplyByCommentEntity.builder()
                 .parentId(truParentId).createdAt(now).replyId(replyId)
                 .authorId(authorId).postId(postId).textContent(text)
                 .mediaUrl(mediaUrl).deleted(false).edited(false)
+                .moderationStatus(heldMarker(moderation))
                 .build();
         replyRepo.save(row);
 
         lookupRepo.save(CommentLookupEntity.builder()
                 .commentId(replyId).postId(postId).parentId(truParentId)
                 .authorId(authorId).createdAt(now).reply(true)
+                .moderationStatus(heldMarker(moderation))
                 .build());
 
         counterService.incrementCommentReplies(truParentId);
         counterService.incrementPostComments(postId);
         affinityService.recordForPost(authorId, postId, AuthorAffinityService.WEIGHT_COMMENT);
 
-        broadcast(postId, replyId, truParentId, authorId, text, mediaUrl, null,
-                  PostRealtimeEventType.REPLY_CREATED);
-        notifyReply(postId, truParentId, replyId, authorId, text);
-        scanMentions(null, text, replyId, postId, authorId);
+        if (moderation.held()) {
+            log.debug("[REPLY] {} held for moderation ({})", replyId, moderation.status());
+            return row;
+        }
+        publishComment(postId, replyId, truParentId, authorId, text, mediaUrl, null);
         return row;
     }
 
     // ── Edit ─────────────────────────────────────────────────────────────────
 
+    /**
+     * Author-only edit. Re-enters moderation (§5.5) using the roadmap's
+     * "lightweight" option for comments: the new text is checked synchronously
+     * and a rejection refuses the edit outright, leaving the original body in
+     * place, rather than taking down a comment that was fine until the author
+     * tried to change it.
+     */
     public void editComment(UUID commentId, UUID authorId, String newText) {
         CommentLookupEntity meta = requireLookup(commentId);
         if (!meta.getAuthorId().equals(authorId)) {
             throw new SecurityException(PostMessages.NOT_AUTHOR_MSG);
         }
+
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.POST_COMMENT, commentId.toString(), authorId)
+                        .parent(meta.getPostId() == null ? null : meta.getPostId().toString())
+                        .field("body", newText));
+
         // Pre-edit text so the mention scan only pings NEWLY added handles.
         String oldText;
+        String marker = heldMarker(moderation);
         if (Boolean.TRUE.equals(meta.getReply())) {
             oldText = replyRepo.findRow(meta.getParentId(), meta.getCreatedAt(), commentId)
                     .map(ReplyByCommentEntity::getTextContent).orElse(null);
             replyRepo.editText(meta.getParentId(), meta.getCreatedAt(), commentId, newText);
+            replyRepo.setModerationStatus(meta.getParentId(), meta.getCreatedAt(), commentId, marker);
         } else {
             oldText = commentRepo.findRow(meta.getPostId(), meta.getCreatedAt(), commentId)
                     .map(CommentByPostEntity::getTextContent).orElse(null);
             commentRepo.editText(meta.getPostId(), meta.getCreatedAt(), commentId, newText);
+            commentRepo.setModerationStatus(meta.getPostId(), meta.getCreatedAt(), commentId, marker);
+        }
+        meta.setModerationStatus(marker);
+        lookupRepo.save(meta);
+
+        if (moderation.held()) {
+            log.debug("[COMMENT] edit of {} held for moderation ({})", commentId, moderation.status());
+            return;
         }
         broadcast(meta.getPostId(), commentId, meta.getParentId(), authorId, newText, null, null,
                   PostRealtimeEventType.COMMENT_EDITED);

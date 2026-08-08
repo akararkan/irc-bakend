@@ -34,4 +34,7 @@ public class ReplyByCommentEntity {
     @Column("media_url")    private String mediaUrl;
     @Column("is_deleted")   private Boolean deleted;
     @Column("is_edited")    private Boolean edited;
+
+    /** See {@link CommentByPostEntity#getModerationStatus()} — NULL reads as approved. */
+    @Column("moderation_status") private String moderationStatus;
 }

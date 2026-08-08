@@ -52,7 +52,9 @@ public class EnumCheckConstraintReconciler {
             // — the pre-widening CHECK constraint would reject the new values.
             new String[]{"users", "users_role_check"},
             // Announcement Status gained SCHEDULED/CANCELLED with the scheduler.
-            new String[]{"platform_announcements", "platform_announcements_status_check"}
+            new String[]{"platform_announcements", "platform_announcements_status_check"},
+            // TrainingExampleSource gained ADMIN_IMPORT with the CSV bulk import.
+            new String[]{"moderation_training_examples", "moderation_training_examples_source_check"}
     );
 
     /** table.constraint → outcome of the last startup run (ops report). */

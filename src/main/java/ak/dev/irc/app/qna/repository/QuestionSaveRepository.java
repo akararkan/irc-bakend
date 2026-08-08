@@ -19,10 +19,52 @@ public interface QuestionSaveRepository extends JpaRepository<QuestionSave, Ques
 
     boolean existsById(QuestionSaveId id);
 
-    Page<QuestionSave> findByUserIdOrderByCreatedAtDesc(UUID userId, Pageable pageable);
+    // ── Moderation-aware bookmark listings (docs/moderation/) ───────────────
+    // A bookmark outlives the state of the thing it points at: a question saved
+    // while it was published can be edited back into review, or rejected
+    // outright. The saved list renders the full title and body, so without the
+    // same predicate the feed queries carry it would hand held text to a reader
+    // who is not its author — the one surface where a stale bookmark, not a
+    // feed query, is the delivery mechanism. The author carve-out is kept so a
+    // user who bookmarked their own question still sees it.
 
-    Page<QuestionSave> findByUserIdAndCollectionNameOrderByCreatedAtDesc(
-            UUID userId, String collectionName, Pageable pageable);
+    @Query(value = """
+        SELECT s FROM QuestionSave s
+        WHERE s.user.id = :userId
+          AND (s.question.moderationStatus IS NULL
+               OR s.question.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR s.question.author.id = :userId)
+        ORDER BY s.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(s) FROM QuestionSave s
+        WHERE s.user.id = :userId
+          AND (s.question.moderationStatus IS NULL
+               OR s.question.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR s.question.author.id = :userId)
+        """)
+    Page<QuestionSave> findVisibleByUserId(@Param("userId") UUID userId, Pageable pageable);
+
+    @Query(value = """
+        SELECT s FROM QuestionSave s
+        WHERE s.user.id = :userId
+          AND s.collectionName = :collectionName
+          AND (s.question.moderationStatus IS NULL
+               OR s.question.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR s.question.author.id = :userId)
+        ORDER BY s.createdAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(s) FROM QuestionSave s
+        WHERE s.user.id = :userId
+          AND s.collectionName = :collectionName
+          AND (s.question.moderationStatus IS NULL
+               OR s.question.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR s.question.author.id = :userId)
+        """)
+    Page<QuestionSave> findVisibleByUserIdAndCollectionName(@Param("userId") UUID userId,
+                                                            @Param("collectionName") String collectionName,
+                                                            Pageable pageable);
 
     @Query("""
         SELECT DISTINCT s.collectionName FROM QuestionSave s

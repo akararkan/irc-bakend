@@ -52,4 +52,23 @@ public class MessageByIdEntity {
     @Column("edited_at")       private Instant editedAt;
     @Column("system_event")    private String systemEvent;
     @Column("created_at")      private Instant createdAt;
+    /** Twin of {@code messages_by_conversation.moderation_status} — the applier
+     *  resolves a message through this table, so it needs the same flag. */
+    @Column("moderation_status") private String moderationStatus;
+
+    /**
+     * True once the message has actually been fanned out — broadcast, bells,
+     * inbox preview, gallery rows, channel counters.
+     *
+     * <p>Not derivable from {@code moderationStatus} or {@code editedAt}: a
+     * message held at send and later edited looks identical to one that was
+     * delivered and then edited into a hold, and the two need opposite
+     * treatment when the verdict lands — first delivery versus an edit
+     * broadcast. Without this flag the first case is never delivered at all:
+     * readable on refresh, but no recipient is ever told it arrived.</p>
+     *
+     * <p>NULL means the row predates moderation, and those were all
+     * delivered.</p>
+     */
+    @Column("delivered") private Boolean delivered;
 }

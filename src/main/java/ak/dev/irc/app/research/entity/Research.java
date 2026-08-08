@@ -173,6 +173,26 @@ public class Research extends BaseAuditEntity {
     @Column(name = "published_at")
     private LocalDateTime publishedAt;
 
+    /**
+     * Verdict of the automated text-moderation pass run at {@code publish()}
+     * time (docs/moderation/). Kept in its own column rather than as a new
+     * {@link ResearchStatus} value: the two axes are independent — a paper held
+     * by the classifier is still a DRAFT as far as the author's dashboard,
+     * the scheduled publisher and every feed query are concerned, and widening
+     * the existing status enum would need an {@code EnumCheckConstraintReconciler}
+     * entry on top.
+     *
+     * <p>Null on every row that predates moderation and on drafts that were
+     * never submitted. Anything other than {@code APPROVED} means the paper is
+     * readable by its author only.</p>
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", length = 20)
+    private ak.dev.irc.app.moderation.enums.ModerationStatus moderationStatus;
+
+    @Column(name = "moderation_decided_at")
+    private LocalDateTime moderationDecidedAt;
+
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 
@@ -266,4 +286,15 @@ public class Research extends BaseAuditEntity {
     public boolean isDeleted()   { return deletedAt != null; }
     public boolean isPublished() { return status == ResearchStatus.PUBLISHED && publishedAt != null; }
     public boolean isDraft()     { return status == ResearchStatus.DRAFT; }
+
+    /**
+     * True while the moderation verdict blocks publication — PENDING or
+     * IN_REVIEW (still waiting) and REJECTED (refused). Read paths use this to
+     * narrow a paper down to its author; a null status is a paper moderation
+     * never saw and must stay readable exactly as before.
+     */
+    public boolean isHeldForModeration() {
+        return moderationStatus != null
+                && moderationStatus != ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED;
+    }
 }

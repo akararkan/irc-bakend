@@ -36,7 +36,12 @@ public class JobPauseRegistry {
             "retention-sweep", "log-alert-sweep",
             "analytics-daily-rollup", "analytics-weekly-cohorts", "analytics-anomaly-scan",
             "trending-rebuild", "trending-digest",
-            "notification-cleanup", "account-purge", "research-scheduled-publish");
+            "notification-cleanup", "account-purge", "research-scheduled-publish",
+            // Automated moderation (docs/moderation/MODERATION_ROADMAP.md §5.6, §12.4).
+            // Pausing the SLA sweeper stops held content from being force-resolved —
+            // useful while the inference container is being rolled — but it also
+            // means nothing leaves PENDING until it resumes.
+            "moderation-sla-sweep", "moderation-training-poll");
 
     private final StringRedisTemplate redis;
 

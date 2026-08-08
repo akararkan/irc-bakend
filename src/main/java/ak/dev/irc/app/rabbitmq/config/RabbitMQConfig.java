@@ -34,6 +34,7 @@ import static ak.dev.irc.app.rabbitmq.constants.RabbitMQConstants.*;
  * │    qna.lifecycle.#      ──►  irc.queue.notifications   ← ADDED           │
  * │    qna.social.#         ──►  irc.queue.notifications   ← ADDED           │
  * │    research.analytics.# ──►  irc.queue.analytics                        │
+ * │    moderation.#         ──►  irc.queue.moderation      ← ADDED           │
  * │                                                                          │
  * │  irc.dlx.exchange       ──►  irc.queue.dead-letter  (failed messages)   │
  * └──────────────────────────────────────────────────────────────────────────┘
@@ -130,6 +131,25 @@ public class RabbitMQConfig {
     @Bean
     public Queue mediaDeleteQueue() {
         return QueueBuilder.durable(MEDIA_DELETE_QUEUE).withArguments(queueArgs()).build();
+    }
+
+    // ── Moderation queue (MODERATION_ROADMAP.md §11) ──────────────────────────
+
+    /**
+     * Held content units awaiting a verdict. Dead-lettering is deliberate here:
+     * a message that exhausts its retries lands in the parking lot, but the
+     * {@code moderation_cases} row is still PENDING in Postgres and the SLA
+     * sweeper applies the configured fallback policy on the deadline — so a lost
+     * message degrades to "decided by policy", never to "published unchecked".
+     */
+    @Bean
+    public Queue moderationQueue() {
+        return QueueBuilder.durable(MODERATION_QUEUE).withArguments(queueArgs()).build();
+    }
+
+    @Bean
+    public Binding moderationBinding(Queue moderationQueue, TopicExchange ircExchange) {
+        return BindingBuilder.bind(moderationQueue).to(ircExchange).with(MODERATION_PATTERN);
     }
 
     // ── Bindings — notification queue ────────────────────────────────────────
@@ -252,7 +272,8 @@ public class RabbitMQConfig {
                 "ak.dev.irc.app.rabbitmq.event.research",
             "ak.dev.irc.app.rabbitmq.event.post",
             "ak.dev.irc.app.rabbitmq.event.qna",
-            "ak.dev.irc.app.media.event"
+            "ak.dev.irc.app.media.event",
+            "ak.dev.irc.app.moderation.worker"
         );
 
         converter.setJavaTypeMapper(typeMapper);

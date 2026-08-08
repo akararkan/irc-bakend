@@ -35,4 +35,11 @@ public class CommentLookupEntity {
     @Column("author_id")  private UUID    authorId;
     @Column("created_at") private Instant createdAt;
     @Column("is_reply")   private Boolean reply;
+
+    /**
+     * Mirror of the comment/reply row's moderation state. Kept here because this
+     * is the only table keyed by comment id alone — the applier that publishes a
+     * held reply later has nothing else to resolve it through.
+     */
+    @Column("moderation_status") private String moderationStatus;
 }

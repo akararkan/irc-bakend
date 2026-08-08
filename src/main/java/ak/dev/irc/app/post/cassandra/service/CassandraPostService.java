@@ -2,6 +2,10 @@ package ak.dev.irc.app.post.cassandra.service;
 
 import ak.dev.irc.app.activity.service.UserActivityService;
 import ak.dev.irc.app.common.messages.PostMessages;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ContentModerationService;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.post.cassandra.entity.CommentByPostEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByAuthorEntity;
 import ak.dev.irc.app.post.cassandra.entity.PostByIdEntity;
@@ -37,6 +41,7 @@ import java.util.UUID;
 /**
  * Cassandra-backed post write path. The hot insert path is:
  *
+ *   0.  Automated text moderation ← NEW: quarantine-then-publish (§5)
  *   1.  posts_by_id              ← canonical
  *   2.  posts_by_author          ← profile feed
  *   3.  reels_by_day (REEL only) ← global reels discover feed
@@ -45,6 +50,21 @@ import java.util.UUID;
  *
  * Steps 1-3 are synchronous so the create endpoint can return a complete
  * post. Steps 4 & 5 are async so a creator with 1M followers isn't blocked.
+ *
+ * <p>Step 0 runs BEFORE anything is written. The moderation case stores its own
+ * copy of the text, so a rejection can be recorded and explained without ever
+ * persisting the post — which is why a blocked post leaves no row behind, the
+ * same contract the keyword blocklist already had here.</p>
+ *
+ * <p>When the verdict is APPROVED (the overwhelming majority, decided inline in
+ * well under a second) steps 1-8 run exactly as they always did. When it is
+ * held, the row is written with {@code status = PENDING_REVIEW} — which
+ * {@code PostHydrator.isServable} and the single-post read already hide — and
+ * every <em>publication</em> side effect is skipped. Fan-out is the important
+ * one: it copies a text preview into up to 50k follower rows and fires a
+ * notification each, and none of that is undoable, so it must not happen for
+ * content that has not cleared. {@code PostModerationApplier} runs those steps
+ * later if and when the case is approved.</p>
  */
 @Slf4j
 @Service
@@ -53,7 +73,12 @@ public class CassandraPostService {
 
     private final PostByIdRepository       postByIdRepo;
     private final PostByAuthorRepository   postByAuthorRepo;
-    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
+    /**
+     * Automated text moderation (docs/moderation/). Replaces the direct
+     * {@code PlatformKeywordService} call that used to live in createPost — the
+     * deny-list still runs, but now inside the gateway, followed by the model.
+     */
+    private final ContentModerationService contentModeration;
     /** Bounded shared pool (AsyncConfig) — runs the post-delete cascade off the request thread. */
     private final ThreadPoolTaskExecutor   taskExecutor;
     private final ReelsByDayRepository     reelsByDayRepo;
@@ -86,16 +111,19 @@ public class CassandraPostService {
      * a copy. The returned entity is the canonical posts_by_id row.
      */
     public PostByIdEntity createPost(CreatePostCommand cmd) {
-        // Platform keyword blocklist: BLOCK severity rejects here; FLAG lets
-        // the post publish and drops a moderation-queue hit below.
-        String flaggedKeyword = platformKeywords.blockOrFlag(cmd.textContent());
-
         UUID    id        = UUID.randomUUID();
         Instant now       = Instant.now();
         String  preview   = preview(cmd.textContent());
-        if (flaggedKeyword != null) {
-            platformKeywords.recordHit("POST", id.toString(), cmd.authorId(), flaggedKeyword);
-        }
+
+        // 0. Automated moderation (docs/moderation/) — deny-list, then the model.
+        //    Throws CONTENT_REJECTED before any row exists when the verdict blocks;
+        //    the blocklist hit / model scores are already recorded by then.
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.POST, id.toString(), cmd.authorId())
+                        .field("body", cmd.textContent())
+                        .field("location", cmd.locationName())
+                        .field("audio_track", cmd.audioTrackName()));
+
         // For reels, prefer the VIDEO-typed URL so feed rows always point to playable media.
         // For other post types, the first URL (typically the cover image) is correct.
         String  coverMedia = "REEL".equals(cmd.postType())
@@ -107,7 +135,10 @@ public class CassandraPostService {
                 .id(id)
                 .authorId(cmd.authorId())
                 .postType(cmd.postType())
-                .status("PUBLISHED")
+                // "PUBLISHED" when moderation cleared it inline, otherwise
+                // "PENDING_REVIEW" — already hidden by PostHydrator.isServable,
+                // the single-post 404 gate, and GlobalSearchService.DEAD_STATUSES.
+                .status(moderation.postStatus())
                 .visibility(cmd.visibility())
                 .textContent(cmd.textContent())
                 .audioTrackUrl(cmd.audioTrackUrl())
@@ -147,35 +178,62 @@ public class CassandraPostService {
                     .build());
         }
 
-        // 4. async fanout — never blocks the response
-        feedTimelineService.fanoutAsync(id, cmd.authorId(), now, cmd.postType(),
-                                       preview, coverMedia, cmd.visibility());
-
-        // 5. async indexing — search remains eventually consistent
-        postSearchService.indexAsync(canonical);
-
-        // 6. sound adoption: index this post under the sound + bump use_count.
-        //    Done synchronously so trending counts stay accurate; cheap (two writes).
+        // Steps 4-8 are PUBLICATION side effects: they push the text out to
+        // followers, search, tag feeds and mention inboxes. None of them is
+        // reversible, so a post that has not cleared moderation must not run
+        // them — PostModerationApplier.onApproved does exactly this block when
+        // the deferred verdict lands.
+        // Sound adoption is ownership bookkeeping, not publication — a held post
+        // still legitimately uses the sound — so it runs either way. Cheap (two
+        // writes) and kept synchronous so trending counts stay accurate.
         if (cmd.soundId() != null) {
             soundService.recordPostUsage(cmd.soundId(), id, cmd.authorId(), now);
         }
 
-        // 7. hashtag + mention extraction. Done synchronously so the per-tag
+        if (moderation.held()) {
+            log.debug("[POST] {} held for moderation ({}), publication deferred",
+                      id, moderation.status());
+            return canonical;
+        }
+
+        publishSideEffects(canonical, preview, coverMedia);
+        return canonical;
+    }
+
+    /**
+     * Everything that makes a post visible beyond its author: follower fan-out,
+     * search indexing, tag/mention extraction, activity feed.
+     *
+     * <p>Extracted so {@code PostModerationApplier} can run the identical steps
+     * when a held post is approved later — two copies of a 50k-follower fan-out
+     * that drifted apart would be a genuinely nasty bug.</p>
+     */
+    public void publishSideEffects(PostByIdEntity post, String preview, String coverMedia) {
+        UUID id = post.getId();
+        UUID authorId = post.getAuthorId();
+        Instant createdAt = post.getCreatedAt();
+
+        // 4. async fanout — never blocks the response
+        feedTimelineService.fanoutAsync(id, authorId, createdAt, post.getPostType(),
+                                       preview, coverMedia, post.getVisibility());
+
+        // 5. async indexing — search remains eventually consistent
+        postSearchService.indexAsync(post);
+
+        // 6. hashtag + mention extraction. Done synchronously so the per-tag
         //    feed sees the post immediately and mentioned users can find it
         //    in their /mentions inbox before realtime delivery completes.
         //    The postType is threaded through so the unified content_by_tag
         //    fan-out picks ContentType.REEL vs POST correctly.
-        hashtagService.indexEntitiesForPost(id, cmd.authorId(), cmd.postType(),
-                                            cmd.textContent(), now, coverMedia);
+        hashtagService.indexEntitiesForPost(id, authorId, post.getPostType(),
+                                            post.getTextContent(), createdAt, coverMedia);
 
         // 8. record on the author's activity feed.
         try {
-            userActivityService.recordPostCreated(cmd.authorId(), id, cmd.postType());
+            userActivityService.recordPostCreated(authorId, id, post.getPostType());
         } catch (Exception e) {
             log.debug("[POST] activity record skipped: {}", e.getMessage());
         }
-
-        return canonical;
     }
 
     private static String preview(String text) {
@@ -201,6 +259,20 @@ public class CassandraPostService {
      * mirror on {@code posts_by_author} is updated best-effort so the profile
      * feed reflects the edit on next read; failures there are logged but do
      * not fail the request.
+     *
+     * <p><b>Edits re-enter moderation</b> (MODERATION_ROADMAP.md §5.5). This path
+     * previously ran no checks at all, which meant blocked text could be
+     * laundered in by posting something benign and immediately PATCHing it.
+     * New text is now scored before it is accepted: a rejection keeps the
+     * original wording and 400s, and a borderline result applies the edit but
+     * flips the post back to {@code PENDING_REVIEW} — the {@code APPROVED →
+     * IN_REVIEW} transition of §5.1.</p>
+     *
+     * <p>The roadmap's "strict" option (keep the old version visible while the
+     * new one clears) is not available here: {@code posts_by_id} holds exactly
+     * one revision of the text and the platform has no post version history, so
+     * there is no older copy to keep serving. Refusing the write outright is the
+     * closest honest equivalent.</p>
      *
      * @return the updated row, or {@code null} if the post did not exist
      * @throws SecurityException when {@code actorId} is not the post's author
@@ -246,6 +318,28 @@ public class CassandraPostService {
             return existing;
         }
 
+        // §5.5 — re-moderate the edited text. Only when text actually changed:
+        // a visibility-only PATCH has nothing new to score.
+        boolean heldByEdit = false;
+        boolean wasPublished = "PUBLISHED".equalsIgnoreCase(existing.getStatus());
+        if (textChanged || cmd.locationName() != null || cmd.audioTrackName() != null) {
+            ModerationOutcome moderation = contentModeration.submitOrThrow(
+                    ModerationSubmission.of(ModeratedEntityType.POST, postId.toString(),
+                                    existing.getAuthorId())
+                            .field("body", existing.getTextContent())
+                            .field("location", existing.getLocationName())
+                            .field("audio_track", existing.getAudioTrackName()));
+            if (moderation.held()) {
+                heldByEdit = true;
+                existing.setStatus(moderation.postStatus());
+                log.info("[POST] edit {} re-entered moderation ({})", postId, moderation.status());
+            } else if ("REJECTED".equals(existing.getStatus())
+                    || "PENDING_REVIEW".equals(existing.getStatus())) {
+                // The edit cleared and the post was previously held — release it.
+                existing.setStatus("PUBLISHED");
+            }
+        }
+
         existing.setUpdatedAt(Instant.now());
         postByIdRepo.save(existing);
 
@@ -267,6 +361,30 @@ public class CassandraPostService {
             log.warn("[POST] profile-feed mirror update failed for {}: {}", postId, e.getMessage());
         }
 
+        // Publication side effects must not run for text that has not cleared —
+        // the same rule createPost enforces. This one matters more than it looks:
+        // the tag/mention reindex writes the new 280-char preview into
+        // posts_by_hashtag, content_by_tag and mentions_by_user, and fires a
+        // USER_MENTIONED notification whose BODY IS that preview. None of those
+        // surfaces re-checks post status, and a delivered notification cannot be
+        // recalled — so a held edit would leak its own text to exactly the person
+        // it names.
+        if (heldByEdit) {
+            // Withdraw the pre-edit tag/mention rows so the post leaves the public
+            // tag feeds while it waits. Guarded on wasPublished because clearing
+            // decrements tag counters: a second edit while still held would
+            // double-decrement rows that were already withdrawn.
+            if (textChanged && wasPublished) {
+                try {
+                    hashtagService.clearEntitiesForPost(postId, previousText, existing.getCreatedAt());
+                } catch (Exception e) {
+                    log.warn("[POST] tag withdrawal failed for held edit {}: {}", postId, e.getMessage());
+                }
+            }
+            log.info("[POST] edit {} held ({}), publication deferred", postId, existing.getStatus());
+            return existing;
+        }
+
         // Best-effort search re-index — async.
         postSearchService.indexAsync(existing);
 
@@ -284,6 +402,30 @@ public class CassandraPostService {
 
         log.info("[POST] edited {} (author={}, fields={})", postId, actorId, changedFields);
         return existing;
+    }
+
+    /**
+     * Re-runs only the side effects an <em>edit</em> needs when its moderation
+     * hold clears: search re-index and tag/mention extraction.
+     *
+     * <p>Deliberately not {@link #publishSideEffects}. The post already published
+     * once, so every follower holds a {@code feed_by_user} row; re-running the
+     * fan-out would duplicate it across up to 50,000 rows and fire a second
+     * POST_NEW notification for each. Only the stores that keep their own copy of
+     * the text are stale.</p>
+     */
+    public void republishEditedText(PostByIdEntity post, String coverMedia) {
+        postSearchService.indexAsync(post);
+        try {
+            // The pre-edit tag rows were withdrawn when the edit was held, so this
+            // is an add rather than a diff — passing the new text as both sides of
+            // a reindex would be a no-op.
+            hashtagService.indexEntitiesForPost(post.getId(), post.getAuthorId(), post.getPostType(),
+                                                post.getTextContent(), post.getCreatedAt(), coverMedia);
+        } catch (Exception e) {
+            log.warn("[POST] tag re-extraction failed for released edit {}: {}",
+                     post.getId(), e.getMessage());
+        }
     }
 
     /**

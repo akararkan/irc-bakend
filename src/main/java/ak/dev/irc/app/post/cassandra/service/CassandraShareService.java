@@ -19,6 +19,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -51,10 +54,22 @@ public class CassandraShareService {
     private final CassandraNotificationService notificationService;
     private final FrontendUrlResolver   frontendUrlResolver;
     private final AuthorAffinityService affinityService;
+    /** Automated text moderation for the share caption (docs/moderation/). */
+    private final ak.dev.irc.app.moderation.service.ContentModerationService contentModeration;
 
     public ShareByPostEntity recordShare(UUID postId, UUID sharerId, String caption) {
         UUID    shareId = UUID.randomUUID();
         Instant now     = Instant.now();
+
+        // Share captions are user prose surfaced on GET /{postId}/shares and had
+        // no content check of any kind. There is no held state for a share row —
+        // the list endpoint reads the partition directly — so the verdict is
+        // terminal here: cleared or refused.
+        contentModeration.submitOrRefuse(
+                ModerationSubmission.of(ModeratedEntityType.CONTENT_ANNOTATION,
+                                shareId.toString(), sharerId)
+                        .parent(postId.toString())
+                        .field("share_caption", caption));
 
         ShareByPostEntity row = ShareByPostEntity.builder()
                 .postId(postId).createdAt(now).shareId(shareId)

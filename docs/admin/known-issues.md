@@ -6,6 +6,12 @@ resolved most of them; the rest are deliberate debts, each with an owner note.
 
 Status: ✅ resolved by the admin build · 🔶 partially resolved · ⬜ still open (deliberate).
 
+> **Freshness, 2026-08-08.** Two things landed after this list was written and
+> both added rows below: **automated text moderation** (rows Q–T) and
+> **sounds becoming admin-curated only**. The section docs were also
+> reorganised into topic directories — see [README.md](README.md); every link
+> in this file points at the new paths.
+
 ## Resolved by the build
 
 | # | Flag | Where it was documented | Resolution |
@@ -57,3 +63,7 @@ Status: ✅ resolved by the admin build · 🔶 partially resolved · ⬜ still 
 | N | **Push-delivery pipeline wiring (NotificationPrefResolver matrix + DND + push send)** | notifications-email.md §6 | The settings module stores prefs/DND and the token registry exists; an actual push provider integration is a product/deps decision |
 | O | **MediaMTX RTMP/viewer kick endpoints** | chat-channels-live.md §4.9 | Same MediaMTX API gap as F — sweep + key rotation remain the mitigation |
 | P | **Arch-test guardrails (stray-endpoint / unaudited-mutation / step-up-bypass build failures)** | admin-api-blueprint.md §7 | The test tree is stale by standing policy (compile-only checks); guardrails land when the test tree is revived |
+| Q | **Moderation training set is proof-of-concept size and English-only** | ../moderation/MODERATION_ROADMAP.md §18, ../moderation/admin-guide.md §9 | The pipeline, registry, gate and dataset manager are all built and wired. What is missing is a *corpus* — expanding beyond the seed examples (Jigsaw or equivalent) and deriving thresholds from a real validation set is curation work, not engineering. Until then, keep `low` thresholds tight so humans see the borderline traffic |
+| R | **Shadow-mode inference pool not deployed** | ../moderation/architecture.md §6 | `SHADOW` exists as a registry status and promote/rollback is wired for it; running a *second* inference replica pool that scores live traffic without enforcing is a deployment-topology change, not application code |
+| S | ✅ RESOLVED (2026-08-08) — `PostModerationApplier.onRejected` now pairs the ES delete with `contentTagService.untag`, matching `AdminContentService.removePost`. A post approved and later rejected no longer leaves its denormalised tag-feed preview behind | ../moderation/architecture.md §6 | — |
+| T | **Unit tests for the Decision Engine (roadmap §17) not added** | ../moderation/architecture.md §8 | The engine is pure and stateless and is the highest-value thing to test, but `src/test/java` does not currently compile — it references `ak.dev.irc.app.post.{entity,repository,mapper}` packages that no longer exist, predating this work. Reviving the tree is a separate change; §8 of the architecture doc lists exactly what to assert once it is |

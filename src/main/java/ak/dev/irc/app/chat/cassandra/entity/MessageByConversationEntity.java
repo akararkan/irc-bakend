@@ -69,4 +69,27 @@ public class MessageByConversationEntity {
     /** For SYSTEM messages: MEMBER_ADDED, TITLE_CHANGED, … */
     @Column("system_event")    private String systemEvent;
     @Column("created_at")      private Instant createdAt;
+    /**
+     * Automated-moderation state ({@code ModerationStatus} name). NULL means the
+     * row predates moderation or has cleared it, and reads as approved — the same
+     * legacy convention the post/comment tables use. Anything else keeps the body
+     * visible to its sender only until a verdict lands.
+     */
+    @Column("moderation_status") private String moderationStatus;
+
+    /**
+     * True once the message has actually been fanned out — broadcast, bells,
+     * inbox preview, gallery rows, channel counters.
+     *
+     * <p>Not derivable from {@code moderationStatus} or {@code editedAt}: a
+     * message held at send and later edited looks identical to one that was
+     * delivered and then edited into a hold, and the two need opposite
+     * treatment when the verdict lands — first delivery versus an edit
+     * broadcast. Without this flag the first case is never delivered at all:
+     * readable on refresh, but no recipient is ever told it arrived.</p>
+     *
+     * <p>NULL means the row predates moderation, and those were all
+     * delivered.</p>
+     */
+    @Column("delivered") private Boolean delivered;
 }

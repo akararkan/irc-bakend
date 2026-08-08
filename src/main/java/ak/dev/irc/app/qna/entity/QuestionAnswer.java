@@ -17,7 +17,8 @@ import java.util.UUID;
                 @Index(name = "idx_qanswer_question", columnList = "question_id"),
                 @Index(name = "idx_qanswer_author", columnList = "author_id"),
                 @Index(name = "idx_qanswer_deleted", columnList = "deleted_at"),
-                @Index(name = "idx_qanswer_parent", columnList = "parent_answer_id")
+                @Index(name = "idx_qanswer_parent", columnList = "parent_answer_id"),
+                @Index(name = "idx_qanswer_moderation", columnList = "moderation_status")
         }
 )
 @Getter
@@ -131,6 +132,30 @@ public class QuestionAnswer extends BaseAuditEntity {
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 
+    // ── Automated moderation (docs/moderation/) ──────────────────
+    /**
+     * Verdict on this answer's text. Null means "never scored" — every answer
+     * that predates the pipeline — and reads treat null as visible so switching
+     * the classifier on does not retroactively hide the archive. Reanswers carry
+     * the same column; a reply is just an answer with a parent.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", length = 20)
+    private ak.dev.irc.app.moderation.enums.ModerationStatus moderationStatus;
+
+    @Column(name = "moderation_decided_at")
+    private LocalDateTime moderationDecidedAt;
+
+    /**
+     * Stamped the first time this answer was actually published. Answer counts
+     * are deferred to publication, so the applier has to distinguish a first
+     * approval (bump {@code question.answerCount} / the parent's
+     * {@code replyCount}) from a re-approval after an edit put the answer back
+     * under review (counters already reflect it).
+     */
+    @Column(name = "published_at")
+    private LocalDateTime publishedAt;
+
     // ── Attachments (PDF, Word, ZIP, video, audio, images) ────────
     @OneToMany(mappedBy = "answer", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
@@ -145,6 +170,11 @@ public class QuestionAnswer extends BaseAuditEntity {
 
     public boolean isDeleted() {
         return deletedAt != null;
+    }
+
+    /** True while the answer is written but not published — visible to its author only. */
+    public boolean isModerationHeld() {
+        return moderationStatus != null && moderationStatus.held();
     }
 
     public void incrementReactions() {

@@ -102,7 +102,10 @@ public class AdminResearchController {
 
     @GetMapping("/{id}")
     public ResponseEntity<Map<String, Object>> detail(@PathVariable UUID id) {
-        Research r = require(id);
+        // toRow reads researcher.getUsername(); with open-in-view off the plain
+        // by-id load hands back a detached proxy and the mapper throws.
+        Research r = researchRepository.findByIdWithResearcher(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Research", "id", id));
         return ResponseEntity.ok(Map.of(
                 "research", toRow(r),
                 "slug", String.valueOf(r.getSlug()),

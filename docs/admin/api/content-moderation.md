@@ -5,12 +5,12 @@ API reference for the two content-plane admin controllers:
 - `app/admin/content/AdminContentController` — base path **`/api/v1/admin/content`** (posts, comments, stories, highlight pins, platform keyword blocklist)
 - `app/admin/moderation/AdminModerationController` — base path **`/api/v1/admin/moderation`** (unified moderation queue, bulk actions)
 
-Concepts, policy, and data-flow: [../content-moderation.md](../content-moderation.md). Dashboard integration (auth, step-up UX, retry flow): [../frontend-dashboard-guide.md](../frontend-dashboard-guide.md). Error envelope (`ApiErrorResponse`, `errorCode` branching): [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md).
+Concepts, policy, and data-flow: [../content-moderation.md](../trust-safety/content-moderation.md). Dashboard integration (auth, step-up UX, retry flow): [../frontend-dashboard-guide.md](../frontend/README.md). Error envelope (`ApiErrorResponse`, `errorCode` branching): [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md).
 
 **Conventions (apply to every endpoint below)**
 
 - **Auth**: Bearer JWT. Both controllers are class-annotated `@PreAuthorize("hasAnyRole('ADMIN','MODERATOR')")` — any other role gets a 403 envelope.
-- **Step-up**: endpoints marked `@RequiresStepUp` additionally require a fresh step-up marker (Redis `stepup:{userId}`, default TTL 300 s). Missing marker → `403 STEP_UP_REQUIRED`. Arm it with `POST /api/v1/security/step-up` (`{"password": "…"}` or `{"code": "…"}`) and retry — see the [frontend guide](../frontend-dashboard-guide.md).
+- **Step-up**: endpoints marked `@RequiresStepUp` additionally require a fresh step-up marker (Redis `stepup:{userId}`, default TTL 300 s). Missing marker → `403 STEP_UP_REQUIRED`. Arm it with `POST /api/v1/security/step-up` (`{"password": "…"}` or `{"code": "…"}`) and retry — see the [frontend guide](../frontend/README.md).
 - **Null omission**: the app sets `spring.jackson.default-property-inclusion: non_null` globally (and `QueueRow`/`BulkResult` repeat it via `@JsonInclude(NON_NULL)`) — **any null field is absent from the JSON**, so type everything optional.
 - **Timestamps**: UTC ISO-8601 with `Z` suffix. `LocalDateTime` fields are forced to `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`; `Instant` fields serialize as standard ISO instants (may carry micro/nanosecond precision).
 - **Page sizes**: every `pageSize` is clamped server-side to `[1, 100]` (`Pages.clamp`).

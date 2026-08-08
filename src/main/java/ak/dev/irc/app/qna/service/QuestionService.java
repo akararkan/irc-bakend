@@ -60,6 +60,28 @@ public interface QuestionService {
 
     Page<QuestionResponse> getMyQuestions(UUID authorId, Pageable pageable);
 
+    // ── Deferred publication (docs/moderation/) ──────────────────────────────
+    // Called by the moderation appliers when a verdict lands after the create
+    // request already returned. They live on the interface so the appliers can
+    // reach them through an ObjectProvider without a bean cycle, and so there is
+    // exactly one implementation of each fan-out rather than two that can drift.
+
+    /**
+     * Run the publication side effects a held question skipped at create time:
+     * the {@code QuestionCreatedEvent}, the Cassandra tag fan-out, the activity
+     * record, the @mention pings and the Elasticsearch document. Idempotent —
+     * a question already published only refreshes its tag feed and index.
+     */
+    void publishQuestionSideEffects(UUID questionId);
+
+    /**
+     * Run the publication side effects a held answer skipped: the answer /
+     * reply counters, the {@code QuestionAnsweredEvent}, the activity record,
+     * the @mention pings, the SSE broadcast and the Elasticsearch document.
+     * Idempotent — the counters move only on an answer's first publication.
+     */
+    void publishAnswerSideEffects(UUID answerId);
+
     // ── Answers ──────────────────────────────────────────────────────────────
 
     QuestionAnswerResponse addAnswer(UUID questionId, CreateAnswerRequest request, UUID authorId);

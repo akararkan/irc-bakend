@@ -320,6 +320,136 @@ app:
       # subscribes to every active guest, so keep this modest.
       max-guests: ${STREAM_STAGE_MAX_GUESTS:6}
 
+  # ── Automated text moderation (docs/moderation/MODERATION_ROADMAP.md §20) ────
+  # Everything here is a BOOTSTRAP default. Thresholds, hold durations, fallback
+  # policy and per-entity enablement are all overridable at runtime from
+  # /api/v1/admin/moderation/settings, which writes the moderation_settings
+  # table — that is what lets an admin retune sensitivity without redeploying
+  # either service. A key with no DB row inherits the value below.
+  #
+  # The model itself runs as two Python containers (docker-compose.yml):
+  #   model-inference :8000  — pure scorer, text → six probabilities
+  #   model-training  :8001  — on-demand fine-tune, profile "on-demand"
+  # Start at least model-inference, or held content follows the fallback policy
+  # per entity type instead of being auto-decided.
+  moderation:
+    # MODERATION-FIRST BY DEFAULT. Set MODERATION_ENABLED=false ONLY for local
+    # testing where you do not want to run the model container — the keyword
+    # blocklist still applies, but nothing is scored and everything publishes
+    # immediately. Never in production. (Same spirit as app.security.permit-all.)
+    enabled: ${MODERATION_ENABLED:true}
+
+    inference:
+      base-url: ${MODERATION_INFERENCE_URL:http://localhost:8000}
+      # Must match INFERENCE_API_KEY on the container. Empty = no auth header,
+      # which is acceptable only because the container is meant to stay on the
+      # internal network (§15).
+      api-key: ${MODERATION_INFERENCE_API_KEY:}
+      connect-timeout-ms: 1000
+      # Hard ceiling for ANY single call. Per-entity inline budgets below are
+      # clamped under this and under half the hold ceiling, so the sweeper can
+      # never fire while a request thread is still waiting on the same case.
+      timeout-ms: ${MODERATION_INFERENCE_TIMEOUT_MS:5000}
+      max-attempts: 2
+      retry-backoff-ms: 200
+      circuit-window: 20
+      circuit-failure-rate-percent: 50
+      circuit-open-ms: 10000
+      max-batch-items: 32
+
+    training:
+      base-url: ${MODERATION_TRAINING_URL:http://localhost:8001}
+      api-key: ${MODERATION_TRAINING_API_KEY:}
+      timeout-ms: 30000
+      # The training container runs in Docker and calls back to the backend on
+      # the host. Leave empty to rely on polling alone.
+      callback-url: ${MODERATION_TRAINING_CALLBACK_URL:}
+      callback-token: ${MODERATION_TRAINING_CALLBACK_TOKEN:}
+      max-examples: 20000
+
+    retrain:
+      # §12.4 promotion gate: no per-label F1 may drop more than this vs active.
+      max-f1-drop: 0.02
+      require-human-promote: true
+      min-examples: 20
+      poll-interval-ms: 15000
+
+    # §6 real-time exception. Borderline live-chat lines default to HIDDEN:
+    # there is no review queue that catches up later for a live stream.
+    live-chat:
+      buffer-ms: 3000
+      borderline-hidden: true
+
+    # SLA sweeper cadence (§5.6). Runs independently of the queue so held content
+    # still reaches a defined outcome when the broker or the model is down.
+    sweeper:
+      initial-delay-ms: 20000
+      interval-ms: 5000
+
+    # §8.1 starting bands, per label. Retune from the dashboard once a real
+    # validation set exists — these are a sane bootstrap, not a tuned policy.
+    # threat/identity_hate sit lower on purpose: a false negative there costs
+    # far more than a false positive.
+    thresholds:
+      toxic:         { low: 0.30, high: 0.80 }
+      severe_toxic:  { low: 0.20, high: 0.60 }
+      obscene:       { low: 0.30, high: 0.80 }
+      threat:        { low: 0.15, high: 0.50 }
+      insult:        { low: 0.30, high: 0.80 }
+      identity_hate: { low: 0.15, high: 0.55 }
+
+    # §5.3 hard hold ceilings — the MAXIMUM wait, not a fixed delay. Clean
+    # content clears inline in well under a second and never waits this long.
+    hold-ms:
+      post: 30000
+      post_comment: 10000
+      story: 15000
+      story_poll: 15000
+      research: 60000
+      research_comment: 10000
+      qna_question: 30000
+      qna_answer: 30000
+      chat_message: 10000
+      channel: 30000
+      stream_meta: 30000
+      live_chat: 5000
+      content_annotation: 10000
+
+    # §5.3 target auto-decision times — the synchronous budget on the request
+    # thread before the unit is handed to the queue.
+    inline-ms:
+      post: 2000
+      post_comment: 500
+      story: 1000
+      story_poll: 1000
+      research: 5000
+      research_comment: 500
+      qna_question: 2000
+      qna_answer: 2000
+      chat_message: 500
+      channel: 2000
+      stream_meta: 2000
+      live_chat: 300
+      content_annotation: 500
+
+    # §5.6 / §20 fallback when the hold window expires with no verdict.
+    # fail_closed → hidden, top of the admin queue, SLA-breached flag.
+    # fail_open_shadow → published + flagged; only for short-lived, low-risk types.
+    fallback:
+      post: fail_closed
+      post_comment: fail_closed
+      story: fail_open_shadow
+      story_poll: fail_open_shadow
+      research: fail_closed
+      research_comment: fail_closed
+      qna_question: fail_closed
+      qna_answer: fail_closed
+      chat_message: fail_closed
+      channel: fail_closed
+      stream_meta: fail_closed
+      live_chat: fail_closed
+      content_annotation: fail_closed
+
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:5173,http://192.168.1.118:3000,http://192.168.1.118:5173,http://192.168.1.118:8080}
     allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}

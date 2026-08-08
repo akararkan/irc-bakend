@@ -91,8 +91,63 @@ services:
       - "127.0.0.1:9997:9997"  # Control API — backend enables per-stream recording.
                                # Bound to localhost only: never expose it publicly.
 
+  # ── Automated text moderation (docs/moderation/MODERATION_ROADMAP.md §7) ────
+  # Two Python containers behind a private HTTP contract. The backend runs on
+  # the HOST here (like every other datastore in this file), so both publish to
+  # localhost rather than relying on a shared compose network — set
+  # MODERATION_INFERENCE_URL / MODERATION_TRAINING_URL to the container names
+  # instead once the app itself is containerized.
+  #
+  # They share the `model-artifacts` volume: training writes /app/model/<version>/,
+  # inference reloads that path when an admin promotes the version. Neither ever
+  # touches Postgres — the dataset arrives over HTTP.
+  model-inference:
+    build: ./docs/model-inference
+    environment:
+      MODEL_ROOT: /app/model
+      # Which artifact to load at boot. Point at a promoted version dir (e.g.
+      # /app/model/v3) once one exists; with nothing mounted the service falls
+      # back to BASE_CHECKPOINT so a fresh clone still comes up scoring.
+      MODEL_PATH: ${MODERATION_MODEL_PATH:-/app/model}
+      BASE_CHECKPOINT: ${MODERATION_BASE_CHECKPOINT:-unitary/toxic-bert}
+      MAX_LENGTH: "256"
+      # Must match app.moderation.inference.api-key in application.yaml.
+      INFERENCE_API_KEY: ${MODERATION_INFERENCE_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-artifacts:/app/model
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 10
+
+  # Not started by default — `docker compose --profile on-demand up model-training`.
+  # A fine-tune saturates the CPU; it only needs to be up while a retrain runs.
+  model-training:
+    build: ./docs/model-training
+    environment:
+      MODEL_ROOT: /app/model
+      DATA_ROOT: /app/data
+      BASE_CHECKPOINT: ${MODERATION_BASE_CHECKPOINT:-unitary/toxic-bert}
+      TRAINING_API_KEY: ${MODERATION_TRAINING_API_KEY:-}
+    ports:
+      - "8001:8001"
+    volumes:
+      - model-artifacts:/app/model
+      - training-data:/app/data
+    extra_hosts:
+      # So the training container can POST its completion webhook back to the
+      # backend running on the host (app.moderation.training.callback-url).
+      - "host.docker.internal:host-gateway"
+    profiles: ["on-demand"]
+
 volumes:
   db-data:
   minio-data:
   cassandra-data:
   elasticsearch-data:
+  model-artifacts:
+  training-data:

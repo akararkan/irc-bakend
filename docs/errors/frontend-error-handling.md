@@ -255,12 +255,31 @@ guard, not a failure. Show a confirm dialog quoting the message (it interpolates
 and on confirm **resend the identical request with `confirmLargeAudience: true`**. Do not set the
 flag by default — that defeats the guard.
 
-### 2.8 Policy blocks — `CONTENT_BLOCKED_BY_POLICY`
+### 2.8 Policy blocks — `CONTENT_BLOCKED_BY_POLICY`, `CONTENT_REJECTED`
 
 Content creation (posts, comments, …) whose text matches a BLOCK-severity platform keyword
 returns 400 `CONTENT_BLOCKED_BY_POLICY` ("This content violates platform policy and cannot be
 published."). Show the message on the composer and **keep the draft** — the user edits and
 resubmits. There is nothing to retry unchanged; don't offer a retry button.
+
+`CONTENT_REJECTED` is the same story from the automated toxicity classifier, and it now covers
+**edits** as well as creates on every text surface. Treat both identically: render `message`
+verbatim, keep the draft, no retry button. Do **not** decorate it with which word or category
+tripped — the server deliberately does not say, because that would be a working oracle for
+probing the classifier until something gets through.
+
+### 2.8a Held content — `status: "PENDING_REVIEW"`
+
+A create can now **succeed** and still not be public. Post responses carry
+`status: "PENDING_REVIEW"`; comments and chat messages simply do not appear for other viewers
+until they clear. This is not an error state:
+
+- Render the item normally in the author's own feed and profile.
+- Overlay a quiet "Checking…" badge; do not show engagement affordances that cannot work yet.
+- Re-fetch after a few seconds — hold ceilings are 10s for comments, 30s for posts, 60s for
+  research papers, and most content clears far faster.
+
+Full UX contract and copy: [../moderation/frontend/README.md](../moderation/frontend/README.md).
 
 ### 2.9 Infrastructure — 5xx
 
@@ -426,6 +445,8 @@ The ~30 codes a frontend must recognize. Everything else: show `message` (4xx) o
 | `TYPE_MISMATCH` | 400 | Client bug; `details.hint === 'frontend_path_param_unhydrated'` ⇒ you sent `undefined` in a URL. |
 | `OTP_INVALID` / `TWO_FA_INVALID` | 400 | Inline on the code input; allow re-entry. |
 | `CONTENT_BLOCKED_BY_POLICY` | 400 | Show on composer, keep the draft, no retry button (§2.8). |
+| `CONTENT_REJECTED` | 400 | Automated moderation blocked it — same handling as above; never name a category (§2.8). |
+| `CONTENT_UNDER_REVIEW` | 400 | Already held; show the "checking" state instead of an error (§2.8a). |
 | `LARGE_AUDIENCE_CONFIRMATION_REQUIRED` | 400 | Confirm dialog → resend with `confirmLargeAudience: true` (§2.7). |
 | `*_NOT_FOUND` (family) | 404 | "Content no longer available" state, not an error toast (§2.5). |
 | `ENDPOINT_NOT_FOUND` | 404 | Frontend URL bug — log it. |

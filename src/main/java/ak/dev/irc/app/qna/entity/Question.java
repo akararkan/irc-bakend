@@ -19,7 +19,8 @@ import java.util.UUID;
         indexes = {
                 @Index(name = "idx_question_author", columnList = "author_id"),
                 @Index(name = "idx_question_status", columnList = "status"),
-                @Index(name = "idx_question_deleted", columnList = "deleted_at")
+                @Index(name = "idx_question_deleted", columnList = "deleted_at"),
+                @Index(name = "idx_question_moderation", columnList = "moderation_status")
         }
 )
 @Getter
@@ -70,6 +71,36 @@ public class Question extends BaseAuditEntity {
     @Builder.Default
     private QuestionStatus status = QuestionStatus.OPEN;
 
+    /**
+     * Automated-moderation verdict (docs/moderation/). Deliberately a column of
+     * its own rather than another {@link QuestionStatus} value: that enum gates
+     * <em>writes</em> (can this still be answered?) while this one gates
+     * <em>visibility</em>, and the two move independently — a CLOSED question is
+     * still readable, a held one is not.
+     *
+     * <p>Null means "never scored" — every question that predates the moderation
+     * pipeline, plus anything written while it was switched off. Read paths treat
+     * null as visible, so turning the classifier on never retroactively hides the
+     * archive.</p>
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", length = 20)
+    private ak.dev.irc.app.moderation.enums.ModerationStatus moderationStatus;
+
+    /** When the verdict above landed — inline at create, or later from the queue/sweeper/admin. */
+    @Column(name = "moderation_decided_at")
+    private LocalDateTime moderationDecidedAt;
+
+    /**
+     * Stamped the first time this question's publication side effects actually
+     * ran. The applier needs it to tell a first publication from a re-approval
+     * after an edit dipped back into the uncertain band; without it every such
+     * edit would re-fire {@code QuestionCreatedEvent}, the activity record and a
+     * full mention scan.
+     */
+    @Column(name = "published_at")
+    private LocalDateTime publishedAt;
+
     @Column(name = "answer_count", nullable = false)
     @Builder.Default
     private Long answerCount = 0L;
@@ -114,5 +145,10 @@ public class Question extends BaseAuditEntity {
 
     public boolean isDeleted() {
         return deletedAt != null;
+    }
+
+    /** True while the question is written but not published — visible to its author only. */
+    public boolean isModerationHeld() {
+        return moderationStatus != null && moderationStatus.held();
     }
 }

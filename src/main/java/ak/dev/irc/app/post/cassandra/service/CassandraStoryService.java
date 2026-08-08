@@ -8,6 +8,9 @@ import ak.dev.irc.app.post.cassandra.entity.StoryViewEntity;
 import ak.dev.irc.app.post.cassandra.repository.StoryByAuthorRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryLookupRepository;
 import ak.dev.irc.app.post.cassandra.repository.StoryViewRepository;
+import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
+import ak.dev.irc.app.moderation.service.ModerationOutcome;
+import ak.dev.irc.app.moderation.service.ModerationSubmission;
 import ak.dev.irc.app.post.enums.StoryLifetime;
 import ak.dev.irc.app.user.repository.UserFollowRepository;
 import lombok.RequiredArgsConstructor;
@@ -57,7 +60,8 @@ public class CassandraStoryService {
     private final ak.dev.irc.app.chat.repository.ConversationMemberRepository chatMemberRepo;
     private final CassandraStoryPollService pollService;
     private final ak.dev.irc.app.post.realtime.StoryTrayRealtimePublisher trayPublisher;
-    private final ak.dev.irc.app.admin.moderation.PlatformKeywordService platformKeywords;
+    /** Automated text moderation (docs/moderation/) — replaces the direct blocklist call. */
+    private final ak.dev.irc.app.moderation.service.ContentModerationService contentModeration;
     /**
      * Used to write with explicit per-row {@code USING TTL <seconds>}, so the
      * 8 / 16 / 24-hour story windows actually expire at the row level — the
@@ -97,13 +101,17 @@ public class CassandraStoryService {
                                            String thumbnailUrl, String textContent,
                                            StoryLifetime lifetime) {
         if (lifetime == null) lifetime = StoryLifetime.DEFAULT;
-        String flaggedKeyword = platformKeywords.blockOrFlag(textContent);
         UUID    storyId = UUID.randomUUID();
         Instant now     = Instant.now();
         Instant expires = now.plus(lifetime.duration());
-        if (flaggedKeyword != null) {
-            platformKeywords.recordHit("STORY", storyId.toString(), authorId, flaggedKeyword);
-        }
+
+        // Automated moderation (docs/moderation/). Stories get the shortest hold
+        // ceiling and a fail-open-shadow fallback: a 24h story that spends its
+        // whole life in a review queue has effectively been deleted, so
+        // availability wins over the small residual risk here (§5.3, §5.6).
+        ModerationOutcome moderation = contentModeration.submitOrThrow(
+                ModerationSubmission.of(ModeratedEntityType.STORY, storyId.toString(), authorId)
+                        .field("caption", textContent));
 
         StoryByAuthorEntity row = StoryByAuthorEntity.builder()
                 .authorId(authorId)
@@ -115,6 +123,7 @@ public class CassandraStoryService {
                 .thumbnailUrl(thumbnailUrl)
                 .textContent(textContent)
                 .expiresAt(expires)
+                .moderationStatus(moderation.held() ? moderation.status().name() : null)
                 .build();
 
         // Per-row TTL: overrides the table's default_time_to_live for this
@@ -129,6 +138,7 @@ public class CassandraStoryService {
                 .storyId(storyId).authorId(authorId)
                 .createdAt(now).visibility(visibility)
                 .expiresAt(expires)
+                .moderationStatus(moderation.held() ? moderation.status().name() : null)
                 .build(), ttlOpts);
 
         return row;
@@ -277,6 +287,20 @@ public class CassandraStoryService {
     }
 
     public boolean canView(StoryByAuthorEntity story, UUID viewerId) {
+        // Automated moderation gate, evaluated BEFORE audience visibility: a held
+        // story is invisible to everyone but its author no matter who the author
+        // shared it with. NULL means "predates moderation / cleared".
+        //
+        // recordView reconstructs a synthetic entity carrying only authorId and
+        // visibility, so moderationStatus is null there and this correctly
+        // no-ops on that path — a view of an already-visible story.
+        String moderation = story.getModerationStatus();
+        if (moderation != null && !moderation.isBlank()
+                && !"APPROVED".equalsIgnoreCase(moderation)
+                && !story.getAuthorId().equals(viewerId)) {
+            return false;
+        }
+
         String v = story.getVisibility();
         if (v == null || "PUBLIC".equals(v)) return true;
         // Channel story: authorId is the channel's conversation id. Public

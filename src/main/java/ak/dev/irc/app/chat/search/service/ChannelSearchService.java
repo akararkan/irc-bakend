@@ -5,6 +5,7 @@ import ak.dev.irc.app.chat.enums.ConversationType;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.search.document.ChannelSearchDocument;
 import ak.dev.irc.app.chat.search.repository.ChannelSearchRepository;
+import ak.dev.irc.app.chat.util.ChatModeration;
 import ak.dev.irc.app.common.search.EsRetry;
 import ak.dev.irc.app.common.search.dto.ReindexSummary;
 import co.elastic.clients.elasticsearch._types.query_dsl.FieldValueFactorModifier;
@@ -65,7 +66,12 @@ public class ChannelSearchService {
     public void indexAsync(Conversation c) {
         if (c == null || c.getId() == null) return;
         try {
-            if (!c.isChannel() || !c.isPublicChannel() || c.getDeletedAt() != null) {
+            // The held check lives here rather than at each call site because
+            // subscribe/unsubscribe/verify also re-index, and a channel whose title
+            // has not cleared automated moderation must not become discoverable
+            // through any of them.
+            if (!c.isChannel() || !c.isPublicChannel() || c.getDeletedAt() != null
+                    || ChatModeration.held(c.getModerationStatus())) {
                 EsRetry.run(() -> searchRepo.deleteById(c.getId().toString()),
                         "[SEARCH] de-index channel " + c.getId());
                 return;
@@ -189,7 +195,10 @@ public class ChannelSearchService {
             if (slice.isEmpty()) break;
 
             List<ChannelSearchDocument> docs = new ArrayList<>(slice.getNumberOfElements());
-            for (Conversation c : slice.getContent()) docs.add(buildDoc(c));
+            for (Conversation c : slice.getContent()) {
+                if (ChatModeration.held(c.getModerationStatus())) continue;  // same gate as indexAsync
+                docs.add(buildDoc(c));
+            }
             try {
                 EsRetry.run(() -> searchRepo.saveAll(docs),
                         "[SEARCH] reindex channels page " + page);

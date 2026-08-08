@@ -20,6 +20,13 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
      * excluded. Comment author + profile are fetch-joined: the mapper reads
      * {@code c.getUser().getProfileImage()} per row, and {@code User.profile}
      * is a non-proxyable mappedBy 1:1. Explicit countQuery (fetch join).
+     *
+     * <p>The moderation predicate rides alongside the {@code isHidden} one: a
+     * comment the classifier held is visible to whoever wrote it and to nobody
+     * else on this path (the research owner uses the sibling query). A null
+     * status is a row moderation never scored and stays visible. {@code viewerId}
+     * is null for anonymous readers, and {@code c.user.id = null} is never true
+     * in SQL, so the author clause simply drops out.</p>
      */
     @Query(value = """
         SELECT c FROM ResearchComment c
@@ -29,17 +36,28 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
           AND c.parent IS NULL
           AND c.deletedAt IS NULL
           AND c.isHidden = false
+          AND (c.moderationStatus IS NULL
+               OR c.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR c.user.id = :viewerId)
         ORDER BY c.createdAt DESC
         """,
         countQuery = """
         SELECT COUNT(c) FROM ResearchComment c
         WHERE c.research.id = :researchId
           AND c.parent IS NULL AND c.deletedAt IS NULL AND c.isHidden = false
+          AND (c.moderationStatus IS NULL
+               OR c.moderationStatus = ak.dev.irc.app.moderation.enums.ModerationStatus.APPROVED
+               OR c.user.id = :viewerId)
         """)
-    Page<ResearchComment> findByResearchIdAndParentIsNullAndDeletedAtIsNullAndIsHiddenFalseOrderByCreatedAtDesc(
-            @Param("researchId") UUID researchId, Pageable pageable);
+    Page<ResearchComment> findVisibleTopLevel(@Param("researchId") UUID researchId,
+                                              @Param("viewerId") UUID viewerId,
+                                              Pageable pageable);
 
-    /** Top-level comments for a research (parent IS NULL) — includes hidden comments. */
+    /**
+     * Top-level comments for a research (parent IS NULL) — the research owner's
+     * view, so it includes both hidden and moderation-held rows. The owner is
+     * the one person who needs to see everything attached to their paper.
+     */
     @Query(value = """
         SELECT c FROM ResearchComment c
         JOIN FETCH c.user u
@@ -94,6 +112,19 @@ public interface ResearchCommentRepository extends JpaRepository<ResearchComment
         WHERE comment_id = :commentId
     """, nativeQuery = true)
     void deleteAllLikesByCommentId(@Param("commentId") UUID commentId);
+
+    /**
+     * Cascade purge of the like rows for an entire research thread. The FK
+     * {@code research_comment_likes.comment_id → research_comments(id)} is
+     * NO ACTION (Hibernate's default), so the likes must go first or the
+     * comment purge fails with a constraint violation.
+     */
+    @Modifying
+    @Query(value = """
+        DELETE FROM research_comment_likes
+        WHERE comment_id IN (SELECT id FROM research_comments WHERE research_id = :researchId)
+    """, nativeQuery = true)
+    int deleteAllLikesByResearchId(@Param("researchId") UUID researchId);
 
     /**
      * Atomic clamp-at-zero increment/decrement of the denormalised

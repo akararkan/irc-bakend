@@ -74,6 +74,8 @@ public class ChatCassandraSchemaInitializer {
                     deleted         boolean,
                     system_event    text,
                     created_at      timestamp,
+                    moderation_status text,
+                    delivered boolean,
                     PRIMARY KEY ((conversation_id, bucket), message_id)
                 ) WITH CLUSTERING ORDER BY (message_id DESC)""".formatted(keyspace));
 
@@ -97,7 +99,9 @@ public class ChatCassandraSchemaInitializer {
                     deleted         boolean,
                     edited_at       timestamp,
                     system_event    text,
-                    created_at      timestamp
+                    created_at      timestamp,
+                    moderation_status text,
+                    delivered boolean
                 )""".formatted(keyspace));
 
             session.execute("""
@@ -166,6 +170,13 @@ public class ChatCassandraSchemaInitializer {
             ensureColumn("message_by_id", "location", "text");
             ensureColumn("message_by_id", "contact", "text");
             ensureColumn("message_counters", "comments", "counter");
+            // Automated text moderation (docs/moderation/) — both message tables
+            // carry the held/rejected flag so the read path and the applier agree.
+            ensureColumn("messages_by_conversation", "moderation_status", "text");
+            ensureColumn("message_by_id", "moderation_status", "text");
+            // NULL = predates moderation, and those rows were all delivered.
+            ensureColumn("messages_by_conversation", "delivered", "boolean");
+            ensureColumn("message_by_id", "delivered", "boolean");
 
             log.info("[CHAT-CASSANDRA] media_ref UDT + message/poll/counter/gallery tables ready");
         } catch (Exception e) {

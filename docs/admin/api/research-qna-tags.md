@@ -10,7 +10,7 @@ Complete request/response reference for five admin controllers:
 | `TagAdminController` (`app/common/tag/controller`) | `/api/v1/admin/tags` |
 | `AdminKnowledgeController` (`app/admin/knowledge`) | `/api/v1/admin/knowledge` |
 
-Concepts and workflows: [../research-qna.md](../research-qna.md) (research & Q&A oversight), [../knowledge-vocabulary.md](../knowledge-vocabulary.md) (topics/madhhabs taxonomy), [../frontend-dashboard-guide.md](../frontend-dashboard-guide.md) (UI build guide). All errors arrive in the canonical envelope — see [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md).
+Concepts and workflows: [../research-qna.md](../content/research-qna.md) (research & Q&A oversight), [../knowledge-vocabulary.md](../content/knowledge-vocabulary.md) (topics/madhhabs taxonomy), [../frontend-dashboard-guide.md](../frontend/README.md) (UI build guide). All errors arrive in the canonical envelope — see [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md).
 
 **Conventions used below**
 

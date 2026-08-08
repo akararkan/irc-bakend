@@ -4,8 +4,8 @@ Complete request/response reference for the admin user-administration surface: `
 (`/api/v1/admin/users`, 32 routes), `AdminImpersonationController` (`/api/v1/admin/impersonation`),
 and the step-up arming endpoint of `SecurityController` (`POST /api/v1/security/step-up`) that every
 `@RequiresStepUp` route below depends on. Concepts and role semantics live in
-[users-roles.md](../users-roles.md) and [user-administration.md](../user-administration.md); dashboard
-integration in [frontend-dashboard-guide.md](../frontend-dashboard-guide.md). Every error arrives in
+[users-roles.md](../users/directory-and-roles.md) and [user-administration.md](../users/administration.md); dashboard
+integration in [frontend-dashboard-guide.md](../frontend/README.md). Every error arrives in
 the canonical `ApiErrorResponse` envelope — see
 [frontend-error-handling.md](../../errors/frontend-error-handling.md).
 

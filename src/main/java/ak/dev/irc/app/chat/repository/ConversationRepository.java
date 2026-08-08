@@ -40,6 +40,23 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
                            @Param("preview") String preview);
 
     /**
+     * Swap the inbox preview of a message that already owns the pointer — the
+     * automated-moderation release path, where a placeholder was written at hold
+     * time and {@link #advanceLastMessage} would refuse to move sideways. The
+     * {@code last_message_id = :messageId} guard makes it a no-op once a newer
+     * message has taken the pointer.
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+        UPDATE Conversation c
+           SET c.lastMessagePreview = :preview
+         WHERE c.id = :id AND c.lastMessageId = :messageId
+        """)
+    int refreshLastMessagePreview(@Param("id") UUID id,
+                                  @Param("messageId") long messageId,
+                                  @Param("preview") String preview);
+
+    /**
      * Atomic member-count delta. {@code flushAutomatically} pushes any pending
      * managed-entity changes (e.g. a member status update in the same tx) to the
      * DB first, and {@code clearAutomatically} detaches the persistence context so
@@ -64,10 +81,14 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
     boolean existsByHandle(String handle);
 
     /** Discover public channels by title/handle (optionally within a category),
-     *  most-subscribed first. An empty {@code q} lists all public channels. */
+     *  most-subscribed first. An empty {@code q} lists all public channels.
+     *  Channels whose title/description has not cleared automated moderation are
+     *  excluded — this is the fallback path when the ES index is cold, and it has
+     *  to enforce the same gate the indexer does. */
     @Query("""
         SELECT c FROM Conversation c
          WHERE c.type = :type AND c.publicChannel = true AND c.deletedAt IS NULL
+           AND (c.moderationStatus IS NULL OR c.moderationStatus = 'APPROVED')
            AND (:q = '' OR LOWER(c.title) LIKE LOWER(CONCAT('%', :q, '%'))
                        OR LOWER(c.handle) LIKE LOWER(CONCAT('%', :q, '%')))
            AND (:category IS NULL OR c.category = :category)

@@ -11,9 +11,9 @@ and search-operations sections of the admin dashboard:
 | `app/admin/search/AdminSearchOpsController` | `/api/v1/admin/search` | Index health/drift, query analytics, async reindex-all |
 | `app/common/search/controller/SearchAdminController` | `/api/v1/admin/search` | The 7 synchronous per-index reindex hooks |
 
-Concepts and data-model background: [analytics-kpis.md](../analytics-kpis.md),
-[search-feed-trending.md](../search-feed-trending.md). Dashboard wiring:
-[frontend-dashboard-guide.md](../frontend-dashboard-guide.md).
+Concepts and data-model background: [analytics-kpis.md](../platform/analytics-kpis.md),
+[search-feed-trending.md](../platform/search-feed-trending.md). Dashboard wiring:
+[frontend-dashboard-guide.md](../frontend/README.md).
 
 ---
 

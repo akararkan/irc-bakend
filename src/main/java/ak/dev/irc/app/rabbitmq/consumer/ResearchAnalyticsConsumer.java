@@ -51,6 +51,10 @@ public class ResearchAnalyticsConsumer {
     private final UserRepository          userRepo;
     private final ResearchRealtimeBroadcaster realtime;
     private final ak.dev.irc.app.common.cache.CounterCache counterCache;
+    /** Cassandra mirror of the download log — the store the admin
+     *  {@code /admin/research/{id}/downloads} panel reads from. */
+    private final ak.dev.irc.app.research.cassandra.service.CassandraResearchEngagementService
+            engagementMirror;
 
     // Used to drop the L1 cache between a JPQL UPDATE and the re-read so the
     // broadcast carries the post-increment value, not the pre-increment entity
@@ -104,6 +108,11 @@ public class ResearchAnalyticsConsumer {
 
         downloadRepo.save(download);
         researchRepo.incrementDownloadCount(event.researchId());
+
+        // Mirror into Cassandra: the Postgres row is the relational record,
+        // the Cassandra partition is what the admin download panel pages over.
+        engagementMirror.mirrorDownload(event.researchId(), event.userId(),
+                event.mediaId(), ip);
 
         broadcastFreshCounters(event.researchId(), ResearchRealtimeEventType.DOWNLOAD_COUNT_UPDATED);
 

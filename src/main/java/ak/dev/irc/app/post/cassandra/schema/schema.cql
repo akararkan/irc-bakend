@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS comments_by_post (
     media_type  text,
     is_deleted  boolean,
     is_edited   boolean,
+    -- Automated text moderation (docs/moderation/). NULL = predates moderation
+    -- or cleared; anything else hides the row from everyone but its author.
+    moderation_status text,
     PRIMARY KEY (post_id, created_at, comment_id)
 ) WITH CLUSTERING ORDER BY (created_at ASC, comment_id ASC);
 
@@ -112,7 +115,10 @@ CREATE TABLE IF NOT EXISTS comment_lookup (
     parent_id   uuid,         -- null = top-level; non-null = reply (parent is a top-level comment)
     author_id   uuid,
     created_at  timestamp,
-    is_reply    boolean
+    is_reply    boolean,
+    -- Automated text moderation (docs/moderation/). NULL = predates moderation
+    -- or cleared; anything else hides the row from everyone but its author.
+    moderation_status text
 );
 
 -- 5b. Comment replies (replies are flat at 1 level per project rule)
@@ -126,6 +132,9 @@ CREATE TABLE IF NOT EXISTS replies_by_comment (
     media_url   text,
     is_deleted  boolean,
     is_edited   boolean,
+    -- Automated text moderation (docs/moderation/). NULL = predates moderation
+    -- or cleared; anything else hides the row from everyone but its author.
+    moderation_status text,
     PRIMARY KEY (parent_id, created_at, reply_id)
 ) WITH CLUSTERING ORDER BY (created_at ASC, reply_id ASC);
 
@@ -211,6 +220,9 @@ CREATE TABLE IF NOT EXISTS stories_by_author (
     thumbnail_url text,
     text_content text,
     expires_at  timestamp,
+    -- Automated text moderation (docs/moderation/). NULL = predates moderation
+    -- or cleared; anything else hides the row from everyone but its author.
+    moderation_status text,
     PRIMARY KEY (author_id, created_at, story_id)
 ) WITH CLUSTERING ORDER BY (created_at DESC, story_id ASC)
   AND default_time_to_live = 86400;  -- 24h
@@ -223,7 +235,10 @@ CREATE TABLE IF NOT EXISTS story_lookup (
     author_id   uuid,
     created_at  timestamp,
     visibility  text,
-    expires_at  timestamp
+    expires_at  timestamp,
+    -- Automated text moderation (docs/moderation/). NULL = predates moderation
+    -- or cleared; anything else hides the row from everyone but its author.
+    moderation_status text
 ) WITH default_time_to_live = 86400;
 
 -- 9c. Story HIGHLIGHTS — permanent (no TTL) curated archives of stories.

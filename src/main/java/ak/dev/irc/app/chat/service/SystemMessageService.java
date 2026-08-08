@@ -32,6 +32,15 @@ import java.util.UUID;
  * they appear inline, paginate normally, and update the inbox preview — no
  * separate mechanism. Shared by {@code ConversationService} and
  * {@code GroupMemberService}.
+ *
+ * <p><b>Not moderated, deliberately.</b> This path bypasses
+ * {@code MessageService.persist} and every body it writes is platform-composed;
+ * the only user-controlled text any of them carries is an embedded group or
+ * channel title, and that title is already scored where it is set
+ * ({@code ConversationService.update} / {@code ChannelService.update}) under the
+ * strict edit policy, which refuses the change unless it clears. Scoring it a
+ * second time here would double-charge the same text and open a case pointing at
+ * a system row no moderator can act on.</p>
  */
 @Service
 @RequiredArgsConstructor

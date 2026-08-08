@@ -53,6 +53,11 @@ public class AdminSoundController {
     public record ImportBody(List<AdminSoundService.ImportItem> items) {
     }
 
+    public record CreateBody(@Size(max = 200) String title, @Size(max = 200) String artistName,
+                             String audioUrl, String coverArtUrl, Integer durationSeconds,
+                             String category, Boolean official) {
+    }
+
     // ── reads ───────────────────────────────────────────────────────────
 
     @GetMapping
@@ -84,6 +89,20 @@ public class AdminSoundController {
     @GetMapping("/{id}")
     public ResponseEntity<AdminSoundService.AdminSoundDetail> detail(@PathVariable UUID id) {
         return ResponseEntity.ok(adminSoundService.detail(id));
+    }
+
+    /**
+     * The only way a new sound enters the library (sound-library.md §5). Sounds
+     * are admin-curated, not user-uploaded, so this lands straight on APPROVED —
+     * there is nothing to review after the fact. {@code official} defaults to
+     * {@code false}; set it for first-party/licensed audio you want flagged as
+     * such in the picker.
+     */
+    @PostMapping
+    public ResponseEntity<AdminSoundService.AdminSoundRow> create(@RequestBody CreateBody body) {
+        return ResponseEntity.status(201).body(adminSoundService.create(
+                body.title(), body.artistName(), body.audioUrl(), body.coverArtUrl(),
+                body.durationSeconds(), body.category(), Boolean.TRUE.equals(body.official())));
     }
 
     // ── transitions ─────────────────────────────────────────────────────

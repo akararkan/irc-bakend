@@ -27,6 +27,20 @@ public interface ResearchRepository extends JpaRepository<Research, UUID> {
     @Query("SELECT r FROM Research r WHERE r.id = :id AND r.deletedAt IS NULL")
     Optional<Research> findByIdAndDeletedAtIsNull(@Param("id") UUID id);
 
+    /**
+     * Same row, with the author graph fetched. Callers that read
+     * {@code researcher.getUsername()} outside a transaction — the admin
+     * detail panel — need this: {@code open-in-view} is off, so the lazy
+     * proxy is already detached by the time the response is mapped.
+     */
+    @Query("""
+        SELECT r FROM Research r
+        JOIN FETCH r.researcher res
+        LEFT JOIN FETCH res.profile
+        WHERE r.id = :id AND r.deletedAt IS NULL
+        """)
+    Optional<Research> findByIdWithResearcher(@Param("id") UUID id);
+
     // ── Feed queries ─────────────────────────────────────────────────────────
 
     /**

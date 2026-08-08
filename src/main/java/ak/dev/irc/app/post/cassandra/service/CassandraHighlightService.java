@@ -38,12 +38,23 @@ public class CassandraHighlightService {
     private final StoryInHighlightRepository  storyInHighlightRepo;
     private final StoryLookupRepository       storyLookupRepo;
     private final StoryByAuthorRepository     storyByAuthorRepo;
+    /** Automated text moderation for the highlight title (docs/moderation/). */
+    private final ak.dev.irc.app.moderation.service.ContentModerationService contentModeration;
 
     // ── Highlights ──────────────────────────────────────────────────────────
 
     public HighlightByAuthorEntity createHighlight(UUID authorId, String title,
                                                    String coverUrl, int displayOrder) {
         UUID id = UUID.randomUUID();
+        // Highlight titles render on a public profile and had no content check.
+        // Like share captions there is no held representation for one, so the
+        // verdict is terminal: cleared or refused.
+        contentModeration.submitOrRefuse(
+                ak.dev.irc.app.moderation.service.ModerationSubmission.of(
+                                ak.dev.irc.app.moderation.enums.ModeratedEntityType.CONTENT_ANNOTATION,
+                                id.toString(), authorId)
+                        .field("highlight_title", title));
+
         HighlightByAuthorEntity h = HighlightByAuthorEntity.builder()
                 .authorId(authorId).displayOrder(displayOrder).highlightId(id)
                 .title(title).coverUrl(coverUrl).createdAt(Instant.now())
