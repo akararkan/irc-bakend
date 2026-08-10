@@ -98,8 +98,9 @@ public class AdminChatController {
     public ResponseEntity<Map<String, Object>> overview() {
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, Long> byType = new LinkedHashMap<>();
-        for (ConversationType t : ConversationType.values()) {
-            byType.put(t.name(), conversationRepository.countByTypeAndDeletedAtIsNull(t));
+        for (ConversationType t : ConversationType.values()) byType.put(t.name(), 0L);
+        for (Object[] row : conversationRepository.countLiveGroupedByType()) {
+            byType.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
         }
         body.put("conversationsByType", byType);
         body.put("verifiedChannels",
@@ -179,8 +180,9 @@ public class AdminChatController {
         LocalDateTime t = to == null ? LocalDateTime.now() : to;
 
         Map<String, Long> funnel = new LinkedHashMap<>();
-        for (MessageRequestStatus s : MessageRequestStatus.values()) {
-            funnel.put(s.name(), messageRequestRepository.countByStatus(s));
+        for (MessageRequestStatus s : MessageRequestStatus.values()) funnel.put(s.name(), 0L);
+        for (Object[] row : messageRequestRepository.countGroupedByStatus()) {
+            funnel.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
         }
         Map<String, Long> windowed = new LinkedHashMap<>();
         for (Object[] row : messageRequestRepository.countByStatusBetween(f, t)) {

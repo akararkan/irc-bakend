@@ -15,6 +15,8 @@ import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
+import org.springframework.data.elasticsearch.core.query.FetchSourceFilter;
+import org.springframework.data.elasticsearch.core.query.SourceFilter;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -37,6 +39,10 @@ import java.util.UUID;
 public class ChatSearchService {
 
     private static final String INDEX = "irc-chat-messages";
+
+    /** Both query paths only read {@code messageId} — leave the bodies on the ES node. */
+    private static final SourceFilter ID_ONLY_SOURCE =
+            FetchSourceFilter.of(null, new String[]{"messageId"}, null);
 
     private final ChatMessageSearchRepository searchRepo;
     private final ElasticsearchOperations esOps;
@@ -106,6 +112,8 @@ public class ChatSearchService {
         NativeQuery nq = NativeQuery.builder()
                 .withQuery(esQuery)
                 .withPageable(PageRequest.of(0, size))
+                .withTrackTotalHits(false)
+                .withSourceFilter(ID_ONLY_SOURCE)
                 .build();
 
         try {
@@ -146,6 +154,8 @@ public class ChatSearchService {
                 .withSort(s -> s.field(f -> f.field("messageId")
                         .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
                 .withPageable(PageRequest.of(0, size))
+                .withTrackTotalHits(false)
+                .withSourceFilter(ID_ONLY_SOURCE)
                 .build();
 
         try {

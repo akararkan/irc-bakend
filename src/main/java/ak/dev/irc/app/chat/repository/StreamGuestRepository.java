@@ -15,10 +15,13 @@ import java.util.UUID;
 @Repository
 public interface StreamGuestRepository extends JpaRepository<StreamGuest, UUID> {
 
-    Optional<StreamGuest> findByStreamIdAndUserId(UUID streamId, UUID userId);
+    @Query("SELECT g FROM StreamGuest g WHERE g.streamId = :streamId AND g.userId = :userId")
+    Optional<StreamGuest> findByStreamIdAndUserId(@Param("streamId") UUID streamId, @Param("userId") UUID userId);
 
     /** The guests in a given state for a stream, oldest-first (stable stage order). */
-    List<StreamGuest> findByStreamIdAndStatusOrderByJoinedAtAsc(UUID streamId, StreamGuestStatus status);
+    @Query("SELECT g FROM StreamGuest g WHERE g.streamId = :streamId AND g.status = :status ORDER BY g.joinedAt ASC")
+    List<StreamGuest> findByStreamIdAndStatusOrderByJoinedAtAsc(@Param("streamId") UUID streamId,
+                                                                @Param("status") StreamGuestStatus status);
 
     /** Pending hand-raises, oldest-first — the host's request queue. */
     List<StreamGuest> findByStreamIdAndStatusOrderByRequestedAtAsc(UUID streamId, StreamGuestStatus status);

@@ -36,9 +36,11 @@ a phrase-prefix typeahead layer, wrapped in
 win ties, `log1p` keeps a mega-viral sound from drowning exact title
 matches. `O(t · log n)`.
 
-ES returns ranked ids; rows hydrate from Cassandra `sounds_by_id`
-(k point-reads, O(1) each) **preserving rank order**, re-checking
-`APPROVED` so a stale index row can't surface an un-approved sound.
+ES returns ranked ids only (`_source` trimmed to the id, totals never
+counted); rows hydrate from Cassandra `sounds_by_id` in **one IN-clause
+batch read** — not a point read per id — **preserving rank order** and
+re-checking `APPROVED` so a stale index row can't surface an un-approved
+sound.
 
 **Response `200`:** `SoundEntity[]` — `id`, `title`, `artistName`,
 `audioUrl`, `coverArtUrl`, `durationSeconds`, `category`, `status`,

@@ -59,7 +59,7 @@ public class PlatformKeywordService {
             throw new BadRequestException(AdminContentMessages.INVALID_KEYWORD_MSG,
                     AdminContentMessages.INVALID_KEYWORD);
         }
-        PlatformKeyword existing = keywordRepository.findByKeywordNormalized(norm).orElse(null);
+        PlatformKeyword existing = keywordRepository.byNormalized(norm).orElse(null);
         if (existing != null) {
             existing.setSeverity(severity);
             existing.setNote(note);
@@ -174,7 +174,7 @@ public class PlatformKeywordService {
             }
         } catch (Exception ignored) {
         }
-        List<String> fresh = keywordRepository.findBySeverity(severity).stream()
+        List<String> fresh = keywordRepository.bySeverity(severity).stream()
                 .map(PlatformKeyword::getKeywordNormalized)
                 .toList();
         try {

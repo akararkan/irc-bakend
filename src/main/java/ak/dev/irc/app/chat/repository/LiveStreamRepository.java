@@ -34,20 +34,30 @@ public interface LiveStreamRepository extends JpaRepository<LiveStream, UUID> {
      * Served off {@code idx_stream_host}; with a clamped page this is
      * O(log N + pageSize), independent of history depth.
      */
-    Page<LiveStream> findByHostIdOrderByStartedAtDesc(UUID hostId, Pageable pageable);
+    @Query(value = "SELECT s FROM LiveStream s WHERE s.hostId = :hostId ORDER BY s.startedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM LiveStream s WHERE s.hostId = :hostId")
+    Page<LiveStream> findByHostIdOrderByStartedAtDesc(@Param("hostId") UUID hostId, Pageable pageable);
 
     // ── Admin browse (chat-channels-live.md §6) ───────────────────────────
 
+    @Query(value = "SELECT s FROM LiveStream s ORDER BY s.startedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM LiveStream s")
     Page<LiveStream> findAllByOrderByStartedAtDesc(Pageable pageable);
 
-    Page<LiveStream> findByStatusOrderByStartedAtDesc(LiveStreamStatus status, Pageable pageable);
+    @Query(value = "SELECT s FROM LiveStream s WHERE s.status = :status ORDER BY s.startedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM LiveStream s WHERE s.status = :status")
+    Page<LiveStream> findByStatusOrderByStartedAtDesc(@Param("status") LiveStreamStatus status, Pageable pageable);
 
-    Page<LiveStream> findByStatusAndHostIdOrderByStartedAtDesc(LiveStreamStatus status,
-                                                               UUID hostId, Pageable pageable);
+    @Query(value = "SELECT s FROM LiveStream s WHERE s.status = :status AND s.hostId = :hostId ORDER BY s.startedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM LiveStream s WHERE s.status = :status AND s.hostId = :hostId")
+    Page<LiveStream> findByStatusAndHostIdOrderByStartedAtDesc(@Param("status") LiveStreamStatus status,
+                                                               @Param("hostId") UUID hostId, Pageable pageable);
 
     @Query("SELECT COUNT(s) FROM LiveStream s WHERE s.status = :status")
     long countByStatus(@Param("status") LiveStreamStatus status);
 
     /** Stale-LIVE candidates for the orphan sweep (ops §3.12). */
-    List<LiveStream> findByStatusAndStartedAtBefore(LiveStreamStatus status, java.time.Instant cutoff);
+    @Query("SELECT s FROM LiveStream s WHERE s.status = :status AND s.startedAt < :cutoff")
+    List<LiveStream> findByStatusAndStartedAtBefore(@Param("status") LiveStreamStatus status,
+                                                    @Param("cutoff") java.time.Instant cutoff);
 }

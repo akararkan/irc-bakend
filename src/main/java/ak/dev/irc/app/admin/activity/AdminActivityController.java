@@ -130,7 +130,7 @@ public class AdminActivityController {
 
     @GetMapping("/breakglass/cases")
     public ResponseEntity<Page<BreakGlassCase>> cases(@PageableDefault(size = 25) Pageable pageable) {
-        return ResponseEntity.ok(caseRepository.findAllByOrderByOpenedAtDesc(
+        return ResponseEntity.ok(caseRepository.browse(
                 PageRequest.of(Math.max(0, pageable.getPageNumber()),
                         Pages.clamp(pageable.getPageSize()))));
     }
@@ -253,7 +253,7 @@ public class AdminActivityController {
 
     private void requireOpenCase(UUID targetUserId, String auditAction) {
         boolean open = caseRepository
-                .findByTargetUserIdAndStatus(targetUserId, BreakGlassCase.Status.OPEN)
+                .casesForTarget(targetUserId, BreakGlassCase.Status.OPEN)
                 .stream().anyMatch(BreakGlassCase::isOpenNow);
         if (!open) {
             throw new ForbiddenException(

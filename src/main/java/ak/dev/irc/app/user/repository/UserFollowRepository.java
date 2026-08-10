@@ -56,6 +56,14 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
     @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.following.id = :userId")
     long countByFollowingId(@Param("userId") UUID userId);
 
+    /** Follower totals for a batch of users in one grouped scan (search reindex). */
+    @Query("""
+        SELECT uf.following.id, COUNT(uf) FROM UserFollow uf
+        WHERE uf.following.id IN :userIds
+        GROUP BY uf.following.id
+        """)
+    java.util.List<Object[]> countByFollowingIdIn(@Param("userIds") java.util.Collection<UUID> userIds);
+
     @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.follower.id = :userId")
     long countByFollowerId(@Param("userId") UUID userId);
 

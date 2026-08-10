@@ -38,6 +38,10 @@ public interface MessageRequestRepository extends JpaRepository<MessageRequest, 
     @Query("SELECT COUNT(r) FROM MessageRequest r WHERE r.status = :status")
     long countByStatus(@Param("status") ak.dev.irc.app.chat.enums.MessageRequestStatus status);
 
+    /** All-time totals per status in one scan (admin funnel). */
+    @Query("SELECT r.status, COUNT(r) FROM MessageRequest r GROUP BY r.status")
+    java.util.List<Object[]> countGroupedByStatus();
+
     @Query("""
         SELECT r.status, COUNT(r) FROM MessageRequest r
         WHERE r.createdAt >= :from AND r.createdAt <= :to

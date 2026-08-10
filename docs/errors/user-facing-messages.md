@@ -683,7 +683,8 @@ Everything below arrives inside the standard error envelope with the listed stat
 
 | HTTP | Code | Message | Trigger | Surface |
 |---|---|---|---|---|
-| 403 | `ACCESS_FORBIDDEN` | The owner cannot unsubscribe from their own channel. | owner calls unsubscribe | DELETE channel subscription |
+| 403 | `ACCESS_FORBIDDEN` | The owner cannot unsubscribe from their own channel. | owner calls unsubscribe (or conversation leave) | DELETE channel subscription |
+| 403 | `NOT_OWNER` | Only the channel owner can delete the channel. | non-owner calls channel delete | DELETE /api/v1/channels/{id} |
 | 403 | `ACCESS_FORBIDDEN` | This channel is private. | public preview/handle access of a non-public channel (ChannelService:297) | GET channel by handle/preview |
 | 403 | `ADMINS_ONLY` | You cannot change this channel's photo. / You cannot change this channel's cover. | photo/cover set or delete without canChangeInfo right | channel image endpoints |
 | 403 | `ADMINS_ONLY` | You cannot edit this channel's info. | channel update without canChangeInfo right | PATCH /api/v1/channels/{id} |
@@ -1203,6 +1204,9 @@ absolute boundary in this codebase, not a moderation-specific choice.
 |---|---|---|---|---|
 | 400 | `INVALID_IMPORT_BATCH` | Provide 1–100 items. | Official import with empty or >100 items | POST /api/v1/admin/sounds/import |
 | 400 | `INVALID_IMPORT_ITEM` | Each item needs title and audioUrl. | Import item missing title/audioUrl | POST /api/v1/admin/sounds/import |
+| 400 | `SOUND_FILE_INVALID` | Provide an audio file. | Upload with a missing/empty `file` part | POST /api/v1/admin/sounds/upload |
+| 400 | `SOUND_FILE_INVALID` | The sound file must be audio (mp3, m4a, aac, wav, ogg, opus or mp4). | Non-audio content type + unrecognized extension | POST /api/v1/admin/sounds/upload |
+| 400 | `SOUND_FILE_INVALID` | The cover art must be an image. | `cover` part with a non-image content type | POST /api/v1/admin/sounds/upload |
 | 400 | `INVALID_STATUS / INVALID_CATEGORY` | Unknown status. Allowed: {SoundStatus values array} — and — Unknown category. Allowed: {SoundCategory values array} | Unparseable status/category | /api/v1/admin/sounds/** |
 | 404 | `SOUND_NOT_FOUND` | Sound not found with id: {soundId} | Missing sound | /api/v1/admin/sounds/** |
 

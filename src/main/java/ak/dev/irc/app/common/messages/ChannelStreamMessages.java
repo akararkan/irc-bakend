@@ -50,6 +50,8 @@ public final class ChannelStreamMessages {
             "This channel is private.";
     public static final String OWNER_CANNOT_UNSUBSCRIBE_MSG =
             "The owner cannot unsubscribe from their own channel.";
+    public static final String CHANNEL_DELETE_OWNER_ONLY_MSG =
+            "Only the channel owner can delete the channel.";
     public static final String NOT_CHANNEL_MEMBER_MSG =
             "You are not a member of this channel.";
     public static final String CHANNEL_STATS_ADMINS_ONLY_MSG =

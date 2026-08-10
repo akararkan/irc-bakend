@@ -102,7 +102,7 @@ public class AdminModerationController {
         }
 
         if (source == null || "keywords".equalsIgnoreCase(source)) {
-            keywordHitRepository.findByResolvedFalseOrderByCreatedAtAsc(PageRequest.of(page, size))
+            keywordHitRepository.openHits(PageRequest.of(page, size))
                     .forEach(h -> rows.add(new QueueRow("keywords", h.getTargetType(),
                             h.getTargetRef(), "KEYWORD:" + h.getKeywordNormalized(), 1,
                             "FLAGGED", h.getCreatedAt(), h.getCreatedAt())));

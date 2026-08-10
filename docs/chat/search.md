@@ -51,8 +51,12 @@ One Elasticsearch document per **text** message (`ChatMessageDocument`:
   conversation ids** (the membership scope; see below).
 - `must_not` — `type = SYSTEM`, so system/timeline messages never surface.
 
-ES returns ranked `messageId`s; the service then hydrates them from Cassandra into
-full `MessageResponse` objects, dropping any that fall below the caller's floors.
+The query ships back ids and nothing else — `_source` is trimmed to
+`messageId` and totals are not counted (`track_total_hits: false`), so
+message bodies never ride the search response. ES returns ranked
+`messageId`s; the service then hydrates them from Cassandra (bulk `IN`
+reads for rows, senders, reactions, stars, poll state) into full
+`MessageResponse` objects, dropping any that fall below the caller's floors.
 
 ---
 

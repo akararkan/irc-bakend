@@ -23,6 +23,7 @@ import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
+import org.springframework.data.elasticsearch.core.query.FetchSourceFilter;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -73,7 +74,22 @@ public class GlobalSearchService {
 
     private final ElasticsearchOperations esOps;
     private final SearchQueryLogService   queryLog;
-    private final ObjectMapper            objectMapper = new ObjectMapper();
+
+    /**
+     * Only the fields the hit-mapper actually reads leave the ES node —
+     * bodies, keyword arrays, counters and everything else stay behind
+     * instead of riding every response. {@code SOURCE_BARE} covers the two
+     * fields needed to type/deep-link a hit; {@code SOURCE_EXPANDED} adds
+     * the preview + attribution fields {@link #inlineBrief} inlines.
+     */
+    private static final String[] SOURCE_BARE = {"postType", "questionId"};
+    private static final String[] SOURCE_EXPANDED = {
+            "postType", "questionId", "createdAt",
+            "title", "textContent", "body",
+            "displayName", "fname", "lname", "username", "handle",
+            "artistName", "authorName", "authorUsername",
+            "researcherName", "researcherUsername"
+    };
 
     /**
      * Search result envelope. {@code nextCursor} is non-null when cursor
@@ -106,6 +122,11 @@ public class GlobalSearchService {
         NativeQuery native_ = NativeQuery.builder()
                 .withQuery(buildQuery(query, types))
                 .withPageable(PageRequest.of(page, size))
+                // Totals are never surfaced — skipping the count phase saves
+                // work on every shard of every index in the fan-out.
+                .withTrackTotalHits(false)
+                .withSourceFilter(FetchSourceFilter.of(
+                        null, expand ? SOURCE_EXPANDED : SOURCE_BARE, null))
                 .build();
 
         SearchHits<EntityAsMap> hits;
@@ -158,6 +179,9 @@ public class GlobalSearchService {
         NativeQueryBuilder builder = NativeQuery.builder()
                 .withQuery(buildQuery(query, types))
                 .withPageable(PageRequest.of(0, size))
+                .withTrackTotalHits(false)
+                .withSourceFilter(FetchSourceFilter.of(
+                        null, expand ? SOURCE_EXPANDED : SOURCE_BARE, null))
                 .withSort(sort);
         // Spring Data ES forwards searchAfter into the underlying query body.
         if (after != null) {
@@ -228,6 +252,14 @@ public class GlobalSearchService {
             "FOLLOWERS_ONLY", "ONLY_ME",        // PostVisibility
             "PRIVATE"                           // ResearchVisibility
     );
+
+    // Prebuilt FieldValue lists — buildQuery runs per request; these never change.
+    private static final List<FieldValue> DEAD_STATUS_VALUES =
+            DEAD_STATUSES.stream().map(FieldValue::of).toList();
+    private static final List<FieldValue> NON_PUBLIC_VALUES =
+            NON_PUBLIC_VISIBILITIES.stream().map(FieldValue::of).toList();
+    private static final List<FieldValue> ENTITY_INDEX_VALUES =
+            ENTITY_INDICES.stream().map(FieldValue::of).toList();
 
     /**
      * Multi-power query: combines text relevance, typo tolerance, phrase
@@ -319,18 +351,17 @@ public class GlobalSearchService {
                 b.filter(f -> f.term(t -> t.field("postType").value("REEL")));
             }
 
-            // 5) Lifecycle filter — dead statuses never surface.
-            for (String dead : DEAD_STATUSES) {
-                b.mustNot(mn -> mn.term(t -> t.field("status").value(dead)));
-            }
+            // 5) Lifecycle filter — dead statuses never surface. A single
+            //    terms clause (set lookup) instead of one mustNot per status.
+            b.mustNot(mn -> mn.terms(t -> t.field("status")
+                    .terms(v -> v.value(DEAD_STATUS_VALUES))));
 
             // 6) Privacy filter — non-public content never surfaces.
             //    (mustNot on a field an index doesn't have is a no-op, so
             //    this only bites posts + research, the two visibility-bearing
             //    indices.)
-            for (String hidden : NON_PUBLIC_VISIBILITIES) {
-                b.mustNot(mn -> mn.term(t -> t.field("visibility").value(hidden)));
-            }
+            b.mustNot(mn -> mn.terms(t -> t.field("visibility")
+                    .terms(v -> v.value(NON_PUBLIC_VALUES))));
             return b;
         }));
 
@@ -437,8 +468,7 @@ public class GlobalSearchService {
                 // year-old account with no followers multiplies BM25 by ~0.
                 .functions(fn -> fn
                         .filter(f -> f.terms(t -> t.field("_index")
-                                .terms(v -> v.value(ENTITY_INDICES.stream()
-                                        .map(FieldValue::of).toList()))))
+                                .terms(v -> v.value(ENTITY_INDEX_VALUES))))
                         .weight(1.0))
                 // Popularity signals for the entity indices — each field
                 // exists on exactly one index; missing(0.0) keeps the rest

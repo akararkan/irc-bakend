@@ -13,7 +13,8 @@ import java.util.UUID;
 @Repository
 public interface UserStrikeRepository extends JpaRepository<UserStrike, UUID> {
 
-    List<UserStrike> findByUserIdOrderByIssuedAtDesc(UUID userId);
+    @Query("SELECT s FROM UserStrike s WHERE s.userId = :userId ORDER BY s.issuedAt DESC")
+    List<UserStrike> findByUserIdOrderByIssuedAtDesc(@Param("userId") UUID userId);
 
     @Query("""
         SELECT COUNT(s) FROM UserStrike s
@@ -23,13 +24,18 @@ public interface UserStrikeRepository extends JpaRepository<UserStrike, UUID> {
 
     // ── Admin ledger (safety-reports.md §3.8/§5) ──────────────────────────
 
-    java.util.List<UserStrike> findByReportId(UUID reportId);
+    @Query("SELECT s FROM UserStrike s WHERE s.reportId = :reportId")
+    java.util.List<UserStrike> findByReportId(@Param("reportId") UUID reportId);
 
+    @Query(value = "SELECT s FROM UserStrike s ORDER BY s.issuedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM UserStrike s")
     org.springframework.data.domain.Page<UserStrike> findAllByOrderByIssuedAtDesc(
             org.springframework.data.domain.Pageable pageable);
 
+    @Query(value = "SELECT s FROM UserStrike s WHERE s.userId = :userId ORDER BY s.issuedAt DESC",
+           countQuery = "SELECT COUNT(s) FROM UserStrike s WHERE s.userId = :userId")
     org.springframework.data.domain.Page<UserStrike> findByUserIdOrderByIssuedAtDesc(
-            UUID userId, org.springframework.data.domain.Pageable pageable);
+            @Param("userId") UUID userId, org.springframework.data.domain.Pageable pageable);
 
     @Query("SELECT COUNT(s) FROM UserStrike s WHERE s.expiresAt > :now")
     long countAllActive(@Param("now") LocalDateTime now);

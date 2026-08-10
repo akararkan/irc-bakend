@@ -81,8 +81,9 @@ public class AdminAnalyticsController {
         tiles.put("totalResearch", researchRepository.countByDeletedAtIsNull());
         tiles.put("questions", questionRepository.countByDeletedAtIsNull());
         Map<String, Long> conversations = new LinkedHashMap<>();
-        for (ConversationType t : ConversationType.values()) {
-            conversations.put(t.name(), conversationRepository.countByTypeAndDeletedAtIsNull(t));
+        for (ConversationType t : ConversationType.values()) conversations.put(t.name(), 0L);
+        for (Object[] row : conversationRepository.countLiveGroupedByType()) {
+            conversations.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
         }
         tiles.put("conversationsByType", conversations);
         tiles.put("liveNow", liveStreamRepository.countByStatus(LiveStreamStatus.LIVE));
@@ -423,7 +424,7 @@ public class AdminAnalyticsController {
     public ResponseEntity<org.springframework.data.domain.Page<MetricAlert>> anomalies(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return ResponseEntity.ok(metricAlertRepository.findAllByOrderByCreatedAtDesc(
+        return ResponseEntity.ok(metricAlertRepository.browse(
                 org.springframework.data.domain.PageRequest.of(
                         Math.max(0, page), Pages.clamp(size))));
     }

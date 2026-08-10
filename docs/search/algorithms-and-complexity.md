@@ -116,6 +116,25 @@ segment buffer; segment merges amortize in the background. All app writes
 are async ([indexing-and-reindex.md](indexing-and-reindex.md)), so request
 paths pay **O(1)** (a task submission).
 
+### 1.8 Response shaping — pay only for what leaves the node
+
+Two costs scale with the *response*, not the index, and both are trimmed on
+every search surface:
+
+- **`track_total_hits: false`** wherever a total is never rendered (global,
+  chat, sound search). Counting every match forces a full postings walk even
+  when only k hits return — the count phase is exactly the part that defeats
+  Block-Max WAND pruning, so skipping it keeps queries in the pruned regime.
+- **`_source` filtering** — id-only on id→hydrate surfaces (chat messages,
+  sounds), preview-fields-only on global search. A hit's body, keyword
+  arrays and counters never cross the wire just to be discarded by the
+  mapper.
+
+Hydration after an id-ranked search is always **one batch read per store**
+(Cassandra `IN`, Postgres `IN` — with the profile join-fetched for people
+rows), never a point read per id: the id list is ≤ k, so hydration is
+`O(k)` work at **O(1)** round-trips.
+
 ---
 
 ## 2. Postgres full-text people search

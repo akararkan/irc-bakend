@@ -87,13 +87,20 @@ public interface ModerationCaseRepository extends JpaRepository<ModerationCase, 
     Optional<ModerationCase> findWithFields(@Param("id") UUID id);
 
     /** The review queue (§12.1), newest-risk-first when sorted by maxScore. */
-    Page<ModerationCase> findByStatus(ModerationStatus status, Pageable pageable);
+    @Query(value = "SELECT c FROM ModerationCase c WHERE c.status = :status",
+           countQuery = "SELECT COUNT(c) FROM ModerationCase c WHERE c.status = :status")
+    Page<ModerationCase> findByStatus(@Param("status") ModerationStatus status, Pageable pageable);
 
-    Page<ModerationCase> findByStatusAndEntityType(ModerationStatus status,
-                                                   ModeratedEntityType entityType,
+    @Query(value = "SELECT c FROM ModerationCase c WHERE c.status = :status AND c.entityType = :entityType",
+           countQuery = "SELECT COUNT(c) FROM ModerationCase c WHERE c.status = :status AND c.entityType = :entityType")
+    Page<ModerationCase> findByStatusAndEntityType(@Param("status") ModerationStatus status,
+                                                   @Param("entityType") ModeratedEntityType entityType,
                                                    Pageable pageable);
 
-    Page<ModerationCase> findByStatusAndSlaBreached(ModerationStatus status, boolean slaBreached,
+    @Query(value = "SELECT c FROM ModerationCase c WHERE c.status = :status AND c.slaBreached = :slaBreached",
+           countQuery = "SELECT COUNT(c) FROM ModerationCase c WHERE c.status = :status AND c.slaBreached = :slaBreached")
+    Page<ModerationCase> findByStatusAndSlaBreached(@Param("status") ModerationStatus status,
+                                                    @Param("slaBreached") boolean slaBreached,
                                                     Pageable pageable);
 
     long countByStatus(ModerationStatus status);
@@ -105,7 +112,8 @@ public interface ModerationCaseRepository extends JpaRepository<ModerationCase, 
     long countBySubmittedAtAfter(LocalDateTime after);
 
     /** Author history for the review screen — "has this account been here before?" (§12.1). */
-    long countByAuthorIdAndStatus(UUID authorId, ModerationStatus status);
+    @Query("SELECT COUNT(c) FROM ModerationCase c WHERE c.authorId = :authorId AND c.status = :status")
+    long countByAuthorIdAndStatus(@Param("authorId") UUID authorId, @Param("status") ModerationStatus status);
 
     /** Volume breakdown for the metrics endpoint (§12.5). */
     @Query("""

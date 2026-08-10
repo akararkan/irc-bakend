@@ -57,6 +57,7 @@ public class GroupMemberService {
     private final UserRepository userRepository;
     private final ConversationService conversationService;
     private final ChannelJoinRequestService joinRequestService;
+    private final ChannelService channelService;
 
     /** Web origin invite share links point at (frontend routes /join/{token}). */
     @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
@@ -222,7 +223,13 @@ public class GroupMemberService {
 
     @Transactional
     public void leave(UUID conversationId, UUID userId) {
-        Conversation c = requireGroup(conversationId);
+        Conversation c = requireGroupOrChannel(conversationId);
+        if (c.isChannel()) {
+            // Leaving a channel IS unsubscribing — same membership removal,
+            // count decrement and fan-out as DELETE /channels/{id}/subscribe.
+            channelService.unsubscribe(conversationId, userId);
+            return;
+        }
         ConversationMember me = requireActiveMember(conversationId, userId);
         if (me.isOwner() && c.getMemberCount() > 1) {
             throw new BadRequestException(ChatMessages.LEAVE_TRANSFER_FIRST_MSG);
@@ -420,14 +427,6 @@ public class GroupMemberService {
         // Always deliver to the affected user so their client updates even if
         // they've just lost active membership (removed/left).
         broadcaster.broadcastTo(userId, evt);
-    }
-
-    private Conversation requireGroup(UUID conversationId) {
-        Conversation c = conversationRepo.findById(conversationId)
-                .filter(x -> x.getDeletedAt() == null)
-                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
-        if (!c.isGroup()) throw new BadRequestException(ChatMessages.GROUP_ONLY_ACTION_MSG);
-        return c;
     }
 
     /** Invite links apply to groups AND channels (a private channel is shared by

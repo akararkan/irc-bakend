@@ -208,6 +208,10 @@ SYSTEM message, and emits `member.changed` (`LEFT`) — delivered directly to yo
   `transfer-owner` first, or `DELETE /conversations/{id}` to retire the group.
 - A **sole owner** (last member) leaving soft-deletes the whole group in the same
   transaction.
+- On a **channel** id this endpoint delegates to unsubscribe: the membership row
+  is removed (no `LEFT` status, no SYSTEM message), idempotently — see
+  [channels/inbox.md](channels/inbox.md#leaving--deleting-the-channel). A channel
+  **owner** leaving gets `403`.
 
 **Errors:** `BAD_REQUEST` (400) for the owner-with-members case;
 `NOT_A_MEMBER` (403); `CONVERSATION_NOT_FOUND` (404).

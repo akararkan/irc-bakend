@@ -25,7 +25,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -152,9 +154,18 @@ public class UserSearchService {
             Page<User> slice = userRepo.findAllActive(PageRequest.of(page, PAGE_SIZE));
             if (slice.isEmpty()) break;
 
-            List<UserSearchDocument> docs = new ArrayList<>(slice.getNumberOfElements());
-            for (User u : slice.getContent()) {
-                docs.add(buildDoc(u, followRepo.countByFollowingId(u.getId())));
+            // Re-load the page WITH profiles (one fetch-join) and read every
+            // follower total in one grouped scan — the naive shape lazy-loads
+            // each profile and point-counts each user's followers.
+            List<UUID> ids = slice.getContent().stream().map(User::getId).toList();
+            List<User> users = userRepo.findActiveWithProfileByIdIn(ids);
+            Map<UUID, Long> followers = new HashMap<>();
+            for (Object[] row : followRepo.countByFollowingIdIn(ids)) {
+                followers.put((UUID) row[0], (Long) row[1]);
+            }
+            List<UserSearchDocument> docs = new ArrayList<>(users.size());
+            for (User u : users) {
+                docs.add(buildDoc(u, followers.getOrDefault(u.getId(), 0L)));
             }
             try {
                 EsRetry.run(() -> searchRepo.saveAll(docs),

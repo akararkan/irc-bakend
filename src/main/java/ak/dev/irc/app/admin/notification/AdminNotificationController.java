@@ -172,7 +172,7 @@ public class AdminNotificationController {
     @GetMapping("/announcements")
     public ResponseEntity<Page<PlatformAnnouncement>> announcements(
             @PageableDefault(size = 25) Pageable pageable) {
-        return ResponseEntity.ok(announcementRepository.findAllByOrderByCreatedAtDesc(
+        return ResponseEntity.ok(announcementRepository.browse(
                 PageRequest.of(Math.max(0, pageable.getPageNumber()),
                         Pages.clamp(pageable.getPageSize()))));
     }

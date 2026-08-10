@@ -12,6 +12,8 @@ import java.util.UUID;
 
 public interface EmailSendLogRepository extends JpaRepository<EmailSendLog, UUID> {
 
+    @Query(value = "SELECT l FROM EmailSendLog l ORDER BY l.createdAt DESC",
+           countQuery = "SELECT COUNT(l) FROM EmailSendLog l")
     Page<EmailSendLog> findAllByOrderByCreatedAtDesc(Pageable pageable);
 
     Page<EmailSendLog> findByRecipientIdOrderByCreatedAtDesc(UUID recipientId, Pageable pageable);

@@ -288,7 +288,9 @@ public class UserServiceImpl implements UserService {
         if (hits.isEmpty()) return java.util.List.of();
 
         java.util.List<UUID> ids = hits.stream().map(r -> (UUID) r[0]).toList();
-        java.util.Map<UUID, User> byId = userRepository.findActiveByIdIn(ids).stream()
+        // Profile join-fetched: the response mapper reads displayName/avatar,
+        // which would otherwise lazy-load one profile per hit.
+        java.util.Map<UUID, User> byId = userRepository.findActiveWithProfileByIdIn(ids).stream()
             .collect(java.util.stream.Collectors.toMap(User::getId, u -> u));
         // Re-apply the ranking order lost by the batch load.
         return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();

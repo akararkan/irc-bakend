@@ -99,6 +99,16 @@ unchanged**. `settings` is a **whole-object replacement** (send the full
 `conversation.updated` (`CHANNEL_INFO_CHANGED`). **Errors** — `403 ADMINS_ONLY`,
 `400 BAD_REQUEST` (e.g. handle taken).
 
+## `DELETE /channels/{id}` — delete the channel
+
+**Owner only.** Soft-deletes the channel for **everyone** — it drops out of all
+subscriber inboxes, discovery and by-handle lookups, and is de-indexed from the
+public-channel search. Broadcasts `conversation.updated`
+(`memberChange: "DELETED"`). **Response** — `204`. **Errors** — `403 NOT_OWNER`,
+`403 NOT_A_MEMBER`, `404`. Full lifecycle semantics (including
+`DELETE /conversations/{id}` on a channel id):
+[inbox.md](inbox.md#leaving--deleting-the-channel).
+
 ---
 
 ## Photo & cover *(multipart)*
@@ -131,7 +141,10 @@ true`. **Response** — `200`, [`ChannelResponse`](#channelresponse). **Errors**
 `403` on a private channel (join via invite instead).
 
 ### `DELETE /channels/{id}/subscribe`
-Unsubscribe. **Response** — `204`. The **owner cannot unsubscribe** — delete or
+Unsubscribe — equivalent to `POST /conversations/{id}/leave` on the channel id
+(see [inbox.md](inbox.md#leaving--deleting-the-channel)). **Response** — `204`.
+The **owner cannot unsubscribe** —
+[delete the channel](#delete-channelsid--delete-the-channel) or
 [transfer ownership](admins.md#ownership-kick-restrict) instead (`403`).
 
 ---

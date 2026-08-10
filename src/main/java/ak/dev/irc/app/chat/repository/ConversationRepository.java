@@ -150,5 +150,10 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
     @Query("SELECT COUNT(c) FROM Conversation c WHERE c.type = :type AND c.deletedAt IS NULL")
     long countByTypeAndDeletedAtIsNull(@Param("type") ConversationType type);
 
-    long countByTypeAndVerifiedTrueAndDeletedAtIsNull(ConversationType type);
+    /** Live totals for every type in one scan (admin overview tiles). */
+    @Query("SELECT c.type, COUNT(c) FROM Conversation c WHERE c.deletedAt IS NULL GROUP BY c.type")
+    java.util.List<Object[]> countLiveGroupedByType();
+
+    @Query("SELECT COUNT(c) FROM Conversation c WHERE c.type = :type AND c.verified = TRUE AND c.deletedAt IS NULL")
+    long countByTypeAndVerifiedTrueAndDeletedAtIsNull(@Param("type") ConversationType type);
 }

@@ -1,9 +1,9 @@
 # Channels — subscribers, inbox & lifecycle
 
 The subscriber-facing side: seeing the member list, and managing a channel as an
-entry in **your** inbox (read state, mute, pin-to-top, archive), plus deleting
-the channel. These are the shared [conversation](../conversations.md) endpoints
-applied to a channel's id.
+entry in **your** inbox (read state, mute, pin-to-top, archive), plus leaving
+and deleting the channel. These are the shared
+[conversation](../conversations.md) endpoints applied to a channel's id.
 
 Base path `/api/v1`. `{id}` = channel UUID.
 
@@ -80,10 +80,43 @@ muting a channel only silences *your* notifications.
 
 ---
 
-## Deleting the channel
+## Leaving & deleting the channel
 
-### `DELETE /conversations/{id}`
-Owner only. Soft-deletes the channel (async cascade of its messages/members).
-**Response** — `204`. The **owner cannot unsubscribe** while the channel exists
-(`DELETE /channels/{id}/subscribe` → `403`) — delete it, or
-[transfer ownership](admins.md#ownership-kick-restrict) first.
+### `POST /conversations/{id}/leave` · `DELETE /channels/{id}/subscribe` — leave
+
+Equivalent endpoints: leaving a channel **is** unsubscribing. Your membership
+row is removed (no `LEFT` tombstone, no SYSTEM message — channels don't announce
+subscriber churn), `memberCount` drops by one, the remaining members get
+`member.changed` (`UNSUBSCRIBED`, applied as a −1 delta) and your own tabs get
+it directly, your unread badge is invalidated, and the chat disappears from your
+inbox. Re-subscribing later brings it back with full history (channel history is
+always visible to new subscribers). **Response** — `204`, idempotent (leaving a
+channel you're not in is a no-op `204`). The **owner cannot leave** → `403
+ACCESS_FORBIDDEN` — [transfer ownership](admins.md#ownership-kick-restrict) or
+delete the channel instead.
+
+### `DELETE /conversations/{id}` — delete the chat
+
+Telegram parity — what happens depends on who you are:
+
+- **Owner** → **deletes the channel for everyone**, identical to
+  [`DELETE /channels/{id}`](overview.md#delete-channelsid--delete-the-channel)
+  below.
+- **Subscriber** → **leaves the channel** (exactly the semantics above). The
+  chat drops off your list **for good** — unlike a DM/group "delete for me" it
+  does not resurface on the channel's next post, because you are no longer a
+  member.
+
+**Response** — `204`. **Errors** — `403 NOT_A_MEMBER` (never subscribed);
+`404` (unknown/already-deleted conversation).
+
+### `DELETE /channels/{id}` — delete the channel *(owner only)*
+
+Soft-deletes the channel for **everyone**: the thread drops out of every
+subscriber's inbox at once, posting/reading starts failing, discovery and
+by-handle lookups 404, and the channel is removed from the public-channel
+search index. Member rows and the message log are retained (nothing is
+purged). Broadcasts `conversation.updated` with `memberChange: "DELETED"` to
+every active member. **Response** — `204`. **Errors** — `403 NOT_OWNER`
+(admins and subscribers can't delete); `403 NOT_A_MEMBER`; `404` (unknown
+channel).

@@ -20,9 +20,13 @@ public interface ModerationTrainingExampleRepository
 
     Optional<ModerationTrainingExample> findByTextHash(String textHash);
 
-    Page<ModerationTrainingExample> findBySourceOrderByAddedAtDesc(TrainingExampleSource source,
+    @Query(value = "SELECT e FROM ModerationTrainingExample e WHERE e.source = :source ORDER BY e.addedAt DESC",
+           countQuery = "SELECT COUNT(e) FROM ModerationTrainingExample e WHERE e.source = :source")
+    Page<ModerationTrainingExample> findBySourceOrderByAddedAtDesc(@Param("source") TrainingExampleSource source,
                                                                    Pageable pageable);
 
+    @Query(value = "SELECT e FROM ModerationTrainingExample e ORDER BY e.addedAt DESC",
+           countQuery = "SELECT COUNT(e) FROM ModerationTrainingExample e")
     Page<ModerationTrainingExample> findAllByOrderByAddedAtDesc(Pageable pageable);
 
     long countBySource(TrainingExampleSource source);

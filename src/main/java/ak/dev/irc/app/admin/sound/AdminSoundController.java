@@ -5,9 +5,11 @@ import ak.dev.irc.app.common.util.Pages;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -103,6 +105,25 @@ public class AdminSoundController {
         return ResponseEntity.status(201).body(adminSoundService.create(
                 body.title(), body.artistName(), body.audioUrl(), body.coverArtUrl(),
                 body.durationSeconds(), body.category(), Boolean.TRUE.equals(body.official())));
+    }
+
+    /**
+     * Multipart variant of {@link #create}: upload the audio bytes directly
+     * (part {@code file}, plus optional {@code cover} image) instead of
+     * pasting a URL. Same semantics — admin-curated, lands straight on
+     * APPROVED; the stored row plays through the media proxy.
+     */
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<AdminSoundService.AdminSoundRow> upload(
+            @RequestPart("file") MultipartFile file,
+            @RequestPart(value = "cover", required = false) MultipartFile cover,
+            @RequestParam @Size(max = 200) String title,
+            @RequestParam(required = false) @Size(max = 200) String artistName,
+            @RequestParam(required = false) Integer durationSeconds,
+            @RequestParam(required = false) String category,
+            @RequestParam(defaultValue = "false") boolean official) {
+        return ResponseEntity.status(201).body(adminSoundService.createFromUpload(
+                file, cover, title, artistName, durationSeconds, category, official));
     }
 
     // ── transitions ─────────────────────────────────────────────────────

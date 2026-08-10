@@ -12,11 +12,16 @@ import java.util.UUID;
 
 public interface DeadLetterRepository extends JpaRepository<DeadLetter, UUID> {
 
-    @Query("""
+    @Query(value = """
         SELECT d FROM DeadLetter d
         WHERE (:status IS NULL OR d.status = :status)
           AND (:routingKey IS NULL OR d.routingKey = :routingKey)
         ORDER BY d.receivedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(d) FROM DeadLetter d
+        WHERE (:status IS NULL OR d.status = :status)
+          AND (:routingKey IS NULL OR d.routingKey = :routingKey)
         """)
     Page<DeadLetter> browse(@Param("status") DeadLetter.Status status,
                             @Param("routingKey") String routingKey,

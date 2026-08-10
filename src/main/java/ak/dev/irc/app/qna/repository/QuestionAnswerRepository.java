@@ -60,7 +60,8 @@ public interface QuestionAnswerRepository extends JpaRepository<QuestionAnswer, 
 
     Optional<QuestionAnswer> findByIdAndQuestionIdAndDeletedAtIsNull(UUID answerId, UUID questionId);
 
-    Optional<QuestionAnswer> findByIdAndDeletedAtIsNull(UUID answerId);
+    @Query("SELECT a FROM QuestionAnswer a WHERE a.id = :answerId AND a.deletedAt IS NULL")
+    Optional<QuestionAnswer> findByIdAndDeletedAtIsNull(@Param("answerId") UUID answerId);
 
     /**
      * Restriction-aware top-level answer listing — answers authored by users

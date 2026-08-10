@@ -97,7 +97,7 @@ public class AdminResearchController {
 
     @GetMapping("/flags")
     public ResponseEntity<Page<ResearchFlag>> openFlags(@PageableDefault(size = 25) Pageable pageable) {
-        return ResponseEntity.ok(flagRepository.findByResolvedAtIsNullOrderByCreatedAtAsc(clamp(pageable)));
+        return ResponseEntity.ok(flagRepository.openFlags(clamp(pageable)));
     }
 
     @GetMapping("/{id}")
@@ -114,7 +114,7 @@ public class AdminResearchController {
                 "shareCount", r.getShareCount() == null ? 0L : r.getShareCount(),
                 "commentsEnabled", r.isCommentsEnabled(),
                 "downloadsEnabled", r.isDownloadsEnabled(),
-                "flags", flagRepository.findByResearchIdOrderByCreatedAtDesc(id)));
+                "flags", flagRepository.flagsFor(id)));
     }
 
     /** First HTTP surface over the (previously unreferenced) download log. */

@@ -39,7 +39,8 @@ public interface UserContactHashRepository extends JpaRepository<UserContactHash
 
     boolean existsByOwnerIdAndKind(UUID ownerId, String kind);
 
-    long countByOwnerIdAndKind(UUID ownerId, String kind);
+    @Query("SELECT COUNT(h) FROM UserContactHash h WHERE h.ownerId = :ownerId AND h.kind = :kind")
+    long countByOwnerIdAndKind(@Param("ownerId") UUID ownerId, @Param("kind") String kind);
 
     /** Active users still missing their server-side IDENTITY hash (startup backfill). */
     @Query("""
@@ -51,7 +52,8 @@ public interface UserContactHashRepository extends JpaRepository<UserContactHash
 
     // ── Admin oversight (docs/admin/discovery-pymk-privacy.md §5.2) ───────
 
-    long countByKind(String kind);
+    @Query("SELECT COUNT(h) FROM UserContactHash h WHERE h.kind = :kind")
+    long countByKind(@Param("kind") String kind);
 
     @Query("SELECT COUNT(DISTINCT h.ownerId) FROM UserContactHash h WHERE h.kind = :kind")
     long countDistinctOwnersByKind(@Param("kind") String kind);

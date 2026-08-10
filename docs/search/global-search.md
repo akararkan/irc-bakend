@@ -54,6 +54,16 @@ Cursor mode sorts on `(score DESC, _doc ASC)` and seeks with `search_after`:
 The token is base64 of the last hit's sort values — treat as opaque.
 `nextCursor: ""` means no further page.
 
+### Cost notes
+
+- **No hit counting** — the envelope carries no total, so the query runs
+  with `track_total_hits: false`: ES stops tracking matches the moment the
+  top-k heap is full instead of walking every posting to count them.
+- **Trimmed `_source`** — only the fields the hit-mapper reads leave the
+  ES node: two routing fields (`postType`, `questionId`) in bare mode
+  (`expand=false`), plus the preview/attribution fields when
+  `expand=true`. Bodies, keyword arrays and counters stay on the node.
+
 ---
 
 ## Response `200`
@@ -148,8 +158,9 @@ i.e. `final = BM25 × Σ(functions)`):
 
 ### Lifecycle filter
 
-Documents in any of these statuses never surface, on any index
-(`mustNot term` on a missing field is a no-op, so one list serves all):
+Documents in any of these statuses never surface, on any index — one
+`mustNot terms` clause carrying the whole list (a terms filter on a missing
+field is a no-op, so one clause serves all indices):
 
 ```
 DELETED · DRAFT · ARCHIVED · RETRACTED · REMOVED_BY_MODERATOR

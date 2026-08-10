@@ -10,10 +10,14 @@ import java.util.UUID;
 
 public interface LegalHoldRepository extends JpaRepository<LegalHold, UUID> {
 
-    @Query("""
+    @Query(value = """
         SELECT h FROM LegalHold h
         WHERE (:status IS NULL OR h.status = :status)
         ORDER BY h.openedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(h) FROM LegalHold h
+        WHERE (:status IS NULL OR h.status = :status)
         """)
     Page<LegalHold> browse(@Param("status") LegalHold.Status status, Pageable pageable);
 }

@@ -88,6 +88,40 @@ category-browse row and the search index — no separate publish step.
   validation with the bulk-import path).
 - `INVALID_CATEGORY` — 400 — `category` is not a `SoundCategory`.
 
+### POST /api/v1/admin/sounds/upload
+
+Multipart variant of [create](#post-apiv1adminsounds): upload the **audio
+file itself** (plus optional cover art) instead of pasting a URL. The bytes
+land in R2 under `sounds/audio/` (cover: `sounds/cover/`) and the created
+row stores their **media-proxy URLs** (`/api/v1/media/sounds/...`), so the
+picker streams them exactly like link-based sounds — with HTTP range
+support for seeking.
+
+**Access**: `ADMIN` or `MODERATOR`. **Content type**: `multipart/form-data`.
+
+| Part / field | Required | Notes |
+|---|---|---|
+| `file` | ✔ | The audio file. Accepted: `audio/*` content type (plus `video/mp4` for m4a mislabels), or a generic content type with an `mp3` / `m4a` / `aac` / `wav` / `ogg` / `opus` / `mp4` extension. Global multipart cap: 500 MB. |
+| `cover` | — | Cover-art image (`image/*`). |
+| `title` | ✔ | ≤ 200 chars. |
+| `artistName` | — | ≤ 200 chars. |
+| `durationSeconds` | — | Omit to auto-extract from MP4-container audio (m4a/mp4); mp3/wav can't be parsed server-side and stay `null` — the player reads the real duration at playback. |
+| `category` | — | Defaults to `PLATFORM_MUSIC`. |
+| `official` | — | Defaults to `false`. |
+
+**Response**: `201` — the created `AdminSoundRow`, `"status": "APPROVED"`,
+same as the JSON create.
+
+**Errors**
+- `SOUND_FILE_INVALID` — 400 — no `file` part, a non-audio file, or a
+  non-image `cover`.
+- `INVALID_IMPORT_ITEM` — 400 — missing/blank `title`.
+- `INVALID_CATEGORY` — 400 — `category` is not a `SoundCategory`.
+
+Metadata is validated **before** any bytes are stored, and a failed cover
+upload best-effort deletes the already-uploaded audio — a 400 never leaves
+orphaned objects in the bucket.
+
 ### GET /api/v1/admin/sounds
 
 Review queue / status-filtered library browse.

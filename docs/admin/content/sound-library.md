@@ -96,8 +96,11 @@ is repaired by the reindex (§2.5), not by a transaction.
 > **Policy change (2026-08-08): sounds are admin-curated only.** There is no
 > longer an end-user upload path — a regular user's account cannot add to the
 > library at all. New sounds enter only through
-> `POST /api/v1/admin/sounds` (single) or `POST /api/v1/admin/sounds/import`
-> (bulk), both `ADMIN`/`MODERATOR`, both landing straight on `APPROVED`. The
+> `POST /api/v1/admin/sounds` (single, by URL),
+> `POST /api/v1/admin/sounds/upload` (single, **multipart file upload** —
+> added 2026-08-10: audio + optional cover land in R2 under `sounds/` and the
+> row stores their media-proxy URLs), or `POST /api/v1/admin/sounds/import`
+> (bulk), all `ADMIN`/`MODERATOR`, all landing straight on `APPROVED`. The
 > old `POST /api/v1/sounds` upload route still exists but is now
 > `ADMIN`/`MODERATOR`-only and `@Deprecated`, kept solely for backward
 > compatibility with any caller still pointed at it. Full request/response
@@ -132,6 +135,7 @@ is repaired by the reindex (§2.5), not by a transaction.
 |---|---|
 | `POST /api/v1/admin/search/sounds/reindex?drop=` | **[EXISTS]** `SearchAdminController.reindexSounds`, `hasRole('ADMIN')`, synchronous, returns `ReindexSummary` |
 | **Create a sound directly** | **[EXISTS]** (built 2026-08-08) — `POST /api/v1/admin/sounds`, `ADMIN`/`MODERATOR`, single item, lands straight on `APPROVED`. The canonical creation path — see the policy-change note above §2.3 |
+| **Create by file upload** | **[EXISTS]** (built 2026-08-10) — `POST /api/v1/admin/sounds/upload`, multipart `file` (audio) + optional `cover` image; bytes stored in R2 `sounds/`, row plays via the media proxy; duration auto-extracted for MP4-container audio |
 | Approve a pending sound | **[EXISTS]** — `POST /api/v1/admin/sounds/{id}/approve` (built 2026-08; bare path deprecated) |
 | Auto-approve on upload | **[EXISTS]** (ADMIN/MODERATOR-only, via `autoApprove` on the deprecated legacy upload route; the canonical create endpoint is always auto-approved) |
 | **List pending sounds** | **[EXISTS]** (built 2026-08) — `GET /api/v1/admin/sounds?status=` + `GET /api/v1/admin/sounds/status-counts` (§2.6) |

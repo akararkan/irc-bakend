@@ -67,6 +67,7 @@ public class ConversationService {
     private final UserRepository userRepository;
     private final UnreadBadgeCache unreadBadge;
     private final ChatSettingsService chatSettings;
+    private final ChannelService channelService;
     /** Automated text moderation of the group's title/description (docs/moderation/). */
     private final ContentModerationService contentModeration;
 
@@ -417,11 +418,14 @@ public class ConversationService {
 
     /**
      * {@code DELETE /conversations/{id}}. The <b>group owner</b> deletes the whole
-     * group for everyone (destructive soft-delete). <b>Everyone else</b> — a DM
-     * participant or a non-owner group member — performs a per-user
-     * <b>"delete conversation for me"</b>: the thread is cleared and hidden on
-     * their side and re-surfaces (showing only newer messages) the next time the
-     * peer sends. See {@link #deleteForMe}.
+     * group for everyone (destructive soft-delete), and the <b>channel owner</b>
+     * likewise deletes the whole channel. A channel <b>subscriber</b> leaves the
+     * channel instead — the chat drops off their list for good rather than
+     * resurfacing on the channel's next post (Telegram "delete and leave").
+     * <b>Everyone else</b> — a DM participant or a non-owner group member —
+     * performs a per-user <b>"delete conversation for me"</b>: the thread is
+     * cleared and hidden on their side and re-surfaces (showing only newer
+     * messages) the next time the peer sends. See {@link #deleteForMe}.
      */
     @Transactional
     public void delete(UUID conversationId, UUID userId) {
@@ -429,6 +433,12 @@ public class ConversationService {
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         ConversationMember me = requireMember(conversationId, userId);
+
+        if (c.isChannel()) {
+            if (me.isOwner()) channelService.deleteChannel(conversationId, userId);
+            else channelService.unsubscribe(conversationId, userId);
+            return;
+        }
 
         if (c.isGroup()
                 && GroupPermissions.can(me.getRole(), GroupAction.DELETE_GROUP, null, c.getGroupSettings())) {

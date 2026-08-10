@@ -14,7 +14,8 @@ public interface ConversationInviteRepository extends JpaRepository<Conversation
 
     Optional<ConversationInvite> findByTokenHash(String tokenHash);
 
-    List<ConversationInvite> findByConversationIdAndRevokedFalse(UUID conversationId);
+    @Query("SELECT i FROM ConversationInvite i WHERE i.conversationId = :conversationId AND i.revoked = false")
+    List<ConversationInvite> findByConversationIdAndRevokedFalse(@Param("conversationId") UUID conversationId);
 
     /**
      * Atomically consume one use iff the link is still usable (not revoked, not

@@ -132,7 +132,7 @@ public class LogAlertSweepJob {
                 boolean pendingOverdue = !deletionRepository.findByStatusAndPurgeAfterBefore(
                         DeletionStatus.PENDING_DELETION, LocalDateTime.now()).isEmpty();
                 boolean ranRecently = jobRunRepository
-                        .findFirstByJobNameOrderByStartedAtDesc("account-purge")
+                        .latestRun("account-purge")
                         .map(run -> run.getStartedAt().isAfter(since))
                         .orElse(false);
                 if (pendingOverdue && !ranRecently) {

@@ -26,8 +26,10 @@ group membership in [groups.md](./groups.md).
   returns `201`.
 - **Two kinds of delete.** `DELETE /conversations/{id}` means "delete the group for
   everyone" when you own the group, and "delete this conversation **for me**" for
-  everyone else — see [§DELETE](#delete-conversationsid--delete--hide). This is
-  distinct from `archive`, which only moves a thread to the archived list.
+  everyone else — see [§DELETE](#delete-conversationsid--delete--hide). On a
+  **channel** id it deletes the channel for everyone (owner) or leaves the channel
+  (subscriber). This is distinct from `archive`, which only moves a thread to the
+  archived list.
 - **`hasUnread` is the durable unread signal.** `unreadCount` is exact for small
   conversations but is not maintained for large groups (> 256 members); `hasUnread`
   is always meaningful — render it as the "new messages" dot when in doubt.
@@ -165,6 +167,13 @@ member); `403 ADMINS_ONLY` (lacking `EDIT_INFO` / `CHANGE_SETTINGS`);
   (`deletedAt` set): the thread drops out of every inbox, and sends/reads start
   failing, but the message log is retained. Broadcasts `conversation.updated` with
   `memberChange: "DELETED"`.
+- **Channel owner** → **deletes the whole channel for everyone** — same
+  soft-delete + `DELETED` broadcast, plus the channel is de-indexed from
+  public-channel search. Equivalent to `DELETE /channels/{id}`.
+- **Channel subscriber** → **leaves the channel** (membership row removed). The
+  chat drops off their list for good — it does **not** resurface on the
+  channel's next post. See
+  [channels/inbox.md](channels/inbox.md#leaving--deleting-the-channel).
 - **Everyone else** (a DM participant, or a non-owner group member) → **"delete
   conversation for me."** The thread is cleared and hidden **on my side only** — it
   leaves both the inbox and the archived list, is unpinned, and its unread state is

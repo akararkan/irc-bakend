@@ -23,6 +23,7 @@ public final class AdminContentMessages {
     public static final String INVALID_BULK_TARGET        = "INVALID_BULK_TARGET";
     public static final String INVALID_IMPORT_BATCH       = "INVALID_IMPORT_BATCH";
     public static final String INVALID_IMPORT_ITEM        = "INVALID_IMPORT_ITEM";
+    public static final String SOUND_FILE_INVALID         = "SOUND_FILE_INVALID";
     public static final String INVALID_STATUS             = "INVALID_STATUS";
     public static final String INVALID_CATEGORY           = "INVALID_CATEGORY";
     public static final String INVALID_SORT               = "INVALID_SORT";
@@ -63,6 +64,12 @@ public final class AdminContentMessages {
             "Provide 1–100 items.";
     public static final String INVALID_IMPORT_ITEM_MSG =
             "Each item needs title and audioUrl.";
+    public static final String SOUND_AUDIO_FILE_REQUIRED_MSG =
+            "Provide an audio file.";
+    public static final String SOUND_AUDIO_TYPE_INVALID_MSG =
+            "The sound file must be audio (mp3, m4a, aac, wav, ogg, opus or mp4).";
+    public static final String SOUND_COVER_TYPE_INVALID_MSG =
+            "The cover art must be an image.";
     public static final String INVALID_STATUS_MSG =
             "Unknown status. Allowed: %s";
     public static final String INVALID_CATEGORY_MSG =

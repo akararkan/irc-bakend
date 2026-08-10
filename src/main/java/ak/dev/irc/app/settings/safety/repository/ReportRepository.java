@@ -31,7 +31,8 @@ public interface ReportRepository extends JpaRepository<Report, UUID> {
             ak.dev.irc.app.settings.safety.enums.ReportTargetType targetType,
             UUID targetId, Pageable pageable);
 
-    java.util.List<Report> findByGroupKeyOrderByCreatedAtAsc(String groupKey);
+    @Query("SELECT r FROM Report r WHERE r.groupKey = :groupKey ORDER BY r.createdAt ASC")
+    java.util.List<Report> findByGroupKeyOrderByCreatedAtAsc(@Param("groupKey") String groupKey);
 
     java.util.List<Report> findByGroupKeyAndStateIn(String groupKey, Collection<ReportState> states);
 

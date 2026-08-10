@@ -30,7 +30,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     Optional<User> findByEmailAndDeletedAtIsNull(@Param("email") String email);
 
     /** Finds a non-deleted user by username — use for profile lookups and auth. */
-    Optional<User> findByUsernameAndDeletedAtIsNull(String username);
+    @Query("SELECT u FROM User u WHERE u.username = :username AND u.deletedAt IS NULL")
+    Optional<User> findByUsernameAndDeletedAtIsNull(@Param("username") String username);
 
     @Query("SELECT COUNT(u) > 0 FROM User u WHERE u.email = :email")
     boolean existsByEmail(@Param("email") String email);

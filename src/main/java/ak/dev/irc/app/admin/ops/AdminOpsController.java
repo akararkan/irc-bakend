@@ -143,6 +143,9 @@ public class AdminOpsController {
 
     @GetMapping("/jobs")
     public ResponseEntity<List<Map<String, Object>>> jobs() {
+        // One DISTINCT ON scan instead of a point query per registry entry.
+        Map<String, JobRun> latest = new LinkedHashMap<>();
+        for (JobRun r : jobRunRepository.latestRunPerJob()) latest.put(r.getJobName(), r);
         List<Map<String, Object>> out = new ArrayList<>();
         for (Map.Entry<String, String[]> e : JOB_REGISTRY.entrySet()) {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -150,13 +153,15 @@ public class AdminOpsController {
             row.put("schedule", e.getValue()[0]);
             row.put("description", e.getValue()[1]);
             row.put("triggerable", TRIGGERABLE.contains(e.getKey()));
-            jobRunRepository.findFirstByJobNameOrderByStartedAtDesc(e.getKey())
-                    .ifPresentOrElse(run -> {
-                        row.put("lastRun", run.getStartedAt());
-                        row.put("lastOutcome", run.getOutcome());
-                        row.put("lastDurationMs", run.getDurationMs());
-                        row.put("lastItemsProcessed", run.getItemsProcessed());
-                    }, () -> row.put("lastRun", null));
+            JobRun run = latest.get(e.getKey());
+            if (run == null) {
+                row.put("lastRun", null);
+            } else {
+                row.put("lastRun", run.getStartedAt());
+                row.put("lastOutcome", run.getOutcome());
+                row.put("lastDurationMs", run.getDurationMs());
+                row.put("lastItemsProcessed", run.getItemsProcessed());
+            }
             out.add(row);
         }
         return ResponseEntity.ok(out);
@@ -165,7 +170,7 @@ public class AdminOpsController {
     @GetMapping("/jobs/{jobKey}/runs")
     public ResponseEntity<?> jobRuns(@PathVariable String jobKey,
                                      @PageableDefault(size = 25) Pageable pageable) {
-        return ResponseEntity.ok(jobRunRepository.findByJobNameOrderByStartedAtDesc(jobKey,
+        return ResponseEntity.ok(jobRunRepository.runsFor(jobKey,
                 PageRequest.of(Math.max(0, pageable.getPageNumber()),
                         Pages.clamp(pageable.getPageSize()))));
     }

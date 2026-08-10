@@ -13,7 +13,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -96,10 +99,10 @@ public class CassandraSoundService {
             log.warn("[SOUND] search unavailable: {}", e.getMessage());
             return List.of();
         }
+        // One IN-clause bulk read instead of a point read per ranked id.
         List<SoundEntity> out = new ArrayList<>(ids.size());
-        for (UUID id : ids) {
-            SoundEntity s = soundRepo.findById(id).orElse(null);
-            if (s != null && "APPROVED".equals(s.getStatus())) out.add(s);
+        for (SoundEntity s : getByIds(ids)) {
+            if ("APPROVED".equals(s.getStatus())) out.add(s);
         }
         return out;
     }
@@ -134,6 +137,30 @@ public class CassandraSoundService {
     public Long useCountFor(UUID soundId) {
         return soundCounterRepo.findBySoundId(soundId)
                 .map(c -> c.getUseCount()).orElse(0L);
+    }
+
+    /** Order-preserving bulk load from {@code sounds_by_id} — one IN read;
+     *  ids that no longer resolve are dropped. */
+    public List<SoundEntity> getByIds(List<UUID> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        Map<UUID, SoundEntity> byId = new HashMap<>();
+        for (SoundEntity s : soundRepo.findAllById(ids)) byId.put(s.getId(), s);
+        List<SoundEntity> out = new ArrayList<>(ids.size());
+        for (UUID id : ids) {
+            SoundEntity s = byId.get(id);
+            if (s != null) out.add(s);
+        }
+        return out;
+    }
+
+    /** Use counts for a batch of sounds in one IN read (no counter row → 0). */
+    public Map<UUID, Long> useCountsFor(Collection<UUID> soundIds) {
+        if (soundIds == null || soundIds.isEmpty()) return Map.of();
+        Map<UUID, Long> out = new HashMap<>();
+        for (var c : soundCounterRepo.findAllBySoundIdIn(soundIds)) {
+            out.put(c.getSoundId(), c.getUseCount() == null ? 0L : c.getUseCount());
+        }
+        return out;
     }
 
     // ── Adoption (called from CassandraPostService when a post has a sound) ─

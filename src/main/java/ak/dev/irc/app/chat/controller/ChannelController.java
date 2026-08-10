@@ -86,6 +86,13 @@ public class ChannelController {
         return ResponseEntity.ok(channelService.update(id, requireId(user), req));
     }
 
+    /** Owner-only: delete the channel for everyone (Telegram "Delete channel"). */
+    @DeleteMapping("/channels/{id}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id, @AuthenticationPrincipal User user) {
+        channelService.deleteChannel(id, requireId(user));
+        return ResponseEntity.noContent().build();
+    }
+
     // ── Photo / cover ────────────────────────────────────────────────────────────
 
     @PostMapping(value = "/channels/{id}/photo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

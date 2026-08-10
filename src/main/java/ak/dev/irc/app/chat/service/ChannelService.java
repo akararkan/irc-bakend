@@ -42,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -78,6 +79,7 @@ public class ChannelService {
     private final ak.dev.irc.app.chat.search.service.ChannelSearchService channelSearch;
     /** Automated text moderation of the channel's title/description (docs/moderation/). */
     private final ContentModerationService contentModeration;
+    private final UnreadBadgeCache unreadBadge;
 
     /** Web origin the share links point at (frontend routes /c/{handle}). */
     @org.springframework.beans.factory.annotation.Value("${irc.base-url:https://irc.example.com}")
@@ -412,7 +414,35 @@ public class ChannelService {
                 .build();
         broadcaster.broadcast(memberRepo.findActiveMemberIds(channelId), evt);
         broadcaster.broadcastTo(userId, evt);
+        unreadBadge.invalidate(userId);   // any unread from this channel leaves the badge now
         conversationRepo.findById(channelId).ifPresent(channelSearch::indexAsync);
+    }
+
+    // ── Delete channel ───────────────────────────────────────────────────────────
+
+    /**
+     * Owner-only: delete the channel for <b>everyone</b> (Telegram "Delete
+     * channel"). Soft-deletes the conversation — every read path filters
+     * {@code deletedAt}, so the channel drops out of all subscriber inboxes,
+     * lookups and discovery at once — then de-indexes it from the
+     * public-channel search. A subscriber who only wants the chat out of
+     * their own list uses {@link #unsubscribe} instead.
+     */
+    @Transactional
+    public void deleteChannel(UUID channelId, UUID actorId) {
+        Conversation c = requireChannel(channelId);
+        ConversationMember me = requireMember(channelId, actorId);
+        if (!me.isOwner()) throw new ForbiddenException(
+                ChannelStreamMessages.CHANNEL_DELETE_OWNER_ONLY_MSG, ChannelStreamMessages.NOT_OWNER);
+        c.setDeletedAt(LocalDateTime.now());
+        conversationRepo.save(c);
+        broadcaster.broadcast(memberRepo.findActiveMemberIds(channelId),
+                ChatRealtimeEvent.builder()
+                        .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
+                        .conversationId(channelId)
+                        .memberChange("DELETED")
+                        .build());
+        channelSearch.deleteAsync(channelId);
     }
 
     // ── Discover / lookup ────────────────────────────────────────────────────────

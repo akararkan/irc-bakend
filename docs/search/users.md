@@ -59,6 +59,10 @@ Unchanged, and still the canonical people-picker API. Full reference:
 3. **Prefix matcher** — queries under 3 chars use mention-style prefix
    ranking (username-prefix first).
 
+The ranked ids then hydrate in **one active-user batch with the profile
+join-fetched** (`findActiveWithProfileByIdIn`) — a single round-trip, no
+per-row lazy profile loads — before the rank order is re-applied.
+
 Blank `q` lists all active users (plain paging);
 `eligibleContributor=true` restricts to RESEARCHER/SCHOLAR.
 

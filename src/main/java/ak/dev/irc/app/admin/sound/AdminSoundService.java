@@ -16,16 +16,21 @@ import ak.dev.irc.app.post.search.service.SoundSearchService;
 import ak.dev.irc.app.rabbitmq.event.post.SoundApprovedEvent;
 import ak.dev.irc.app.rabbitmq.event.post.SoundRejectedEvent;
 import ak.dev.irc.app.rabbitmq.publisher.PostEventPublisher;
+import ak.dev.irc.app.research.service.S3StorageService;
+import ak.dev.irc.app.research.service.VideoMetadataExtractor;
 import ak.dev.irc.app.security.SecurityUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -46,6 +51,14 @@ public class AdminSoundService {
     private final PostEventPublisher postEventPublisher;
     private final ModerationRecorder moderationRecorder;
     private final AdminAuditor adminAuditor;
+    private final S3StorageService storageService;
+    private final VideoMetadataExtractor videoMetadataExtractor;
+
+    private static final String AUDIO_PREFIX = "sounds/audio";
+    private static final String COVER_PREFIX = "sounds/cover";
+    /** Accepted when the browser sends a generic content type (octet-stream). */
+    private static final Set<String> AUDIO_EXTENSIONS =
+            Set.of("mp3", "m4a", "aac", "wav", "ogg", "opus", "mp4");
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record AdminSoundRow(UUID id, String title, String artistName, String category,
@@ -88,6 +101,72 @@ public class AdminSoundService {
         adminAuditor.record(AuditOperation.CREATE, "Sound", created.getId(),
                 "ADMIN_SOUND_CREATE", created.getTitle());
         return toRow(created);
+    }
+
+    /**
+     * File-upload variant of {@link #create}: the admin ships the audio bytes
+     * (plus optional cover art) instead of pasting a URL. The files land in
+     * R2 under {@code sounds/} and the created row stores their media-proxy
+     * URLs, so the picker streams them exactly like link-based sounds.
+     * Duration falls back to the MP4-container extractor when not supplied
+     * (mp3 → null; the player reads the real duration at playback anyway).
+     */
+    public AdminSoundRow createFromUpload(MultipartFile file, MultipartFile cover,
+                                          String title, String artistName,
+                                          Integer durationSeconds, String category,
+                                          boolean official) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException(AdminContentMessages.SOUND_AUDIO_FILE_REQUIRED_MSG,
+                    AdminContentMessages.SOUND_FILE_INVALID);
+        }
+        if (!looksLikeAudio(file)) {
+            throw new BadRequestException(AdminContentMessages.SOUND_AUDIO_TYPE_INVALID_MSG,
+                    AdminContentMessages.SOUND_FILE_INVALID);
+        }
+        boolean hasCover = cover != null && !cover.isEmpty();
+        if (hasCover) {
+            String mime = cover.getContentType();
+            if (mime == null || !mime.startsWith("image/")) {
+                throw new BadRequestException(AdminContentMessages.SOUND_COVER_TYPE_INVALID_MSG,
+                        AdminContentMessages.SOUND_FILE_INVALID);
+            }
+        }
+        // Validate the metadata BEFORE any bytes land in storage — a late 400
+        // must not leave orphaned objects behind.
+        if (title == null || title.isBlank()) {
+            throw new BadRequestException(AdminContentMessages.INVALID_IMPORT_ITEM_MSG,
+                    AdminContentMessages.INVALID_IMPORT_ITEM);
+        }
+        parseCategory(category == null ? SoundCategory.PLATFORM_MUSIC.name() : category);
+
+        Integer duration = durationSeconds != null ? durationSeconds
+                : videoMetadataExtractor.extractDurationSeconds(file);
+
+        String audioKey = storageService.upload(file, AUDIO_PREFIX);
+        String coverKey = null;
+        if (hasCover) {
+            try {
+                coverKey = storageService.upload(cover, COVER_PREFIX);
+            } catch (RuntimeException e) {
+                try { storageService.delete(audioKey); } catch (Exception ignored) { }
+                throw e;
+            }
+        }
+        return create(title, artistName,
+                storageService.getPublicUrl(audioKey),
+                coverKey == null ? null : storageService.getPublicUrl(coverKey),
+                duration, category, official);
+    }
+
+    private static boolean looksLikeAudio(MultipartFile file) {
+        String mime = file.getContentType();
+        // m4a arrives as audio/mp4 or video/mp4 depending on the browser.
+        if (mime != null && (mime.startsWith("audio/") || mime.equals("video/mp4"))) return true;
+        String name = file.getOriginalFilename();
+        if (name == null) return false;
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 && AUDIO_EXTENSIONS.contains(
+                name.substring(dot + 1).toLowerCase(Locale.ROOT));
     }
 
     public List<AdminSoundRow> queue(String status, UUID uploaderId, Instant cursor, int pageSize) {
@@ -228,21 +307,26 @@ public class AdminSoundService {
         return s;
     }
 
+    /** Bulk hydration: one IN read for the rows + one for the use counters
+     *  (previously a point read of each per id). Preserves the ranked order. */
     private List<AdminSoundRow> hydrate(List<UUID> ids) {
-        List<AdminSoundRow> out = new ArrayList<>(ids.size());
-        for (UUID id : ids) {
-            SoundEntity s = soundService.getById(id);
-            if (s != null) out.add(toRow(s));
-        }
+        List<SoundEntity> sounds = soundService.getByIds(ids);
+        Map<UUID, Long> useCounts = soundService.useCountsFor(ids);
+        List<AdminSoundRow> out = new ArrayList<>(sounds.size());
+        for (SoundEntity s : sounds) out.add(toRow(s, useCounts.getOrDefault(s.getId(), 0L)));
         return out;
     }
 
     private AdminSoundRow toRow(SoundEntity s) {
+        return toRow(s, soundService.useCountFor(s.getId()));
+    }
+
+    private AdminSoundRow toRow(SoundEntity s, long useCount) {
         return new AdminSoundRow(s.getId(), s.getTitle(), s.getArtistName(), s.getCategory(),
                 s.getStatus(), s.getDurationSeconds(), s.getUploaderId(),
                 s.getOfficial(), s.getTrendingExcluded(),
                 s.getAudioUrl(), s.getCoverArtUrl(),
-                soundService.useCountFor(s.getId()), s.getCreatedAt(), s.getUpdatedAt());
+                useCount, s.getCreatedAt(), s.getUpdatedAt());
     }
 
     private String blastRadius(UUID soundId) {

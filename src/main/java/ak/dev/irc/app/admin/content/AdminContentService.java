@@ -34,6 +34,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -90,9 +91,15 @@ public class AdminContentService {
         var rows = cursor == null
                 ? postByAuthorRepo.firstPage(authorId, pageSize)
                 : postByAuthorRepo.nextPage(authorId, cursor, pageSize);
+        // Bulk-hydrate the page in one IN-clause read instead of a point read
+        // per row (same pattern as the feed's PostHydrator).
+        List<UUID> ids = new ArrayList<>();
+        for (var row : rows) ids.add(row.getPostId());
+        Map<UUID, PostByIdEntity> liveById = new HashMap<>();
+        for (PostByIdEntity p : postByIdRepo.findAllById(ids)) liveById.put(p.getId(), p);
         List<AdminPostRow> out = new ArrayList<>();
         for (var row : rows) {
-            PostByIdEntity live = postByIdRepo.findById(row.getPostId()).orElse(null);
+            PostByIdEntity live = liveById.get(row.getPostId());
             if (live == null) continue;
             if (status != null && !status.isBlank()
                     && !status.trim().equalsIgnoreCase(live.getStatus())) {

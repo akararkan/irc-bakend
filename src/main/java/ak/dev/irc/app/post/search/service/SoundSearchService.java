@@ -19,6 +19,8 @@ import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
+import org.springframework.data.elasticsearch.core.query.FetchSourceFilter;
+import org.springframework.data.elasticsearch.core.query.SourceFilter;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -45,6 +47,10 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class SoundSearchService {
+
+    /** Every read path here returns ranked ids only — ship a minimal source. */
+    private static final SourceFilter ID_ONLY_SOURCE =
+            FetchSourceFilter.of(null, new String[]{"id"}, null);
 
     private final SoundSearchRepository  searchRepo;
     private final SoundRepository        soundRepo;
@@ -139,6 +145,8 @@ public class SoundSearchService {
         NativeQuery query = NativeQuery.builder()
                 .withQuery(scored)
                 .withPageable(PageRequest.of(0, limit))
+                .withTrackTotalHits(false)
+                .withSourceFilter(ID_ONLY_SOURCE)
                 .build();
 
         SearchHits<SoundSearchDocument> hits = EsRetry.call(
@@ -284,6 +292,8 @@ public class SoundSearchService {
                                 ? co.elastic.clients.elasticsearch._types.SortOrder.Asc
                                 : co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
                 .withPageable(PageRequest.of(0, limit))
+                .withTrackTotalHits(false)
+                .withSourceFilter(ID_ONLY_SOURCE)
                 .build();
 
         SearchHits<SoundSearchDocument> hits = EsRetry.call(
@@ -311,6 +321,8 @@ public class SoundSearchService {
                 .withSort(s -> s.field(f -> f.field("createdAt")
                         .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)))
                 .withPageable(PageRequest.of(0, limit))
+                .withTrackTotalHits(false)
+                .withSourceFilter(ID_ONLY_SOURCE)
                 .build();
         SearchHits<SoundSearchDocument> hits = EsRetry.call(
                 () -> esOps.search(query, SoundSearchDocument.class),
@@ -322,21 +334,40 @@ public class SoundSearchService {
         return ids;
     }
 
-    /** Per-status doc counts for the library-overview tiles. */
+    private static final List<String> STATUS_TILES =
+            List.of("PENDING_REVIEW", "APPROVED", "REJECTED", "ARCHIVED");
+
+    /**
+     * Per-status doc counts for the library-overview tiles — one terms
+     * aggregation instead of a count query per status. A failed/absent index
+     * leaves the {@code -1} sentinels in place.
+     */
     public java.util.Map<String, Long> countsByStatus() {
         java.util.Map<String, Long> out = new java.util.LinkedHashMap<>();
-        for (String status : List.of("PENDING_REVIEW", "APPROVED", "REJECTED", "ARCHIVED")) {
-            try {
-                NativeQuery query = NativeQuery.builder()
-                        .withQuery(Query.of(qb -> qb.term(t -> t.field("status").value(status))))
-                        .withMaxResults(0)
-                        .build();
-                out.put(status, EsRetry.call(
-                        () -> esOps.count(query, SoundSearchDocument.class),
-                        "[SEARCH] sound status count"));
-            } catch (Exception e) {
-                out.put(status, -1L);
+        for (String status : STATUS_TILES) out.put(status, -1L);
+        try {
+            NativeQuery query = NativeQuery.builder()
+                    .withMaxResults(0)
+                    .withTrackTotalHits(false)
+                    .withAggregation("byStatus",
+                            co.elastic.clients.elasticsearch._types.aggregations.Aggregation.of(
+                                    a -> a.terms(t -> t.field("status").size(16))))
+                    .build();
+            SearchHits<SoundSearchDocument> hits = EsRetry.call(
+                    () -> esOps.search(query, SoundSearchDocument.class),
+                    "[SEARCH] sound status counts");
+            if (hits.getAggregations()
+                    instanceof org.springframework.data.elasticsearch.client.elc.ElasticsearchAggregations aggs
+                    && aggs.get("byStatus") != null) {
+                for (String status : STATUS_TILES) out.put(status, 0L);   // present index → real zeros
+                aggs.get("byStatus").aggregation().getAggregate().sterms().buckets().array()
+                        .forEach(bucket -> {
+                            String key = bucket.key().stringValue();
+                            if (out.containsKey(key)) out.put(key, bucket.docCount());
+                        });
             }
+        } catch (Exception e) {
+            log.warn("[SEARCH] sound status counts unavailable: {}", e.getMessage());
         }
         return out;
     }

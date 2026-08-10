@@ -11,11 +11,16 @@ import java.util.UUID;
 
 public interface LogAlertFiringRepository extends JpaRepository<LogAlertFiring, UUID> {
 
-    @Query("""
+    @Query(value = """
         SELECT f FROM LogAlertFiring f
         WHERE (CAST(:since AS timestamp) IS NULL OR f.firedAt >= :since)
           AND (:ruleId IS NULL OR f.ruleId = :ruleId)
         ORDER BY f.firedAt DESC
+        """,
+        countQuery = """
+        SELECT COUNT(f) FROM LogAlertFiring f
+        WHERE (CAST(:since AS timestamp) IS NULL OR f.firedAt >= :since)
+          AND (:ruleId IS NULL OR f.ruleId = :ruleId)
         """)
     Page<LogAlertFiring> feed(@Param("since") LocalDateTime since,
                               @Param("ruleId") UUID ruleId,
