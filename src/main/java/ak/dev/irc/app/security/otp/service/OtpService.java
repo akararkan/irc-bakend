@@ -75,9 +75,13 @@ public class OtpService {
         String destHash = Hashing.hmacSha256Hex(e164, props.getPepper());
         String codeHash = Hashing.hmacSha256Hex(code, props.getPepper());
 
-        // Redis: fast lookup + free TTL expiry.
-        redis.opsForValue().set(redisKey(p, destHash), codeHash,
-                Duration.ofSeconds(props.getTtlSeconds()));
+        // Redis holds the live challenge: the hashed code plus its own attempts
+        // counter, both under the same TTL so expiry cleans up for free. A new
+        // request overwrites the previous pair, which is what retires an older
+        // code the moment a fresh one is sent.
+        Duration ttl = Duration.ofSeconds(props.getTtlSeconds());
+        redis.opsForValue().set(redisKey(p, destHash), codeHash, ttl);
+        redis.opsForValue().set(attemptsKey(p, destHash), "0", ttl);
 
         // Postgres: durable audit trail + authoritative attempts counter.
         challengeRepo.save(OtpChallenge.builder()
@@ -108,26 +112,52 @@ public class OtpService {
         OtpPurpose p = purpose == null ? OtpPurpose.LOGIN : purpose;
         String destHash = Hashing.hmacSha256Hex(e164, props.getPepper());
 
-        OtpChallenge challenge = challengeRepo
-                .findFirstByDestinationHashAndPurposeAndConsumedAtIsNullOrderByCreatedAtDesc(destHash, p)
-                .orElseThrow(() -> invalid());
+        // Redis is authoritative for the live challenge; the Postgres row is the
+        // audit trail. Reading the hash here (rather than off the row) is also
+        // what makes expiry exact — the key is simply gone.
+        String storedHash;
+        try {
+            storedHash = redis.opsForValue().get(redisKey(p, destHash));
+        } catch (Exception ex) {
+            // Fail CLOSED: without Redis there is no attempt ceiling, so a
+            // degraded store must not become an unmetered guessing oracle.
+            log.warn("[OTP] challenge store unavailable on verify: {}", ex.getMessage());
+            throw invalid();
+        }
+        if (storedHash == null) throw invalid();     // expired, never issued, or spent
 
-        if (challenge.isExpired() || challenge.getAttempts() >= props.getMaxAttempts()) {
+        // Atomic increment — two concurrent guesses cannot both read the same
+        // count and slip past the ceiling, which a read-modify-write on the
+        // Postgres row allowed.
+        Long attempts = redis.opsForValue().increment(attemptsKey(p, destHash));
+        if (attempts != null && attempts == 1L) {
+            // Counter recreated after its TTL lapsed — re-arm it so it cannot
+            // outlive the code it guards.
+            redis.expire(attemptsKey(p, destHash), Duration.ofSeconds(props.getTtlSeconds()));
+        }
+        if (attempts == null || attempts > props.getMaxAttempts()) {
+            burn(p, destHash);
+            recordAttempt(destHash, p, true);
             throw invalid();
         }
 
         String candidate = Hashing.hmacSha256Hex(code == null ? "" : code.trim(), props.getPepper());
-        boolean ok = Hashing.constantTimeEquals(candidate, challenge.getCodeHash());
-
-        if (!ok) {
-            challenge.setAttempts(challenge.getAttempts() + 1);
-            challengeRepo.save(challenge);
+        if (!Hashing.constantTimeEquals(candidate, storedHash)) {
+            recordAttempt(destHash, p, false);
             throw invalid();
         }
 
-        challenge.setConsumedAt(LocalDateTime.now());
-        challengeRepo.save(challenge);
-        redis.delete(redisKey(p, destHash));
+        // Single use: delete first, and only the caller whose delete actually
+        // removed the key may proceed.
+        Boolean won = redis.delete(redisKey(p, destHash));
+        if (!Boolean.TRUE.equals(won)) throw invalid();
+        redis.delete(attemptsKey(p, destHash));
+
+        challengeRepo.findFirstByDestinationHashAndPurposeAndConsumedAtIsNullOrderByCreatedAtDesc(destHash, p)
+                .ifPresent(row -> {
+                    row.setConsumedAt(LocalDateTime.now());
+                    challengeRepo.save(row);
+                });
         return e164;
     }
 
@@ -141,6 +171,38 @@ public class OtpService {
 
     private String redisKey(OtpPurpose p, String destHash) {
         return "otp:" + p.name() + ":" + destHash;
+    }
+
+    private String attemptsKey(OtpPurpose p, String destHash) {
+        return "otp:att:" + p.name() + ":" + destHash;
+    }
+
+    /** Retire a challenge outright (attempt ceiling blown). */
+    private void burn(OtpPurpose p, String destHash) {
+        try {
+            redis.delete(redisKey(p, destHash));
+            redis.delete(attemptsKey(p, destHash));
+        } catch (Exception ex) {
+            log.debug("[OTP] burn failed: {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * Mirror a failed attempt onto the audit row. Best-effort: the ceiling that
+     * actually protects the code lives in Redis, so a bookkeeping failure here
+     * must never turn into a login failure.
+     */
+    private void recordAttempt(String destHash, OtpPurpose p, boolean exhausted) {
+        try {
+            challengeRepo.findFirstByDestinationHashAndPurposeAndConsumedAtIsNullOrderByCreatedAtDesc(destHash, p)
+                    .ifPresent(row -> {
+                        row.setAttempts(row.getAttempts() + 1);
+                        if (exhausted) row.setConsumedAt(LocalDateTime.now());
+                        challengeRepo.save(row);
+                    });
+        } catch (Exception ex) {
+            log.debug("[OTP] attempt audit failed: {}", ex.getMessage());
+        }
     }
 
     /** Deterministic UUID key for the UUID-typed RateLimiter API. */

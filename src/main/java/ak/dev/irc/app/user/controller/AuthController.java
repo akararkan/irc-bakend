@@ -61,6 +61,21 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(request, response));
     }
 
+    /**
+     * Second leg of a two-factor login. Send back the {@code mfaToken} from the
+     * {@code /login} response together with the 6-digit authenticator code — or
+     * a single-use recovery code when the authenticator is unavailable. Returns
+     * the ordinary token pair on success.
+     */
+    @PostMapping("/login/2fa")
+    public ResponseEntity<AuthResponse> loginTwoFactor(
+            @Valid @RequestBody AuthRequests.TwoFactorLoginRequest request,
+            HttpServletResponse response) {
+
+        log.info("POST /api/v1/auth/login/2fa");
+        return ResponseEntity.ok(authService.loginTwoFactor(request, response));
+    }
+
     @PostMapping("/refresh")
     public ResponseEntity<AuthResponse> refreshToken(
             @RequestBody(required = false) AuthRequests.RefreshTokenRequest request,

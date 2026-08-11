@@ -33,6 +33,7 @@ the IRC codebase (base package `ak.dev.irc.app`):
 | § | Topic | Owner | Doc |
 |---|-------|-------|-----|
 | 2 | Registration, phone + OTP, sessions | [B] | [auth-sessions.md](auth-sessions.md) |
+| 2/12 | **2FA, authenticator apps, recovery, OTP** — full reference | [B] | [two-factor-authentication.md](two-factor-authentication.md) |
 | 3 | Contact synchronization | [B] | [discovery-contacts.md](discovery-contacts.md) |
 | 4 | Account settings, sensitive changes | [B] | [auth-sessions.md](auth-sessions.md) |
 | 5 | Privacy — Visibility Resolver | [B] | [privacy.md](privacy.md) |
@@ -42,7 +43,7 @@ the IRC codebase (base package `ak.dev.irc.app`):
 | 9 | Messaging settings | [B+C] | [messaging-media.md](messaging-media.md) |
 | 10 | Appearance | [C] | [core-settings.md](core-settings.md) |
 | 11 | Accessibility | [C] | [core-settings.md](core-settings.md) |
-| 12 | Security — 2FA, recovery, sessions, login history | [B] | [auth-sessions.md](auth-sessions.md) |
+| 12 | Security — 2FA, recovery, sessions, login history | [B] | [two-factor-authentication.md](two-factor-authentication.md) · [auth-sessions.md](auth-sessions.md) |
 | 13 | Blocks, mute, restrict, hidden keywords | [B] | [privacy.md](privacy.md) |
 | 14 | Device permissions / consent evidence | [C]/[B] | [discovery-contacts.md](discovery-contacts.md) |
 | 15 | Storage management | [B+C] | [messaging-media.md](messaging-media.md) |

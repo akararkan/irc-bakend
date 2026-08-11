@@ -18,16 +18,22 @@ import java.util.UUID;
  *   <li><b>IDENTITY</b> — the server-computed SHA-256 of the owner's own
  *       registered email (lower-cased, trimmed), written on sync and
  *       backfilled at startup so existing accounts are matchable.</li>
+ *   <li><b>IDENTITY_PHONE</b> — the same construction over the owner's
+ *       <em>verified</em> phone number in E.164 <b>without the leading
+ *       {@code +}</b>. Written the moment a phone clears OTP verification.</li>
  * </ul>
  *
  * <p>A contact match is then a pure hash join: my CONTACT rows ∩ other
- * users' IDENTITY rows. A <b>bidirectional</b> match (both users have each
+ * users' identity rows. A <b>bidirectional</b> match (both users have each
  * other saved — the strongest form per the friend-suggestion literature)
- * additionally requires my IDENTITY hash among their CONTACT rows.</p>
+ * additionally requires one of my identity hashes among their CONTACT rows.</p>
  *
- * <p>Phone-number hashes are accepted and stored, but only email identity
- * hashes exist server-side today — phone matching lights up automatically
- * if phone-verified signup ever lands.</p>
+ * <p><b>Why the identity hash is unkeyed.</b> Clients hash their address book
+ * locally, so the server can only match on a function the client can also
+ * compute — a peppered HMAC is unreproducible client-side and would match
+ * nothing. {@code User.phoneHmac} is a keyed hash kept for a different purpose
+ * and is deliberately <em>not</em> what matching joins on; the two are not
+ * interchangeable.</p>
  */
 @Entity
 @Table(name = "user_contact_hashes",
@@ -40,9 +46,12 @@ import java.util.UUID;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class UserContactHash {
 
-    /** Row kinds — plain strings (two fixed values; no enum CHECK-constraint risk). */
-    public static final String KIND_CONTACT  = "CONTACT";
+    /** Row kinds — plain strings (fixed values; no enum CHECK-constraint risk). */
+    public static final String KIND_CONTACT = "CONTACT";
+    /** The owner's registered email identity. Name kept for row compatibility. */
     public static final String KIND_IDENTITY = "IDENTITY";
+    /** The owner's verified phone identity (E.164, no leading {@code +}). */
+    public static final String KIND_IDENTITY_PHONE = "IDENTITY_PHONE";
 
     @Id
     @GeneratedValue

@@ -74,7 +74,7 @@ auto-DDL can add them to an existing table.
 | Column | Purpose |
 |--------|---------|
 | `phone_e164` | normalised E.164 phone (nullable until verified) |
-| `phone_hmac` | keyed hash of the phone for contact-matching without storing the raw number |
+| `phone_hmac` | keyed HMAC of the phone. **Not** what contact matching joins on (that is the unkeyed `IDENTITY_PHONE` hash in `user_contact_hashes` — clients hash locally and cannot reproduce a pepper). The raw number is stored alongside in `phone_e164`; both are cleared on account erasure |
 | `phone_verified_at` | phone verification timestamp |
 | `two_factor_last_step` | TOTP replay guard — last accepted step index |
 | `timezone` | IANA zone for DND (e.g. `Asia/Baghdad`) |

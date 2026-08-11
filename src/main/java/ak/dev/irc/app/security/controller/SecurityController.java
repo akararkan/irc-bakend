@@ -1,5 +1,7 @@
 package ak.dev.irc.app.security.controller;
 
+import ak.dev.irc.app.common.exception.BadRequestException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.dto.SecurityDtos.*;
 import ak.dev.irc.app.security.login.service.LoginEventService;
@@ -63,9 +65,17 @@ public class SecurityController {
 
     // ── Two-factor (spec §12) ────────────────────────────────────────────────
 
+    /**
+     * Begin enrolment. Requires a fresh step-up: binding a new authenticator is
+     * as sensitive as removing one — without the re-auth, someone holding a
+     * stolen session could enrol <em>their own</em> device and lock the real
+     * owner out of their account.
+     */
     @PostMapping("/2fa/setup")
     public ResponseEntity<TwoFaSetupResponse> setup2fa() {
-        var r = twoFactorService.setup(SecurityUtils.requireCurrentUserId());
+        UUID userId = SecurityUtils.requireCurrentUserId();
+        stepUpService.requireRecentStepUp(userId);
+        var r = twoFactorService.setup(userId);
         return ResponseEntity.ok(new TwoFaSetupResponse(r.provisioningUri(), r.secret()));
     }
 
@@ -119,12 +129,16 @@ public class SecurityController {
         if (req.password() != null && !req.password().isBlank()) {
             stepUpService.stepUpWithPassword(userId, req.password());
         } else if (req.code() != null && !req.code().isBlank()) {
+            // Bare 400s here used to escape the platform error envelope, so the
+            // client got a body-less failure it could not render.
             if (!twoFactorService.verifyCode(userId, req.code())) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+                throw new BadRequestException(
+                        SecurityMessages.TWO_FA_INVALID_MSG, SecurityMessages.TWO_FA_INVALID);
             }
             stepUpService.arm(userId);
         } else {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            throw new BadRequestException(
+                    SecurityMessages.STEP_UP_CREDENTIAL_REQUIRED_MSG, SecurityMessages.STEP_UP_REQUIRED);
         }
         return ResponseEntity.noContent().build();
     }

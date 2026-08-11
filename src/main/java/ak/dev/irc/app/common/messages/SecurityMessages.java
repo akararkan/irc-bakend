@@ -20,8 +20,13 @@ public final class SecurityMessages {
     public static final String OTP_INVALID          = "OTP_INVALID";
     public static final String PHONE_REQUIRED       = "PHONE_REQUIRED";
     public static final String PHONE_INVALID        = "PHONE_INVALID";
+    public static final String PHONE_ALREADY_BOUND  = "PHONE_ALREADY_BOUND";
     public static final String STEP_UP_BAD_PASSWORD = "STEP_UP_BAD_PASSWORD";
     public static final String STEP_UP_REQUIRED     = "STEP_UP_REQUIRED";
+    public static final String MFA_REQUIRED          = "MFA_REQUIRED";
+    public static final String MFA_CHALLENGE_INVALID = "MFA_CHALLENGE_INVALID";
+    public static final String MFA_TOO_MANY_ATTEMPTS = "MFA_TOO_MANY_ATTEMPTS";
+    public static final String MFA_CODE_INVALID      = "MFA_CODE_INVALID";
 
     // ── message text (templates render with .formatted) ─────────────────
     /** {@code SecurityUtils.requireCurrentUserId} variant of {@code AUTH_REQUIRED}. */
@@ -49,10 +54,24 @@ public final class SecurityMessages {
     /** {@code PHONE_INVALID} — normalized number outside E.164 length bounds. */
     public static final String PHONE_INVALID_LENGTH_MSG =
             "Phone number is not a valid E.164 length.";
+    public static final String PHONE_ALREADY_BOUND_MSG =
+            "This phone number is already verified on another account.";
     public static final String STEP_UP_BAD_PASSWORD_MSG =
             "Password is incorrect.";
     public static final String STEP_UP_REQUIRED_MSG =
             "This action requires you to confirm your identity.";
+    /** Login stopped at the second factor — not an error the user must fix. */
+    public static final String MFA_REQUIRED_MSG =
+            "Enter the 6-digit code from your authenticator app to finish signing in.";
+    public static final String MFA_CHALLENGE_INVALID_MSG =
+            "This sign-in request expired. Please enter your password again.";
+    public static final String MFA_TOO_MANY_ATTEMPTS_MSG =
+            "Too many incorrect codes. Please enter your password again to restart sign-in.";
+    public static final String MFA_CODE_INVALID_MSG =
+            "That code is not valid. Check your authenticator app, or use a recovery code.";
+    /** {@code STEP_UP_REQUIRED} — the step-up call carried neither credential. */
+    public static final String STEP_UP_CREDENTIAL_REQUIRED_MSG =
+            "Provide your password or an authentication code to confirm your identity.";
 
     // ── notification / SMS copy ─────────────────────────────────────────
     /** Title of the new-device sign-in security alert (body stays dynamic at the call site). */

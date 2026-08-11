@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.enums.AuditAction;
 import ak.dev.irc.app.common.exception.DuplicateResourceException;
 import ak.dev.irc.app.common.exception.UnauthorizedException;
 import ak.dev.irc.app.common.messages.AuthMessages;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.jwt.JwtCookieUtil;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
@@ -65,6 +66,10 @@ public class AuthServiceImpl implements AuthService {
     private final ak.dev.irc.app.user.service.UserProvisioningService provisioningService;
     private final ak.dev.irc.app.security.login.service.LoginEventService loginEventService;
     private final ak.dev.irc.app.security.session.SessionDenylist sessionDenylist;
+    private final ak.dev.irc.app.security.twofa.service.TwoFactorService twoFactorService;
+    private final ak.dev.irc.app.security.twofa.service.RecoveryCodeService recoveryCodeService;
+    private final ak.dev.irc.app.security.twofa.service.MfaChallengeStore mfaChallengeStore;
+    private final ak.dev.irc.app.security.twofa.TwoFaProperties twoFaProperties;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  REGISTER
@@ -112,6 +117,82 @@ public class AuthServiceImpl implements AuthService {
 
         User user = (User) authentication.getPrincipal();
 
+        // Second factor: a correct password is only the first half of the login
+        // for a 2FA-protected account. Nothing is issued here — no session, no
+        // cookies, no user payload, and last-login/new-device bookkeeping is
+        // deferred to loginTwoFactor so an unfinished login leaves no trace of
+        // success.
+        if (user.isTwoFactorEnabled()) {
+            long ttlMs = twoFaProperties.getChallengeTtlSeconds() * 1000L;
+            String challenge = jwtTokenProvider.generateMfaChallengeToken(user, ttlMs);
+            mfaChallengeStore.issue(jwtTokenProvider.getJtiFromToken(challenge),
+                    java.time.Duration.ofSeconds(twoFaProperties.getChallengeTtlSeconds()));
+            recordLoginEvent(user.getId(), "PASSWORD", "MFA_REQUIRED");
+            log.info("Login awaiting second factor — id={}", user.getId());
+            return AuthResponse.ofMfaChallenge(challenge, twoFaProperties.getChallengeTtlSeconds());
+        }
+
+        return completeLogin(user, response, "PASSWORD");
+    }
+
+    @Override
+    public AuthResponse loginTwoFactor(AuthRequests.TwoFactorLoginRequest request,
+                                       HttpServletResponse response) {
+        String token = request.mfaToken();
+        if (!jwtTokenProvider.validateToken(token)
+                || !"MFA_CHALLENGE".equals(jwtTokenProvider.getTokenType(token))) {
+            throw new UnauthorizedException(
+                    SecurityMessages.MFA_CHALLENGE_INVALID_MSG, SecurityMessages.MFA_CHALLENGE_INVALID);
+        }
+        String jti = jwtTokenProvider.getJtiFromToken(token);
+        UUID userId = jwtTokenProvider.getUserIdFromToken(token);
+
+        // Count the try BEFORE verifying — a wrong guess must cost an attempt
+        // even if the request dies mid-flight, and blowing the ceiling burns the
+        // challenge outright.
+        mfaChallengeStore.registerAttempt(jti, twoFaProperties.getMaxChallengeAttempts());
+
+        User user = userRepository.findById(userId)
+                .filter(u -> u.getDeletedAt() == null && u.isEnabled() && u.isAccountNonLocked())
+                .orElseThrow(() -> new UnauthorizedException(
+                        SecurityMessages.MFA_CHALLENGE_INVALID_MSG, SecurityMessages.MFA_CHALLENGE_INVALID));
+
+        // The enabled-check also covers 2FA being switched off while this
+        // challenge was in flight: the password already cleared, so the login
+        // completes rather than dead-ending on a factor that no longer exists.
+        String method = "PASSWORD+TOTP";
+        if (user.isTwoFactorEnabled()) {
+            if (twoFactorService.verifyCode(userId, request.code())) {
+                method = "PASSWORD+TOTP";
+            } else if (recoveryCodeService.consume(userId, request.code())) {
+                // Recovery codes are the way back in when the authenticator is
+                // gone; each one burns on use. Kept ≤ 20 chars — login_events
+                // .method is varchar(20) and the write is best-effort, so an
+                // overlong value would silently lose the audit row for the most
+                // sensitive login type there is.
+                method = "PASSWORD+RECOVERY";
+                log.warn("Recovery code redeemed at login — id={}, remaining={}",
+                        userId, recoveryCodeService.remaining(userId));
+            } else {
+                recordLoginEvent(userId, "PASSWORD+2FA", "FAILED");
+                throw new UnauthorizedException(
+                        SecurityMessages.MFA_CODE_INVALID_MSG, SecurityMessages.MFA_CODE_INVALID);
+            }
+        }
+
+        // Burn the challenge before minting anything: whoever wins this delete is
+        // the only caller that gets a session out of it.
+        mfaChallengeStore.consume(jti);
+
+        return completeLogin(user, response, method);
+    }
+
+    /**
+     * The shared tail of every successful login: last-login stamp, audit row,
+     * login_events + new-device alert, then the token pair. Reached only once
+     * <em>all</em> required factors have cleared.
+     */
+    private AuthResponse completeLogin(User user, HttpServletResponse response, String method) {
         userRepository.updateLastLogin(user.getId());
         user.audit(AuditAction.LOGIN, "User logged in");
         userRepository.save(user);
@@ -120,12 +201,13 @@ public class AuthServiceImpl implements AuthService {
         // permanently empty. Success path also fires the new-IP alert.
         try {
             loginEventService.recordSuccessAndAlertIfNew(
-                    user.getId(), currentIp(), currentUserAgent(), "PASSWORD");
+                    user.getId(), currentIp(), currentUserAgent(), method);
         } catch (Exception e) {
             log.debug("login_events write failed (non-fatal): {}", e.getMessage());
         }
 
-        log.info("Login successful — id={}, email='{}'", user.getId(), user.getEmail());
+        log.info("Login successful — id={}, email='{}', method={}",
+                user.getId(), user.getEmail(), method);
 
         return issueTokenPair(user, response);
     }
@@ -365,7 +447,9 @@ public class AuthServiceImpl implements AuthService {
 
     private void recordLoginEvent(UUID userId, String method, String outcome) {
         try {
-            loginEventService.record(userId, currentIp(), currentUserAgent(), method, outcome);
+            // REQUIRES_NEW — these rows document attempts that end in a thrown
+            // exception, so they must commit independently of the caller.
+            loginEventService.recordIndependent(userId, currentIp(), currentUserAgent(), method, outcome);
         } catch (Exception e) {
             log.debug("login_events write failed (non-fatal): {}", e.getMessage());
         }

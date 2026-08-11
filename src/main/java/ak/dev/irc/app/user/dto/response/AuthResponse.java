@@ -23,6 +23,18 @@ public class AuthResponse {
     private final long   expiresIn;     // access token TTL in seconds
     private final UserResponse user;    // null on refresh — only tokens change
 
+    /**
+     * {@code true} when the password was correct but the account is protected by
+     * two-factor authentication: <b>no session was issued</b>. The client must
+     * post {@code mfaToken} plus the user's 6-digit code (or a recovery code) to
+     * {@code POST /api/v1/auth/login/2fa} to finish signing in. Omitted entirely
+     * (never {@code false}) on ordinary logins.
+     */
+    private final Boolean mfaRequired;
+
+    /** Opaque, single-use, short-TTL handle for the pending 2FA step. */
+    private final String mfaToken;
+
     public static AuthResponse ofTokens(String access, String refresh,
                                          long expiresInMs, UserResponse user) {
         return AuthResponse.builder()
@@ -40,6 +52,19 @@ public class AuthResponse {
                 .refreshToken(refresh)
                 .tokenType("Bearer")
                 .expiresIn(expiresInMs / 1000)
+                .build();
+    }
+
+    /**
+     * Password accepted, second factor still owed. Carries no session tokens and
+     * no user payload — nothing about the account is disclosed until the second
+     * factor clears.
+     */
+    public static AuthResponse ofMfaChallenge(String mfaToken, long ttlSeconds) {
+        return AuthResponse.builder()
+                .mfaRequired(true)
+                .mfaToken(mfaToken)
+                .expiresIn(ttlSeconds)
                 .build();
     }
 }

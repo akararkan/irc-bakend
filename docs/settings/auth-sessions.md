@@ -41,6 +41,19 @@ other sessions) plus the OTP engine above.
 
 ## Two-factor authentication (§12)
 
+> **Full reference — including the end-user authenticator-app walkthrough, the
+> two-leg login flow, recovery, and the OTP engine:
+> [two-factor-authentication.md](two-factor-authentication.md).** This section is
+> the architecture summary only.
+
+**2FA is enforced at login.** A correct password on a 2FA account issues no
+session — `POST /auth/login` returns `{mfaRequired: true, mfaToken}` and the
+client must redeem it at `POST /auth/login/2fa` with a TOTP **or recovery** code.
+The `MFA_CHALLENGE` token type is rejected by the JWT filter, is single-use, and
+is capped at 5 attempts by a fail-closed Redis record. Earlier builds enrolled
+the authenticator but never asked for a code at sign-in — 2FA only gated step-up,
+and recovery codes had no redemption path at all.
+
 `security.twofa.TotpProvider` — **RFC 6238 TOTP in pure JDK** (`javax.crypto`
 HmacSHA1, Base32, 6 digits, 30s step, ±1 drift). `security.twofa.TwoFactorService`:
 
@@ -55,9 +68,11 @@ HmacSHA1, Base32, 6 digits, 30s step, ±1 drift). `security.twofa.TwoFactorServi
 **Recovery codes** (`security.twofa.RecoveryCodeService`): 10 single-use codes,
 shown once, stored as BCrypt hashes; regenerating invalidates the previous set.
 
-**Endpoints:** `POST /2fa/setup`, `POST /2fa/verify` (→ recovery codes on first
+**Endpoints:** `POST /2fa/setup` (**step-up** — binding a new authenticator is as
+sensitive as removing one), `POST /2fa/verify` (→ recovery codes on first
 enable), `POST /2fa/disable` (**step-up**), `GET /2fa/status`,
-`POST /recovery-codes/regenerate` (**step-up**).
+`POST /recovery-codes/regenerate` (**step-up**), plus the login leg
+`POST /api/v1/auth/login/2fa`.
 
 ## Sessions, login history, step-up (§12)
 

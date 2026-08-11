@@ -43,3 +43,6 @@ app.log
 .DS_Store
 Thumbs.db
 
+
+# Local secrets reference — never commit
+KEYS.txt

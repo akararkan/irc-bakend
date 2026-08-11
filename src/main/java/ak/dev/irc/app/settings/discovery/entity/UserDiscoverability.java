@@ -33,15 +33,23 @@ public class UserDiscoverability {
     @Builder.Default
     private boolean byUsername = true;
 
+    /**
+     * "People who have my number in their contacts can find me." Defaults ON,
+     * the same posture as WhatsApp/Telegram/Signal — a contact-sync feature that
+     * is off by default finds nobody and looks broken. The toggle is enforced
+     * inside the contact-match join, so switching it off genuinely removes the
+     * account from phone matching.
+     */
     @Column(name = "by_phone", nullable = false,
-            columnDefinition = "boolean not null default false")
+            columnDefinition = "boolean not null default true")
     @Builder.Default
-    private boolean byPhone = false;
+    private boolean byPhone = true;
 
+    /** Same contract as {@link #byPhone}, for the email identity. */
     @Column(name = "by_email", nullable = false,
-            columnDefinition = "boolean not null default false")
+            columnDefinition = "boolean not null default true")
     @Builder.Default
-    private boolean byEmail = false;
+    private boolean byEmail = true;
 
     @Column(name = "by_qr", nullable = false,
             columnDefinition = "boolean not null default true")

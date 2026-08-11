@@ -1,57 +1,49 @@
 package ak.dev.irc.app.user.controller;
 
-import ak.dev.irc.app.common.exception.UnauthorizedException;
-import ak.dev.irc.app.common.messages.UserMessages;
-import ak.dev.irc.app.post.cassandra.service.FriendSuggestionService;
-import ak.dev.irc.app.user.entity.User;
-import ak.dev.irc.app.user.service.ContactMatchService;
+import ak.dev.irc.app.settings.contacts.ContactSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 /**
- * Contact synchronization — the client uploads SHA-256 hashes of address-book
- * entries (never raw contacts) to power the contact-matching friend-suggestion
- * signal.
+ * @deprecated legacy alias of the spec-named contact-sync surface at
+ * {@code /api/v1/contacts} — see {@link ak.dev.irc.app.settings.contacts.ContactsController}.
  *
- * <p>Client-side hashing contract: emails → {@code sha256(lowercase(trim(email)))},
- * phones → {@code sha256(E.164 digits, no '+')}, hex-encoded. Max
- * {@link ContactMatchService#MAX_HASHES_PER_SYNC} hashes per sync; each sync
- * replaces the previous upload. A successful sync immediately triggers a
- * suggestion recompute so matches surface right away.</p>
+ * <p>It used to reach {@code ContactMatchService} directly, which meant it
+ * carried <b>neither the rate limit nor the consent record</b> its twin
+ * enforced. Since both endpoints return the same {@code matched} count, the
+ * unmetered one was a perfect membership oracle: post one hash, read the count,
+ * repeat forever — the whole user base enumerable by phone number, with the
+ * documented "3 syncs per 24h" protection one path segment away. Both routes now
+ * funnel through {@link ContactSyncService}, so the limit, the consent event and
+ * the suggestion recompute apply identically wherever the client knocks.</p>
  */
+@Deprecated
 @RestController
 @RequestMapping("/api/v1/users/contacts")
 @RequiredArgsConstructor
+@PreAuthorize("isAuthenticated()")
 public class UserContactController {
 
-    private final ContactMatchService      contactMatchService;
-    private final FriendSuggestionService  suggestionService;
+    private final ContactSyncService contactSyncService;
 
     public record SyncContactsRequest(List<String> hashes) {}
 
     /** Upload (replace) the caller's hashed contacts. Returns stored + matched counts. */
     @PostMapping("/sync")
-    public ResponseEntity<Map<String, Object>> sync(@RequestBody SyncContactsRequest body,
-                                                    @AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
-        int stored = contactMatchService.syncContacts(user.getId(),
-                body == null ? List.of() : body.hashes());
-        int matched = contactMatchService.matchedContactIds(user.getId()).size();
-        suggestionService.recomputeFor(user.getId());   // async — matches surface immediately
-        return ResponseEntity.ok(Map.of("stored", stored, "matched", matched));
+    public ResponseEntity<ContactSyncService.SyncResult> sync(
+            @RequestBody(required = false) SyncContactsRequest body) {
+        return ResponseEntity.ok(contactSyncService.sync(
+                body == null ? List.of() : body.hashes(), null));
     }
 
     /** Privacy op: wipe the caller's uploaded contact hashes. */
     @DeleteMapping
-    public ResponseEntity<Void> clear(@AuthenticationPrincipal User user) {
-        if (user == null) throw new UnauthorizedException(UserMessages.AUTHENTICATION_REQUIRED_MSG);
-        contactMatchService.clearContacts(user.getId());
-        suggestionService.recomputeFor(user.getId());
+    public ResponseEntity<Void> clear() {
+        contactSyncService.clear();
         return ResponseEntity.noContent().build();
     }
 }

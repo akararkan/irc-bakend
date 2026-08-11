@@ -11,6 +11,13 @@ public interface AuthService {
 
     AuthResponse login(AuthRequests.LoginRequest request, HttpServletResponse response);
 
+    /**
+     * Completes a login that stopped at the second factor. Accepts either the
+     * authenticator's TOTP code or a single-use recovery code.
+     */
+    AuthResponse loginTwoFactor(AuthRequests.TwoFactorLoginRequest request,
+                                HttpServletResponse response);
+
     AuthResponse refreshToken(AuthRequests.RefreshTokenRequest request,
                                HttpServletRequest httpRequest,
                                HttpServletResponse httpResponse);

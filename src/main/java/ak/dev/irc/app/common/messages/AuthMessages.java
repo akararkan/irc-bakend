@@ -52,6 +52,8 @@ public final class AuthMessages {
     // ── validation copy (plain literals — annotation values) ────────────
     public static final String VAL_LOGIN_IDENTIFIER_REQUIRED = "Username or email is required";
     public static final String VAL_PASSWORD_REQUIRED         = "Password is required";
+    public static final String VAL_MFA_TOKEN_REQUIRED        = "Sign-in session is required";
+    public static final String VAL_MFA_CODE_REQUIRED         = "Authentication code is required";
     public static final String VAL_FIRST_NAME_REQUIRED       = "First name is required";
     public static final String VAL_FIRST_NAME_MAX            = "First name must be at most 80 characters";
     public static final String VAL_LAST_NAME_REQUIRED        = "Last name is required";

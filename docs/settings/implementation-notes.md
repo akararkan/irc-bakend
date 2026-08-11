@@ -50,10 +50,15 @@ later without touching callers):
    and revoke is real; the immediate `sid`-denylist check in
    `JwtAuthenticationFilter` is written (`SessionDenylist`) but left as a
    one-line wiring seam so existing tokens are unaffected.
-4. **Contact sync keeps the existing client-SHA-256 email model** (`ContactMatchService`)
-   and adds the `/api/v1/contacts/sync` alias + consent + rate-limit. The spec's
-   server-HMAC-pepper phone model is now possible (`users.phone_hmac` exists) but
-   phone-based matching lights up only once accounts are phone-verified.
+4. **Contact sync uses client-side SHA-256 for both email and phone**
+   (`ContactMatchService`), with `/api/v1/contacts/sync` + consent + rate-limit.
+   Phone matching is live as of 2026-08-11: an `IDENTITY_PHONE` hash is written
+   when a number clears OTP verification. The spec's **server-HMAC-pepper phone
+   model is not implementable here** — clients hash locally, so the server can
+   only join on a function the client can also compute, and a peppered HMAC is
+   unreproducible client-side. `users.phone_hmac` therefore exists but is *not*
+   what matching joins on. See [discovery-contacts.md](discovery-contacts.md) §1
+   and §4 for the real privacy properties.
 
 ## Seams left for follow-up (searchable as `// SEAM:` in code)
 

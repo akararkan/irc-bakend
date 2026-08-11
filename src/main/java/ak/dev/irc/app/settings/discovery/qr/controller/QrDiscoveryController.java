@@ -6,6 +6,7 @@ import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.settings.discovery.qr.dto.QrDtos.QrResolveResponse;
 import ak.dev.irc.app.settings.discovery.qr.dto.QrDtos.QrTokenResponse;
 import ak.dev.irc.app.settings.discovery.qr.service.QrTokenService;
+import ak.dev.irc.app.settings.discovery.service.DiscoverabilityService;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ public class QrDiscoveryController {
 
     private final QrTokenService qrTokenService;
     private final UserRepository userRepository;
+    private final ak.dev.irc.app.settings.discovery.service.DiscoverabilityService discoverabilityService;
 
     /** The current user's QR token (minted on first request). */
     @GetMapping("/api/v1/settings/discovery/qr")
@@ -48,8 +50,14 @@ public class QrDiscoveryController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<QrResolveResponse> resolve(@PathVariable String opaque) {
         UUID targetId = qrTokenService.resolve(opaque);
-        // SEAM: once the discoverability-flags service (settings.discovery) lands,
-        // additionally reject here when the target user has disabled discover.byQr.
+        // A scanned code must still respect its owner's choice: byQr=false makes
+        // the token resolve to nothing rather than handing out a profile card.
+        // Answering 404 (not 403) keeps "disabled" and "unknown token"
+        // indistinguishable, so the response can't be used to probe the setting.
+        if (!discoverabilityService.isDiscoverableBy(targetId,
+                DiscoverabilityService.Method.QR)) {
+            throw new ResourceNotFoundException(SettingsMessages.QR_USER_NOT_FOUND_MSG);
+        }
         User user = userRepository.findActiveById(targetId)
                 .orElseThrow(() -> new ResourceNotFoundException(SettingsMessages.QR_USER_NOT_FOUND_MSG));
         return ResponseEntity.ok(new QrResolveResponse(

@@ -1,24 +1,24 @@
 package ak.dev.irc.app.settings.contacts;
 
-import ak.dev.irc.app.common.cache.RateLimiter;
-import ak.dev.irc.app.security.SecurityUtils;
-import ak.dev.irc.app.settings.consent.service.ConsentService;
 import ak.dev.irc.app.user.service.ContactMatchService;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Duration;
 import java.util.List;
-import java.util.UUID;
 
 /**
- * Spec §3 contact-synchronization surface, spec-named at {@code /api/v1/contacts}.
- * A thin alias over the existing {@link ContactMatchService} (client-side hash
- * model) that additionally records a consent event (§14) and rate-limits full
- * syncs (§3.5: 3 per 24h) to block the "upload the whole national number range
- * and enumerate the user base" attack.
+ * Spec §3 contact-synchronization surface, spec-named at {@code /api/v1/contacts}
+ * — "which people in my address book are already here?".
+ *
+ * <p>The client hashes locally and uploads only hex digests; raw phone numbers
+ * and email addresses never reach the server. The rate limit, consent record and
+ * suggestion recompute all live in {@link ContactSyncService}, shared with the
+ * deprecated {@code /api/v1/users/contacts} alias so neither route can be used
+ * to sidestep the other's protections.</p>
  */
 @RestController
 @RequestMapping("/api/v1/contacts")
@@ -26,28 +26,30 @@ import java.util.UUID;
 @PreAuthorize("isAuthenticated()")
 public class ContactsController {
 
-    private final ContactMatchService contactMatchService;
-    private final ConsentService consentService;
-    private final RateLimiter rateLimiter;
+    private final ContactSyncService contactSyncService;
 
-    public record SyncRequest(List<String> hashes, String appVersion) {}
-    public record SyncResponse(int stored, int matched) {}
+    /**
+     * @param hashes lower-case hex SHA-256 digests. Bounded by {@code @Size} so an
+     *               oversized array is rejected at binding time — the service-side
+     *               cap only applies after Jackson has already materialised the
+     *               whole list, which left a large POST able to exhaust the heap.
+     */
+    public record SyncRequest(
+            @Size(max = ContactMatchService.MAX_HASHES_PER_SYNC,
+                  message = "At most " + ContactMatchService.MAX_HASHES_PER_SYNC
+                          + " contact hashes per sync")
+            List<String> hashes,
+            String appVersion) {}
 
     @PostMapping("/sync")
-    public ResponseEntity<SyncResponse> sync(@RequestBody SyncRequest req) {
-        UUID userId = SecurityUtils.requireCurrentUserId();
-        rateLimiter.check("contact:sync", userId, 3, Duration.ofHours(24));
-        int stored = contactMatchService.syncContacts(userId, req.hashes());
-        consentService.record(userId, "CONTACTS", true, req.appVersion());
-        int matched = contactMatchService.matchedContactIds(userId).size();
-        return ResponseEntity.ok(new SyncResponse(stored, matched));
+    public ResponseEntity<ContactSyncService.SyncResult> sync(
+            @Valid @RequestBody SyncRequest req) {
+        return ResponseEntity.ok(contactSyncService.sync(req.hashes(), req.appVersion()));
     }
 
     @DeleteMapping("/sync")
     public ResponseEntity<Void> clear() {
-        UUID userId = SecurityUtils.requireCurrentUserId();
-        contactMatchService.clearContacts(userId);
-        consentService.record(userId, "CONTACTS", false, null);
+        contactSyncService.clear();
         return ResponseEntity.noContent().build();
     }
 }

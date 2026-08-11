@@ -59,6 +59,15 @@ public class PhoneNormalizer {
             e164Digits = defaultCallingCode + digits;
         }
 
+        // Trunk 0 after the country code — "+964 0770…", "00964 0770…". The trunk
+        // prefix is national-dialling only and is never part of E.164, so it has
+        // to go or the number is unroutable and hashes to a different key than
+        // the same number entered as "0770…". Only done for the configured
+        // default country: a few countries (Italy) keep a significant leading 0.
+        if (e164Digits.startsWith(defaultCallingCode + "0")) {
+            e164Digits = defaultCallingCode + e164Digits.substring(defaultCallingCode.length() + 1);
+        }
+
         if (e164Digits.length() < 8 || e164Digits.length() > 15) {
             throw new BadRequestException(
                     SecurityMessages.PHONE_INVALID_LENGTH_MSG, SecurityMessages.PHONE_INVALID);

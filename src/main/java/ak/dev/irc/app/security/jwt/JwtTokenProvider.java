@@ -134,6 +134,31 @@ public class JwtTokenProvider {
                 .compact();
     }
 
+    /**
+     * Mints a short-TTL <b>MFA challenge</b> token: the only thing handed back
+     * when a password login succeeds but the account has 2FA enabled. It is
+     * deliberately minimal — subject + type + {@code jti}, no role and no
+     * authorities — and {@code JwtAuthenticationFilter} only ever authenticates
+     * {@code ACCESS}/{@code IMPERSONATION}, so this token can never be used as
+     * a session credential. It is redeemed once at
+     * {@code POST /api/v1/auth/login/2fa}; the {@code jti} is what
+     * {@code MfaChallengeStore} counts attempts against and burns on use.
+     */
+    public String generateMfaChallengeToken(User user, long ttlMs) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("tokenType", "MFA_CHALLENGE");
+
+        return Jwts.builder()
+                .claims(claims)
+                .id(UUID.randomUUID().toString())
+                .subject(user.getId().toString())
+                .issuer(issuer)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + ttlMs))
+                .signWith(signingKey, Jwts.SIG.HS256)
+                .compact();
+    }
+
     public String generateRefreshToken(User user) {
         log.debug("Generating refresh token for user [{}]", user.getId());
 
@@ -185,6 +210,11 @@ public class JwtTokenProvider {
 
     public String getTokenType(String token) {
         return parseClaims(token).get("tokenType", String.class);
+    }
+
+    /** JWT id ({@code jti}) — the per-token handle MFA challenges are tracked by. */
+    public String getJtiFromToken(String token) {
+        return parseClaims(token).getId();
     }
 
     /** Session id claim, or {@code null} for tokens minted before sid binding. */

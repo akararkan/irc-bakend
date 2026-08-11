@@ -297,7 +297,8 @@ Everything below arrives inside the standard error envelope with the listed stat
 | HTTP | Code | Message | Trigger | Surface |
 |---|---|---|---|---|
 | 400 | `STEP_UP_BAD_PASSWORD` | Password is incorrect. | wrong password submitted to arm step-up | POST /api/v1/security/step-up |
-| 403 | `STEP_UP_REQUIRED` | This action requires you to confirm your identity. | sensitive action attempted without a recent step-up confirmation | POST /api/v1/security/2fa/disable, POST /api/v1/security/recovery-codes/regenerate, @RequiresStepUp admin endpoints (e.g. POST /api/v1/admin/users) |
+| 403 | `STEP_UP_REQUIRED` | This action requires you to confirm your identity. | sensitive action attempted without a recent step-up confirmation | POST /api/v1/security/2fa/**setup**, /2fa/disable, /recovery-codes/regenerate, @RequiresStepUp admin endpoints |
+| 400 | `STEP_UP_REQUIRED` | Provide your password or an authentication code to confirm your identity. | step-up called with neither credential (was a body-less 400 outside the error envelope) | POST /api/v1/security/step-up |
 
 ### 1.31 `security/twofa (TwoFactorService)`
 
@@ -305,7 +306,12 @@ Everything below arrives inside the standard error envelope with the listed stat
 |---|---|---|---|---|
 | 409 | `TWO_FA_ALREADY_ON` | Two-factor authentication is already enabled. | 2FA setup started while already enabled | POST /api/v1/security/2fa/setup |
 | 400 | `TWO_FA_INVALID` | Invalid authentication code. | TOTP code fails verification during 2FA enrolment | POST /api/v1/security/2fa/verify |
+| 400 | `TWO_FA_INVALID` | Invalid authentication code. | TOTP code fails verification when arming step-up with a code | POST /api/v1/security/step-up |
 | 400 | `TWO_FA_NOT_STARTED` | Start 2FA setup first. | verify called with no pending secret | POST /api/v1/security/2fa/verify |
+| 401 | `MFA_CHALLENGE_INVALID` | This sign-in request expired. Please enter your password again. | mfaToken expired, already redeemed, malformed, wrong type, or the fail-closed challenge store is unreachable | POST /api/v1/auth/login/2fa |
+| 401 | `MFA_CODE_INVALID` | That code is not valid. Check your authenticator app, or use a recovery code. | neither the TOTP code nor a recovery code matched; challenge survives, one attempt consumed | POST /api/v1/auth/login/2fa |
+| 401 | `MFA_TOO_MANY_ATTEMPTS` | Too many incorrect codes. Please enter your password again to restart sign-in. | attempt ceiling hit (default 5); the challenge is burned | POST /api/v1/auth/login/2fa |
+| 409 | `PHONE_ALREADY_BOUND` | This phone number is already verified on another account. | verifying a number already bound to a live account (one-number-one-account rule) | POST /api/v1/security/phone/verify |
 
 ### 1.32 `settings dto validation (framework defaults)`
 

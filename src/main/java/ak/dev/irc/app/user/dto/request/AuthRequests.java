@@ -42,6 +42,19 @@ public final class AuthRequests {
             String password
     ) {}
 
+    /**
+     * Second leg of a two-factor login: the challenge handed back by
+     * {@code /auth/login} plus either the authenticator's 6-digit code or one of
+     * the account's single-use recovery codes.
+     */
+    public record TwoFactorLoginRequest(
+            @NotBlank(message = AuthMessages.VAL_MFA_TOKEN_REQUIRED)
+            String mfaToken,
+
+            @NotBlank(message = AuthMessages.VAL_MFA_CODE_REQUIRED)
+            String code
+    ) {}
+
     public record RefreshTokenRequest(
             String refreshToken  // optional — can come from cookie instead
     ) {}

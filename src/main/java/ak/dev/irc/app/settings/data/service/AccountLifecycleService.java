@@ -134,13 +134,24 @@ public class AccountLifecycleService {
         UUID userId = req.getUserId();
         String shortHash = userId.toString().replace("-", "").substring(0, 12);
         userRepo.findById(userId).ifPresent(u -> {
-            // Overwrite PII (§16 anonymization). phone_hmac drop happens once the
-            // §2 phone columns land — SEAM noted there.
+            // Overwrite PII (§16 anonymization).
             u.setUsername("deleted_user_" + shortHash);
             u.setEmail("deleted_" + shortHash + "@deleted.invalid");
             u.setFname("Deleted");
             u.setLname("User");
             u.setPassword(null);
+            // The §2 phone columns landed and were being left behind: erasure
+            // used to overwrite name/email while the verified phone number
+            // survived in plaintext on the same row, still visible to admins.
+            // Clearing the number also frees it for re-verification elsewhere.
+            u.setPhoneE164(null);
+            u.setPhoneHmac(null);
+            u.setPhoneVerifiedAt(null);
+            // Two-factor secrets are credentials, not profile data — they have
+            // no business outliving the account.
+            u.setTwoFactorEnabled(false);
+            u.setTwoFactorSecret(null);
+            u.setTwoFactorLastStep(null);
             // deletedAt stays set — the row remains soft-deleted/anonymized.
             userRepo.save(u);
         });

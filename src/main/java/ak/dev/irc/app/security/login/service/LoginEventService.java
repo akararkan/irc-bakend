@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -42,6 +43,23 @@ public class LoginEventService {
         return repo.save(LoginEvent.builder()
                 .userId(userId).ip(ip).userAgent(userAgent)
                 .method(method).outcome(outcome).build());
+    }
+
+    /**
+     * Record an outcome in its <b>own</b> transaction.
+     *
+     * <p>Every unsuccessful-login path records the attempt and then throws. With
+     * the default {@code REQUIRED} propagation that row joins the caller's
+     * transaction and is rolled back by the very exception it was meant to
+     * document — so the FAILED and MFA_REQUIRED rows, precisely the ones a
+     * brute-force investigation reads, silently never landed. {@code
+     * REQUIRES_NEW} commits the audit row independently of the request's
+     * outcome.</p>
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public LoginEvent recordIndependent(UUID userId, String ip, String userAgent,
+                                        String method, String outcome) {
+        return record(userId, ip, userAgent, method, outcome);
     }
 
     /**

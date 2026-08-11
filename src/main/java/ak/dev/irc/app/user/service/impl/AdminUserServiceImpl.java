@@ -132,6 +132,7 @@ public class AdminUserServiceImpl implements AdminUserService {
     private final SessionDenylist sessionDenylist;
     private final JwtTokenProvider jwtTokenProvider;
     private final ak.dev.irc.app.security.twofa.service.TwoFactorService twoFactorService;
+    private final ak.dev.irc.app.user.service.ContactMatchService contactMatchService;
     private final ak.dev.irc.app.security.twofa.service.RecoveryCodeService recoveryCodeService;
     private final ak.dev.irc.app.security.login.service.LoginEventService loginEventService;
     private final ak.dev.irc.app.settings.audit.service.SettingsAuditService settingsAuditService;
@@ -709,6 +710,10 @@ public class AdminUserServiceImpl implements AdminUserService {
         }
         user.audit(AuditAction.UPDATE, "Identity edited by admin: " + String.join(", ", changes));
         userRepository.save(user);
+        // Contact-match identities are derived from the email; without this the
+        // account would stay findable by its OLD address forever and never by
+        // the new one, with no repair path short of a manual DB edit.
+        contactMatchService.syncIdentityHashes(userId);
         adminAuditor.record(AuditOperation.UPDATE, RESOURCE, userId,
                 "ADMIN_USER_EDIT", String.join(", ", changes));
         return userMapper.toResponse(user);

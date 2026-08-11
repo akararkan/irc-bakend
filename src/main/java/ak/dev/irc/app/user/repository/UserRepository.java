@@ -33,6 +33,10 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     @Query("SELECT u FROM User u WHERE u.username = :username AND u.deletedAt IS NULL")
     Optional<User> findByUsernameAndDeletedAtIsNull(@Param("username") String username);
 
+    /** Live account already holding this verified E.164 — the one-number-one-account guard. */
+    @Query("SELECT u FROM User u WHERE u.phoneE164 = :e164 AND u.deletedAt IS NULL")
+    Optional<User> findActiveByPhoneE164(@Param("e164") String e164);
+
     @Query("SELECT COUNT(u) > 0 FROM User u WHERE u.email = :email")
     boolean existsByEmail(@Param("email") String email);
 

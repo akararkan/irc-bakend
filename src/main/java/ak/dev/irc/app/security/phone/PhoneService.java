@@ -1,6 +1,7 @@
 package ak.dev.irc.app.security.phone;
 
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
+import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.crypto.Hashing;
 import ak.dev.irc.app.security.otp.enums.OtpPurpose;
 import ak.dev.irc.app.security.otp.service.OtpService;
@@ -27,6 +28,7 @@ public class PhoneService {
     private final OtpService otpService;
     private final UserRepository userRepo;
     private final PhoneNormalizer phoneNormalizer;
+    private final ak.dev.irc.app.user.service.ContactMatchService contactMatchService;
 
     /** Server pepper for the phone HMAC — lives only in the environment. */
     @Value("${app.security.contact.pepper:${app.otp.pepper:}}")
@@ -44,10 +46,26 @@ public class PhoneService {
         String e164 = otpService.verifyOtp(rawPhone, code, OtpPurpose.PHONE_VERIFY);
         User user = userRepo.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
+
+        // One number, one account. Without this a number could be bound to
+        // several accounts and a single contact-match hash would then resolve to
+        // all of them — every synced address book would surface strangers.
+        userRepo.findActiveByPhoneE164(e164)
+                .filter(other -> !other.getId().equals(userId))
+                .ifPresent(other -> {
+                    throw new ak.dev.irc.app.common.exception.ConflictException(
+                            SecurityMessages.PHONE_ALREADY_BOUND_MSG, SecurityMessages.PHONE_ALREADY_BOUND);
+                });
+
         user.setPhoneE164(e164);
         user.setPhoneHmac(Hashing.hmacSha256Hex(e164, contactPepper));
         user.setPhoneVerifiedAt(LocalDateTime.now());
         userRepo.save(user);
+
+        // The number is only findable in other people's address books once it is
+        // verified — this is the write that actually turns phone contact-sync on
+        // for this account.
+        contactMatchService.syncIdentityHashes(userId);
         return e164;
     }
 }
