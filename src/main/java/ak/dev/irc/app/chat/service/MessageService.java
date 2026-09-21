@@ -79,6 +79,7 @@ public class MessageService {
     private final SnowflakeIdGenerator snowflake;
     private final MessageByConversationRepository messageRepo;
     private final MessageByIdRepository messageByIdRepo;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final ConversationRepository conversationRepo;
     private final ConversationMemberRepository memberRepo;
     private final MessageRequestRepository messageRequestRepo;
@@ -247,7 +248,7 @@ public class MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", sourceMessageId));
 
         // Must be able to read the source.
-        memberRepo.findMember(src.getConversationId(), senderId)
+        ConversationMember srcMember = memberRepo.findMember(src.getConversationId(), senderId)
                 .filter(ConversationMember::canRead)
                 .orElseThrow(() -> new ForbiddenException(
                         ChatMessages.SOURCE_MESSAGE_INACCESSIBLE_MSG, ChatMessages.NOT_A_MEMBER));
@@ -255,6 +256,20 @@ public class MessageService {
         // Telegram "protected content": posts of a protected channel cannot be
         // forwarded out of it.
         Conversation source = conversationRepo.findById(src.getConversationId()).orElse(null);
+
+        /* …and must be able to read THIS message. Every read path floors at the
+           caller's clear point / hidden-history join point / per-message hide /
+           moderation hold (MessageQueryService), and a forward is a read that
+           re-publishes — without the identical gates, any message id below the
+           caller's floor was exfiltratable by forwarding it into their own DM.
+           404, not 403: same answer getOne gives, and a distinct status would
+           itself confirm the message exists. */
+        Long srcFloor = source == null ? null : MessageQueryService.floorMessageId(source, srcMember);
+        if ((srcFloor != null && sourceMessageId < srcFloor)
+                || hiddenRepo.existsByUserIdAndMessageId(senderId, sourceMessageId)
+                || ChatModeration.hiddenFrom(src.getModerationStatus(), src.getSenderId(), senderId)) {
+            throw new ResourceNotFoundException("Message", "id", sourceMessageId);
+        }
         boolean sourceIsChannel = source != null && source.isChannel();
         if (sourceIsChannel && source.channelSettingsOrDefaults().isProtectedContent()) {
             throw new ForbiddenException(ChatMessages.PROTECTED_CONTENT_MSG,
@@ -345,6 +360,12 @@ public class MessageService {
     public MessageResponse edit(long messageId, UUID userId, String body) {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
+        /* A soft-deleted conversation (owner-deleted, or retired for purge)
+           takes no writes of ANY kind. The own-sender branch below never loads
+           the conversation, so without this gate an edit could write into a
+           retired thread for its whole grace window — and racing the purge,
+           re-create cells in partitions being irreversibly deleted. */
+        requireLiveConversation(m.getConversationId());
         if (Boolean.TRUE.equals(m.getDeleted())) {
             throw new BadRequestException(ChatMessages.EDIT_DELETED_MESSAGE_MSG);
         }
@@ -478,6 +499,7 @@ public class MessageService {
         if (StringUtils.hasText(m.getPoll())) pollService.clear(messageId); // poll votes + counts
         dropGalleryRows(m);                      // shared-media gallery index rows
         dropCommentLinks(convo, m);              // discussion-comment index rows
+        dropStoredMedia(m);                      // R2 objects (asset-aware, forwards excluded)
         if (convo != null && convo.isChannel() && !MessageType.SYSTEM.name().equals(m.getType())) {
             channelMetrics.clear(m.getConversationId(), messageId);          // views/forwards
             // Only a post that actually counted may be decremented — a post deleted
@@ -943,6 +965,31 @@ public class MessageService {
     }
 
     /** Remove a deleted message's gallery rows (kinds derived from its content). */
+    /**
+     * Remove the stored objects behind a deleted message's attachments —
+     * pipeline assets by id (all renditions, via the media.delete queue),
+     * legacy uploads by key. Forwarded messages share MediaRefs with their
+     * source, so they keep their objects; the rare orphan is the reconcile
+     * job's business, a dangling ref would be a correctness bug.
+     */
+    private void dropStoredMedia(MessageByIdEntity m) {
+        if (m.getForwardedFrom() != null) return;
+        if (m.getMedia() == null || m.getMedia().isEmpty()) return;
+        for (MediaRef ref : m.getMedia()) {
+            try {
+                mediaIngest.deleteByStorageKey(ref.getStorageKey());
+                if (ref.getThumbnailKey() != null
+                        && ak.dev.irc.app.media.service.MediaIngestService
+                                .assetIdFromKey(ref.getThumbnailKey()) == null) {
+                    // Legacy client-uploaded thumbnail — its own object.
+                    mediaIngest.deleteByStorageKey(ref.getThumbnailKey());
+                }
+            } catch (Exception e) {
+                log.warn("[CHAT] media delete for message {} failed: {}", m.getMessageId(), e.getMessage());
+            }
+        }
+    }
+
     private void dropGalleryRows(MessageByIdEntity m) {
         try {
             Set<String> kinds = new HashSet<>();
@@ -1196,6 +1243,8 @@ public class MessageService {
     private MessageByIdEntity requirePostableMessage(long messageId, UUID userId) {
         MessageByIdEntity m = messageByIdRepo.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message", "id", messageId));
+        // Same gate as send/edit: no writes into a soft-deleted conversation.
+        requireLiveConversation(m.getConversationId());
         ConversationMember mem = memberRepo.findMember(m.getConversationId(), userId)
                 .orElseThrow(() -> new ForbiddenException(
                         ChatMessages.NOT_A_MEMBER_MSG, ChatMessages.NOT_A_MEMBER));
@@ -1204,6 +1253,14 @@ public class MessageService {
                     ChatMessages.RESTRICTED_INTERACTING_MSG, ChatMessages.READ_ONLY);
         }
         return m;
+    }
+
+    /** The conversation exists and is not soft-deleted (owner-deleted or
+     *  retired for purge) — the gate every WRITE path must pass. */
+    private void requireLiveConversation(UUID conversationId) {
+        conversationRepo.findById(conversationId)
+                .filter(c -> c.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
     }
 
     /** Like {@link #otherDirectMember} but tolerant of a peer that is gone — the

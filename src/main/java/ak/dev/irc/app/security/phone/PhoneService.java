@@ -34,10 +34,17 @@ public class PhoneService {
     @Value("${app.security.contact.pepper:${app.otp.pepper:}}")
     private String contactPepper;
 
-    /** Send a verification code to the candidate phone. */
+    /**
+     * Send a verification code for the candidate phone.
+     *
+     * <p>The code goes to the account's <em>email</em>, not to the number being
+     * verified (see {@code OtpDeliveryService}) — which is also the only thing
+     * that can work here, since the number is unbound until it is confirmed.</p>
+     */
     @Transactional
     public void requestVerification(UUID userId, String rawPhone, String ip) {
-        otpService.requestOtp(rawPhone, OtpPurpose.PHONE_VERIFY, ip, null);
+        String email = userRepo.findById(userId).map(User::getEmail).orElse(null);
+        otpService.requestOtp(rawPhone, OtpPurpose.PHONE_VERIFY, ip, null, email);
     }
 
     /** Verify the code and bind the phone to the user. Returns the E.164. */

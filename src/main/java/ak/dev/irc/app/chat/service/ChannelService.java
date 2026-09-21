@@ -75,6 +75,7 @@ public class ChannelService {
     private final ChannelJoinRequestService joinRequestService;
     private final ChatRealtimeBroadcaster broadcaster;
     private final S3StorageService storageService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final UserRepository userRepository;
     private final ak.dev.irc.app.chat.search.service.ChannelSearchService channelSearch;
     /** Automated text moderation of the channel's title/description (docs/moderation/). */
@@ -238,11 +239,15 @@ public class ChannelService {
             throw new BadRequestException("The channel " + (avatar ? "photo" : "cover") + " must be an image.");
         }
         String old = avatar ? c.getAvatarKey() : c.getCoverKey();
-        String key = storageService.upload(file, MEDIA_PREFIX);
+        var result = mediaIngest.ingest(file,
+                avatar ? ak.dev.irc.app.media.enums.MediaSurface.CHANNEL_PHOTO
+                       : ak.dev.irc.app.media.enums.MediaSurface.CHANNEL_COVER,
+                actorId, MEDIA_PREFIX);
+        String key = result.storageKey();
         if (avatar) c.setAvatarKey(key); else c.setCoverKey(key);
         conversationRepo.save(c);
         if (StringUtils.hasText(old)) {
-            try { storageService.delete(old); } catch (Exception ignored) { /* best-effort */ }
+            try { mediaIngest.deleteByStorageKey(old); } catch (Exception ignored) { /* best-effort */ }
         }
         broadcastChannelUpdated(channelId);
         return toResponse(c, memberRepo.findMember(channelId, actorId).orElse(null), false);
@@ -256,7 +261,7 @@ public class ChannelService {
         if (!StringUtils.hasText(old)) return; // idempotent
         if (avatar) c.setAvatarKey(null); else c.setCoverKey(null);
         conversationRepo.save(c);
-        try { storageService.delete(old); } catch (Exception ignored) { /* best-effort */ }
+        try { mediaIngest.deleteByStorageKey(old); } catch (Exception ignored) { /* best-effort */ }
         broadcastChannelUpdated(channelId);
     }
 

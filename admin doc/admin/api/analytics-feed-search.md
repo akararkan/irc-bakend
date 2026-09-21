@@ -27,7 +27,7 @@ Concepts and data-model background: [analytics-kpis.md](../platform/analytics-kp
   `403` with `errorCode: "STEP_UP_REQUIRED"`.
 - **Errors** — every error uses the canonical `ApiErrorResponse` envelope
   (`timestamp`, `status`, `error`, `message`, `path`, `errorCode`, `details?`, `fieldErrors?`,
-  `traceId`). See [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+  `traceId`). See [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
   Per-endpoint **Errors** lists below name only the domain `errorCode`s; `401` (no/expired
   token) and `403` (role / step-up) apply everywhere.
 - **`null` is never on the wire** — global `spring.jackson.default-property-inclusion: non_null`.

@@ -9,7 +9,7 @@ announcement composer** (the one broadcast tool), and **opt-out analytics**
 
 Related: [logs-audit.md](../platform/logs-audit.md) (notification stores as records),
 [operations.md](../platform/operations.md) (jobs & queues), [analytics-kpis.md](../platform/analytics-kpis.md)
-(engagement KPIs), [../settings/notifications.md](../../settings/notifications.md)
+(engagement KPIs), [../settings/notifications.md](../../../docs/settings/notifications.md)
 (the user-facing preference matrix/DND/push), [../notifications/](../../notifications/)
 (inbox mechanics).
 
@@ -46,7 +46,7 @@ matrix (`user_notification_prefs` + `NotificationPrefResolver`), DND windows
 (`user_dnd` + `DndEvaluator`, IANA timezone, cross-midnight-safe), push-token
 registry (`push_tokens` + `NoOpPushSender`). These are live tables/APIs but the
 delivery pipeline does not consult them yet — a documented seam
-([../settings/notifications.md](../../settings/notifications.md)). The dashboard
+([../settings/notifications.md](../../../docs/settings/notifications.md)). The dashboard
 must show them as **configured state**, honestly labeled "not yet enforced" until
 the seam is wired.
 
@@ -146,7 +146,7 @@ prioritized fix list.
   large-audience confirmation flag. Consider restricting to a future
   `SUPER_ADMIN`/owner tier when RBAC evolves ([architecture.md](../foundation/architecture.md)).
 - Security/login alerts **bypass all preferences and DND by design**
-  ([../settings/notifications.md](../../settings/notifications.md)) — the dashboard
+  ([../settings/notifications.md](../../../docs/settings/notifications.md)) — the dashboard
   must never offer a toggle that mutes them platform-wide.
 - Preference data is per-user configuration: show **aggregates** on the
   dashboard; individual users' matrices appear only in the per-user inspection

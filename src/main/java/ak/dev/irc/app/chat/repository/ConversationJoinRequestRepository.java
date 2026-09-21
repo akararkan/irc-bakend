@@ -22,4 +22,9 @@ public interface ConversationJoinRequestRepository
     boolean existsByConversationIdAndUserIdAndStatus(UUID conversationId, UUID userId, JoinRequestStatus status);
 
     long countByConversationIdAndStatus(UUID conversationId, JoinRequestStatus status);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM ConversationJoinRequest r WHERE r.conversationId = :cid")
+    int deleteAllForConversation(@org.springframework.data.repository.query.Param("cid") UUID conversationId);
 }

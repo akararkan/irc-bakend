@@ -14,7 +14,7 @@ audit log:
 Concept docs: [safety-reports.md](../trust-safety/safety-reports.md) (report state machine, evidence, strikes),
 [logs-audit.md](../platform/logs-audit.md) (audit pipeline, Cassandra pivots, retention),
 [frontend-dashboard-guide.md](../frontend/README.md) (how the dashboard consumes these).
-Error envelope: [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+Error envelope: [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 
 ## Conventions
 

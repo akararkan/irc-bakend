@@ -96,6 +96,43 @@ public interface MediaAssetRepository extends JpaRepository<MediaAsset, UUID> {
     List<MediaAsset> findByStatusAndCreatedAtBefore(@Param("status") MediaStatus status,
                                                     @Param("cutoff") LocalDateTime cutoff);
 
+    /** Stuck-PROCESSING candidates for the sweeper — stale by last update, oldest first. */
+    @Query("""
+        SELECT m FROM MediaAsset m
+        WHERE m.status = :status
+          AND m.updatedAt < :cutoff
+        ORDER BY m.updatedAt ASC
+        """)
+    List<MediaAsset> findByStatusAndUpdatedAtBefore(@Param("status") MediaStatus status,
+                                                    @Param("cutoff") LocalDateTime cutoff,
+                                                    org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * READY videos old enough for the ladder-original purge: an HLS master
+     * exists (adaptive playback keeps working) AND a stored {@code original}
+     * rendition remains to reclaim. Dedup reference rows ({@code storedBytes
+     * = 0} — their rendition rows point at another asset's objects) are
+     * excluded at the query; the job additionally skips assets with dedup
+     * siblings. Oldest first, paged by the job.
+     */
+    @Query("""
+        SELECT m FROM MediaAsset m
+        WHERE m.status = :status
+          AND m.type IN :types
+          AND m.updatedAt < :cutoff
+          AND m.storedBytes > 0
+          AND EXISTS (SELECT 1 FROM MediaRendition h
+                      WHERE h.id.mediaId = m.id AND h.id.label = 'hls')
+          AND EXISTS (SELECT 1 FROM MediaRendition o
+                      WHERE o.id.mediaId = m.id AND o.id.label = 'original')
+        ORDER BY m.updatedAt ASC
+        """)
+    List<MediaAsset> findLadderOriginalPurgeCandidates(
+            @Param("status") MediaStatus status,
+            @Param("types") java.util.Collection<ak.dev.irc.app.media.enums.MediaAssetType> types,
+            @Param("cutoff") LocalDateTime cutoff,
+            org.springframework.data.domain.Pageable pageable);
+
     // ── Daily quota enforcement (idx_media_owner (owner_id, created_at)) ──
 
     @Query("SELECT COUNT(m) FROM MediaAsset m WHERE m.ownerId = :ownerId AND m.createdAt >= :since")

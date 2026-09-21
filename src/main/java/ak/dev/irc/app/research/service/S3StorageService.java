@@ -80,6 +80,18 @@ public interface S3StorageService {
     }
 
     /**
+     * Upload a local file at a specific key — used by the media worker for video
+     * renditions, which must never transit the heap as a {@code byte[]}. Returns
+     * the key.
+     *
+     * <p>Default throws {@link UnsupportedOperationException}; the real R2 impl
+     * overrides it.</p>
+     */
+    default String putFile(java.nio.file.Path file, String s3Key, String contentType) {
+        throw new UnsupportedOperationException("putFile is not supported by this storage backend");
+    }
+
+    /**
      * Ranged fetch for HTTP {@code 206 Partial Content} (video/audio seeking).
      *
      * @param s3Key       the object key
@@ -94,6 +106,25 @@ public interface S3StorageService {
      */
     default S3ObjectStream getObject(String s3Key, String rangeHeader) {
         return getObject(s3Key);
+    }
+
+    /**
+     * Conditional fetch: forwards {@code If-None-Match} to the store so an
+     * unchanged object costs no transfer. Throws {@link NotModifiedException}
+     * (carrying the current ETag) when the store answers 304.
+     *
+     * <p>Default impl ignores the validator and returns the object; the R2/S3
+     * impl forwards it.</p>
+     */
+    default S3ObjectStream getObject(String s3Key, String rangeHeader, String ifNoneMatch) {
+        return getObject(s3Key, rangeHeader);
+    }
+
+    /** Signal that a conditional GET matched — respond {@code 304 Not Modified}. */
+    class NotModifiedException extends RuntimeException {
+        private final String etag;
+        public NotModifiedException(String etag) { super("not modified"); this.etag = etag; }
+        public String etag() { return etag; }
     }
 
     /**
@@ -120,13 +151,21 @@ public interface S3StorageService {
      *                     {@code null} for a full (200) response
      * @param totalLength  the full object size in bytes (even for a partial read);
      *                     {@code null} if unknown
+     * @param etag         the store's ETag for the object; {@code null} if the
+     *                     backend doesn't supply one
      */
     record S3ObjectStream(InputStream inputStream, String contentType, long contentLength,
-                          String contentRange, Long totalLength) {
+                          String contentRange, Long totalLength, String etag) {
 
-        /** Full-object convenience: no partial-content metadata. */
+        /** Full-object convenience: no partial-content metadata, no ETag. */
         public S3ObjectStream(InputStream inputStream, String contentType, long contentLength) {
-            this(inputStream, contentType, contentLength, null, null);
+            this(inputStream, contentType, contentLength, null, null, null);
+        }
+
+        /** Pre-ETag shape kept for older call sites. */
+        public S3ObjectStream(InputStream inputStream, String contentType, long contentLength,
+                              String contentRange, Long totalLength) {
+            this(inputStream, contentType, contentLength, contentRange, totalLength, null);
         }
     }
 }

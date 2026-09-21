@@ -2,9 +2,9 @@
 
 Section 4 of the [admin dashboard plan](../README.md). Covers the entire `chat` module surface:
 DMs/groups, Telegram-parity broadcast channels, voice/video calls, and live streaming
-(stage, gifts, recordings). Underlying mechanics: [../chat/README.md](../../chat/README.md),
-[../chat/live-streaming.md](../../chat/live-streaming.md), [../chat/calls.md](../../chat/calls.md),
-[../chat/message-requests.md](../../chat/message-requests.md).
+(stage, gifts, recordings). Underlying mechanics: [../chat/README.md](../../../docs/chat/README.md),
+[../chat/live-streaming.md](../../../docs/chat/live-streaming.md), [../chat/calls.md](../../../docs/chat/calls.md),
+[../chat/message-requests.md](../../../docs/chat/message-requests.md).
 
 | Tag | Meaning |
 |-----|---------|
@@ -234,7 +234,7 @@ recipients** → feed into [safety-reports.md](../trust-safety/safety-reports.md
 
 Convention (per [architecture.md](../foundation/architecture.md)): all new routes under
 `/api/v1/admin/**` for the filter-chain double gate; every mutation writes an audit row;
-step-up = re-auth via the settings module ([../settings/auth-sessions.md](../../settings/auth-sessions.md)).
+step-up = re-auth via the settings module ([../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md)).
 
 | Action | Endpoint | Params | Danger | Step-up | Audit action | Status |
 |--------|----------|--------|--------|---------|--------------|--------|
@@ -327,7 +327,7 @@ All thresholds are **[PLANNED]**; no alerting infrastructure exists in this subs
 | Everything here is ADMIN-only, new routes under `/api/v1/admin/**` | Filter-chain double gate; the existing verified toggle (§4.1) is the cautionary tale — annotation-only, open under `SECURITY_PERMIT_ALL=true` |
 | Never select `stream_key` / `publish_key` / `last_message_preview` into admin DTOs | §2.3 — plaintext secrets and content leak edge |
 | Content access ONLY via legal hold (dual admin, step-up, case ID, per-access audit) | §2.2; there is no other read path today and the build must not create one |
-| Step-up auth on force-stop, key rotation, takedown, recording delete, legal hold | Irreversible or rights-impacting; [../settings/auth-sessions.md](../../settings/auth-sessions.md) step-up **[EXISTS]** |
+| Step-up auth on force-stop, key rotation, takedown, recording delete, legal hold | Irreversible or rights-impacting; [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) step-up **[EXISTS]** |
 | Every mutation writes a typed audit row (`AdminAuditor` → `AuditLogService.record` **[EXISTS (built 2026-08)]**) | HTTP-interceptor rows alone don't capture reason/reportId |
 | Oversight, not substitution: admins monitor join requests / invites / stage but the conversation's own `ChannelRights` governance keeps operating | Preserves the module's self-governance model; admin powers are takedown-shaped, not management-shaped |
 | Aggregate-only for DMs/groups; no browse-by-participant | §5.1 — who-talks-to-whom is sensitive metadata |

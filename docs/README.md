@@ -58,19 +58,19 @@ shapes, error codes, and side effects, verified against the source.
 ### Admin Documentation — `admin/`
 
 Organised one directory per topic. Start at
-[admin/README.md](admin/README.md) — it maps all of them.
+[admin/README.md](../admin%20doc/admin/README.md) — it maps all of them.
 
 | Directory | Covers |
 |------|--------|
-| [foundation/](admin/foundation/README.md) | Access model & RBAC, step-up, API conventions, the endpoint blueprint, the controller reference |
-| [users/](admin/users/README.md) | Directory & roles, the user-administration action surface (add/disable/impersonate), discovery & PYMK privacy, the activity ledger |
-| [trust-safety/](admin/trust-safety/README.md) | **Automated (AI) moderation**, the reports/keyword inbox, report triage & strikes & appeals |
-| [content/](admin/content/README.md) | Research & Q&A, the **admin-curated** sound library, media pipeline & storage, knowledge vocabulary |
-| [communication/](admin/communication/README.md) | Chat/channels/live (+ the privacy boundary), notifications & email |
-| [platform/](admin/platform/README.md) | Search/feed/trending, **the complete log catalog**, analytics & KPIs, operations & runbooks |
-| [api/](admin/api/README.md) | **Request/response JSON for all 271 admin endpoints**, one file per domain |
-| [frontend/](admin/frontend/README.md) | Dashboard UI build guide — auth & roles, page maps, conventions, danger-zone rules, nav tree |
-| [known-issues.md](admin/known-issues.md) · [TODO.md](admin/TODO.md) | Freshness overlay and build status |
+| [foundation/](../admin%20doc/admin/foundation/README.md) | Access model & RBAC, step-up, API conventions, the endpoint blueprint, the controller reference |
+| [users/](../admin%20doc/admin/users/README.md) | Directory & roles, the user-administration action surface (add/disable/impersonate), discovery & PYMK privacy, the activity ledger |
+| [trust-safety/](../admin%20doc/admin/trust-safety/README.md) | **Automated (AI) moderation**, the reports/keyword inbox, report triage & strikes & appeals |
+| [content/](../admin%20doc/admin/content/README.md) | Research & Q&A, the **admin-curated** sound library, media pipeline & storage, knowledge vocabulary |
+| [communication/](../admin%20doc/admin/communication/README.md) | Chat/channels/live (+ the privacy boundary), notifications & email |
+| [platform/](../admin%20doc/admin/platform/README.md) | Search/feed/trending, **the complete log catalog**, analytics & KPIs, operations & runbooks |
+| [api/](../admin%20doc/admin/api/README.md) | **Request/response JSON for all 271 admin endpoints**, one file per domain |
+| [frontend/](../admin%20doc/admin/frontend/README.md) | Dashboard UI build guide — auth & roles, page maps, conventions, danger-zone rules, nav tree |
+| [known-issues.md](../admin%20doc/admin/known-issues.md) · [TODO.md](../admin%20doc/admin/TODO.md) | Freshness overlay and build status |
 
 ### Automated Moderation — `moderation/`
 Quarantine-then-publish for every surface that carries user text, backed by a

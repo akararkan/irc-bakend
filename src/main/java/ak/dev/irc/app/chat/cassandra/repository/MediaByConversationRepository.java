@@ -33,4 +33,9 @@ public interface MediaByConversationRepository
     void deleteForMessage(@Param("cid") UUID conversationId,
                           @Param("kind") String kind,
                           @Param("messageId") long messageId);
+
+    /** Drop a whole {@code (conversation, kind)} partition — whole-conversation
+     *  purge only. Call once per known kind (see MessageQueryService's set). */
+    @Query("DELETE FROM media_by_conversation WHERE conversation_id = :cid AND kind = :kind")
+    void deleteAllForConversationKind(@Param("cid") UUID conversationId, @Param("kind") String kind);
 }

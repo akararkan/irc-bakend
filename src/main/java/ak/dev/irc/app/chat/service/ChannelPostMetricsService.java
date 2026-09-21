@@ -193,6 +193,36 @@ public class ChannelPostMetricsService {
         } catch (Exception ignored) { /* best-effort */ }
     }
 
+    /** Strict per-post variant for the whole-conversation purge. The counter
+     *  ROW is durable Cassandra state whose only handle is the message id — a
+     *  swallowed failure here would orphan it forever once the log rows go, so
+     *  it throws (and an unprepared statement counts as failure, unlike
+     *  {@link #clear}'s silent no-op). The Redis keys stay best-effort: they
+     *  expire and rebuild, orphaning one is cosmetic. */
+    public void clearStrict(UUID channelId, long messageId) {
+        if (deleteRow == null) {
+            throw new IllegalStateException("message_counters delete statement unavailable");
+        }
+        session.execute(deleteRow.bind(messageId));
+        try {
+            redis.delete(VIEWERS_PREFIX + messageId);
+            if (channelId != null) redis.opsForZSet().remove(TOP_PREFIX + channelId, Long.toString(messageId));
+        } catch (Exception ignored) { /* best-effort */ }
+    }
+
+    /** Drop a purged channel's channel-LEVEL keys (totals hash, post-type hash,
+     *  top-posts ZSET). Per-post keys and counter rows go through
+     *  {@link #clearStrict} as the purge sweeps the message log — this is the
+     *  remainder that no per-message call ever touches. Whole-conversation
+     *  purge only. */
+    public void purgeChannel(UUID channelId) {
+        if (channelId == null) return;
+        try {
+            redis.delete(java.util.List.of(
+                    TOTALS_PREFIX + channelId, TYPES_PREFIX + channelId, TOP_PREFIX + channelId));
+        } catch (Exception ignored) { /* best-effort */ }
+    }
+
     private static long parse(Object v) {
         try { return Long.parseLong(String.valueOf(v)); } catch (Exception e) { return 0L; }
     }

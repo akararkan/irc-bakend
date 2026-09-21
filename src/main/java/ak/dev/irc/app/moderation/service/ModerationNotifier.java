@@ -53,6 +53,7 @@ public class ModerationNotifier {
         LABELS.put(ModeratedEntityType.STREAM_META, "stream details");
         LABELS.put(ModeratedEntityType.LIVE_CHAT, "live chat message");
         LABELS.put(ModeratedEntityType.CONTENT_ANNOTATION, "content");
+        LABELS.put(ModeratedEntityType.MEDIA_IMAGE, "image");
     }
 
     /**

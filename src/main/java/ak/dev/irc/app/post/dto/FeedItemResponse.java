@@ -59,7 +59,9 @@ public record FeedItemResponse(
         String  source,
         Double  rankScore,
         ChannelSummary channel,
-        String  channelPostId
+        String  channelPostId,
+        // ── Adaptive playback (null until the HLS packager has run — additive) ──
+        String  videoHlsUrl   // REEL only — CMAF/fMP4 HLS master; videoUrl stays progressive MP4
 ) {
 
     /**
@@ -76,7 +78,7 @@ public record FeedItemResponse(
         this(id, authorId, author, entityType, postType, textPreview, mediaUrl, videoUrl,
              reactionCount, commentCount, viewCount, saveCount, shareCount,
              likedByMe, savedByMe, createdAt,
-             null, null, null, null);
+             null, null, null, null, null);
     }
 
     /** Copy with ranking metadata attached (records are immutable). */
@@ -85,6 +87,16 @@ public record FeedItemResponse(
                 textPreview, mediaUrl, videoUrl,
                 reactionCount, commentCount, viewCount, saveCount, shareCount,
                 likedByMe, savedByMe, createdAt,
-                source, rankScore, channel, channelPostId);
+                source, rankScore, channel, channelPostId, videoHlsUrl);
+    }
+
+    /** Copy with the adaptive playback URL attached (null-safe no-op). */
+    public FeedItemResponse withVideoHls(String hlsUrl) {
+        if (hlsUrl == null) return this;
+        return new FeedItemResponse(id, authorId, author, entityType, postType,
+                textPreview, mediaUrl, videoUrl,
+                reactionCount, commentCount, viewCount, saveCount, shareCount,
+                likedByMe, savedByMe, createdAt,
+                source, rankScore, channel, channelPostId, hlsUrl);
     }
 }

@@ -223,6 +223,7 @@ class ResearchCommentReactionTest {
                 userId, "Researcher", "researcher@test", "r.png",
                 "Insightful.",
                 /* mediaUrl */ null, /* mediaType */ null, /* mediaThumbnailUrl */ null,
+                /* voiceUrl */ null, /* voiceDurationSeconds */ null,
                 likeCount, /* replyCount */ 0L,
                 myReaction,
                 /* isEdited */ false, /* editedAt */ null,

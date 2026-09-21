@@ -20,6 +20,7 @@ import java.util.UUID;
 public class QuestionMapper {
 
     private final CounterCache counterCache;
+    private final ak.dev.irc.app.media.service.MediaVariantHydrator variantHydrator;
 
     private static long nz(Long v) { return v == null ? 0L : v; }
 
@@ -167,6 +168,17 @@ public class QuestionMapper {
     }
 
     public AnswerAttachmentResponse toAttachmentResponse(AnswerAttachment attachment) {
+        // Single-item path — one bulk load of one asset.
+        var sets = attachment.getMediaAssetId() == null
+                ? java.util.Map.<java.util.UUID, ak.dev.irc.app.media.service.MediaVariantHydrator.VariantSet>of()
+                : variantHydrator.load(java.util.Set.of(attachment.getMediaAssetId()));
+        return toAttachmentResponse(attachment, sets);
+    }
+
+    private AnswerAttachmentResponse toAttachmentResponse(
+            AnswerAttachment attachment,
+            java.util.Map<java.util.UUID, ak.dev.irc.app.media.service.MediaVariantHydrator.VariantSet> sets) {
+        var set = attachment.getMediaAssetId() == null ? null : sets.get(attachment.getMediaAssetId());
         return new AnswerAttachmentResponse(
                 attachment.getId(),
                 attachment.getAnswer().getId(),
@@ -179,7 +191,9 @@ public class QuestionMapper {
                 attachment.getCaption(),
                 attachment.getDurationSeconds(),
                 attachment.getThumbnailUrl(),
-                attachment.getCreatedAt()
+                attachment.getCreatedAt(),
+                set == null ? java.util.Map.of() : set.variants(),
+                set == null ? null : set.processing()
         );
     }
 
@@ -201,8 +215,14 @@ public class QuestionMapper {
 
     private List<AnswerAttachmentResponse> mapAttachments(List<AnswerAttachment> attachments) {
         if (attachments == null) return Collections.emptyList();
+        // ONE variant load for the whole list (no per-row Postgres reads).
+        java.util.Set<java.util.UUID> assetIds = new java.util.HashSet<>();
+        for (AnswerAttachment a : attachments) {
+            if (a.getMediaAssetId() != null) assetIds.add(a.getMediaAssetId());
+        }
+        var sets = variantHydrator.load(assetIds);
         return attachments.stream()
-                .map(this::toAttachmentResponse)
+                .map(a -> toAttachmentResponse(a, sets))
                 .toList();
     }
 

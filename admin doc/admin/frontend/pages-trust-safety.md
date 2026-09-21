@@ -27,7 +27,7 @@ per-target `{outcome, error}` — show a result list, never a bare toast.
 
 `AdminAutoModerationController` (ADMIN, MODERATOR) · `AdminModerationSettingsController`
 (ADMIN, MODERATOR; kill switch ADMIN) · `AdminModerationModelController` (ADMIN; dataset writes
-MODERATOR). Full reference: [../moderation/api.md](../../moderation/api.md).
+MODERATOR). Full reference: [../moderation/api.md](../../../docs/moderation/api.md).
 
 | Method + path | Key params | SU |
 |---------------|-----------|----|

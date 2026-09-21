@@ -106,13 +106,13 @@ every previously-deferred block:
   `media_renditions(object_key)`, `user_strikes(expires_at)`).
 - **Messages catalog** — every user-facing note/warning/error/notification/
   email/header documented in
-  [`../errors/user-facing-messages.md`](../errors/user-facing-messages.md)
+  [`../errors/user-facing-messages.md`](../../docs/errors/user-facing-messages.md)
   — and now implemented as centralized constants in
   `ak.dev.irc.app.common.messages.*`.
 - **API wire reference** — request/response JSON for all **271** admin
   endpoints in [api/](api/README.md) (10 per-domain files, every key traced to
   code); frontend build guide split into [frontend/](frontend/README.md)
-  + [`../errors/frontend-error-handling.md`](../errors/frontend-error-handling.md).
+  + [`../errors/frontend-error-handling.md`](../../docs/errors/frontend-error-handling.md).
 
 ## 2026-08-08 — automated moderation + docs reorganisation
 
@@ -124,7 +124,7 @@ every previously-deferred block:
   (retrain → gate → promote → rollback). Docs:
   [trust-safety/automated-moderation.md](trust-safety/automated-moderation.md)
   (dashboard) · [api/automated-moderation.md](api/automated-moderation.md)
-  (wire) · [`../moderation/`](../moderation/README.md) (whole subsystem).
+  (wire) · [`../moderation/`](../../docs/moderation/README.md) (whole subsystem).
 - **Sounds became admin-curated only** — the open end-user upload path is
   closed (`403` for regular users, deprecated staff-only alias). New canonical
   `POST /api/v1/admin/sounds`. See

@@ -12,7 +12,7 @@ UI wiring lives in the [frontend dashboard guide](../frontend/README.md).
 
 **Conventions used throughout:**
 
-- **Auth.** Bearer JWT. Sound endpoints accept role `ADMIN` **or** `MODERATOR` (class-level `@PreAuthorize`); all media and storage endpoints are `ADMIN`-only. A missing/expired token is `401`; a wrong role is `403`. Errors arrive in the canonical envelope (`errorCode` is the switch key) — see [frontend error handling](../../errors/frontend-error-handling.md).
+- **Auth.** Bearer JWT. Sound endpoints accept role `ADMIN` **or** `MODERATOR` (class-level `@PreAuthorize`); all media and storage endpoints are `ADMIN`-only. A missing/expired token is `401`; a wrong role is `403`. Errors arrive in the canonical envelope (`errorCode` is the switch key) — see [frontend error handling](../../../docs/errors/frontend-error-handling.md).
 - **Step-up.** Endpoints marked **step-up** additionally require a fresh re-auth marker (`stepup:{userId}` in Redis), armed via `POST /api/v1/security/step-up`. Absent/expired marker → `403 STEP_UP_REQUIRED`.
 - **Serialization.** `AdminSoundRow`, `AdminSoundDetail` and `AdminMediaRow` are `@JsonInclude(NON_NULL)` — null fields are **omitted**, not sent as `null`. Sound timestamps are `Instant` (`"2026-08-05T14:30:00Z"`); media timestamps are `LocalDateTime` without zone (`"2026-08-06T09:15:00"`).
 - **Page sizes.** Every `pageSize`/`size`/`limit`/`top` is clamped to **1–100** (`Pages.clamp`).

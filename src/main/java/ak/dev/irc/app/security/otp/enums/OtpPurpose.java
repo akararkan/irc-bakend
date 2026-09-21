@@ -13,6 +13,12 @@ public enum OtpPurpose {
     PHONE_CHANGE,
     /** Sensitive change: moving to a new email address. */
     EMAIL_CHANGE,
+    /**
+     * Confirming the address already on the account. Deliberately distinct from
+     * {@link #EMAIL_CHANGE}: a code minted to authorise a move to a new address
+     * must not be redeemable as proof that the current one is owned.
+     */
+    EMAIL_VERIFY,
     /** Password reset via OTP. */
     PASSWORD_RESET,
     /** Fresh-auth challenge for a sensitive action inside a valid session. */

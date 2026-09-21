@@ -150,6 +150,11 @@ public class CloudflareR2StorageService implements S3StorageService {
 
     @Override
     public S3ObjectStream getObject(String s3Key, String rangeHeader) {
+        return getObject(s3Key, rangeHeader, null);
+    }
+
+    @Override
+    public S3ObjectStream getObject(String s3Key, String rangeHeader, String ifNoneMatch) {
         try {
             GetObjectRequest.Builder req = GetObjectRequest.builder()
                     .bucket(bucketName)
@@ -160,6 +165,10 @@ public class CloudflareR2StorageService implements S3StorageService {
             if (rangeHeader != null && !rangeHeader.isBlank()) {
                 req.range(rangeHeader);
             }
+            // Conditional GET: an unchanged object costs a 304, not a transfer.
+            if (ifNoneMatch != null && !ifNoneMatch.isBlank()) {
+                req.ifNoneMatch(ifNoneMatch);
+            }
 
             ResponseInputStream<GetObjectResponse> response = s3Client.getObject(req.build());
             GetObjectResponse metadata = response.response();
@@ -169,8 +178,16 @@ public class CloudflareR2StorageService implements S3StorageService {
                     metadata.contentType(),
                     metadata.contentLength(),
                     contentRange,
-                    parseTotalLength(contentRange, metadata.contentLength())
+                    parseTotalLength(contentRange, metadata.contentLength()),
+                    metadata.eTag()
             );
+        } catch (software.amazon.awssdk.services.s3.model.S3Exception e) {
+            if (e.statusCode() == 304) {
+                throw new NotModifiedException(ifNoneMatch);
+            }
+            log.error("Failed to get object from R2: {} ({})", s3Key, e.statusCode());
+            throw new AppException(ResearchMessages.MEDIA_NOT_FOUND_MSG,
+                    HttpStatus.NOT_FOUND, ResearchMessages.MEDIA_NOT_FOUND);
         } catch (SdkClientException e) {
             log.error("R2 storage is unreachable — cannot retrieve object '{}': {}",
                     s3Key, e.getMessage(), e);
@@ -254,6 +271,33 @@ public class CloudflareR2StorageService implements S3StorageService {
             throw new AppException(
                     ResearchMessages.STORAGE_UNAVAILABLE_MSG,
                     HttpStatus.SERVICE_UNAVAILABLE, ResearchMessages.STORAGE_UNAVAILABLE);
+        }
+    }
+
+    @Override
+    public String putFile(java.nio.file.Path file, String s3Key, String contentType) {
+        try {
+            long size = java.nio.file.Files.size(file);
+            PutObjectRequest.Builder put = PutObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(s3Key)
+                    .contentLength(size);
+            if (contentType != null && !contentType.isBlank()) {
+                put.contentType(contentType);
+            }
+            // fromFile streams from disk — a 512 MB rendition never becomes a byte[].
+            s3Client.putObject(put.build(), RequestBody.fromFile(file));
+            log.info("Uploaded file ({} bytes) to R2: {}", size, s3Key);
+            return s3Key;
+        } catch (SdkClientException e) {
+            log.error("R2 storage is unreachable — putFile failed for '{}': {}", s3Key, e.getMessage(), e);
+            throw new AppException(
+                    ResearchMessages.STORAGE_UNAVAILABLE_MSG,
+                    HttpStatus.SERVICE_UNAVAILABLE, ResearchMessages.STORAGE_UNAVAILABLE);
+        } catch (IOException e) {
+            log.error("putFile could not read local file '{}': {}", file, e.getMessage());
+            throw new AppException(ResearchMessages.FILE_UPLOAD_ERROR_MSG,
+                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.FILE_UPLOAD_ERROR);
         }
     }
 

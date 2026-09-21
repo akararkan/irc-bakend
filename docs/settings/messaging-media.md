@@ -1,5 +1,12 @@
 # Messaging, Media Pipeline & Storage (§9, §15, §20)
 
+> **Freshness (2026-08-23):** §20 is no longer aspirational — the pipeline is
+> consumed by every upload surface (posts, stories, chat, avatars, research,
+> QnA, sounds) via `MediaIngestService`, produces a full image variant set
+> (1440/1080/320/150 + WebP) and the H.264 video ladder over RabbitMQ, and the
+> previously-noted gaps (EXIF orientation, media queues without a consumer)
+> are closed. Canonical doc: **docs/media/pipeline.md**.
+
 ## Messaging settings (§9)
 
 | Setting | Owner | Where |

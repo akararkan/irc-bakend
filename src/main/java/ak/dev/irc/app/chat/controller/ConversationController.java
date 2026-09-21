@@ -113,6 +113,14 @@ public class ConversationController {
         return ResponseEntity.noContent().build();
     }
 
+    /** Per-user "clear chat": empties the thread on the caller's side only; the
+     *  row stays in their inbox. Idempotent. */
+    @PostMapping("/{id}/clear")
+    public ResponseEntity<Void> clear(@PathVariable UUID id, @AuthenticationPrincipal User user) {
+        conversationService.clear(id, requireId(user));
+        return ResponseEntity.ok().build();
+    }
+
     @PostMapping("/{id}/read")
     public ResponseEntity<Void> read(@PathVariable UUID id,
                                      @Valid @RequestBody ReadMarkerRequest req,

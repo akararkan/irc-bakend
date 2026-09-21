@@ -386,4 +386,40 @@ public class RabbitMQConfig {
         factory.setMissingQueuesFatal(false);
         return factory;
     }
+
+    /**
+     * Dedicated factory for the media transcode worker. Same retry/DLX
+     * discipline as the shared factory, but {@code prefetch=1} and low
+     * concurrency: a transcode holds a consumer for minutes and ffmpeg already
+     * saturates cores — the shared factory's prefetch of 10 would silently
+     * park ~10 queued jobs invisible on one busy consumer.
+     */
+    @Bean
+    public SimpleRabbitListenerContainerFactory mediaListenerContainerFactory(
+            ConnectionFactory connectionFactory,
+            Jackson2JsonMessageConverter messageConverter,
+            ak.dev.irc.app.media.config.MediaProperties mediaProperties) {
+
+        RetryOperationsInterceptor retryInterceptor = RetryInterceptorBuilder.stateless()
+                .maxAttempts(3)
+                .backOffOptions(1_000, 2.0, 10_000)
+                .recoverer(new RejectAndDontRequeueRecoverer())
+                .build();
+
+        int consumers = Math.max(1, mediaProperties.getProcessing().getWorkerConcurrency());
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(messageConverter);
+        factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+        factory.setPrefetchCount(1);
+        factory.setConcurrentConsumers(consumers);
+        factory.setMaxConcurrentConsumers(consumers);
+        factory.setAdviceChain(retryInterceptor);
+
+        ExponentialBackOff recoveryBackOff = new ExponentialBackOff(5_000L, 2.0);
+        recoveryBackOff.setMaxInterval(60_000L);
+        factory.setRecoveryBackOff(recoveryBackOff);
+        factory.setMissingQueuesFatal(false);
+        return factory;
+    }
 }

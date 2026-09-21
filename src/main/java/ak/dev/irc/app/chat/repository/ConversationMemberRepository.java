@@ -40,7 +40,7 @@ public interface ConversationMemberRepository
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.archived = false
           AND c.deletedAt IS NULL
-          AND (m.clearedBeforeMessageId = 0
+          AND (m.deletedAt IS NULL
                OR (c.lastMessageId IS NOT NULL AND c.lastMessageId > m.clearedBeforeMessageId))
           AND NOT EXISTS (
               SELECT 1 FROM MessageRequest r
@@ -55,7 +55,7 @@ public interface ConversationMemberRepository
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.archived = false
           AND m.conversation.deletedAt IS NULL
-          AND (m.clearedBeforeMessageId = 0
+          AND (m.deletedAt IS NULL
                OR (m.conversation.lastMessageId IS NOT NULL
                    AND m.conversation.lastMessageId > m.clearedBeforeMessageId))
           AND NOT EXISTS (
@@ -72,7 +72,7 @@ public interface ConversationMemberRepository
         WHERE m.id.userId = :uid AND m.archived = true
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND c.deletedAt IS NULL
-          AND (m.clearedBeforeMessageId = 0
+          AND (m.deletedAt IS NULL
                OR (c.lastMessageId IS NOT NULL AND c.lastMessageId > m.clearedBeforeMessageId))
         ORDER BY c.lastMessageAt DESC NULLS LAST
         """,
@@ -81,7 +81,7 @@ public interface ConversationMemberRepository
         WHERE m.id.userId = :uid AND m.archived = true
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
           AND m.conversation.deletedAt IS NULL
-          AND (m.clearedBeforeMessageId = 0
+          AND (m.deletedAt IS NULL
                OR (m.conversation.lastMessageId IS NOT NULL
                    AND m.conversation.lastMessageId > m.clearedBeforeMessageId))
         """)
@@ -164,6 +164,51 @@ public interface ConversationMemberRepository
         """)
     List<UUID> findMyConversationIds(@Param("uid") UUID userId);
 
+    /** Members who can still SEE the conversation — not deleted-for-me, or holding
+     *  unseen post-floor messages. Zero means every side has walked away, which is
+     *  the purge job's eligibility test (re-run inside its transaction). */
+    @Query("""
+        SELECT COUNT(m) FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+          AND (m.deletedAt IS NULL
+               OR (m.conversation.lastMessageId IS NOT NULL
+                   AND m.conversation.lastMessageId > m.clearedBeforeMessageId))
+        """)
+    long countMembersWhoCanSee(@Param("cid") UUID conversationId);
+
+    /** The lowest clear floor among a conversation's members — the highest
+     *  message id NOBODY may read is everything at or below this. 0 when a
+     *  member never cleared (or there are no members). Purge eligibility only. */
+    @Query("""
+        SELECT COALESCE(MIN(m.clearedBeforeMessageId), 0) FROM ConversationMember m
+        WHERE m.id.conversationId = :cid
+        """)
+    long minClearedFloor(@Param("cid") UUID conversationId);
+
+    /** Drop every membership row of a conversation — the purge job's final
+     *  transaction only; nothing else may bulk-remove members. */
+    @Modifying
+    @Query("DELETE FROM ConversationMember m WHERE m.id.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
+
+    /**
+     * Account hard-purge: mark every membership of the purged user
+     * deleted-for-me with the floor at the conversation's current head. Without
+     * this, a DM whose peer's ACCOUNT was purged can never satisfy "every
+     * member has walked away" and survives the conversation purge forever —
+     * the dead user's member row (deletedAt NULL) counts as someone who can
+     * still see it. Native: the per-row floor is a correlated lookup.
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE conversation_members m
+           SET deleted_at = :now,
+               cleared_before_message_id = GREATEST(m.cleared_before_message_id,
+                   COALESCE((SELECT c.last_message_id FROM conversations c WHERE c.id = m.conversation_id), 0))
+         WHERE m.user_id = :uid AND m.deleted_at IS NULL
+        """, nativeQuery = true)
+    int markAllDeletedForPurgedUser(@Param("uid") UUID userId, @Param("now") java.time.LocalDateTime now);
+
     /** Active member ids — the eager unread-fanout + realtime recipient set. */
     @Query("""
         SELECT m.id.userId FROM ConversationMember m
@@ -209,11 +254,15 @@ public interface ConversationMemberRepository
                              @Param("messageId") long messageId,
                              @Param("exclude") UUID exclude);
 
-    /** Sum of unread across all my active conversations — the badge rebuild. */
+    /** Sum of unread across all my active conversations — the badge rebuild.
+     *  A soft-deleted conversation must not count: deleting a channel/group
+     *  leaves every member row ACTIVE with its unreadCount intact, and without
+     *  this filter those dead counts sat in everyone's badge forever. */
     @Query("""
         SELECT COALESCE(SUM(m.unreadCount), 0) FROM ConversationMember m
         WHERE m.id.userId = :uid
           AND m.status = ak.dev.irc.app.chat.enums.MemberStatus.ACTIVE
+          AND m.conversation.deletedAt IS NULL
         """)
     long sumUnread(@Param("uid") UUID userId);
 

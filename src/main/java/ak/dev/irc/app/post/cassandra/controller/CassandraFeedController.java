@@ -25,11 +25,14 @@ import ak.dev.irc.app.post.cassandra.service.FriendSuggestionService;
 import ak.dev.irc.app.post.cassandra.service.HomeFeedService;
 import ak.dev.irc.app.post.cassandra.service.ReelFeedService;
 import ak.dev.irc.app.post.cassandra.service.PostHydrator;
+import ak.dev.irc.app.activity.service.ReelViewService;
 import ak.dev.irc.app.post.dto.FeedItemResponse;
+import ak.dev.irc.app.post.dto.NewFollowingReelsResponse;
 import ak.dev.irc.app.post.dto.PostResponse;
 import ak.dev.irc.app.post.realtime.PostRealtimeService;
-import ak.dev.irc.app.research.service.S3StorageService;
 import ak.dev.irc.app.user.entity.User;
+import java.time.temporal.ChronoUnit;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import ak.dev.irc.app.security.jwt.JwtTokenProvider;
 import jakarta.servlet.http.HttpServletResponse;
@@ -66,10 +69,20 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class CassandraFeedController {
 
+    /** {@code /reels/following/new-count}: freshness window, fan-in scan and watch-slice sizes. */
+
+    private static final int NEW_REEL_DAYS = 7;
+
+    private static final int NEW_REEL_SCAN = 100;
+
+    private static final int WATCH_SCAN    = 500;
+
+
     private final CassandraPostService     postService;
     private final FeedTimelineService      feedService;
     private final ak.dev.irc.app.post.cassandra.service.HomeFeedService homeFeedService;
     private final ReelFeedService          reelFeedService;
+    private final ReelViewService reelViewService;
     private final FriendSuggestionService  suggestionService;
     private final CassandraReactionService reactionService;
     private final CassandraViewService     viewService;
@@ -78,7 +91,7 @@ public class CassandraFeedController {
     private final CassandraShareService    shareService;
     private final PostHydrator             hydrator;
     private final PostRealtimeService      postRealtimeService;
-    private final S3StorageService         storageService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final JwtTokenProvider         jwtTokenProvider;
     /** Per-user write throttling; fail-open if Redis is down. */
     private final RateLimiter              rateLimiter;
@@ -103,6 +116,8 @@ public class CassandraFeedController {
                 cmd.shareLink(),
                 cmd.mediaUrls(),
                 cmd.mediaTypes(),
+                cmd.mediaIds(),
+                cmd.thumbnailUrl(),
                 cmd.soundId());
         return ResponseEntity.ok(hydrator.hydrate(postService.createPost(authed)));
     }
@@ -153,25 +168,38 @@ public class CassandraFeedController {
         String shareLink     = paramOr(request, "shareLink", null);
         UUID   soundId       = parseUuid(paramOr(request, "soundId", null));
 
-        // 2) Upload each file to R2. Track successful keys so we can roll back
-        //    if anything below fails.
-        List<String> uploadedKeys = new ArrayList<>();
-        List<String> mediaUrls    = new ArrayList<>();
-        List<String> mediaTypes   = new ArrayList<>();
-        try {
-            for (List<MultipartFile> bucket : request.getMultiFileMap().values()) {
-                for (MultipartFile f : bucket) {
-                    if (f == null || f.isEmpty()) continue;
-                    String key = storageService.upload(f, "posts/media");
-                    uploadedKeys.add(key);
-                    mediaUrls.add(storageService.getPublicUrl(key));
-                    mediaTypes.add(classifyMedia(f.getContentType()));
-                }
+        // 2) Route every file through the ingest pipeline (validation, quota,
+        //    resize/EXIF-strip, video original+poster+async ladder). Validation
+        //    problems (type/size/count/duration) surface as structured 400s via
+        //    the global handler; ingestAll rolls its own uploads back on failure.
+        List<MultipartFile> files = new ArrayList<>();
+        for (List<MultipartFile> bucket : request.getMultiFileMap().values()) {
+            for (MultipartFile f : bucket) {
+                if (f != null && !f.isEmpty()) files.add(f);
             }
+        }
+        List<ak.dev.irc.app.media.dto.IngestResult> ingested;
+        try {
+            ingested = mediaIngest.ingestAll(files,
+                    ak.dev.irc.app.media.enums.MediaSurface.POST_MEDIA, user.getId(), "posts/media");
+        } catch (ak.dev.irc.app.common.exception.AppException e) {
+            throw e;   // structured 400/429/503 envelope — not a 502
         } catch (Exception e) {
-            rollbackR2(uploadedKeys);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(Map.of("error", PostMessages.UPLOAD_FAILED, "message", String.valueOf(e.getMessage())));
+        }
+
+        List<String> mediaUrls  = new ArrayList<>();
+        List<String> mediaTypes = new ArrayList<>();
+        List<String> mediaIds   = new ArrayList<>();
+        String thumbnailUrl     = null;
+        for (var r : ingested) {
+            mediaUrls.add(r.url());
+            mediaTypes.add(legacyMediaType(r.kind()));
+            mediaIds.add(r.assetId() == null ? "" : r.assetId().toString());
+            if (thumbnailUrl == null && r.kind() == ak.dev.irc.app.media.enums.MediaKind.VIDEO) {
+                thumbnailUrl = r.thumbnailUrl();   // server-extracted poster
+            }
         }
 
         // 2b) VOICE_POST: an uploaded audio file must surface in `audioTrackUrl`
@@ -184,10 +212,11 @@ public class CassandraFeedController {
             if (audioIdx >= 0) {
                 audioTrackUrl = mediaUrls.remove(audioIdx);
                 mediaTypes.remove(audioIdx);
+                mediaIds.remove(audioIdx);
             }
         }
 
-        // 3) Persist the post. On any DB failure, clean up R2 so we never
+        // 3) Persist the post. On any DB failure, clean up storage so we never
         //    leave orphaned files paid-for in R2 but not addressable from any post.
         try {
             CassandraPostService.CreatePostCommand authed =
@@ -196,24 +225,26 @@ public class CassandraFeedController {
                             audioTrackUrl, audioTrackName,
                             locationName, locationLat, locationLng,
                             sharedPostId, shareLink,
-                            mediaUrls, mediaTypes, soundId);
+                            mediaUrls, mediaTypes, mediaIds, thumbnailUrl, soundId);
             PostByIdEntity created = postService.createPost(authed);
             return ResponseEntity.ok(hydrator.hydrate(created));
         } catch (Exception e) {
-            rollbackR2(uploadedKeys);
+            for (var r : ingested) mediaIngest.rollback(r);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", PostMessages.POST_CREATE_FAILED,
                             "message", String.valueOf(e.getMessage()),
-                            "rolledBackFiles", uploadedKeys.size()));
+                            "rolledBackFiles", ingested.size()));
         }
     }
 
-    /** Delete previously-uploaded R2 keys after a failure to avoid orphans. */
-    private void rollbackR2(List<String> keys) {
-        for (String k : keys) {
-            try { storageService.delete(k); }
-            catch (Exception ignore) { /* best-effort */ }
-        }
+    /** Legacy media-type bucket the post rows/DTOs already use. */
+    private static String legacyMediaType(ak.dev.irc.app.media.enums.MediaKind kind) {
+        return switch (kind) {
+            case IMAGE -> "IMAGE";
+            case VIDEO -> "VIDEO";
+            case AUDIO -> "AUDIO";
+            case FILE -> "OTHER";
+        };
     }
 
     private static String paramOr(MultipartHttpServletRequest req, String name, String fallback) {
@@ -229,16 +260,6 @@ public class CassandraFeedController {
     private static UUID parseUuid(String s) {
         if (s == null || s.isBlank()) return null;
         try { return UUID.fromString(s); } catch (IllegalArgumentException e) { return null; }
-    }
-
-    /** Map an HTTP content-type to a coarse media bucket the UI cares about. */
-    private static String classifyMedia(String contentType) {
-        if (contentType == null) return "OTHER";
-        String ct = contentType.toLowerCase();
-        if (ct.startsWith("image/")) return "IMAGE";
-        if (ct.startsWith("video/")) return "VIDEO";
-        if (ct.startsWith("audio/")) return "AUDIO";
-        return "OTHER";
     }
 
     @GetMapping("/{id}")
@@ -411,14 +432,11 @@ public class CassandraFeedController {
         }
         int size = Pages.clamp(pageSize);
         if (!ranked) {
-            List<FeedByUserEntity> rows = cursor == null
-                    ? feedService.homeFeed(user.getId(), size)
-                    : feedService.homeFeedAfter(user.getId(), cursor, size);
-            Instant next = rows.isEmpty() ? null : rows.get(rows.size() - 1).getCreatedAt();
+            // "Latest": still chronological, but merged by time with the
+            // public-content discovery pool — see HomeFeedService.latestFeed.
+            HomeFeedService.RankedFeed latest = homeFeedService.latestFeed(user.getId(), size, cursor);
             return new ak.dev.irc.app.post.dto.HomeFeedResponse(
-                    hydrator.hydrateHomeFeed(rows),
-                    cursor == null ? homeFeedService.liveRail(user.getId()) : List.of(),
-                    next, false);
+                    latest.items(), latest.liveNow(), latest.nextCursor(), false);
         }
         HomeFeedService.RankedFeed feed = homeFeedService.rankedHomeFeed(user.getId(), size, cursor);
         return new ak.dev.irc.app.post.dto.HomeFeedResponse(
@@ -464,6 +482,35 @@ public class CassandraFeedController {
         if (user == null) return List.of();
         return hydrator.hydrateProfileFeed(
                 reelFeedService.followingReels(user.getId(), Pages.clamp(pageSize), cursor));
+    }
+
+    /**
+     * The Following tab's badge: how many reels from followed accounts the
+     * viewer has NOT watched yet. "New" = posted within the last
+     * {@value #NEW_REEL_DAYS} days and no watch session by this viewer
+     * ({@code POST /{id}/reels/view} — a plain view does not count). Built from
+     * the same per-author fan-in as {@code /reels/following} (newest
+     * {@value #NEW_REEL_SCAN}), hydrated so removed / held reels are not
+     * counted, minus the viewer's recent watch slice. The ids ride along so a
+     * client can strike a reel the moment it is watched instead of asking
+     * again. Anonymous callers get zero, not 401.
+     */
+    @GetMapping("/reels/following/new-count")
+    public NewFollowingReelsResponse newFollowingReels(@AuthenticationPrincipal User user) {
+        if (user == null) return NewFollowingReelsResponse.empty();
+        Instant since = Instant.now().minus(NEW_REEL_DAYS, ChronoUnit.DAYS);
+        List<PostByAuthorEntity> fresh = reelFeedService.followingReels(user.getId(), NEW_REEL_SCAN, null)
+                .stream()
+                .filter(r -> r.getCreatedAt() != null && r.getCreatedAt().isAfter(since))
+                .toList();
+        if (fresh.isEmpty()) return new NewFollowingReelsResponse(0, since, List.of());
+        Set<UUID> watched = reelViewService.recentlyWatchedPostIds(user.getId(), WATCH_SCAN);
+        List<UUID> ids = hydrator.hydrateProfileFeed(fresh).stream()
+                .map(FeedItemResponse::id)
+                .filter(id -> !watched.contains(id))
+                .distinct()
+                .toList();
+        return new NewFollowingReelsResponse(ids.size(), since, ids);
     }
 
     /**

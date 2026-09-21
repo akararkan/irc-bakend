@@ -158,7 +158,7 @@ are gone, an administrator resets the second factor. It disables 2FA, clears the
 recovery codes, **revokes every active session**, writes an `ADMIN_2FA_RESET`
 audit row, and notifies the account owner. Admins cannot do this to themselves
 (they must use their own security settings), so the action always has a second
-pair of eyes. See [admin/users/](../admin/users/user-administration.md).
+pair of eyes. See [admin/users/](../../admin%20doc/admin/users/user-administration.md).
 
 > Enrolling a **new** phone is deliberately not automatic: 2FA must be disabled
 > and set up again, so a stolen session cannot silently swap the authenticator to

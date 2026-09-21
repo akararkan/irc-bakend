@@ -82,6 +82,14 @@ public class MediaAsset {
     @Column(name = "error_message", length = 300)
     private String errorMessage;
 
+    /**
+     * Processing attempts consumed (worker failures + sweeper republishes).
+     * Nullable for rows that predate the column — read via null-safe accessors.
+     */
+    @Column(name = "processing_attempts")
+    @Builder.Default
+    private Integer processingAttempts = 0;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

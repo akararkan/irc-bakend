@@ -37,7 +37,7 @@ workflow.
 | Method security (braces) | `@PreAuthorize("hasRole('ADMIN')")` on every admin controller/method, enforced by `MethodSecurityConfig`. This is the platform-wide convention — the chain stays permissive so optional-auth endpoints keep working. | **[EXISTS]** |
 | Escape hatch | `app.security.permit-all` (env `SECURITY_PERMIT_ALL`, **default `false`**) skips the chain-level admin rule for local testing. `@PreAuthorize` still applies unless method security is bypassed by the same flag's design; treat `SECURITY_PERMIT_ALL=true` as local-only. | **[EXISTS]** |
 | Auth transport | Stateless JWT Bearer (`JwtAuthFilter`), no sessions, CSRF disabled. SSE endpoints accept `?token=` fallback (EventSource cannot set headers). | **[EXISTS]** |
-| Step-up for sensitive ops | `security/stepup/StepUpService` — short-TTL Redis marker `stepup:{userId}` (TTL `STEP_UP_TTL_SECONDS`, default 300s) armed by `POST /api/v1/security/step-up` (fresh password or 2FA code). Used by the settings module and — since 2026-08 — required on sensitive admin endpoints via `@RequiresStepUp` (`admin/support/StepUpGuardInterceptor`). See [../settings/auth-sessions.md](../../settings/auth-sessions.md). | **[EXISTS]** (built 2026-08) |
+| Step-up for sensitive ops | `security/stepup/StepUpService` — short-TTL Redis marker `stepup:{userId}` (TTL `STEP_UP_TTL_SECONDS`, default 300s) armed by `POST /api/v1/security/step-up` (fresh password or 2FA code). Used by the settings module and — since 2026-08 — required on sensitive admin endpoints via `@RequiresStepUp` (`admin/support/StepUpGuardInterceptor`). See [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md). | **[EXISTS]** (built 2026-08) |
 
 ### Known gate defects (fix during phase 1)
 
@@ -72,12 +72,12 @@ All section docs propose endpoints against these rules; [admin-api-blueprint.md]
 | Rule | Convention |
 |------|-----------|
 | Prefix & gate | Everything under `/api/v1/admin/{section}/...` — inherits the filter-chain double gate automatically. Class-level `@PreAuthorize("hasRole('ADMIN')")` mandatory anyway (both layers, always). No admin capability may ship outside the prefix again. |
-| Response shape | **No envelope.** Raw DTO (or `Page<DTO>`) in `ResponseEntity<T>`, matching the rest of the API. Errors use the canonical error envelope of [../errors/error-handling.md](../../errors/error-handling.md). |
+| Response shape | **No envelope.** Raw DTO (or `Page<DTO>`) in `ResponseEntity<T>`, matching the rest of the API. Errors use the canonical error envelope of [../errors/error-handling.md](../../../docs/errors/error-handling.md). |
 | Pagination | Spring `Pageable` (`page`, `size`, `sort`) with **`Pages.clamp`** applied server-side (existing platform pattern) — hard cap `size<=100` for admin lists. Cassandra-backed lists use cursor keyset params (`cursor`, `pageSize`) exactly like `AuditLogController` does today. |
 | Date ranges | `from` / `to` as ISO-8601 instants, both optional, `from<=to` validated, defaulting to last 24h for logs and last 30d for analytics. |
 | Filters | Consistent names across sections: `userId`, `status`, `type`, `q` (free text), `sort`. Enums passed by name, parsed leniently (case-insensitive, 400 with the allowed values on miss). |
 | Audit trail | **Every admin mutation writes an audit row** via `AuditLogService.record(userId, username, operation, resourceType, resourceId, summary)` — the service-layer helper, funneled through `admin/support/AdminAuditor` since the 2026-08 build **[EXISTS]**. The HTTP interceptor already captures the request; the explicit `record` call adds the business-event row (`operation` per action, e.g. `UPDATE`/`DELETE`, summary = human-readable action). Each action table in the section docs names its audit action. |
-| Step-up | Every action marked danger **high** or **critical** requires an armed step-up marker (`StepUpService.require(userId)` → 403 `STEP_UP_REQUIRED` when absent) per [../settings/auth-sessions.md](../../settings/auth-sessions.md). Read endpoints never require step-up. |
+| Step-up | Every action marked danger **high** or **critical** requires an armed step-up marker (`StepUpService.require(userId)` → 403 `STEP_UP_REQUIRED` when absent) per [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md). Read endpoints never require step-up. |
 | Danger levels | `low` = read-only / reversible metadata; `medium` = reversible mutation (mute, unverify); `high` = user-impacting or hard-to-reverse (takedown, force-stop, strike); `critical` = irreversible or account-level (ban, purge, key rotation). Used in every "Admin actions" table platform-wide. |
 | Idempotency | Mutations accept the existing `Idempotency-Key` header (24h replay via `IdempotencyFilter`) — free, already global for mutating methods. |
 | Long-running work | Anything slower than ~5s (reindex-scale) returns `202` + a job id, never blocks like `SearchAdminController` does today (existing 7 reindexes stay synchronous **[EXISTS]** until migrated). |
@@ -147,7 +147,7 @@ Architecture & access is mostly conventions, but it owns the dashboard **shell**
 | Widget | Content | Source | Status |
 |--------|---------|--------|--------|
 | Live audit ticker (shell top strip) | Rolling last-N admin+platform audit events, filter chips by operation/outcome | SSE `GET /api/v1/admin/audit/stream` | **[EXISTS]** (API) / **[PLANNED]** (UI) |
-| Staff roster | All ADMIN (later staff-role) accounts, last login, 2FA on/off, open sessions | `users` table filtered by role; sessions per [../settings/auth-sessions.md](../../settings/auth-sessions.md) | **[PLANNED]** UI (`GET /api/v1/admin/users?role=` **[EXISTS]**, built 2026-08 — [users-roles.md](../users/directory-and-roles.md)) |
+| Staff roster | All ADMIN (later staff-role) accounts, last login, 2FA on/off, open sessions | `users` table filtered by role; sessions per [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) | **[PLANNED]** UI (`GET /api/v1/admin/users?role=` **[EXISTS]**, built 2026-08 — [users-roles.md](../users/directory-and-roles.md)) |
 | Gate health card | `permit-all` flag state, stray admin endpoints count, phantom-grant count | Static config surface — [operations.md](../platform/operations.md) env registry | **[PLANNED]** UI (`GET /api/v1/admin/ops/config` + `/config/reconciler` **[EXISTS]**, built 2026-08) |
 | Admin action feed | Audit rows where path starts `/api/v1/admin/` — who did what, when | Same audit stream/API, client-filtered | **[EXISTS]** (data) / **[PLANNED]** (UI) |
 

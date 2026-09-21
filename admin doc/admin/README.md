@@ -28,7 +28,7 @@ versus still proposed.
 | Find an endpoint's request & response JSON | [api/](api/README.md) |
 | Build the dashboard UI | [frontend/](frontend/README.md) |
 | See what's built vs. outstanding | [TODO.md](TODO.md) · [known-issues.md](known-issues.md) |
-| Look up an error string or code | [../errors/user-facing-messages.md](../errors/user-facing-messages.md) |
+| Look up an error string or code | [../errors/user-facing-messages.md](../../docs/errors/user-facing-messages.md) |
 
 ---
 
@@ -94,7 +94,7 @@ component patterns.
 ## Relationship to the rest of `docs/`
 
 This folder documents **the admin surface over** systems specified elsewhere —
-[settings](../settings/README.md), [moderation](../moderation/README.md),
+[settings](../../docs/settings/README.md), [moderation](../../docs/moderation/README.md),
 [search](../search/), [feed](../feed/), [chat](../chat/), [post](../post/),
 [research](../research/), [qna](../qna/), [notifications](../notifications/),
 [user](../user/), [suggestions](../suggestions/). Section docs link out for the
@@ -102,7 +102,7 @@ underlying mechanics and stay focused on the admin view: **what the admin sees,
 what the admin can do, what gets logged, and what gets measured.**
 
 One system has docs on both sides and it is worth knowing which is which:
-**automated moderation**. [`../moderation/`](../moderation/README.md) is the
+**automated moderation**. [`../moderation/`](../../docs/moderation/README.md) is the
 whole subsystem (design, architecture, the two Python containers, end-user
 behaviour); [`trust-safety/automated-moderation.md`](trust-safety/automated-moderation.md)
 is only the slice a moderator touches from the dashboard.

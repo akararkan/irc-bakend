@@ -36,4 +36,10 @@ public interface ConversationInviteRepository extends JpaRepository<Conversation
     @Modifying
     @Query("UPDATE ConversationInvite i SET i.revoked = true WHERE i.conversationId = :cid AND i.revoked = false")
     void revokeAllForConversation(@Param("cid") UUID conversationId);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only — hard delete, unlike
+     *  the soft {@link #revokeAllForConversation} the leave/kick paths use. */
+    @Modifying
+    @Query("DELETE FROM ConversationInvite i WHERE i.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

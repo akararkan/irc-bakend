@@ -17,5 +17,9 @@ public record AnswerAttachmentResponse(
         String caption,
         Integer durationSeconds,
         String thumbnailUrl,
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        /** Client variant map (thumb/feed/full/v720…); empty for legacy uploads. */
+        java.util.Map<String, String> variants,
+        /** True while a video's rendition ladder is still being produced. */
+        Boolean processing
 ) {}

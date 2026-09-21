@@ -11,8 +11,8 @@ Companion docs: [architecture.md](../foundation/architecture.md) (access model),
 [logs-audit.md](logs-audit.md) (log catalog),
 [admin-api-blueprint.md](../foundation/api-blueprint.md) (all endpoints + phasing),
 [media-storage.md](../content/media-storage.md) (R2/media pipeline detail),
-[../realtime/overview.md](../../realtime/overview.md) (SSE model),
-[../settings/auth-sessions.md](../../settings/auth-sessions.md) (step-up auth).
+[../realtime/overview.md](../../../docs/realtime/overview.md) (SSE model),
+[../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) (step-up auth).
 
 ---
 
@@ -491,7 +491,7 @@ rows through `AdminAuditor` → `AuditLogService.record`.
   gate ([architecture.md](../foundation/architecture.md)). Do **not** repeat the
   `PUT /channels/{id}/verified` mistake of annotation-only gating.
 - Mutating actions (trigger/pause, requeue/discard, flush, config view)
-  require **step-up** ([../settings/auth-sessions.md](../../settings/auth-sessions.md))
+  require **step-up** ([../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md))
   and write audit rows via `AdminAuditor` → `AuditLogService.record`
   **[EXISTS (built 2026-08)]**.
 - **Never render secrets**: env values (presence-only), `live_streams.stream_key`,

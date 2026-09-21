@@ -13,4 +13,9 @@ public interface ConversationDraftRepository extends JpaRepository<ConversationD
     Optional<ConversationDraft> findByUserIdAndConversationId(UUID userId, UUID conversationId);
 
     void deleteByUserIdAndConversationId(UUID userId, UUID conversationId);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM ConversationDraft d WHERE d.conversationId = :cid")
+    int deleteAllForConversation(@org.springframework.data.repository.query.Param("cid") UUID conversationId);
 }

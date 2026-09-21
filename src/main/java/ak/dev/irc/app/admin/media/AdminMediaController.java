@@ -15,7 +15,7 @@ import ak.dev.irc.app.media.enums.MediaAssetType;
 import ak.dev.irc.app.media.enums.MediaStatus;
 import ak.dev.irc.app.media.repository.MediaAssetRepository;
 import ak.dev.irc.app.media.repository.MediaRenditionRepository;
-import ak.dev.irc.app.media.service.MediaProcessingService;
+import ak.dev.irc.app.media.event.MediaEventPublisher;
 import ak.dev.irc.app.research.service.S3StorageService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.constraints.Size;
@@ -54,7 +54,7 @@ public class AdminMediaController {
     private final MediaAssetRepository assetRepository;
     private final MediaRenditionRepository renditionRepository;
     private final ak.dev.irc.app.media.repository.MediaQuotaRepository quotaRepository;
-    private final MediaProcessingService processingService;
+    private final MediaEventPublisher mediaEventPublisher;
     private final S3StorageService storage;
     private final ModerationRecorder moderationRecorder;
     private final AdminAuditor adminAuditor;
@@ -128,9 +128,9 @@ public class AdminMediaController {
     // ── actions ─────────────────────────────────────────────────────────
 
     /**
-     * Retry a failed asset by re-running the in-process pipeline on the
-     * retained {@code raw/} original. 410-equivalent when the original is
-     * already purged/missing.
+     * Retry a failed asset by republishing it to the media.process queue; the
+     * worker re-runs the pipeline from the retained source ({@code original}
+     * rendition or {@code raw/}). 410-equivalent when no source survives.
      */
     @PostMapping("/{assetId}/reprocess")
     public ResponseEntity<Void> reprocess(@PathVariable UUID assetId) {
@@ -142,18 +142,22 @@ public class AdminMediaController {
                     AdminOpsMessages.ASSET_NOT_RETRYABLE_MSG,
                     AdminOpsMessages.ASSET_NOT_RETRYABLE);
         }
-        byte[] original;
-        try (var stream = storage.getObject("raw/" + assetId).inputStream()) {
-            original = stream.readAllBytes();
-        } catch (Exception e) {
-            throw new BadRequestException(
-                    AdminOpsMessages.MEDIA_RAW_MISSING_MSG,
-                    AdminOpsMessages.MEDIA_RAW_MISSING);
+        boolean hasOriginalRendition = renditionRepository.findByIdMediaId(assetId).stream()
+                .anyMatch(r -> "original".equals(r.getId().getLabel()));
+        if (!hasOriginalRendition) {
+            try (var stream = storage.getObject("raw/" + assetId, "bytes=0-0").inputStream()) {
+                stream.read();   // existence probe only — bytes stay in storage
+            } catch (Exception e) {
+                throw new BadRequestException(
+                        AdminOpsMessages.MEDIA_RAW_MISSING_MSG,
+                        AdminOpsMessages.MEDIA_RAW_MISSING);
+            }
         }
         asset.setStatus(MediaStatus.PROCESSING);
         asset.setErrorMessage(null);
+        asset.setProcessingAttempts(0);   // an admin retry starts a fresh budget
         assetRepository.save(asset);
-        processingService.submit(assetId, original, asset.getType(), asset.getRequestedTier());
+        mediaEventPublisher.publishProcessRequested(assetId, "admin-reprocess");
         adminAuditor.record(AuditOperation.UPDATE, "MediaAsset", assetId, "ADMIN_MEDIA_REPROCESS");
         return ResponseEntity.accepted().build();
     }

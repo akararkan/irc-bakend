@@ -1,5 +1,6 @@
 package ak.dev.irc.app.moderation;
 
+import ak.dev.irc.app.moderation.enums.FallbackPolicy;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -32,10 +33,23 @@ public class ModerationProperties {
      */
     private boolean enabled = true;
 
+    /**
+     * Fields with fewer whitespace-separated words than this are not sent to the
+     * text model at all — the blocklist alone screens them. Empirically measured
+     * (2026-09-01, artifact v4): below ~4 words the classifier emits noise, not
+     * signal — unseen English words collapse to an identical constant vector
+     * ("Hot" and "Nice" both score toxic 0.6336 to four decimals), and short
+     * benign Kurdish greetings score 0.99+, indistinguishable from actual slurs.
+     * Scoring noise against thresholds only manufactures false holds. Runtime
+     * override: {@code text.min-scorable-words}. Set 0 to score everything.
+     */
+    private int minScorableWords = 4;
+
     private final Inference inference = new Inference();
     private final Training training = new Training();
     private final Retrain retrain = new Retrain();
     private final LiveChat liveChat = new LiveChat();
+    private final Image image = new Image();
 
     /**
      * Per-label bootstrap bands, keyed by lowercase label name. Filled from yaml;
@@ -139,6 +153,62 @@ public class ModerationProperties {
          * that catches up later.
          */
         private boolean borderlineHidden = true;
+    }
+
+    /**
+     * NSFW image screening (docs/moderation/image-moderation.md). Like the rest
+     * of this file these are bootstrap defaults: {@code image.*} keys in
+     * {@code moderation_settings} override the thresholds/fallback/enabled at
+     * runtime. The master {@link #enabled} switch above also gates this — with
+     * MODERATION_ENABLED=false no image is ever scored.
+     */
+    @Getter
+    @Setter
+    public static class Image {
+        private boolean enabled = true;
+        /** The scorer container (docker-compose: image-inference). */
+        private String baseUrl = "http://localhost:8002";
+        /** Shared secret sent as {@code X-API-Key}; must match IMAGE_INFERENCE_API_KEY. */
+        private String apiKey = "";
+        private long connectTimeoutMs = 1000;
+        /** Payloads are pre-scaled to thumbnails before sending, so calls are fast. */
+        private long timeoutMs = 4000;
+        private int maxAttempts = 2;
+        private long retryBackoffMs = 200;
+        private int circuitWindow = 20;
+        private int circuitFailureRatePercent = 50;
+        private long circuitOpenMs = 10_000;
+        /**
+         * At/above this nsfw score the upload is rejected outright. Tuned for
+         * precision: the target is pornographic/explicit content ONLY —
+         * portraits, beach photos, and other skin-adjacent-but-clothed images
+         * must pass. On this checkpoint real explicit content scores ≥0.95
+         * almost always, so 0.90 blocks porn while sparing borderline benign.
+         */
+        private double blockThreshold = 0.90;
+        /**
+         * At/above this (and below block) the image publishes but lands in the
+         * review queue. Kept high (narrow band) for the same precision goal —
+         * only near-miss explicit content deserves human minutes.
+         */
+        private double reviewThreshold = 0.80;
+        /**
+         * Longest edge the image is scaled down to before being base64'd to the
+         * scorer. The model resizes to 224×224 internally, so shipping a 5MB
+         * original buys nothing over a ~50KB thumbnail — this is the single
+         * biggest latency lever on the upload path. 0 sends originals verbatim.
+         */
+        private int prescaleMaxDim = 512;
+        /**
+         * What happens when the scorer is unreachable: {@code FAIL_OPEN_SHADOW}
+         * (default) publishes and queues the image for later review;
+         * {@code FAIL_CLOSED} refuses the upload with a 503. Fail-open by
+         * default because a scorer outage must not take image uploads down with
+         * it — flip to FAIL_CLOSED for a moderation-first posture.
+         */
+        private String fallback = FallbackPolicy.FAIL_OPEN_SHADOW.name();
+        /** Also screen the extracted poster frame of every uploaded video. */
+        private boolean scoreVideoPosters = true;
     }
 
     /** Roadmap §8.1 starting bands, used for any label yaml does not pin. */

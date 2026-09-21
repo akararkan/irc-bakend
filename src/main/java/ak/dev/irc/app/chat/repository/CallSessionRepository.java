@@ -29,6 +29,30 @@ public interface CallSessionRepository extends JpaRepository<CallSession, UUID> 
     List<CallSession> findByStatusAndStartedAtBefore(@Param("status") CallStatus status,
                                                      @Param("cutoff") Instant cutoff);
 
+    /**
+     * Single-round-trip fast path for the hot {@code signal()} relay: confirms in one
+     * query that (a) the call exists and is active ({@code status IN :activeStatuses}),
+     * (b) {@code fromUserId} has a participant row for this call, and (c) {@code toUserId}
+     * has a participant row for this call — mirroring {@code requireActiveCall} +
+     * {@code requireInvitee} + the recipient {@code findByCallIdAndUserId} lookup exactly,
+     * including that participant existence is state-agnostic (any {@code CallParticipant}
+     * row counts, not just JOINED). Returns the call's conversationId when all three hold;
+     * empty otherwise, in which case the caller must fall back to the three granular checks
+     * to surface the specific failure (call missing, call not active, fromUser not an
+     * invitee, or toUser not a participant).
+     */
+    @Query("""
+        SELECT c.conversationId FROM CallSession c
+        WHERE c.id = :callId
+          AND c.status IN :activeStatuses
+          AND EXISTS (SELECT 1 FROM CallParticipant p WHERE p.callId = c.id AND p.userId = :fromUserId)
+          AND EXISTS (SELECT 1 FROM CallParticipant p WHERE p.callId = c.id AND p.userId = :toUserId)
+        """)
+    Optional<UUID> findConversationIdForActiveSignal(@Param("callId") UUID callId,
+                                                       @Param("fromUserId") UUID fromUserId,
+                                                       @Param("toUserId") UUID toUserId,
+                                                       @Param("activeStatuses") Collection<CallStatus> activeStatuses);
+
     // ── Admin metadata browse + stats (chat-channels-live.md §4.8/§6) ─────
 
     @Query(value = """
@@ -66,4 +90,14 @@ public interface CallSessionRepository extends JpaRepository<CallSession, UUID> 
         GROUP BY c.type
         """)
     List<Object[]> countByTypeBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    /** Whole-conversation purge (ConversationPurgeJob): the session ids whose
+     *  participant rows must go first (CallParticipant carries only callId). */
+    @Query("SELECT c.id FROM CallSession c WHERE c.conversationId = :cid")
+    List<UUID> findIdsByConversationId(@Param("cid") UUID conversationId);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. */
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM CallSession c WHERE c.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

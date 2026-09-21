@@ -37,4 +37,14 @@ public interface ScheduledMessageRepository extends JpaRepository<ScheduledMessa
     List<ScheduledMessage> findByConversationIdAndSenderIdAndStatusOrderByScheduledAtAsc(
             @Param("conversationId") UUID conversationId, @Param("senderId") UUID senderId,
             @Param("status") ScheduledMessageStatus status);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only — a queued send-later
+     *  into a purged thread must die with it, not fire into a 404. */
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM ScheduledMessage m WHERE m.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
+
+    /** Retire veto: a DM with a queued send-later is not "fully walked away
+     *  from" — retiring it would strand the send as an invisible FAILURE. */
+    boolean existsByConversationIdAndStatus(UUID conversationId, ScheduledMessageStatus status);
 }

@@ -1,9 +1,18 @@
 # Media & Storage — Admin Dashboard Section
 
+> **Freshness (2026-08-23):** the convergence proposal in §3 (C1–C6) is now
+> **implemented** — every multipart surface routes through `MediaIngestService`
+> (`app/media`), images are multi-variant resized/EXIF-stripped in-request,
+> video transcodes to the 360→1080p ladder via the (previously dead)
+> `irc.queue.media.process` consumer, `media_assets` accounting covers all
+> uploads, and the dedup-delete hazard (leak L3) plus the post-delete R2 leak
+> are fixed. See **docs/media/pipeline.md** for the current architecture; the
+> "three paths" map below describes the pre-2026-08-23 state.
+
 Pipeline & storage operations for the admin dashboard. Builds on the media
-pipeline spec in [../settings/messaging-media.md](../../settings/messaging-media.md)
+pipeline spec in [../settings/messaging-media.md](../../../docs/settings/messaging-media.md)
 (§15 storage report, §20 upload/quality/compression) and the config reference in
-[../settings/config.md](../../settings/config.md). Sibling sections: sound library
+[../settings/config.md](../../../docs/settings/config.md). Sibling sections: sound library
 *approval* lives in [content-moderation.md](../trust-safety/content-moderation.md); queue/DLQ and
 dependency health in [operations.md](../platform/operations.md); the full log catalog in
 [logs-audit.md](../platform/logs-audit.md); metric conventions in
@@ -217,7 +226,7 @@ mutation writes an audit row via `AdminAuditor` → `AuditLogService.record`
 **Quotas [EXISTS]** (built 2026-08) — `media_quotas` stores per-role daily
 upload-count and byte budgets (`MediaQuota` + `MediaQuotaService`), enforced at
 upload-intent; breaches reuse the envelope in
-[../errors/error-handling.md](../../errors/error-handling.md)
+[../errors/error-handling.md](../../../docs/errors/error-handling.md)
 (`429 MEDIA_QUOTA_EXCEEDED`). Admin read/set via
 `GET /api/v1/admin/media/quotas` + `PUT /api/v1/admin/media/quotas/{role}`.
 

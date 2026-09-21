@@ -9,7 +9,7 @@ Concept docs: [notifications-email.md](../communication/notifications-email.md),
 
 **Conventions used below**
 
-- **Auth**: every route requires `Authorization: Bearer <JWT>`. Missing/expired token → `401`; insufficient role → `403 ACCESS_DENIED`. All errors arrive in the canonical envelope (`errorCode`, `message`, `traceId`, …) — see [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+- **Auth**: every route requires `Authorization: Bearer <JWT>`. Missing/expired token → `401`; insufficient role → `403 ACCESS_DENIED`. All errors arrive in the canonical envelope (`errorCode`, `message`, `traceId`, …) — see [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 - **Step-up**: endpoints marked *step-up required* (`@RequiresStepUp`) additionally need a fresh step-up marker, armed via `POST /api/v1/security/step-up` (password re-auth). Absent/expired marker → `403 STEP_UP_REQUIRED`.
 - **`@JsonInclude(NON_NULL)`** is the global Jackson default (`default-property-inclusion: non_null`): `null` fields are **omitted from JSON entirely** — treat every nullable field as optional.
 - **Timestamps** are `LocalDateTime` serialized as ISO-8601 local strings without zone (`"2026-08-07T09:14:02.113"`). Server clock is UTC.

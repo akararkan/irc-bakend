@@ -54,6 +54,7 @@ public class AccountLifecycleService {
     private final ak.dev.irc.app.user.repository.UserContactHashRepository contactHashRepo;
     private final ak.dev.irc.app.post.cassandra.repository.FriendSuggestionRepository friendSuggestionRepo;
     private final ak.dev.irc.app.user.repository.SuggestionDismissalRepository suggestionDismissalRepo;
+    private final ak.dev.irc.app.chat.repository.ConversationMemberRepository conversationMemberRepo;
     private final ak.dev.irc.app.admin.ops.JobRunRecorder jobRunRecorder;
     private final ak.dev.irc.app.admin.ops.JobPauseRegistry jobPause;
 
@@ -171,6 +172,15 @@ public class AccountLifecycleService {
                     ak.dev.irc.app.user.entity.UserContactHash.KIND_IDENTITY);
         });
         purgeQuietly("friend suggestions", () -> friendSuggestionRepo.clearForUser(userId));
+        /* Mark every chat membership deleted-for-me with the floor at the
+           conversation's head. Without this, the purged user's member rows
+           (deletedAt NULL) count forever as "someone who can still see" in the
+           conversation purge's eligibility — so a DM with a purged peer could
+           never be hard-deleted no matter what the surviving side did. */
+        purgeQuietly("chat memberships", () -> {
+            int marked = conversationMemberRepo.markAllDeletedForPurgedUser(userId, LocalDateTime.now());
+            log.info("[ACCOUNT-DELETE] user {} chat memberships marked deleted-for-me: {}", userId, marked);
+        });
         purgeQuietly("suggestion dismissals", () -> {
             var dismissed = suggestionDismissalRepo.findDismissedCandidateIds(userId);
             dismissed.forEach(candidateId -> suggestionDismissalRepo.deleteById(

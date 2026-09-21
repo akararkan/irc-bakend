@@ -49,6 +49,13 @@ public interface MessageByConversationRepository
                                                 @Param("after") long after,
                                                 @Param("limit") int limit);
 
+    /** Full-PK point read (media ready write-back rewrites the frozen media list). */
+    @Query("SELECT * FROM messages_by_conversation " +
+           "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")
+    java.util.Optional<MessageByConversationEntity> pointRead(@Param("cid") UUID conversationId,
+                                                              @Param("bucket") int bucket,
+                                                              @Param("messageId") long messageId);
+
     /** Stamped once the message has actually been fanned out — see the entity field. */
     @Query("UPDATE messages_by_conversation SET delivered = :delivered " +
            "WHERE conversation_id = :cid AND bucket = :bucket AND message_id = :messageId")

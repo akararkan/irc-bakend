@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -51,6 +52,17 @@ public class LiveStreamFanoutService {
     private final UserFollowRepository         userFollowRepo;
     private final CassandraNotificationService notificationService;
     private final ChatRealtimeBroadcaster      broadcaster;
+    /**
+     * Bounded shared pool (AsyncConfig) that per-follower notification
+     * submissions run on — NOT {@code parallelStream()}, whose ForkJoin
+     * common pool is JVM-wide: hundreds of concurrent submissions there
+     * would starve every other parallel stream in the process (the same
+     * hazard {@code FeedTimelineService} documents for its fan-out write
+     * path). {@code deliverAsync} is itself {@code @Async}, so this just
+     * gets the up-to-500 per-batch submissions off the scanning thread
+     * without serializing them.
+     */
+    private final ThreadPoolTaskExecutor       taskExecutor;
 
     /**
      * @param publicStream the PUBLIC {@code LiveStreamResponse} (built with
@@ -95,17 +107,21 @@ public class LiveStreamFanoutService {
                 log.debug("[LIVE] realtime stream.started batch failed: {}", e.getMessage());
             }
 
-            // Persisted inbox notification per follower. deliverAsync is itself
-            // @Async (runs on the shared taskExecutor) and internally suppresses
-            // self + blocked pairs, so no extra filtering or wrapping is needed.
+            // Persisted inbox notification per follower, submitted to the bounded
+            // taskExecutor so up to 500 submissions per batch don't serialize on
+            // the scanning thread. deliverAsync is itself @Async (runs on the same
+            // shared pool) and internally suppresses self + blocked pairs, so no
+            // extra filtering or wrapping is needed.
             for (UUID followerId : batch) {
-                try {
-                    notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
-                            followerId, NotificationKind.STREAM_STARTED,
-                            title, body, hostId, "LiveStream", streamId, groupKey));
-                } catch (Exception e) {
-                    log.debug("[LIVE] notify follower {} skipped: {}", followerId, e.getMessage());
-                }
+                taskExecutor.execute(() -> {
+                    try {
+                        notificationService.deliverAsync(new CassandraNotificationService.DeliverRequest(
+                                followerId, NotificationKind.STREAM_STARTED,
+                                title, body, hostId, "LiveStream", streamId, groupKey));
+                    } catch (Exception e) {
+                        log.debug("[LIVE] notify follower {} skipped: {}", followerId, e.getMessage());
+                    }
+                });
             }
 
             total += batch.size();

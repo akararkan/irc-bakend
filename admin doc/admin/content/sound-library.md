@@ -29,7 +29,7 @@ files themselves in [media-storage.md](media-storage.md).
 | Approval queue (canonical spec; queue-workflow view mirrored in [content-moderation.md](../trust-safety/content-moderation.md) §2.6) | Where the audio bytes are stored / CDN / transcode → [media-storage.md](media-storage.md) |
 | Full state machine incl. the missing reject / archive / takedown transitions | Trending **algorithm** knobs shared with feed → [search-feed-trending.md](../platform/search-feed-trending.md) |
 | Category curation (the 6 `SoundCategory` values) | Reel/post/story moderation that *uses* a sound → [content-moderation.md](../trust-safety/content-moderation.md) |
-| Official / platform ("PLATFORM_MUSIC") sound seeding | Per-user muted-word blocklist → [../settings/privacy.md](../../settings/privacy.md) |
+| Official / platform ("PLATFORM_MUSIC") sound seeding | Per-user muted-word blocklist → [../settings/privacy.md](../../../docs/settings/privacy.md) |
 | Trending-sounds board + per-sound blast-radius | ES index registry & the reindex hooks → [search-feed-trending.md](../platform/search-feed-trending.md) |
 | Uploader reputation (approval ratio, serial-reupload flags) | |
 | **Rights / copyright / DMCA takedown** (Facebook Rights-Manager analog) | |

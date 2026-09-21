@@ -94,8 +94,10 @@ and reads the caller via `SecurityUtils.requireCurrentUserId()`.
 | POST | `/api/v1/security/recovery-codes/regenerate` | — | **step-up required** |
 | GET | `/api/v1/security/login-history` | — | paged |
 | POST | `/api/v1/security/step-up` | `{password}` or `{code}` | arm step-up window |
-| POST | `/api/v1/security/phone/request` | `{phone}` | 202 |
+| POST | `/api/v1/security/phone/request` | `{phone}` | 202 — code goes to the account **email** (no SMS gateway) |
 | POST | `/api/v1/security/phone/verify` | `{phone,code}` | bind phone |
+| POST | `/api/v1/security/email/request` | **none** | 202 — destination is the account address, never client-supplied |
+| POST | `/api/v1/security/email/verify` | `{code}` | sets `emailVerifiedAt` → `{verified,email}` |
 
 ## Media — `MediaUploadController` `/api/v1/media`
 | Method | Path | Body | Note |

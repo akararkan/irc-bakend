@@ -21,6 +21,8 @@ public final class SecurityMessages {
     public static final String PHONE_REQUIRED       = "PHONE_REQUIRED";
     public static final String PHONE_INVALID        = "PHONE_INVALID";
     public static final String PHONE_ALREADY_BOUND  = "PHONE_ALREADY_BOUND";
+    public static final String EMAIL_ALREADY_VERIFIED = "EMAIL_ALREADY_VERIFIED";
+    public static final String EMAIL_MISSING        = "EMAIL_MISSING";
     public static final String STEP_UP_BAD_PASSWORD = "STEP_UP_BAD_PASSWORD";
     public static final String STEP_UP_REQUIRED     = "STEP_UP_REQUIRED";
     public static final String MFA_REQUIRED          = "MFA_REQUIRED";
@@ -56,6 +58,11 @@ public final class SecurityMessages {
             "Phone number is not a valid E.164 length.";
     public static final String PHONE_ALREADY_BOUND_MSG =
             "This phone number is already verified on another account.";
+    public static final String EMAIL_ALREADY_VERIFIED_MSG =
+            "Your email address is already verified.";
+    /** {@code EMAIL_MISSING} — phone-primary account with no address to send to. */
+    public static final String EMAIL_MISSING_MSG =
+            "There is no email address on this account to verify.";
     public static final String STEP_UP_BAD_PASSWORD_MSG =
             "Password is incorrect.";
     public static final String STEP_UP_REQUIRED_MSG =
@@ -80,4 +87,11 @@ public final class SecurityMessages {
     /** OTP SMS body — args: code, minutes-to-expiry. */
     public static final String NOTIF_OTP_SMS =
             "Your IRC verification code is %s. It expires in %s minutes.";
+    /** Subject line of the email-verification code message. */
+    public static final String EMAIL_VERIFY_SUBJECT =
+            "Your IRC verification code";
+    /** Email-verification body — args: code, minutes-to-expiry. */
+    public static final String EMAIL_VERIFY_BODY =
+            "Your verification code is %s. It expires in %s minutes. "
+                    + "If you didn't request this, you can ignore this email.";
 }

@@ -20,8 +20,8 @@ Tag legend and ground rules: [README.md](../README.md). Underlying mechanics:
 `settings/discovery/*`, `settings/contacts/*`. Related:
 [safety-reports.md](../trust-safety/safety-reports.md) (consent evidence, blocking, abuse),
 [users-roles.md](directory-and-roles.md) (per-user discovery state),
-[../suggestions/algorithm.md](../../suggestions/algorithm.md) (the algorithm itself),
-[../settings/README.md](../../settings/README.md) (user-facing privacy controls).
+[../suggestions/algorithm.md](../../../docs/suggestions/algorithm.md) (the algorithm itself),
+[../settings/README.md](../../../docs/settings/README.md) (user-facing privacy controls).
 
 Status legend: **[EXISTS]** = real today · **[PARTIAL]** = primitive exists, surface
 missing · **[PLANNED]** = proposed here.
@@ -187,7 +187,7 @@ their contacts" lookup (would weaponize the hash graph).
 
 - **Contact hashes** (`UserContactHash`) and **suggestion rows** (`FriendSuggestionEntity`)
   are **personal data** — they must be dropped in the account-purge cascade
-  ([../settings/data-export-deletion.md](../../settings/data-export-deletion.md)). Verify
+  ([../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md)). Verify
   this is wired; if not, it's a GDPR gap. **[PLANNED verification]**
 - **Consent events** are the legal evidence for contact-sync — append-only, never
   edited, surfaced read-only ([logs-audit.md](../platform/logs-audit.md) §3.5).

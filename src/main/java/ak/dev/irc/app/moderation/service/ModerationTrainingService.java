@@ -53,10 +53,20 @@ public class ModerationTrainingService {
      * A bare word is a weak signal for a sentence-level classifier, so §12.3
      * wraps it into short template sentences. The raw word is still stored for
      * the blocklist layer, which is the instant lever; this is the slow one.
+     *
+     * <p>The templates span the three languages the platform actually serves.
+     * A Kurdish or Arabic slur wrapped only in {@code "You are a %s."} teaches
+     * the classifier the term in a sentence frame it will never meet in
+     * production; the vocative forms below are the frames these words really
+     * appear in. Both use a vocative/demonstrative construction rather than a
+     * copula so they stay grammatical whatever the term ends in.</p>
      */
     private static final List<String> WORD_TEMPLATES = List.of(
             "You are a %s.",
             "What a %s.",
+            "ئەی %s.",
+            "ئەم کەسە %sە.",
+            "يا %s.",
             "%s");
 
     private final ModerationTrainingExampleRepository exampleRepository;

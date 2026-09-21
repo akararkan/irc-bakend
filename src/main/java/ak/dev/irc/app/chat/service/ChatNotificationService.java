@@ -4,12 +4,17 @@ import ak.dev.irc.app.common.messages.ChatMessages;
 import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService;
 import ak.dev.irc.app.post.cassandra.service.CassandraNotificationService.DeliverRequest;
+import ak.dev.irc.app.settings.notification.push.PushNotifier;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -33,6 +38,7 @@ public class ChatNotificationService {
 
     private final CassandraNotificationService notifications;
     private final UserRepository               userRepository;
+    private final PushNotifier                 pushNotifier;
 
     /** New message → the recipient's bell (used for offline / backgrounded recipients). */
     public void notifyNewMessage(UUID recipientId, UUID senderId, UUID conversationId,
@@ -168,6 +174,50 @@ public class ChatNotificationService {
                 null,
                 "Channel", channelId,
                 "CHANNEL_JOIN_APPROVED:" + channelId + ":" + userId));
+    }
+
+    /**
+     * A call is RINGING — push the callees' devices directly. The SSE
+     * {@code CALL_INCOMING} frame only reaches a foregrounded app; a
+     * backgrounded or killed one learns about the ring from this push. It is a
+     * DIRECT push, not a pipeline event: no inbox row exists at ring time
+     * (the bell only ever shows {@code CALL_MISSED}), and it deliberately
+     * skips the preference matrix and DND — a ring is ephemeral, and a callee
+     * asleep through it simply gets the DND-honouring missed-call bell later.
+     * The {@code href} opens the mobile incoming-call screen
+     * ({@code /call/&lt;callId&gt;/incoming}), which re-reads everything from
+     * {@code calls.get} so a cold tap works.
+     *
+     * <p>Async: resolving the caller's name and the provider round-trip must
+     * not sit inside {@code CallService.initiate}'s response time.</p>
+     */
+    @Async
+    public void notifyIncomingCall(List<UUID> memberIds, UUID callerId, UUID conversationId,
+                                   UUID callId, boolean video) {
+        String caller = userRepository.findById(callerId)
+                .map(u -> StringUtils.hasText(u.getFullName()) && !u.getFullName().isBlank()
+                        ? u.getFullName().trim()
+                        : "@" + u.getUsername())
+                .orElse("Someone");
+
+        String body = video ? "Incoming video call" : "Incoming voice call";
+
+        Map<String, String> data = new HashMap<>();
+        data.put("type", "CALL_INCOMING");
+        data.put("href", "/call/" + callId + "/incoming");
+        data.put("callId", callId.toString());
+        data.put("conversationId", conversationId.toString());
+        data.put("callType", video ? "VIDEO" : "VOICE");
+        /* This push is data-only (see deliverDirectAsync below) — there is no
+           notification block for the client to read title/body from, so both
+           travel inside data instead. */
+        data.put("title", caller);
+        data.put("body", body);
+
+        for (UUID uid : memberIds) {
+            if (uid.equals(callerId)) continue;
+            pushNotifier.deliverDirectAsync(uid, caller, body, data, PushNotifier.CHANNEL_CALLS, true);
+        }
     }
 
     private static String truncate(String s, int max) {

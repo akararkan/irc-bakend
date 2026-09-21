@@ -100,18 +100,33 @@ public class ConversationMember extends BaseAuditEntity {
     private boolean archived = false;
 
     /**
-     * "Delete conversation for me" high-water mark. When &gt; 0, the caller cleared
-     * the thread at this Snowflake message id: everything up to and including it is
-     * hidden on their side, the conversation drops out of both the inbox and the
-     * archived list, and it re-surfaces (showing only the new messages) once the
-     * peer sends a message with a larger id. 0 = never cleared. The
-     * {@code columnDefinition} default lets {@code ddl-auto=update} add the column
-     * to an existing table and back-fill old rows to 0.
+     * Per-user clear point ("clear chat" / "delete for me") as a Snowflake
+     * high-water mark. When &gt; 0, everything up to and including this message id
+     * is hidden on this member's side — every read path floors at it. 0 = never
+     * cleared. Whether the ROW also disappears from the inbox is a separate axis:
+     * see {@link #deletedAt}. The {@code columnDefinition} default lets
+     * {@code ddl-auto=update} add the column to an existing table and back-fill
+     * old rows to 0.
      */
     @Column(name = "cleared_before_message_id", nullable = false,
             columnDefinition = "bigint not null default 0")
     @Builder.Default
     private long clearedBeforeMessageId = 0L;
+
+    /**
+     * "Delete conversation for me" visibility flag. Non-null = the caller deleted
+     * their copy: the row drops out of both the inbox and the archived list and
+     * re-surfaces (showing only newer messages) once a message with an id above
+     * {@link #clearedBeforeMessageId} arrives. Null = listed normally — which is
+     * how "clear chat" differs from delete: clear advances the floor but leaves
+     * this null, so the emptied row keeps its place in the inbox. Existing rows
+     * that were deleted-for-me under the old single-column scheme must be
+     * back-filled ({@code UPDATE conversation_members SET deleted_at = updated_at
+     * WHERE cleared_before_message_id > 0}) or they pop back into inboxes as
+     * empty rows.
+     */
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
 
     @Column(name = "joined_at", nullable = false, updatable = false)
     @Builder.Default

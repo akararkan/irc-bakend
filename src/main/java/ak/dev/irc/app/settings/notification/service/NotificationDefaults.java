@@ -29,7 +29,10 @@ public final class NotificationDefaults {
     public static boolean defaultEnabled(String eventType, NotificationChannel channel) {
         if (bypasses(eventType)) return true;
         return switch (channel) {
-            case IN_APP, DESKTOP, PUSH -> true;   // free, expected
+            case IN_APP, DESKTOP -> true;          // free, expected
+            // Spec §8: PUSH on for everything EXCEPT the trending digest — a
+            // daily editorial roundup should never buzz a phone by default.
+            case PUSH  -> !"TRENDING_DIGEST".equalsIgnoreCase(eventType);
             case EMAIL -> true;                    // on by default, user can mute
             case SMS   -> false;                   // costs money — opt-in only
         };

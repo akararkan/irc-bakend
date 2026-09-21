@@ -178,8 +178,8 @@ for your own profile or anyone else's.
 | `reelCount` | Cassandra `posts_by_author` | Live posts with `post_type = REEL` |
 | `researchCount` | Postgres `researches` | `PUBLISHED`, not soft-deleted |
 | `questionCount` | Postgres `questions` | Not soft-deleted |
-| `followerCount` | Postgres `user_follows` | — |
-| `followingCount` | Postgres `user_follows` | — |
+| `followerCount` | Postgres `user_follows` | Soft-deleted followers are **not** counted — the same rule `GET /{id}/followers` applies to its rows and `totalElements`, so the number and the list always agree |
+| `followingCount` | Postgres `user_follows` | Likewise excludes followed accounts that were soft-deleted (mirrors `GET /{id}/following`) |
 
 Each count is isolated — if one store is briefly unavailable that field
 degrades to `0` instead of failing the whole row. The denormalized counter

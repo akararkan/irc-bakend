@@ -243,6 +243,12 @@ public class ContentModerationService {
             log.debug("[MODERATION] rescore skipped — case {} is gone", caseId);
             return null;
         }
+        if (moderationCase.getEntityType() == ModeratedEntityType.MEDIA_IMAGE) {
+            // Image cases hold a URL, not text — "rescoring" one would send that
+            // URL through the TEXT model, which scores it clean and quietly
+            // auto-approves a flagged image. Only a human decides these.
+            return moderationCase.getStatus();
+        }
         if (moderationCase.getStatus() != ModerationStatus.PENDING && !neverScored(moderationCase)) {
             // Already decided by another attempt, the sweeper, or an admin.
             applyIfNeeded(moderationCase);
@@ -267,6 +273,9 @@ public class ContentModerationService {
 
         try {
             List<ModerationInferenceClient.BatchItem> items = moderationCase.getFields().stream()
+                    // Same word-floor as the inline path: unsent → result==null
+                    // → APPROVE below, with the stored blocklist flag still merged.
+                    .filter(field -> modelScorable(field.getText()))
                     .map(field -> new ModerationInferenceClient.BatchItem(
                             field.getId().toString(), field.getText()))
                     .toList();
@@ -519,6 +528,21 @@ public class ContentModerationService {
      * {@link FieldDecision} here rather than propagating its exception — this
      * pipeline records the rejection before refusing.
      */
+    /**
+     * True when the text is long enough for the model's answer to mean anything.
+     * Measured on artifact v4 (2026-09-01): 1–3-word inputs score as noise —
+     * unseen English words collapse to one constant vector and short benign
+     * Kurdish greetings score 0.99+, indistinguishable from real slurs. Below
+     * the floor the blocklist is the only screen, which is exactly the §8.2
+     * division of labour for short strings.
+     */
+    private boolean modelScorable(String text) {
+        int floor = settings.minScorableWords();
+        if (floor <= 0) return true;
+        if (text == null || text.isBlank()) return false;
+        return text.trim().split("\\s+").length >= floor;
+    }
+
     private Map<String, FieldDecision> screenBlocklist(ModerationSubmission submission) {
         Map<String, FieldDecision> byField = new LinkedHashMap<>();
         for (ModerationTextField field : submission.textFields()) {
@@ -554,7 +578,14 @@ public class ContentModerationService {
         List<ModerationTextField> fields = submission.textFields();
         List<ModerationInferenceClient.BatchItem> items = new ArrayList<>(fields.size());
         for (ModerationTextField field : fields) {
-            items.add(new ModerationInferenceClient.BatchItem(field.name(), field.text()));
+            // Sub-floor fields are never sent: the model emits noise below the
+            // word floor (see ModerationProperties#minScorableWords) and scoring
+            // noise against bands only manufactures false holds. The blocklist
+            // decision for them is already in `blocklist` and still merges below;
+            // absent from `items` → result==null → APPROVE.
+            if (modelScorable(field.text())) {
+                items.add(new ModerationInferenceClient.BatchItem(field.name(), field.text()));
+            }
         }
 
         Duration budget = settings.inlineBudget(type);

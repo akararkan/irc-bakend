@@ -18,9 +18,14 @@ import java.util.UUID;
  * (getting a presigned PUT URL), PUTs the bytes directly to storage, then calls
  * complete to trigger server-side re-encode/downscale. The tier hint arrives as
  * {@code X-Media-Tier} so the backend never produces renditions above it.
+ *
+ * <p>Mounted at {@code /api/v1/media/assets} — the bare {@code /api/v1/media/{id}}
+ * mapping used to shadow single-segment object keys on the public media proxy
+ * ({@code /api/v1/media/**}). Moved outright: no client had adopted the intent
+ * flow yet, so there is nothing to alias.</p>
  */
 @RestController
-@RequestMapping("/api/v1/media")
+@RequestMapping("/api/v1/media/assets")
 @RequiredArgsConstructor
 @PreAuthorize("isAuthenticated()")
 public class MediaUploadController {

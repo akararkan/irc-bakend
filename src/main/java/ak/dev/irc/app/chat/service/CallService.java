@@ -49,6 +49,9 @@ public class CallService {
     /** How long a call may ring unanswered before the sweep marks it MISSED. */
     private static final Duration RING_TIMEOUT = Duration.ofSeconds(60);
 
+    /** Statuses under which a call is considered active — mirrors {@link CallSession#isActive()}. */
+    private static final List<CallStatus> ACTIVE_CALL_STATUSES = List.of(CallStatus.RINGING, CallStatus.ONGOING);
+
     private final CallSessionRepository callRepo;
     private final CallParticipantRepository participantRepo;
     private final ConversationRepository conversationRepo;
@@ -56,6 +59,7 @@ public class CallService {
     private final ChatRelationshipService relationships;
     private final ChatRealtimeBroadcaster broadcaster;
     private final ChatNotificationService chatNotifications;
+    private final CallSignalRouteCache routeCache;
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -93,9 +97,21 @@ public class CallService {
             }
         }
         participantRepo.saveAll(ring);
+        // Prime the signal route cache so even the first OFFER frame skips the DB.
+        routeCache.primeAfterCommit(call.getId(), conversationId,
+                ring.stream().map(CallParticipant::getUserId).toList());
 
-        CallResponse resp = toResponse(call);
+        CallResponse resp = toResponse(call, ring);
         broadcaster.broadcastExcept(members, initiatorId, event(ChatRealtimeEventType.CALL_INCOMING, resp));
+        // Ring the callees' phones too — SSE only reaches a foregrounded app.
+        // Direct push (calls_v1 channel, deep link to the incoming screen),
+        // async, and never allowed to fail the initiate.
+        try {
+            chatNotifications.notifyIncomingCall(members, initiatorId, conversationId,
+                    call.getId(), type == CallType.VIDEO);
+        } catch (Exception e) {
+            log.debug("[CALL] incoming-call push skipped: {}", e.getMessage());
+        }
         return resp;
     }
 
@@ -129,11 +145,12 @@ public class CallService {
 
         boolean direct = isDirect(call);
         // A 1:1 decline ends the call; a group decline just drops that invitee.
-        if (direct || !anyoneEngaged(call)) {
+        List<CallParticipant> parts = participantRepo.findByCallId(callId);
+        if (direct || !anyoneEngaged(parts)) {
             endCall(call, CallStatus.DECLINED, "declined");
         } else {
             broadcaster.broadcast(memberRepo.findActiveMemberIds(call.getConversationId()),
-                    event(ChatRealtimeEventType.CALL_DECLINED, toResponse(call), userId));
+                    event(ChatRealtimeEventType.CALL_DECLINED, toResponse(call, parts), userId));
         }
     }
 
@@ -150,28 +167,57 @@ public class CallService {
 
         boolean direct = isDirect(call);
         boolean initiatorCancelled = call.getStatus() == CallStatus.RINGING && userId.equals(call.getInitiatorId());
-        if (direct || initiatorCancelled || !anyoneEngaged(call)) {
+        List<CallParticipant> parts = participantRepo.findByCallId(callId);
+        if (direct || initiatorCancelled || !anyoneEngaged(parts)) {
             endCall(call, initiatorCancelled ? CallStatus.CANCELLED : CallStatus.ENDED,
                     initiatorCancelled ? "cancelled" : "hung_up");
         } else {
             broadcaster.broadcast(memberRepo.findActiveMemberIds(call.getConversationId()),
-                    event(ChatRealtimeEventType.CALL_PARTICIPANT, toResponse(call), userId));
+                    event(ChatRealtimeEventType.CALL_PARTICIPANT, toResponse(call, parts), userId));
         }
     }
 
-    /** Relay a WebRTC OFFER/ANSWER/ICE frame to one peer in the call (blind relay). */
-    @Transactional(readOnly = true)
+    /** Relay a WebRTC OFFER/ANSWER/ICE frame to one peer in the call (blind relay).
+     *  Hottest path in the calls feature (fires per SDP/ICE frame — dozens of
+     *  times per call setup), so the steady state is pure in-memory: the route
+     *  cache resolves conversation + participants with no transaction and no DB
+     *  round-trip, and the Redis publish happens immediately (nothing to await
+     *  a commit for). Deliberately NOT {@code @Transactional} — acquiring a
+     *  connection per ICE frame is exactly the overhead this path avoids. */
     public void signal(UUID callId, UUID fromUserId, CallSignalRequest req) {
-        CallSession call = requireActiveCall(callId);
-        requireInvitee(call, fromUserId);
-        participantRepo.findByCallIdAndUserId(callId, req.getToUserId())
-                .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.CALL_TARGET_NOT_IN_CALL_MSG));
+        UUID conversationId = resolveSignalRoute(callId, fromUserId, req.getToUserId());
         CallSignalMessage msg = new CallSignalMessage(callId, fromUserId, req.getKind().name(), req.getPayload());
         broadcaster.broadcastTo(req.getToUserId(), ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.CALL_SIGNAL)
-                .conversationId(call.getConversationId())
+                .conversationId(conversationId)
                 .signal(msg)
                 .build());
+    }
+
+    /** Fast path: cached route (primed at initiate, TTL-refreshed here). Cache miss —
+     *  first frame after a restart/TTL expiry, or an invalid signal — validates with
+     *  one combined query, falling back to the granular checks purely to surface the
+     *  correct specific exception, then re-primes the cache. A cached route whose
+     *  participant set doesn't contain both users also takes the DB path, so a
+     *  non-participant can never ride a warm cache. */
+    private UUID resolveSignalRoute(UUID callId, UUID fromUserId, UUID toUserId) {
+        CallSignalRouteCache.Route route = routeCache.get(callId);
+        if (route != null
+                && route.participantIds().contains(fromUserId)
+                && route.participantIds().contains(toUserId)) {
+            return route.conversationId();
+        }
+        UUID conversationId = callRepo.findConversationIdForActiveSignal(
+                        callId, fromUserId, toUserId, ACTIVE_CALL_STATUSES)
+                .orElseGet(() -> {
+                    CallSession call = requireActiveCall(callId);
+                    requireInvitee(call, fromUserId);
+                    participantRepo.findByCallIdAndUserId(callId, toUserId)
+                            .orElseThrow(() -> new BadRequestException(ChannelStreamMessages.CALL_TARGET_NOT_IN_CALL_MSG));
+                    return call.getConversationId();
+                });
+        routeCache.put(callId, conversationId, participantRepo.findUserIdsByCallId(callId));
+        return conversationId;
     }
 
     @Transactional(readOnly = true)
@@ -201,21 +247,24 @@ public class CallService {
         call.setEndedAt(Instant.now());
         call.setEndReason(reason);
         callRepo.save(call);
+        // Immediate + safe: a rolled-back end just re-primes on the next signal miss.
+        routeCache.invalidate(call.getId());
+        List<CallParticipant> parts = participantRepo.findByCallId(call.getId());
         broadcaster.broadcast(memberRepo.findActiveMemberIds(call.getConversationId()),
-                event(ChatRealtimeEventType.CALL_ENDED, toResponse(call)));
+                event(ChatRealtimeEventType.CALL_ENDED, toResponse(call, parts)));
         // A ring that ended unanswered — rang out (MISSED) or the caller hung up
         // while still ringing (CANCELLED) — leaves a "missed call" bell row for
         // every invitee who never engaged. DECLINED/ENDED invitees saw the call.
         if (status == CallStatus.MISSED || status == CallStatus.CANCELLED) {
-            notifyMissedInvitees(call);
+            notifyMissedInvitees(call, parts);
         }
     }
 
     /** One CALL_MISSED bell per still-INVITED participant; aggregated per
      *  conversation downstream ("3 missed calls from @alice"). */
-    private void notifyMissedInvitees(CallSession call) {
+    private void notifyMissedInvitees(CallSession call, List<CallParticipant> parts) {
         boolean video = call.getType() == CallType.VIDEO;
-        for (CallParticipant p : participantRepo.findByCallId(call.getId())) {
+        for (CallParticipant p : parts) {
             if (p.getState() == CallParticipantState.INVITED
                     && !p.getUserId().equals(call.getInitiatorId())) {
                 try {
@@ -228,9 +277,8 @@ public class CallService {
         }
     }
 
-    private boolean anyoneEngaged(CallSession call) {
-        return participantRepo.findByCallId(call.getId()).stream()
-                .anyMatch(p -> p.getState() == CallParticipantState.JOINED);
+    private static boolean anyoneEngaged(List<CallParticipant> parts) {
+        return parts.stream().anyMatch(p -> p.getState() == CallParticipantState.JOINED);
     }
 
     private boolean isDirect(CallSession call) {
@@ -278,7 +326,11 @@ public class CallService {
     }
 
     private CallResponse toResponse(CallSession call) {
-        List<CallParticipantResponse> parts = participantRepo.findByCallId(call.getId()).stream()
+        return toResponse(call, participantRepo.findByCallId(call.getId()));
+    }
+
+    private CallResponse toResponse(CallSession call, List<CallParticipant> participants) {
+        List<CallParticipantResponse> parts = participants.stream()
                 .map(p -> new CallParticipantResponse(p.getUserId(), p.getState().name(), p.getJoinedAt(), p.getLeftAt()))
                 .toList();
         return new CallResponse(call.getId(), call.getConversationId(), call.getInitiatorId(),

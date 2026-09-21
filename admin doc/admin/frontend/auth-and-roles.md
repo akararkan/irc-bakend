@@ -57,12 +57,12 @@ A 403 from an admin route means one of two things; the error envelope's
    this" state; do **not** loop into the step-up modal.
 
 Error responses across the whole API use the canonical envelope documented in
-[../errors/error-handling.md](../../errors/error-handling.md) — parse
+[../errors/error-handling.md](../../../docs/errors/error-handling.md) — parse
 `errorCode` + `message` from there; the frontend consumption patterns (retry
 rules, step-up modal, 429 countdowns, SSE reconnects) are in
-[../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md),
+[../errors/frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md),
 and user-facing strings are catalogued in
-[../errors/user-facing-messages.md](../../errors/user-facing-messages.md).
+[../errors/user-facing-messages.md](../../../docs/errors/user-facing-messages.md).
 
 ---
 

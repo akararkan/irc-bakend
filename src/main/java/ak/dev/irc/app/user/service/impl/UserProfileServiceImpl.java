@@ -46,6 +46,7 @@ public class UserProfileServiceImpl implements UserProfileService {
     private final TopicRepository       topicRepository;
     private final UserMapper            userMapper;
     private final S3StorageService      s3;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final ak.dev.irc.app.user.search.service.UserSearchService userSearch;
     private final ak.dev.irc.app.admin.analytics.FunnelTracker funnelTracker;
 
@@ -136,17 +137,19 @@ public class UserProfileServiceImpl implements UserProfileService {
         validateImage(image);
 
         UserProfile profile = findProfileOrThrow(myId);
-        deleteS3Object(profile.getAvatarS3Key());
+        deleteOldMedia(profile.getAvatarMediaId(), profile.getAvatarS3Key());
 
-        String s3Key  = s3.upload(image, AVATAR_PREFIX + "/" + myId);
-        String url    = s3.getPublicUrl(s3Key);
-        profile.setAvatarUrl(url);
-        profile.setAvatarS3Key(s3Key);
-        profile.audit(AuditAction.UPLOAD, "Avatar uploaded: " + s3Key);
+        var result = mediaIngest.ingest(image,
+                ak.dev.irc.app.media.enums.MediaSurface.AVATAR, myId, AVATAR_PREFIX + "/" + myId);
+        profile.setAvatarUrl(result.url());
+        profile.setAvatarS3Key(result.storageKey());
+        profile.setAvatarMediaId(result.assetId());
+        profile.setAvatarThumbUrl(result.thumbnailUrl());
+        profile.audit(AuditAction.UPLOAD, "Avatar uploaded: " + result.storageKey());
         profileRepository.save(profile);
         funnelTracker.markProfileCompleted(myId);
 
-        log.info("User [{}] avatar uploaded — s3Key='{}'", myId, s3Key);
+        log.info("User [{}] avatar uploaded — s3Key='{}'", myId, result.storageKey());
         return userMapper.toResponse(profile.getUser(), true);
     }
 
@@ -155,9 +158,11 @@ public class UserProfileServiceImpl implements UserProfileService {
     public UserResponse removeAvatar() {
         UUID myId = authenticatedUserId();
         UserProfile profile = findProfileOrThrow(myId);
-        deleteS3Object(profile.getAvatarS3Key());
+        deleteOldMedia(profile.getAvatarMediaId(), profile.getAvatarS3Key());
         profile.setAvatarUrl(null);
         profile.setAvatarS3Key(null);
+        profile.setAvatarMediaId(null);
+        profile.setAvatarThumbUrl(null);
         profile.audit(AuditAction.UPDATE, "Avatar removed");
         profileRepository.save(profile);
         return userMapper.toResponse(profile.getUser(), true);
@@ -174,16 +179,17 @@ public class UserProfileServiceImpl implements UserProfileService {
         validateImage(image);
 
         UserProfile profile = findProfileOrThrow(myId);
-        deleteS3Object(profile.getCoverImageS3Key());
+        deleteOldMedia(profile.getCoverMediaId(), profile.getCoverImageS3Key());
 
-        String s3Key = s3.upload(image, COVER_PREFIX + "/" + myId);
-        String url   = s3.getPublicUrl(s3Key);
-        profile.setCoverImageUrl(url);
-        profile.setCoverImageS3Key(s3Key);
-        profile.audit(AuditAction.UPLOAD, "Cover uploaded: " + s3Key);
+        var result = mediaIngest.ingest(image,
+                ak.dev.irc.app.media.enums.MediaSurface.PROFILE_COVER, myId, COVER_PREFIX + "/" + myId);
+        profile.setCoverImageUrl(result.url());
+        profile.setCoverImageS3Key(result.storageKey());
+        profile.setCoverMediaId(result.assetId());
+        profile.audit(AuditAction.UPLOAD, "Cover uploaded: " + result.storageKey());
         profileRepository.save(profile);
 
-        log.info("User [{}] cover uploaded — s3Key='{}'", myId, s3Key);
+        log.info("User [{}] cover uploaded — s3Key='{}'", myId, result.storageKey());
         return userMapper.toResponse(profile.getUser(), true);
     }
 
@@ -192,9 +198,10 @@ public class UserProfileServiceImpl implements UserProfileService {
     public UserResponse removeCover() {
         UUID myId = authenticatedUserId();
         UserProfile profile = findProfileOrThrow(myId);
-        deleteS3Object(profile.getCoverImageS3Key());
+        deleteOldMedia(profile.getCoverMediaId(), profile.getCoverImageS3Key());
         profile.setCoverImageUrl(null);
         profile.setCoverImageS3Key(null);
+        profile.setCoverMediaId(null);
         profile.audit(AuditAction.UPDATE, "Cover removed");
         profileRepository.save(profile);
         return userMapper.toResponse(profile.getUser(), true);
@@ -269,6 +276,15 @@ public class UserProfileServiceImpl implements UserProfileService {
             s3.delete(s3Key);
         } catch (Exception e) {
             log.warn("Failed to delete S3 object '{}': {}", s3Key, e.getMessage());
+        }
+    }
+
+    /** Replace/remove cleanup: pipeline assets delete by id (all renditions), legacy by key. */
+    private void deleteOldMedia(UUID mediaId, String s3Key) {
+        if (mediaId != null) {
+            mediaIngest.deleteAsset(mediaId);
+        } else {
+            deleteS3Object(s3Key);
         }
     }
 }

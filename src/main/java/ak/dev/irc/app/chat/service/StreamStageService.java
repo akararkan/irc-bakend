@@ -30,6 +30,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -80,6 +82,7 @@ public class StreamStageService {
     private final UserRepository userRepository;
     private final RateLimiter rateLimiter;
     private final MediaControlClient mediaControl;
+    private final StreamAudienceCache audienceCache;
 
     @Value("${app.streaming.webrtc-base:http://localhost:8889}")
     private String webrtcBase;
@@ -238,7 +241,15 @@ public class StreamStageService {
     }
 
     /** The host takes a guest off the stage. Hard stop: credentials revoked, the
-     *  guest's media session kicked, the roster and the guest both told. */
+     *  guest's media session kicked, the roster and the guest both told.
+     *
+     *  <p>The MediaMTX kick is a blocking HTTP round trip (up to two calls, 2s
+     *  timeout each — up to ~4s) and is deferred until AFTER this transaction
+     *  commits, mirroring {@link ChatRealtimeBroadcaster#broadcastTo}, so it never
+     *  holds the DB connection/transaction open. The roster + grant frames below
+     *  are registered first (they go out via the broadcaster's own after-commit
+     *  hook), so the guest visibly drops off the moment the DB state commits,
+     *  without waiting on the kick.</p> */
     @Transactional
     public void removeGuest(UUID streamId, UUID hostId, UUID guestUserId) {
         LiveStream s = requireOwnedStream(streamId, hostId);
@@ -247,12 +258,14 @@ public class StreamStageService {
         String path = g.getPublishPath();
         takeDown(g);
         guestRepo.save(g);
-        if (path != null) mediaControl.kickPublisher(path); // best-effort hard drop
         broadcastRoster(s);
         // Tell the removed guest to tear their publisher down. Only userId + status
         // are read on the client, so no identity load is needed (null user).
         broadcaster.broadcastTo(guestUserId, event(ChatRealtimeEventType.STREAM_STAGE_GRANT)
                 .stageMember(guestMember(s, g, null, false)).userId(guestUserId).build());
+        // Best-effort hard drop — registered AFTER the frames above so it runs
+        // after them post-commit, never blocking this transaction's connection.
+        if (path != null) runAfterCommit(() -> mediaControl.kickPublisher(path));
     }
 
     /** The host mutes or unmutes a guest. Authoritative — every client enforces it. */
@@ -381,10 +394,12 @@ public class StreamStageService {
         g.setLeftAt(Instant.now());
     }
 
-    /** The active guests, oldest-first (stable stage order). One indexed query
-     *  (idx_stream_guest_status); the stage is tiny (≤ maxGuests rows). */
+    /** The active guests, oldest-first (stable stage order). Backed by
+     *  {@link StreamAudienceCache} (short-TTL, invalidated by
+     *  {@link #broadcastRoster} on every guest/stage change) instead of an
+     *  unconditional query on every call — see that class for why. */
     private List<StreamGuest> activeGuests(UUID streamId) {
-        return guestRepo.findByStreamIdAndStatusOrderByJoinedAtAsc(streamId, StreamGuestStatus.ACTIVE);
+        return audienceCache.activeGuests(streamId);
     }
 
     /** Everyone who should receive stage / reaction / gift frames: active viewers +
@@ -392,7 +407,7 @@ public class StreamStageService {
      *  viewer). Deduplicated. Returned as a Set so a membership test is O(1) and the
      *  broadcaster (which takes a Collection) fans out over it directly — no copy. */
     private Set<UUID> audienceSet(LiveStream s, List<StreamGuest> active) {
-        Set<UUID> set = new LinkedHashSet<>(viewerRepo.findActiveViewerIds(s.getId()));
+        Set<UUID> set = new LinkedHashSet<>(audienceCache.activeViewerIds(s.getId()));
         set.add(s.getHostId());
         active.forEach(g -> set.add(g.getUserId()));
         return set;
@@ -418,11 +433,15 @@ public class StreamStageService {
     /**
      * Broadcast the current roster to everyone watching, and return the fetched
      * user map so a caller can build one guest's member frame WITHOUT another query.
-     * Exactly three queries total (active guests, their identities, the viewers) —
-     * the active-guest list is fetched once and shared by the audience and the roster
-     * (it used to be fetched twice).
+     * Every caller of this method just wrote a guest/stage change (promote, remove,
+     * mute), so the audience cache is invalidated FIRST — the active-guest and
+     * viewer-id reads below are therefore always a fresh DB read (which also
+     * re-warms the cache), never up-to-{@code TTL}-stale data from before the
+     * change. The reaction/gift hot path (which never invalidates) is what then
+     * rides the warm cache in between roster changes.
      */
     private Map<UUID, User> broadcastRoster(LiveStream s) {
+        audienceCache.invalidate(s.getId());
         List<StreamGuest> active = activeGuests(s.getId());
         Map<UUID, User> users = stageUsers(s, active);
         broadcaster.broadcast(audienceSet(s, active),
@@ -466,6 +485,26 @@ public class StreamStageService {
 
     private ChatRealtimeEvent.ChatRealtimeEventBuilder event(ChatRealtimeEventType type) {
         return ChatRealtimeEvent.builder().eventType(type);
+    }
+
+    /** Defer {@code action} until after the surrounding transaction commits —
+     *  mirrors {@link ChatRealtimeBroadcaster}'s private {@code runAfterCommit}.
+     *  Used to keep a blocking call (the MediaMTX kick) off the transactional
+     *  connection; falls back to running immediately outside a transaction. */
+    private void runAfterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() {
+                    try { action.run(); } catch (Exception e) {
+                        log.warn("[STAGE] post-commit action failed: {}", e.getMessage());
+                    }
+                }
+            });
+        } else {
+            try { action.run(); } catch (Exception e) {
+                log.warn("[STAGE] action failed: {}", e.getMessage());
+            }
+        }
     }
 
     /** Load users WITH their profile join-fetched (one query, no N+1) so every

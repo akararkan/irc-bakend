@@ -32,4 +32,11 @@ public interface MessageStarRepository extends JpaRepository<MessageStar, UUID> 
     /** Which of these message ids the user has starred — one query to flag a page. */
     @Query("SELECT s.messageId FROM MessageStar s WHERE s.userId = :uid AND s.messageId IN :ids")
     List<Long> findStarredAmong(@Param("uid") UUID userId, @Param("ids") Collection<Long> messageIds);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. No conversation_id
+     *  index exists — a seq scan over a personal-bookmarks-sized table, in a
+     *  nightly job, is the cheaper deal than another index on the hot path. */
+    @Modifying
+    @Query("DELETE FROM MessageStar s WHERE s.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

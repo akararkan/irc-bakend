@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS posts_by_id (
     share_link      text,
     media_urls      list<text>,    -- denormalized media S3 URLs (small list)
     media_types     list<text>,
+    thumbnail_url   text,          -- server-generated poster frame for the first VIDEO media
     created_at      timestamp,
     updated_at      timestamp
 );

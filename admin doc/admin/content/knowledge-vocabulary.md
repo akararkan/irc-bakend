@@ -14,7 +14,7 @@ Tag legend and ground rules: [README.md](../README.md). Underlying mechanics:
 `KnowledgeController`). Related: [user-administration.md](../users/administration.md)
 (the `madhhab`/`specializations` profile fields that reference this),
 [research-qna.md](research-qna.md) (the *tag/keyword* trending subsystem — a
-different, usage-driven vocabulary), [../user/users.md](../../user/users.md).
+different, usage-driven vocabulary), [../user/users.md](../../../docs/user/users.md).
 
 Status legend: **[EXISTS]** = real today · **[PARTIAL]** = data exists, surface
 missing · **[PLANNED]** = proposed here.

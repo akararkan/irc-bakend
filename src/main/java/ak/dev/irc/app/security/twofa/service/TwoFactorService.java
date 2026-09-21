@@ -95,7 +95,19 @@ public class TwoFactorService {
     // ── internals ───────────────────────────────────────────────────────────────
 
     private boolean verifyInternal(User user, String code) {
-        String secret = cipher.decrypt(user.getTwoFactorSecret());
+        String secret;
+        try {
+            secret = cipher.decrypt(user.getTwoFactorSecret());
+        } catch (IllegalStateException ex) {
+            // Stored secret was encrypted under a different key (rotated, or the
+            // dev ephemeral key of a previous run). Treat as a non-matching code
+            // instead of 500ing — that keeps the recovery-code fallback in
+            // loginTwoFactor reachable, which is the user's only way back in.
+            log.error("2FA secret for user {} is undecryptable (encryption key changed?) — "
+                    + "code rejected; recovery codes remain usable. Re-enrolment required.",
+                    user.getId());
+            return false;
+        }
         long now = System.currentTimeMillis() / 1000L;
         long last = user.getTwoFactorLastStep() == null ? -1L : user.getTwoFactorLastStep();
         long matched = totp.verify(secret, code, now, props.getAllowedDriftSteps(), last);

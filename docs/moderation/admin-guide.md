@@ -163,6 +163,26 @@ why.
 Threshold changes are live within 30 seconds on every node, immediately on the one
 that served the request. Step-up re-auth is required.
 
+### The short-text word floor
+
+Fields with fewer than `text.min-scorable-words` whitespace-separated words
+(default **4**, raw settings key via `PUT /moderation/settings/raw`) are never
+sent to the model at all — only the blocklist screens them.
+
+This exists because the floor was *measured*, not assumed (2026-09-01, artifact
+v4): below ~4 words the classifier emits noise — unseen English words collapse
+to one identical score vector ("Hot" and "Nice" both scored toxic 0.6336 to
+four decimals), and short benign Kurdish greetings ("سوپاس بۆ ئێوە") scored
+0.99+, indistinguishable from actual slurs. Scoring noise against bands only
+manufactures false holds; per §8.2 the blocklist is the designed authority for
+short strings. Set the key to `0` to score everything again (e.g. after a
+retrain that fixes short-input calibration — verify with the dry-run first).
+
+Known residual: mid-length benign Kurdish (4–6 words) can still score in the
+review band on v4. The durable fix is a retrain whose dataset includes short
+*benign* Kurdish/Arabic rows — greetings, thanks, congratulations — so the
+model stops equating "short + Arabic script" with toxicity.
+
 ### Hold durations and fallback
 
 ```
@@ -199,7 +219,7 @@ what was actually stored. For an instant ban, add it to the blocklist too.
 a word list in Excel, export **CSV UTF-8**, upload. Word rows can carry
 `blocklist=yes` to get the instant ban and the training signal in one pass.
 Validate first with `dryRun=true`; the column contract is in
-[`../admin/trust-safety/automated-moderation.md`](../admin/trust-safety/automated-moderation.md) §4.
+[`../admin/trust-safety/automated-moderation.md`](../../admin%20doc/admin/trust-safety/automated-moderation.md) §4.
 
 **Golden cases** — `/moderation/model/golden-cases`. A fixed, hand-reviewed set
 every candidate model must still get right before promotion. These are **never

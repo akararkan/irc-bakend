@@ -21,9 +21,9 @@ Tag legend and ground rules: [README.md](../README.md). Related:
 [users-roles.md](directory-and-roles.md) (directory & inspection),
 [safety-reports.md](../trust-safety/safety-reports.md) (strikes/restrictions/bans as *moderation*),
 [logs-audit.md](../platform/logs-audit.md) (audit trail every action writes),
-[../settings/auth-sessions.md](../../settings/auth-sessions.md) (auth/2FA/step-up
-mechanics), [../settings/data-export-deletion.md](../../settings/data-export-deletion.md)
-(the deletion pipeline), [../user/users.md](../../user/users.md) (user model).
+[../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) (auth/2FA/step-up
+mechanics), [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md)
+(the deletion pipeline), [../user/users.md](../../../docs/user/users.md) (user model).
 
 Status legend: **[EXISTS]** = real today (class/endpoint cited) · **[PARTIAL]** =
 primitive exists, admin surface or wiring missing · **[PLANNED]** = proposed here.
@@ -36,10 +36,10 @@ primitive exists, admin surface or wiring missing · **[PLANNED]** = proposed he
 |----------|--------------------|
 | **Adding users**: admin single-create, pre-verified provisioning, bulk import, invite-based onboarding | Public self-signup UX (`POST /api/v1/auth/register`) — user-facing, not admin |
 | Identity edits (name/username/email on behalf of a user) | Population growth analytics, verification funnel → [users-roles.md](directory-and-roles.md) §2.4 |
-| Credential control: admin password reset, 2FA reset, force credential rotation | The user-facing security settings → [../settings/auth-sessions.md](../../settings/auth-sessions.md) |
+| Credential control: admin password reset, 2FA reset, force credential rotation | The user-facing security settings → [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) |
 | Account state: enable/disable, lock/unlock, ban/suspend | Report-driven strikes & restriction state machine → [safety-reports.md](../trust-safety/safety-reports.md) |
 | Session termination (kill one / kill all) | Self-serve session list → [users-roles.md](directory-and-roles.md) §2.3 |
-| Lifecycle: admin-initiated delete, restore, expedite/hold purge | The purge cron & tombstone mechanics → [../settings/data-export-deletion.md](../../settings/data-export-deletion.md) |
+| Lifecycle: admin-initiated delete, restore, expedite/hold purge | The purge cron & tombstone mechanics → [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md) |
 | **Impersonation** (act-as for support) — policy + design | — |
 | **Bulk operations** on user sets | — |
 | The editable/viewable field inventory (`User` + `UserProfile`) | Badge editing — **impossible by design** (badges derive from role) |

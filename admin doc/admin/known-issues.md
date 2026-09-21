@@ -18,8 +18,8 @@ Status: ✅ resolved by the admin build · 🔶 partially resolved · ⬜ still 
 > contact matching wired to nothing, discovery flags enforcing nothing, and the
 > contact-sync rate limit bypassable via a duplicate endpoint. All are fixed;
 > rows **Y–AC** below, plus row **C** which this closed. Full references:
-> [../settings/two-factor-authentication.md](../settings/two-factor-authentication.md)
-> and [../settings/discovery-contacts.md](../settings/discovery-contacts.md).
+> [../settings/two-factor-authentication.md](../../docs/settings/two-factor-authentication.md)
+> and [../settings/discovery-contacts.md](../../docs/settings/discovery-contacts.md).
 
 > **Freshness, 2026-08-10/11.** Four more things landed and added rows below
 > (U–X): a **real bug fix** in channel leave/delete (rows U), an admin-repo

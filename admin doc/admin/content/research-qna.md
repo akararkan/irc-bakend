@@ -1,6 +1,6 @@
 # Admin Dashboard — Section 3: Research & Q&A
 
-The academic heart of the platform: the research pipeline (drafts → scheduled/manual publish → archive/retract), the IRC identifier system, download/citation analytics, scholar Q&A oversight, and the unified tag/trending subsystem. Underlying mechanics: [../research/research.md](../../research/research.md), [../qna/questions.md](../../qna/questions.md), [../qna/answers.md](../../qna/answers.md), [../search/indexing-and-reindex.md](../../search/indexing-and-reindex.md). Tag legend and ground rules: [README.md](../README.md).
+The academic heart of the platform: the research pipeline (drafts → scheduled/manual publish → archive/retract), the IRC identifier system, download/citation analytics, scholar Q&A oversight, and the unified tag/trending subsystem. Underlying mechanics: [../research/research.md](../../../docs/research/research.md), [../qna/questions.md](../../../docs/qna/questions.md), [../qna/answers.md](../../../docs/qna/answers.md), [../search/indexing-and-reindex.md](../../../docs/search/indexing-and-reindex.md). Tag legend and ground rules: [README.md](../README.md).
 
 ## 1. Purpose & scope
 
@@ -91,7 +91,7 @@ Reindex buttons for `irc-research`, `irc-qna`, `irc-answers` with `drop` toggle 
 
 ## 4. Admin actions
 
-Existing actions first, then proposals. All proposed routes live under `/api/v1/admin/**` (double-gated). Danger: L=low M=medium H=high C=critical. Step-up = re-auth via [../settings/README.md](../../settings/README.md) step-up flow.
+Existing actions first, then proposals. All proposed routes live under `/api/v1/admin/**` (double-gated). Danger: L=low M=medium H=high C=critical. Step-up = re-auth via [../settings/README.md](../../../docs/settings/README.md) step-up flow.
 
 | Action | Endpoint | Params | Danger | Step-up | Audit action | Status |
 |---|---|---|---|---|---|---|

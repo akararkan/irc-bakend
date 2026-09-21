@@ -53,18 +53,38 @@ public interface UserFollowRepository extends JpaRepository<UserFollow, UserFoll
         """)
     Page<UserFollow> findFollowing(@Param("userId") UUID userId, Pageable pageable);
 
-    @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.following.id = :userId")
+    /**
+     * Live follower total — the number behind {@code /users/{id}/stats},
+     * {@code social-status} and the search index. Soft-deleted followers are
+     * EXCLUDED, exactly as {@link #findFollowers} hides them: a deleted
+     * account keeps its follow rows (the graph must survive a restore), so a
+     * raw {@code COUNT(*)} drifted above the list it claims to summarise
+     * ("8 followers" over a list of 5). One rule for the number and the rows.
+     */
+    @Query("""
+        SELECT COUNT(uf) FROM UserFollow uf
+        WHERE uf.following.id = :userId
+          AND uf.follower.deletedAt IS NULL
+        """)
     long countByFollowingId(@Param("userId") UUID userId);
 
-    /** Follower totals for a batch of users in one grouped scan (search reindex). */
+    /** Follower totals for a batch of users in one grouped scan (search reindex).
+     *  Same rule as {@link #countByFollowingId}: deleted followers don't count. */
     @Query("""
         SELECT uf.following.id, COUNT(uf) FROM UserFollow uf
         WHERE uf.following.id IN :userIds
+          AND uf.follower.deletedAt IS NULL
         GROUP BY uf.following.id
         """)
     java.util.List<Object[]> countByFollowingIdIn(@Param("userIds") java.util.Collection<UUID> userIds);
 
-    @Query("SELECT COUNT(uf) FROM UserFollow uf WHERE uf.follower.id = :userId")
+    /** Live following total — mirrors {@link #findFollowing}: a followed account
+     *  that was deleted is neither listed nor counted. */
+    @Query("""
+        SELECT COUNT(uf) FROM UserFollow uf
+        WHERE uf.follower.id = :userId
+          AND uf.following.deletedAt IS NULL
+        """)
     long countByFollowerId(@Param("userId") UUID userId);
 
     @Query("""

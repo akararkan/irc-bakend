@@ -1,6 +1,6 @@
 # Section 5 — Safety & Reports
 
-Admin side of the Safety Center. The user-facing half already exists and is documented in [../settings/safety-center.md](../../settings/safety-center.md) (spec §18): report intake, own-report listing, reporter appeal, strikes view, security score. **The moderator/triage surface is now built (2026-08)** — `AdminSafetyController` + `ReportModerationService` drive the full state machine (triage / action / dismiss / uphold / reverse), and `StrikeService.issueStrike` has real callers. This section documents that console.
+Admin side of the Safety Center. The user-facing half already exists and is documented in [../settings/safety-center.md](../../../docs/settings/safety-center.md) (spec §18): report intake, own-report listing, reporter appeal, strikes view, security score. **The moderator/triage surface is now built (2026-08)** — `AdminSafetyController` + `ReportModerationService` drive the full state machine (triage / action / dismiss / uphold / reverse), and `StrikeService.issueStrike` has real callers. This section documents that console.
 
 Related sections: [content-moderation.md](content-moderation.md) (content takedown primitives), [users-roles.md](../users/directory-and-roles.md) (account suspension), [logs-audit.md](../platform/logs-audit.md) (audit log + consent/settings trails), [architecture.md](../foundation/architecture.md) (access model), [admin-api-blueprint.md](../foundation/api-blueprint.md) (all endpoints, phased).
 
@@ -11,7 +11,7 @@ Related sections: [content-moderation.md](content-moderation.md) (content takedo
 | Report triage queue (dedup-grouped), report detail + evidence panel | Generic content queues & keyword blocklist → [content-moderation.md](content-moderation.md) |
 | Full `ReportState` machine driving: triage, action+resolution, dismiss | Suspend/ban mechanics on the `User` entity → [users-roles.md](../users/directory-and-roles.md) |
 | Appeals review queue (uphold / reverse) | Sound approval queue → [content-moderation.md](content-moderation.md) |
-| Strikes ledger + threshold automation | Security score rules (user-facing, derived) → [../settings/safety-center.md](../../settings/safety-center.md) |
+| Strikes ledger + threshold automation | Security score rules (user-facing, derived) → [../settings/safety-center.md](../../../docs/settings/safety-center.md) |
 | Per-user moderation record (360° view) | Raw audit log explorer → [logs-audit.md](../platform/logs-audit.md) |
 | `consent_events` viewer (compliance evidence) | Consent *capture* (user-facing `POST /api/v1/settings/consent`) |
 | Block/restriction aggregate stats | Per-user block/restrict management (user-facing) |
@@ -107,7 +107,7 @@ Platform-wide strike view: strikes issued per day, currently-active strike distr
 
 ### 3.9 Privacy & discovery posture **[PLANNED]** (tables **[EXISTS]**, aggregates new)
 
-The settings module's privacy engine ([../settings/privacy.md](../../settings/privacy.md))
+The settings module's privacy engine ([../settings/privacy.md](../../../docs/settings/privacy.md))
 is user-owned; the admin surface is **aggregate posture only** — never a tool to
 inspect or override an individual's privacy choices:
 
@@ -142,7 +142,7 @@ this area is account-level (suspend/delete) in [users-roles.md](../users/directo
 
 ## 5. Admin actions
 
-All routes live under `/api/v1/admin/safety/**` — inheriting the filter-chain double gate (`SecurityConfig` hard-codes `hasRole('ADMIN')` on `/api/v1/admin/**` **[EXISTS]**). Every mutation records an audit action via `AdminAuditor` → `AuditLogService.record(...)` (funnelled from every admin mutation since the 2026-08 build) and appears in the admin audit SSE stream. Step-up = re-auth via `StepUpService` (Redis `stepup:{userId}`, TTL 300s **[EXISTS]**, see [../settings/auth-sessions.md](../../settings/auth-sessions.md)).
+All routes live under `/api/v1/admin/safety/**` — inheriting the filter-chain double gate (`SecurityConfig` hard-codes `hasRole('ADMIN')` on `/api/v1/admin/**` **[EXISTS]**). Every mutation records an audit action via `AdminAuditor` → `AuditLogService.record(...)` (funnelled from every admin mutation since the 2026-08 build) and appears in the admin audit SSE stream. Step-up = re-auth via `StepUpService` (Redis `stepup:{userId}`, TTL 300s **[EXISTS]**, see [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md)).
 
 **Built 2026-08 (`AdminSafetyController` + `ReportModerationService`)** — every row below is live except the two dependency-noted ones (takedown / suspend-target), flagged inline.
 

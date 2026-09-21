@@ -273,6 +273,11 @@ public class AdminAutoModerationController {
      * labels would poison the training set faster than it helped.</p>
      */
     private void teach(ModerationCase moderationCase, boolean approved) {
+        if (moderationCase.getEntityType() == ModeratedEntityType.MEDIA_IMAGE) {
+            // Image cases carry a URL, not user text — feeding that to the TEXT
+            // training set would only teach the model what URLs look like.
+            return;
+        }
         if (PRIVATE_TEXT.contains(moderationCase.getEntityType())) {
             // Private correspondence never enters the training set. It would leave
             // the platform entirely — shipped to the training container and baked

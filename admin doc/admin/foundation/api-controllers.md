@@ -95,7 +95,7 @@ a `?drop=` toggle (default `true`).
   *no* reindex hook — their Cassandra canonical stores have no efficient full-scan and
   they re-write on every mutation. (The `/posts/reindex` hook that *does* exist is the
   mapping-repair path, not a routine.)
-- Detail: [search-feed-trending.md](../platform/search-feed-trending.md), [../search/indexing-and-reindex.md](../../search/indexing-and-reindex.md).
+- Detail: [search-feed-trending.md](../platform/search-feed-trending.md), [../search/indexing-and-reindex.md](../../../docs/search/indexing-and-reindex.md).
 
 ### 2.3 `TagAdminController` **[EXISTS]**
 
@@ -256,7 +256,7 @@ Codify these so all admin controllers read alike (extend the arch-tests in
 7. **Cassandra reads are keyset/cursor** (mirror `AuditLogController.firstPage/nextPage`),
    never token-range scans — the one exception (tag backfill) is already flagged.
 8. **Error envelope** — reuse the platform's standard error response
-   ([../errors/error-handling.md](../../errors/error-handling.md)); 400 for a missing
+   ([../errors/error-handling.md](../../../docs/errors/error-handling.md)); 400 for a missing
    required scope (mirror the audit `userId`-required 400).
 9. **Self-protection guards** — an admin cannot disable/lock/delete/demote themselves;
    demoting the last `ADMIN` is rejected (**[EXISTS]** built 2026-08 —

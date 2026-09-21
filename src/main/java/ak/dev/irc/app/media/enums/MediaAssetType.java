@@ -8,7 +8,9 @@ public enum MediaAssetType {
     /** Long-form video (feed / FILM) — up to 10 min, 512 MB. */
     FILM,
     /** Short clip — up to 90 s, 200 MB. */
-    VIDEO_CLIP;
+    VIDEO_CLIP,
+    /** Non-media attachment (PDF, sources, generic files) — passthrough + accounting. */
+    DOCUMENT;
 
     public boolean isVideo() {
         return this == VIDEO || this == FILM || this == VIDEO_CLIP;

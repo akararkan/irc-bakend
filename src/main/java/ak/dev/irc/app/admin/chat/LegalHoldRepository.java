@@ -20,4 +20,9 @@ public interface LegalHoldRepository extends JpaRepository<LegalHold, UUID> {
         WHERE (:status IS NULL OR h.status = :status)
         """)
     Page<LegalHold> browse(@Param("status") LegalHold.Status status, Pageable pageable);
+
+    /** Purge guard: a conversation with a hold in any of these states must not
+     *  have its storage destroyed (ConversationPurgeService.beginPurge). */
+    boolean existsByConversationIdAndStatusIn(java.util.UUID conversationId,
+                                              java.util.Collection<LegalHold.Status> statuses);
 }

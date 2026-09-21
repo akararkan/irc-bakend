@@ -42,6 +42,8 @@ public class MessageController {
     private final MessageService messageService;
     private final MessageQueryService messageQueryService;
     private final S3StorageService storageService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
+    private final ak.dev.irc.app.media.service.MediaReadyDispatcher readyDispatcher;
     private final ak.dev.irc.app.chat.service.StarService starService;
     private final ak.dev.irc.app.chat.service.ScheduledMessageService scheduledMessageService;
     private final ak.dev.irc.app.chat.service.PollService pollService;
@@ -162,19 +164,27 @@ public class MessageController {
         req.setSilent(silent);
 
         List<MediaRefDto> media = new ArrayList<>();
-        List<String> uploadedKeys = new ArrayList<>();
+        List<ak.dev.irc.app.media.dto.IngestResult> ingested = new ArrayList<>();
         try {
             if (hasFiles) {
-                for (MultipartFile f : files) {
-                    String key = storageService.upload(f, "chat/media");
-                    uploadedKeys.add(key);
+                // Ingest pipeline: validation + quota + image resize/EXIF-strip +
+                // video original+poster+async ladder. Rolls back its own uploads
+                // when a mid-batch file fails.
+                ingested = mediaIngest.ingestAll(files,
+                        ak.dev.irc.app.media.enums.MediaSurface.CHAT_MEDIA, userId, "chat/media");
+                for (int i = 0; i < ingested.size(); i++) {
+                    var r = ingested.get(i);
                     MediaRefDto m = new MediaRefDto();
-                    m.setKind(classifyKind(f.getContentType()));
-                    m.setStorageKey(key);
-                    m.setUrl(storageService.getPublicUrl(key));
-                    m.setMime(f.getContentType());
-                    m.setBytes(f.getSize());
-                    m.setFileName(f.getOriginalFilename());
+                    m.setKind(classifyKind(files.get(i).getContentType()));
+                    m.setStorageKey(r.storageKey());
+                    m.setUrl(r.url());
+                    m.setThumbnailUrl(r.thumbnailUrl());
+                    m.setMime(r.mime());
+                    m.setBytes(r.bytes());
+                    m.setWidth(r.width());
+                    m.setHeight(r.height());
+                    m.setDurationMs(r.durationSeconds() == null ? null : r.durationSeconds() * 1000);
+                    m.setFileName(r.fileName());
                     media.add(m);
                 }
                 req.setMedia(media);
@@ -182,11 +192,21 @@ public class MessageController {
             } else {
                 req.setType(MessageType.TEXT);
             }
-            return ResponseEntity.status(HttpStatus.CREATED).body(messageService.send(id, userId, req));
+            MessageResponse sent = messageService.send(id, userId, req);
+            // Register still-transcoding videos for the ready write-back (url →
+            // 720p + MESSAGE_EDITED push once the ladder lands).
+            for (var r : ingested) {
+                if (r.processing() && r.assetId() != null) {
+                    readyDispatcher.track(r.assetId(),
+                            ak.dev.irc.app.chat.service.ChatMediaReadyHandler.SURFACE,
+                            String.valueOf(sent.messageId()));
+                }
+            }
+            return ResponseEntity.status(HttpStatus.CREATED).body(sent);
         } catch (RuntimeException ex) {
             // Roll back any orphaned uploads on failure.
-            for (String k : uploadedKeys) {
-                try { storageService.delete(k); } catch (Exception ignore) { /* best-effort */ }
+            for (var r : ingested) {
+                try { mediaIngest.rollback(r); } catch (Exception ignore) { /* best-effort */ }
             }
             throw ex;
         }

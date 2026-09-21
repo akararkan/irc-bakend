@@ -4,6 +4,7 @@ import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.messages.SecurityMessages;
 import ak.dev.irc.app.security.SecurityUtils;
 import ak.dev.irc.app.security.dto.SecurityDtos.*;
+import ak.dev.irc.app.security.email.EmailVerificationService;
 import ak.dev.irc.app.security.login.service.LoginEventService;
 import ak.dev.irc.app.security.phone.PhoneService;
 import ak.dev.irc.app.security.session.SessionService;
@@ -42,6 +43,7 @@ public class SecurityController {
     private final LoginEventService loginEventService;
     private final StepUpService stepUpService;
     private final PhoneService phoneService;
+    private final EmailVerificationService emailVerificationService;
 
     // ── Sessions (spec §12) ──────────────────────────────────────────────────
 
@@ -159,6 +161,28 @@ public class SecurityController {
     }
 
     public record PhoneVerifyAck(boolean verified, String phone) {}
+
+    // ── Email verification (spec §4) ─────────────────────────────────────────
+
+    /**
+     * Mail a code to the account's own address. Takes no body on purpose — the
+     * destination is read off the account, never supplied by the caller, or this
+     * would "verify" addresses the user does not own.
+     */
+    @PostMapping("/email/request")
+    public ResponseEntity<Void> requestEmailVerification(HttpServletRequest http) {
+        emailVerificationService.requestVerification(
+                SecurityUtils.requireCurrentUserId(), clientIp(http));
+        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
+    }
+
+    @PostMapping("/email/verify")
+    public ResponseEntity<EmailVerifyAck> verifyEmail(@Valid @RequestBody CodeRequest req) {
+        String email = emailVerificationService.confirm(SecurityUtils.requireCurrentUserId(), req.code());
+        return ResponseEntity.ok(new EmailVerifyAck(true, email));
+    }
+
+    public record EmailVerifyAck(boolean verified, String email) {}
 
     private static String clientIp(HttpServletRequest req) {
         String fwd = req.getHeader("X-Forwarded-For");

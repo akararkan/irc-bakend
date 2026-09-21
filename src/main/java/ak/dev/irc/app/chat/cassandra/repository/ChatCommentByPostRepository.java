@@ -28,6 +28,16 @@ public interface ChatCommentByPostRepository
     @Query("DELETE FROM chat_comments_by_post WHERE post_message_id = :postId AND comment_message_id = :commentId")
     void deleteOne(@Param("postId") long postMessageId, @Param("commentId") long commentMessageId);
 
+    /** Point read for the purge's exists-guard: a re-swept discussion comment
+     *  must decrement its post's counter exactly once, and a Cassandra DELETE
+     *  cannot report whether the row was there. */
+    @Query("""
+        SELECT * FROM chat_comments_by_post
+        WHERE post_message_id = :postId AND comment_message_id = :commentId
+        """)
+    java.util.Optional<ChatCommentByPostEntity> findOne(@Param("postId") long postMessageId,
+                                                        @Param("commentId") long commentMessageId);
+
     @Query("DELETE FROM chat_comments_by_post WHERE post_message_id = :postId")
     void deleteAllForPost(@Param("postId") long postMessageId);
 }

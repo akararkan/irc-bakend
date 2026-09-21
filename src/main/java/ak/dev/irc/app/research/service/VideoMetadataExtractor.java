@@ -81,6 +81,27 @@ public class VideoMetadataExtractor {
     }
 
     /**
+     * Same extraction from a file already on local disk (the media ingest
+     * facade spools uploads once and probes in place — no second spool).
+     *
+     * @return duration in seconds, or {@code null} if extraction fails
+     */
+    public Integer extractDurationSeconds(Path videoFile) {
+        if (videoFile == null) return null;
+        try (IsoFile isoFile = new IsoFile(videoFile.toString())) {
+            MovieHeaderBox mvhd = isoFile.getMovieBox().getMovieHeaderBox();
+            if (mvhd.getTimescale() == 0) return null;
+            double durationInSeconds = (double) mvhd.getDuration() / mvhd.getTimescale();
+            int rounded = (int) Math.round(durationInSeconds);
+            return rounded > 0 ? rounded : null;
+        } catch (Exception e) {
+            log.debug("VideoMetadataExtractor: could not extract duration from '{}': {}",
+                    videoFile, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Writes the multipart to {@code target}. Tries {@code getInputStream()}
      * first; if that returns null or fails, falls back to {@code getBytes()}.
      * Returns {@code true} when at least one byte was written. Never throws.

@@ -17,6 +17,13 @@ public interface MediaRenditionRepository
     List<MediaRendition> findByIdMediaId(
             @org.springframework.data.repository.query.Param("mediaId") UUID mediaId);
 
+    /** Bulk variant hydration: one IN-query for a whole page of assets. */
+    @org.springframework.data.jpa.repository.Query(
+            "SELECT r FROM MediaRendition r WHERE r.id.mediaId IN :mediaIds")
+    List<MediaRendition> findByIdMediaIdIn(
+            @org.springframework.data.repository.query.Param("mediaIds")
+            java.util.Collection<UUID> mediaIds);
+
     void deleteByIdMediaId(UUID mediaId);
 
     /**

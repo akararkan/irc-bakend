@@ -12,7 +12,7 @@ Concept docs: [operations.md](../platform/operations.md) · [activity-engagement
 
 - **Auth**: every endpoint requires an authenticated `ADMIN` (class-level `@PreAuthorize("hasRole('ADMIN')")` on all three controllers; the `/api/v1/admin/**` route gate applies on top).
 - **Step-up**: endpoints marked *Step-up: yes* (`@RequiresStepUp`) return `403 STEP_UP_REQUIRED` without a fresh step-up marker. Arm it via `POST /api/v1/security/step-up`; the marker lives `app.security.step-up.ttl-seconds` (default 300 s).
-- **Errors** arrive in the canonical envelope (`errorCode` is the machine field) — see [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+- **Errors** arrive in the canonical envelope (`errorCode` is the machine field) — see [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 - **Null omission**: Jackson runs with `default-property-inclusion: non_null` globally — null fields **and null-valued map entries** are omitted from every body below. Treat all fields as optional in clients.
 - **Timestamps**: `LocalDateTime` fields serialize without a zone suffix (`2026-08-07T03:30:00.412`); `Instant` fields are UTC `Z`-suffixed.
 - **Paging**: `page`/`size` query params; every page size is clamped to **1–100** (`Pages.clamp`), defaults noted per endpoint. `Page<T>` responses use Spring's standard envelope — examples below show only the load-bearing fields (`content`, `totalElements`, `totalPages`, `number`, `size`); the real payload also carries `pageable`, `sort`, `first`, `last`, `numberOfElements`, `empty`.

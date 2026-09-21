@@ -38,6 +38,8 @@ build/
 .env.*.local
 *.log
 app.log
+# Firebase service-account private key (FcmPushSender reads it from the repo root)
+firebase-service-account.json
 
 ### OS junk ###
 .DS_Store

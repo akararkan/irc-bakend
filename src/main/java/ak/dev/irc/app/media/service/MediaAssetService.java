@@ -25,9 +25,9 @@ import java.util.UUID;
 
 /**
  * Orchestrates the upload lifecycle (spec §20.4): upload-intent (validate + dedup
- * + presigned PUT), complete (download the raw upload + enqueue processing), read
- * status, and delete. The heavy transcode runs off-thread in
- * {@link MediaProcessingService}.
+ * + presigned PUT), complete (flip PROCESSING + enqueue), read status, and
+ * delete. The heavy transcode runs in {@code MediaProcessWorker} behind the
+ * {@code irc.queue.media.process} queue — bytes never transit this service.
  *
  * <p>Raw uploads land at a deterministic {@code raw/{assetId}} key (7-day
  * retention, §20.6); renditions are produced under {@code media/{assetId}/…}.</p>
@@ -41,7 +41,8 @@ public class MediaAssetService {
 
     private final MediaAssetRepository assetRepo;
     private final MediaRenditionRepository renditionRepo;
-    private final MediaProcessingService processingService;
+    private final ak.dev.irc.app.media.event.MediaEventPublisher eventPublisher;
+    private final MediaDeleteService deleteService;
     private final S3StorageService storage;
     private final MediaProperties props;
     private final MediaQuotaService quotaService;
@@ -98,8 +99,10 @@ public class MediaAssetService {
         return new UploadIntentResponse(asset.getId(), presignedPutUrl, false, asset.getStatus().name());
     }
 
-    /** Create a new asset row that references an already-processed one's renditions. */
-    private MediaAsset dedupReference(UUID ownerId, MediaAsset src, MediaTier tier) {
+    /** Create a new asset row that references an already-processed one's renditions.
+     *  Public: the ingest facade dedups interception uploads through the same path. */
+    @Transactional
+    public MediaAsset dedupReference(UUID ownerId, MediaAsset src, MediaTier tier) {
         MediaAsset ref = assetRepo.save(MediaAsset.builder()
                 .ownerId(ownerId)
                 .type(src.getType())
@@ -140,19 +143,11 @@ public class MediaAssetService {
         }
         asset.setStatus(MediaStatus.PROCESSING);
         assetRepo.save(asset);
-
-        byte[] bytes;
-        try {
-            var obj = storage.getObject(rawKey(assetId));
-            bytes = obj.inputStream().readAllBytes();
-        } catch (Exception ex) {
-            asset.setStatus(MediaStatus.FAILED_VALIDATION);
-            asset.setErrorMessage("Raw upload not found or unreadable.");
-            assetRepo.save(asset);
-            throw new BadRequestException(MediaMessages.MEDIA_RAW_MISSING_MSG,
-                    MediaMessages.MEDIA_RAW_MISSING);
-        }
-        processingService.submit(assetId, bytes, asset.getType(), asset.getRequestedTier());
+        // The worker downloads raw/{assetId} itself — a 512 MB video never
+        // transits the API thread. A missing raw upload is the worker's
+        // FAILED_VALIDATION, surfaced on the status poll. Publish is
+        // afterCommit, so the message can't beat this row's commit.
+        eventPublisher.publishProcessRequested(assetId, "complete");
     }
 
     // ── Read status ──────────────────────────────────────────────────────────
@@ -165,19 +160,11 @@ public class MediaAssetService {
 
     // ── Delete ───────────────────────────────────────────────────────────────
 
-    @Transactional
     public void delete(UUID ownerId, UUID assetId) {
-        MediaAsset asset = owned(ownerId, assetId);
-        // Delete renditions from storage first, then the rows, then the raw original
-        // (§15: remove objects then the row, so a crash orphans an object — cheap,
-        // nightly-reconciled — rather than a broken reference).
-        for (MediaRendition r : renditionRepo.findByIdMediaId(assetId)) {
-            try { storage.delete(r.getObjectKey()); }
-            catch (Exception ex) { log.warn("[MEDIA] rendition delete failed {}: {}", r.getObjectKey(), ex.getMessage()); }
-        }
-        renditionRepo.deleteByIdMediaId(assetId);
-        try { storage.delete(rawKey(assetId)); } catch (Exception ignored) { }
-        assetRepo.delete(asset);
+        owned(ownerId, assetId);   // 404/403 before anything is touched
+        // Dedup-safe shared path: objects are kept when reference rows or hash
+        // siblings still point at them (media-storage.md leak L3, fixed).
+        deleteService.deleteAssetNow(assetId);
     }
 
     // ── internals ──────────────────────────────────────────────────────────────

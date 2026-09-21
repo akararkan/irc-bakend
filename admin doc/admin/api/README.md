@@ -9,9 +9,9 @@ order), the file says so.
 Written 2026-08-07 against the fully-implemented admin backend; re-counted
 against source 2026-08-08 when the automated-moderation controllers landed.
 Companion docs: [frontend/](../frontend/README.md) (how to build the UI),
-[../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md)
+[../../errors/frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md)
 (the error envelope + client patterns),
-[../../errors/user-facing-messages.md](../../errors/user-facing-messages.md)
+[../../errors/user-facing-messages.md](../../../docs/errors/user-facing-messages.md)
 (every message string).
 
 | File | Controllers | Endpoints |
@@ -19,6 +19,7 @@ Companion docs: [frontend/](../frontend/README.md) (how to build the UI),
 | [users.md](users.md) | AdminUserController (32), AdminImpersonationController (1), step-up (`/api/v1/security/step-up`) | 33 + 1 |
 | [content-moderation.md](content-moderation.md) | AdminContentController (12), AdminModerationController (3) | 15 |
 | [automated-moderation.md](automated-moderation.md) | **AdminAutoModerationController (6), AdminModerationSettingsController (8), AdminModerationModelController (15)** | **29** |
+| [image-moderation.md](image-moderation.md) | NSFW image gate — no new controllers; the `MEDIA_IMAGE` queue behavior, `image.*` settings keys, scorer ops + runbook on the surfaces above | — |
 | [safety-audit.md](safety-audit.md) | AdminSafetyController (14), AuditLogController (4, + audit SSE stream) | 18 |
 | [research-qna-tags.md](research-qna-tags.md) | AdminResearchController (10), AdminQnaController (6), AdminTrendingController (4), TagAdminController (4), AdminKnowledgeController (9) | 33 |
 | [chat-live.md](chat-live.md) | AdminChatController (5), AdminChannelController (11), AdminStreamController (9), LegalHoldController (5) | 30 |
@@ -61,5 +62,5 @@ prerequisite for every step-up-gated call).
   the exact action per endpoint.
 
 When an endpoint changes, update its section here **and** the paired row in
-[user-facing-messages.md](../../errors/user-facing-messages.md) if its
+[user-facing-messages.md](../../../docs/errors/user-facing-messages.md) if its
 messages changed.

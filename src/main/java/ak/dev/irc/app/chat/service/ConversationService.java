@@ -17,6 +17,7 @@ import ak.dev.irc.app.chat.permission.GroupPermissions;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeBroadcaster;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEvent;
 import ak.dev.irc.app.chat.realtime.ChatRealtimeEventType;
+import ak.dev.irc.app.chat.repository.ConversationDraftRepository;
 import ak.dev.irc.app.chat.repository.ConversationMemberRepository;
 import ak.dev.irc.app.chat.repository.ConversationRepository;
 import ak.dev.irc.app.chat.util.DirectKeys;
@@ -58,6 +59,7 @@ public class ConversationService {
 
     private final ConversationRepository conversationRepo;
     private final ConversationMemberRepository memberRepo;
+    private final ConversationDraftRepository draftRepo;
     private final ChatConversationFactory conversationFactory;
     private final ChatRelationshipService relationships;
     private final SystemMessageService systemMessages;
@@ -89,7 +91,18 @@ public class ConversationService {
         }
 
         String key = DirectKeys.of(creatorId, recipientId);
-        UUID convId = conversationRepo.findByDirectKey(key).map(Conversation::getId).orElse(null);
+        Conversation existing = conversationRepo.findByDirectKey(key).orElse(null);
+        if (existing != null && existing.getDeletedAt() != null) {
+            /* A RETIRED DM: both sides deleted it, the purge job stamped it
+               soft-deleted, and its storage may be queued for hard delete. One
+               of the pair wants to talk again — revive it. Both members' clear
+               floors still hide the old history, so it reopens empty, which is
+               exactly what a fresh conversation would show. 0 rows updated
+               means the purge's final transaction won the race and the row is
+               gone — fall through and create fresh on the freed direct_key. */
+            if (conversationRepo.reviveRetiredDirect(existing.getId()) == 0) existing = null;
+        }
+        UUID convId = existing != null ? existing.getId() : null;
         if (convId == null) {
             try {
                 convId = conversationFactory.createDirect(creatorId, recipientId, key);
@@ -177,6 +190,14 @@ public class ConversationService {
 
     @Transactional(readOnly = true)
     public ConversationResponse get(UUID conversationId, UUID userId) {
+        return get(conversationId, userId, true);
+    }
+
+    /** {@code perViewer=false} builds the broadcast flavour: the same
+     *  actor-perspective DTO minus the cleared-view redaction, for
+     *  CONVERSATION_UPDATED payloads that fan out to every member — one
+     *  member's clear floor must not blank the row in everyone else's inbox. */
+    private ConversationResponse get(UUID conversationId, UUID userId, boolean perViewer) {
         Conversation c = conversationRepo.findById(conversationId)
                 .filter(x -> x.getDeletedAt() == null)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
@@ -204,7 +225,7 @@ public class ConversationService {
                 }
             }
         }
-        return mapper.toConversation(c, me, peer, peerLastRead, peerLastDelivered);
+        return mapper.toConversation(c, me, peer, peerLastRead, peerLastDelivered, perViewer);
     }
 
     @Transactional(readOnly = true)
@@ -303,10 +324,14 @@ public class ConversationService {
 
         ConversationResponse resp = get(conversationId, userId);
         if (touchedInfo) {
+            // Broadcast flavour, not `resp`: an actor who has cleared this
+            // thread would otherwise blank every member's preview (the
+            // cleared-view redaction is per-viewer state).
             broadcaster.broadcast(memberRepo.findActiveMemberIds(conversationId),
                     ChatRealtimeEvent.builder()
                             .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
-                            .conversationId(conversationId).conversation(resp)
+                            .conversationId(conversationId)
+                            .conversation(get(conversationId, userId, false))
                             .build());
         }
         return resp;
@@ -380,7 +405,8 @@ public class ConversationService {
         broadcaster.broadcast(memberRepo.findActiveMemberIds(conversationId),
                 ChatRealtimeEvent.builder()
                         .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
-                        .conversationId(conversationId).conversation(get(conversationId, userId))
+                        // broadcast flavour — see update(): no per-viewer redaction
+                        .conversationId(conversationId).conversation(get(conversationId, userId, false))
                         .build());
     }
 
@@ -460,11 +486,76 @@ public class ConversationService {
     /**
      * Clear + hide the conversation for one member: mark everything up to the
      * current last message as cleared, drop it out of BOTH the inbox and the
-     * archived list, unpin it, and zero the unread state. It re-appears (in the
-     * inbox, showing only messages newer than the clear point) when a message with
-     * a larger id arrives — the read path floors reads at {@code clearedBeforeMessageId}.
+     * archived list (via {@code deletedAt}), unpin it, and zero the unread state.
+     * It re-appears (in the inbox, showing only messages newer than the clear
+     * point) when a message with a larger id arrives — the read path floors reads
+     * at {@code clearedBeforeMessageId}.
      */
     private void deleteForMe(Conversation c, ConversationMember me) {
+        UUID userId = me.getId().getUserId();
+        advanceClearFloor(c, me);
+        me.setDeletedAt(LocalDateTime.now());   // hidden until something newer arrives
+        me.setArchived(false);          // out of the archived list too
+        me.setPinned(false);
+        // The flag refers to content now below the floor — without this the
+        // thread resurrects already wearing an unread dot.
+        me.setMarkedUnread(false);
+        memberRepo.save(me);
+        // A saved draft outlives the row it was written under and would pop back
+        // into the composer the moment the thread resurrects — deleting the
+        // conversation deletes the half-typed message with it.
+        draftRepo.deleteByUserIdAndConversationId(userId, c.getId());
+        unreadBadge.invalidate(userId);
+        // Sync MY other sessions: nothing else on the wire carries a per-user
+        // delete (the peer must see nothing), so without this a second open tab
+        // keeps listing the conversation until its next full inbox load. The
+        // client already handles memberChange=DELETED by dropping the row.
+        broadcaster.broadcastTo(userId, ChatRealtimeEvent.builder()
+                .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
+                .conversationId(c.getId())
+                .memberChange("DELETED")
+                .build());
+    }
+
+    /**
+     * {@code POST /conversations/{id}/clear} — per-user "clear chat". Advances the
+     * caller's clear floor to the current last message exactly like
+     * {@link #deleteForMe}, but leaves the row VISIBLE: the conversation keeps its
+     * place in the inbox, empty, and new messages land in it normally. Re-clears
+     * are idempotent, and clearing also un-hides a previously deleted-for-me row
+     * ({@code deletedAt = null}) — the user is plainly interacting with it again.
+     * Only the caller's own membership row is touched; the peer/group is
+     * unaffected and never notified.
+     */
+    @Transactional
+    public void clear(UUID conversationId, UUID userId) {
+        Conversation c = conversationRepo.findById(conversationId)
+                .filter(x -> x.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
+        ConversationMember me = requireMember(conversationId, userId);
+        advanceClearFloor(c, me);
+        me.setDeletedAt(null);
+        // The flag refers to content that is now below the floor — without this a
+        // marked-unread row keeps its dot over an empty thread.
+        me.setMarkedUnread(false);
+        memberRepo.save(me);
+        unreadBadge.invalidate(userId);
+        // Same per-user fan-out rationale as deleteForMe: only MY sessions learn.
+        broadcaster.broadcastTo(userId, ChatRealtimeEvent.builder()
+                .eventType(ChatRealtimeEventType.CONVERSATION_UPDATED)
+                .conversationId(conversationId)
+                .memberChange("CLEARED")
+                .build());
+    }
+
+    /** Shared floor advance for clear / delete-for-me. Deliberately does NOT
+     *  advance {@code lastReadMessageId}: clearing is not reading, and the
+     *  marker is visible to other people (the group "seen by" set, the DM blue
+     *  tick via {@code peerLastRead}) — advancing it here silently confirmed
+     *  having read a backlog the user cleared precisely to avoid. The unread
+     *  signal is handled instead by the mapper, whose {@code hasUnread} treats
+     *  the floor as read ({@code lastMessageId > max(lastRead, clearedBefore)}). */
+    private void advanceClearFloor(Conversation c, ConversationMember me) {
         // For an empty conversation (no messages yet) fall back to a "now" floor in
         // Snowflake id-space. Use the LARGEST id of the current millisecond (all 22
         // node+seq bits set) so any strictly-later message re-surfaces the thread —
@@ -474,12 +565,7 @@ public class ConversationService {
                 ? c.getLastMessageId()
                 : (((System.currentTimeMillis() - SnowflakeIdGenerator.CUSTOM_EPOCH) << 22) | ((1L << 22) - 1));
         me.setClearedBeforeMessageId(highWater);
-        me.setArchived(false);          // out of the archived list too
-        me.setPinned(false);
-        if (me.getLastReadMessageId() < highWater) me.setLastReadMessageId(highWater);
         me.setUnreadCount(0);
-        memberRepo.save(me);
-        unreadBadge.invalidate(me.getId().getUserId());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────

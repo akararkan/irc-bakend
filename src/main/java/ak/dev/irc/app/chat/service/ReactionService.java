@@ -178,11 +178,18 @@ public class ReactionService {
 
     public void clear(long messageId) {
         try {
-            reactionRepo.deleteAllForMessage(messageId);
-            redis.delete(HASH_PREFIX + messageId);
+            clearStrict(messageId);
         } catch (Exception e) {
             log.debug("[REACTION] clear failed for {}: {}", messageId, e.getMessage());
         }
+    }
+
+    /** Strict variant for the whole-conversation purge: the failure must reach
+     *  the sweep so it defers the bucket instead of reporting a clean pass over
+     *  rows that are still there. */
+    public void clearStrict(long messageId) {
+        reactionRepo.deleteAllForMessage(messageId);
+        redis.delete(HASH_PREFIX + messageId);
     }
 
     private void adjust(long messageId, String emoji, long delta) {

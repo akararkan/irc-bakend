@@ -22,7 +22,7 @@ Two entries in the pausable-jobs registry are newer than most of
 
 Both pause/resume through the standard
 `POST /api/v1/admin/ops/jobs/{jobKey}/pause|resume`. Full runbook:
-[`../../moderation/operations.md`](../../moderation/operations.md).
+[`../../moderation/operations.md`](../../../docs/moderation/operations.md).
 
 API reference: [`../api/analytics-feed-search.md`](../api/analytics-feed-search.md) ·
 [`../api/notifications-logs.md`](../api/notifications-logs.md) ·

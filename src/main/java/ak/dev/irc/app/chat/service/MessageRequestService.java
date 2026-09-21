@@ -33,6 +33,7 @@ import java.util.UUID;
 public class MessageRequestService {
 
     private final MessageRequestRepository requestRepo;
+    private final ak.dev.irc.app.chat.repository.ConversationRepository conversationRepo;
     private final UserRepository userRepository;
     private final UserSocialService socialService;
     private final ChatRealtimeBroadcaster broadcaster;
@@ -59,6 +60,16 @@ public class MessageRequestService {
     @Transactional
     public void accept(UUID requestId, UUID userId) {
         MessageRequest r = requireRecipient(requestId, userId);
+        /* The conversation can be RETIRED under a still-PENDING request: both
+           sides deleted-for-me (the recipient's delete does not decline), the
+           purge job stamped the thread soft-deleted, but the request row lists
+           in the tray until the purge removes it. Accepting then would
+           broadcast a graduation into a 404 — refuse the same way every other
+           read of a deleted conversation does. */
+        conversationRepo.findById(r.getConversationId())
+                .filter(c -> c.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Conversation", "id", r.getConversationId()));
         r.setStatus(MessageRequestStatus.ACCEPTED);
         requestRepo.save(r);
         // Let the requester know the thread graduated (their client refetches).

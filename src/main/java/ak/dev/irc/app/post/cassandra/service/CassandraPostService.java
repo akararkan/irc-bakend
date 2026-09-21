@@ -86,6 +86,7 @@ public class CassandraPostService {
     private final PostSearchService        postSearchService;
     private final CassandraSoundService    soundService;
     private final CassandraHashtagService  hashtagService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final UserActivityService      userActivityService;
 
     // Cascade-delete dependencies. Optional via @Autowired(required=false)
@@ -150,6 +151,8 @@ public class CassandraPostService {
                 .shareLink(cmd.shareLink())
                 .mediaUrls(cmd.mediaUrls())
                 .mediaTypes(cmd.mediaTypes())
+                .mediaIds(cmd.mediaIds())
+                .thumbnailUrl(cmd.thumbnailUrl())
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
@@ -536,6 +539,13 @@ public class CassandraPostService {
         try { mediaByPostRepo.deleteAllFor(postId); }
         catch (Exception e) { log.warn("[POST] media partition delete failed for {}: {}", postId, e.getMessage()); }
 
+        // 3b. Stored media objects — pipeline assets delete all their renditions
+        //     via the media.delete queue; legacy rows derive the object key from
+        //     the proxy URL. (Fixes the pre-pipeline leak where a deleted post's
+        //     R2 objects were never removed.)
+        try { deleteStoredMedia(canonical); }
+        catch (Exception e) { log.warn("[POST] stored media delete failed for {}: {}", postId, e.getMessage()); }
+
         // 4. post_counters row.
         try { postCounterRepo.deleteByPostId(postId); }
         catch (Exception e) { log.warn("[POST] post counter delete failed for {}: {}", postId, e.getMessage()); }
@@ -553,6 +563,42 @@ public class CassandraPostService {
         catch (Exception e) { log.warn("[POST] notification cleanup failed for {}: {}", postId, e.getMessage()); }
 
         log.info("[POST] cascade complete for {} (author={})", postId, canonical.getAuthorId());
+    }
+
+    /**
+     * Queue deletion of every stored object this post owned: assets by id
+     * (renditions + rows), legacy entries by the key derived from their proxy
+     * URL. The thumbnail rides along for legacy posts; pipeline posters live
+     * under their asset and go with it.
+     */
+    private void deleteStoredMedia(PostByIdEntity canonical) {
+        List<String> urls = canonical.getMediaUrls();
+        List<String> ids = canonical.getMediaIds();
+        if (urls != null) {
+            for (int i = 0; i < urls.size(); i++) {
+                String rawId = ids != null && i < ids.size() ? ids.get(i) : null;
+                if (rawId != null && !rawId.isBlank()) {
+                    try {
+                        mediaIngest.deleteAsset(UUID.fromString(rawId));
+                        continue;
+                    } catch (IllegalArgumentException ignored) {
+                        // fall through to key-derived delete
+                    }
+                }
+                mediaIngest.deleteByStorageKey(keyFromProxyUrl(urls.get(i)));
+            }
+        }
+        // Legacy poster thumbnails were separate posts/media objects.
+        if ((ids == null || ids.isEmpty()) && canonical.getThumbnailUrl() != null) {
+            mediaIngest.deleteByStorageKey(keyFromProxyUrl(canonical.getThumbnailUrl()));
+        }
+    }
+
+    /** {@code …/api/v1/media/{key}} → {@code key}; null for foreign URLs. */
+    private static String keyFromProxyUrl(String url) {
+        if (url == null) return null;
+        int idx = url.indexOf("/api/v1/media/");
+        return idx < 0 ? null : url.substring(idx + "/api/v1/media/".length());
     }
 
     public List<PostByAuthorEntity> profileFeed(UUID authorId, int pageSize) {
@@ -590,6 +636,12 @@ public class CassandraPostService {
             String shareLink,
             List<String> mediaUrls,
             List<String> mediaTypes,
+            /** Optional — media_assets ids index-aligned with mediaUrls ("" for
+             *  entries that didn't go through the pipeline). JSON callers pass null. */
+            List<String> mediaIds,
+            /** Optional — server-generated poster frame for the first VIDEO
+             *  media (multipart create fills it; JSON callers may omit it). */
+            String thumbnailUrl,
             /** Optional — when set, this post is registered as a use of the
              *  sound library entry, incrementing its use_count. */
             UUID   soundId

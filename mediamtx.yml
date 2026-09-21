@@ -16,6 +16,20 @@
 
 logLevel: info
 
+# ── Connection tuning ────────────────────────────────────────────────────────
+# Size of the per-connection queue of outgoing packets. Raised from MediaMTX's
+# default of 512 to reduce packet drops under concurrent high-throughput
+# publish/read load (multiple simultaneous WHIP publishers + WHEP/HLS readers
+# all sharing this box).
+# NOTE: this key was named `readBufferCount` through MediaMTX v1.0.0 and was
+# renamed to `writeQueueSize` in v1.1.0+ (same slot in the sample config, same
+# default of 512) — `bluenviron/mediamtx:latest` here is pinned to v1.20.1
+# (checked via the image digest + GitHub releases), which only recognizes the
+# new name. MediaMTX's config loader hard-rejects unknown keys (`json: unknown
+# field`), so `readBufferCount: 2048` would have failed to boot the container
+# outright rather than being silently ignored.
+writeQueueSize: 2048
+
 # ── Ingest / playback protocols ──────────────────────────────────────────────
 rtsp: no
 rtmp: yes            # RTMP ingest (:1935) — OBS / ffmpeg
@@ -26,13 +40,18 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcEncryption: no                 # plain HTTP for local dev; put TLS in front for prod
 webrtcAllowOrigins: ["*"]            # browser reads the WHIP/WHEP endpoint cross-origin
-# ICE: advertise only `localhost` and mux media over one published UDP port, so WebRTC
-# works through Docker Desktop's NAT (the container's own 172.x IPs are unreachable from
-# the host and would just waste ICE time). In production, replace `localhost` with the
-# server's public IP/hostname and publish 8189/udp on the firewall.
+# ICE: advertise `localhost` (same-machine browsers) AND the host's LAN IP
+# (phones on the Wi-Fi) over one published UDP port, so WebRTC works through
+# Docker Desktop's NAT (the container's own 172.x IPs are unreachable from the
+# host and would just waste ICE time). The LAN IP MUST track the machine's
+# actual address — keep it in sync with EXPO_PUBLIC_API_BASE_URL in the mobile
+# app's .env and app.streaming.* in application.yaml, and restart this
+# container after editing (`docker compose restart mediamtx`). In production,
+# replace it with the server's public IP/hostname and publish 8189/udp on the
+# firewall.
 webrtcLocalUDPAddress: :8189
 webrtcIPsFromInterfaces: no
-webrtcAdditionalHosts: [localhost]
+webrtcAdditionalHosts: [localhost, 192.168.33.19]
 # How long MediaMTX waits, after the peer connection is up, to gather the
 # session's track list before freezing it. The DEFAULT 2s loses a race on a COLD
 # browser camera: getUserMedia resolves when the device opens, but Chrome's first
@@ -48,6 +67,22 @@ webrtcTrackGatherTimeout: 10s
 # so the browser can read the manifest/segments cross-origin.
 hls: yes
 hlsVariant: fmp4
+# Low-latency HLS tuning for the fallback path (viewers who can't use WHEP).
+# NOTE: as of MediaMTX v1.20.1 (the version `latest` currently resolves to)
+# these three values are already the compiled-in defaults, so this pins them
+# explicitly rather than changing current behavior. More importantly,
+# hlsPartDuration only shortens glass-to-glass latency when hlsVariant is
+# `lowLatency` (CMAF partial segments) — the docs describe parts as "used in
+# Low-Latency HLS in place of segments." Under `fmp4` the key is still valid
+# and accepted, but inert: fmp4 emits whole segments only, so hlsPartDuration
+# has no observable effect while hlsVariant stays fmp4. hlsVariant is kept as
+# fmp4 here per the Opus-compatibility note above — switching to `lowLatency`
+# would be the actual latency win, but that's a behavior change beyond this
+# pass and wasn't verified here for Opus-over-WHIP compatibility, so it's left
+# for a follow-up rather than changed silently.
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentCount: 7
 hlsAllowOrigins: ["*"]
 
 # ── Control API ──────────────────────────────────────────────────────────────

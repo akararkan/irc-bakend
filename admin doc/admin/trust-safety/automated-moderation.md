@@ -8,7 +8,7 @@ model version.
 
 > **Scope.** This is the dashboard slice. The whole subsystem — design rationale,
 > implementation architecture, the two Python containers, what end users
-> experience — is [`../../moderation/`](../../moderation/README.md).
+> experience — is [`../../moderation/`](../../../docs/moderation/README.md).
 > Endpoint request/response JSON: [`../api/automated-moderation.md`](../api/automated-moderation.md).
 
 **Status: [EXISTS]** — built 2026-08-08. 30 endpoints across three controllers
@@ -26,7 +26,7 @@ production-ready is the **data**: see
 | Per-label threshold tuning, hold durations, fallback policy | Strikes / appeals / the reporter relationship → [safety-reports.md](safety-reports.md) |
 | The training-data manager ("teach it a word or sentence") | Image/video moderation — **not built**, text only |
 | The golden regression suite | The keyword blocklist CRUD itself → [content-moderation.md](content-moderation.md) §2.7 |
-| Model registry: retrain → evaluate → gate → promote → rollback | Container ops/runbook → [`../../moderation/operations.md`](../../moderation/operations.md) |
+| Model registry: retrain → evaluate → gate → promote → rollback | Container ops/runbook → [`../../moderation/operations.md`](../../../docs/moderation/operations.md) |
 | Volume / band / SLA / model-health metrics | |
 
 ---
@@ -519,8 +519,8 @@ Tracked as row **Q** in [../known-issues.md](../known-issues.md).
 | Doc | For |
 |---|---|
 | [`../api/automated-moderation.md`](../api/automated-moderation.md) | Every endpoint's request/response JSON |
-| [`../../moderation/README.md`](../../moderation/README.md) | The whole subsystem |
-| [`../../moderation/architecture.md`](../../moderation/architecture.md) | How it's implemented, and the deviations from the design |
-| [`../../moderation/operations.md`](../../moderation/operations.md) | Running the containers, failure modes, safe promotion |
-| [`../../moderation/user-guide/`](../../moderation/user-guide/README.md) | What end users experience — useful for support macros |
+| [`../../moderation/README.md`](../../../docs/moderation/README.md) | The whole subsystem |
+| [`../../moderation/architecture.md`](../../../docs/moderation/architecture.md) | How it's implemented, and the deviations from the design |
+| [`../../moderation/operations.md`](../../../docs/moderation/operations.md) | Running the containers, failure modes, safe promotion |
+| [`../../moderation/user-guide/`](../../../docs/moderation/user-guide/README.md) | What end users experience — useful for support macros |
 | [content-moderation.md](content-moderation.md) | The *other* queue — reports on live content |

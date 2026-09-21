@@ -38,5 +38,5 @@ blocklist CRUD itself lives on the content-moderation endpoints.
 ## Deeper reading
 
 The full moderation subsystem — design, architecture, the two Python
-containers, end-user behaviour — is [`../../moderation/`](../../moderation/README.md).
+containers, end-user behaviour — is [`../../moderation/`](../../../docs/moderation/README.md).
 This directory is only the dashboard slice.

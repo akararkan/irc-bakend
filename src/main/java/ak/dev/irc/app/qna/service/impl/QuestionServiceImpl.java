@@ -74,6 +74,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionMapper mapper;
     private final QuestionEventPublisher eventPublisher;
     private final S3StorageService storageService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final MentionService mentionService;
     private final SocialGuard socialGuard;
     private final FollowingIdsCache followingIdsCache;
@@ -901,18 +902,18 @@ public class QuestionServiceImpl implements QuestionService {
         // before delegating to addAnswer, so the rest of the answer pipeline
         // (block guards, mentions, realtime, dispatch) runs unchanged.
         if (media != null && !media.isEmpty()) {
-            String prefix = "qna/" + questionId + "/answers/inline";
-            String key = storageService.upload(media, prefix);
-            String url = storageService.getPublicUrl(key);
-            request.setMediaUrl(url);
-            String contentType = media.getContentType();
-            request.setMediaType(contentType != null && contentType.startsWith("video") ? "VIDEO" : "IMAGE");
+            var m = mediaIngest.ingest(media,
+                    ak.dev.irc.app.media.enums.MediaSurface.QNA_ANSWER_MEDIA, authorId,
+                    "qna/" + questionId + "/answers/inline");
+            request.setMediaUrl(m.url());
+            request.setMediaType(m.kind() == ak.dev.irc.app.media.enums.MediaKind.VIDEO
+                    ? "VIDEO" : "IMAGE");
         }
         if (voice != null && !voice.isEmpty()) {
-            String prefix = "qna/" + questionId + "/answers/voice";
-            String key = storageService.upload(voice, prefix);
-            String url = storageService.getPublicUrl(key);
-            request.setVoiceUrl(url);
+            var v = mediaIngest.ingest(voice,
+                    ak.dev.irc.app.media.enums.MediaSurface.VOICE, authorId,
+                    "qna/" + questionId + "/answers/voice");
+            request.setVoiceUrl(v.url());
         }
         return addAnswer(questionId, request, authorId);
     }
@@ -1198,8 +1199,10 @@ public class QuestionServiceImpl implements QuestionService {
 
     private void safeS3Delete(String key) {
         if (key == null || key.isBlank()) return;
-        try { storageService.delete(key); }
-        catch (Exception e) { log.warn("[QNA] S3 delete failed for {}: {}", key, e.getMessage()); }
+        // Pipeline keys (media/{assetId}/…) remove the whole asset; legacy keys
+        // delete the single object as before.
+        try { mediaIngest.deleteByStorageKey(key); }
+        catch (Exception e) { log.warn("[QNA] media delete failed for {}: {}", key, e.getMessage()); }
     }
 
     @Override
@@ -1401,16 +1404,18 @@ public class QuestionServiceImpl implements QuestionService {
         moderateAnnotation(answerId, requesterId, "attachment_caption", caption, null, null);
 
         String prefix = "qna/" + questionId + "/answers/" + answerId + "/attachments";
-        String s3Key = storageService.upload(file, prefix);
-        String fileUrl = storageService.getPublicUrl(s3Key);
+        var ingest = mediaIngest.ingest(file,
+                ak.dev.irc.app.media.enums.MediaSurface.QNA_ATTACHMENT, requesterId, prefix);
 
         String mimeType = file.getContentType() != null ? file.getContentType() : "application/octet-stream";
         MediaType mediaType = resolveMediaType(mimeType);
 
         AnswerAttachment attachment = AnswerAttachment.builder()
                 .answer(answer)
-                .fileUrl(fileUrl)
-                .s3Key(s3Key)
+                .fileUrl(ingest.url())
+                .s3Key(ingest.storageKey())
+                .thumbnailUrl(ingest.thumbnailUrl())
+                .mediaAssetId(ingest.assetId())
                 .originalFileName(file.getOriginalFilename())
                 .mimeType(mimeType)
                 .mediaType(mediaType)
@@ -1483,7 +1488,7 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException(QnaMessages.ATTACHMENT_MISMATCH_MSG, QnaMessages.ATTACHMENT_MISMATCH);
         }
 
-        storageService.delete(attachment.getS3Key());
+        safeS3Delete(attachment.getS3Key());
         attachmentRepository.delete(attachment);
     }
 
@@ -1543,14 +1548,15 @@ public class QuestionServiceImpl implements QuestionService {
 
         // Replace any previously-uploaded file for this source.
         if (source.getS3Key() != null) {
-            try { storageService.delete(source.getS3Key()); }
+            try { mediaIngest.deleteByStorageKey(source.getS3Key()); }
             catch (Exception e) { log.warn("[QNA] old source file delete failed: {}", e.getMessage()); }
         }
 
         String prefix = "qna/" + questionId + "/answers/" + answerId + "/sources";
-        String s3Key  = storageService.upload(file, prefix);
-        source.setS3Key(s3Key);
-        source.setFileUrl(storageService.getPublicUrl(s3Key));
+        var ingest = mediaIngest.ingest(file,
+                ak.dev.irc.app.media.enums.MediaSurface.DOCUMENT, requesterId, prefix);
+        source.setS3Key(ingest.storageKey());
+        source.setFileUrl(ingest.url());
         source.setOriginalFileName(file.getOriginalFilename());
         source.setMimeType(file.getContentType());
         source.setFileSize(file.getSize());
@@ -1628,10 +1634,8 @@ public class QuestionServiceImpl implements QuestionService {
             throw new BadRequestException(QnaMessages.SOURCE_MISMATCH_MSG, QnaMessages.SOURCE_MISMATCH);
         }
 
-        // If the source has an uploaded file, delete it from S3
-        if (source.getS3Key() != null) {
-            storageService.delete(source.getS3Key());
-        }
+        // If the source has an uploaded file, delete it from storage
+        safeS3Delete(source.getS3Key());
 
         sourceRepository.delete(source);
     }

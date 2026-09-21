@@ -19,8 +19,8 @@ owns the complete HTTP contract and the build sequence.
 | **[PLANNED]** | Proposed for the dashboard build — not yet coded |
 
 Related: [architecture.md](architecture.md) (conventions §4, existing-surface inventory §5) ·
-[../settings/auth-sessions.md](../../settings/auth-sessions.md) (step-up) ·
-[../errors/error-handling.md](../../errors/error-handling.md) (error envelope) ·
+[../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md) (step-up) ·
+[../errors/error-handling.md](../../../docs/errors/error-handling.md) (error envelope) ·
 [logs-audit.md](../platform/logs-audit.md) (log catalog) · [operations.md](../platform/operations.md) (ops detail)
 
 ## 1. Purpose & scope
@@ -48,7 +48,7 @@ Defined in [architecture.md §4](architecture.md); summarized here because this 
 | Rule | Convention |
 |------|-----------|
 | Prefix & gate | `/api/v1/admin/{section}/...` — inherits the filter-chain double gate (`config/SecurityConfig` `requestMatchers("/api/v1/admin/**").hasRole("ADMIN")`) **plus** class-level `@PreAuthorize("hasRole('ADMIN')")`. **[EXISTS]** mechanism. No admin capability ships outside the prefix again — the two historical strays get re-homed (§4.3, §4.5). |
-| Response shape | Raw DTO / `Page<DTO>` in `ResponseEntity<T>` — **no envelope**. Errors use the canonical envelope of [../errors/error-handling.md](../../errors/error-handling.md). |
+| Response shape | Raw DTO / `Page<DTO>` in `ResponseEntity<T>` — **no envelope**. Errors use the canonical envelope of [../errors/error-handling.md](../../../docs/errors/error-handling.md). |
 | Pagination | PG-backed lists: Spring `Pageable` with `Pages.clamp` (**[EXISTS]** pattern), hard cap `size<=100`. Cassandra-backed lists: `cursor` + `pageSize` keyset, exactly like `AuditLogController` **[EXISTS]**. |
 | Date ranges | `from` / `to` ISO-8601 instants, optional, `from<=to` validated; default last 24h (logs) / last 30d (analytics). |
 | Filters | Consistent names: `userId`, `status`, `type`, `q`, `sort`. Enums parsed case-insensitively; 400 lists allowed values. |

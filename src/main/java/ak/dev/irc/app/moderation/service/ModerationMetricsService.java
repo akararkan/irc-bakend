@@ -6,6 +6,7 @@ import ak.dev.irc.app.moderation.engine.ModerationSettingsService;
 import ak.dev.irc.app.moderation.entity.ModerationModelVersion;
 import ak.dev.irc.app.moderation.enums.ModeratedEntityType;
 import ak.dev.irc.app.moderation.enums.ModerationStatus;
+import ak.dev.irc.app.moderation.image.ImageModerationGate;
 import ak.dev.irc.app.moderation.repository.ModerationCaseRepository;
 import ak.dev.irc.app.moderation.repository.ModerationGoldenCaseRepository;
 import ak.dev.irc.app.moderation.repository.ModerationTrainingExampleRepository;
@@ -38,6 +39,7 @@ public class ModerationMetricsService {
     private final ModerationTrainingClient trainingClient;
     private final ModerationTrainingService trainingService;
     private final ModerationSettingsService settings;
+    private final ImageModerationGate imageModerationGate;
 
     @Transactional(readOnly = true)
     public Map<String, Object> overview(int windowHours) {
@@ -165,6 +167,10 @@ public class ModerationMetricsService {
         out.put("avgLatencyMs", stats.avgLatencyMs());
         out.put("lastError", stats.lastError());
         out.put("trainingUp", trainingClient.health().up());
+
+        // The image scorer's panel (docs/moderation/image-moderation.md) —
+        // prefixed keys so the two models never collide on this map.
+        out.putAll(imageModerationGate.health());
 
         trainingService.activeVersion().ifPresent(active -> {
             Map<String, Object> registry = new LinkedHashMap<>();

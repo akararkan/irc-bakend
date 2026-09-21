@@ -5,9 +5,9 @@ Operational console for the three discovery engines: **Elasticsearch search**
 subsystem** (Cassandra counters + `TrendingTagJob` snapshots, override
 controls), the **ranked home feed** (pipeline observability + knob registry +
 tuning UI), and the **friend-suggestion engine** (PYMK health). Underlying
-mechanics live in [../search/](../../search/README.md),
-[../feed/algorithm.md](../../feed/algorithm.md) and
-[../suggestions/algorithm.md](../../suggestions/algorithm.md); this doc covers
+mechanics live in [../search/](../../../docs/search/README.md),
+[../feed/algorithm.md](../../../docs/feed/algorithm.md) and
+[../suggestions/algorithm.md](../../../docs/suggestions/algorithm.md); this doc covers
 only the admin view. Tag semantics: **[EXISTS]** / **[PARTIAL]** /
 **[PLANNED]** per [README.md](../README.md).
 
@@ -17,11 +17,11 @@ only the admin view. Tag semantics: **[EXISTS]** / **[PARTIAL]** /
 
 | In scope | Out of scope (see) |
 |----------|--------------------|
-| ES index health, doc counts, the 7 reindex endpoints, reindex safety | Search *relevance* algorithms — [../search/algorithms-and-complexity.md](../../search/algorithms-and-complexity.md) |
+| ES index health, doc counts, the 7 reindex endpoints, reindex safety | Search *relevance* algorithms — [../search/algorithms-and-complexity.md](../../../docs/search/algorithms-and-complexity.md) |
 | Search analytics: top queries, zero-result queries | Per-user activity history UI — [logs-audit.md](logs-audit.md) |
 | Trending scopes, rebuild job, tag backfill, pin/ban overrides | Tag content moderation (hashtag abuse) — [content-moderation.md](../trust-safety/content-moderation.md) |
-| Feed pipeline observability, `user_author_affinity`, digest/live-rail stats, knob registry + tuning UI | Feed API contract — [../feed/api-reference.md](../../feed/api-reference.md) |
-| PYMK source mix, dismissal rates, contact-sync match rates | Contact-sync consent/privacy — [../settings/README.md](../../settings/README.md), [safety-reports.md](../trust-safety/safety-reports.md) |
+| Feed pipeline observability, `user_author_affinity`, digest/live-rail stats, knob registry + tuning UI | Feed API contract — [../feed/api-reference.md](../../../docs/feed/api-reference.md) |
+| PYMK source mix, dismissal rates, contact-sync match rates | Contact-sync consent/privacy — [../settings/README.md](../../../docs/settings/README.md), [safety-reports.md](../trust-safety/safety-reports.md) |
 
 ---
 
@@ -35,7 +35,7 @@ Four tabs. What the admin sees on screen:
 |--------|------------------|--------|
 | **Index health board** | 8 cards, one per index (`irc-posts`, `irc-research`, `irc-qna`, `irc-answers`, `irc-users`, `irc-channels`, `irc-sounds`, `irc-chat-messages`): green/yellow/red, doc count, store size, canonical-store count beside it (drift %), last-reindex timestamp | **[EXISTS (built 2026-08)] — backend**: `GET /api/v1/admin/search/indices` (existence + doc count) and `GET /api/v1/admin/search/health` (per-index doc counts + canonical drift where the canonical store is PG; Cassandra-canonical indices report drift-unknown). Store size still missing |
 | **Reindex console** | 7 rows (one per existing endpoint) with a `drop` toggle (default on), Run button behind a type-to-confirm modal, last run result (`indexed` / `failed` counts), run history | **[PARTIAL]** — the 7 endpoints exist (`SearchAdminController`); the UI, history and confirm flow are the dashboard build |
-| **Mapping-gotcha banner** | Static warning card: dynamic-mapping repair semantics of `drop=true` (see §8) | **[PLANNED]** (content is real today, documented in [../search/indexing-and-reindex.md](../../search/indexing-and-reindex.md)) |
+| **Mapping-gotcha banner** | Static warning card: dynamic-mapping repair semantics of `drop=true` (see §8) | **[PLANNED]** (content is real today, documented in [../search/indexing-and-reindex.md](../../../docs/search/indexing-and-reindex.md)) |
 | **Top queries (24h/7d)** | Ranked table: query, count, avg hit count, scope mix | **[EXISTS (built 2026-08)] — backend**: collector §6.1 + `GET /api/v1/admin/search/analytics/top-queries` |
 | **Zero-result queries** | Ranked table of normalized queries with `hitCount=0`; "content gap" export | **[EXISTS (built 2026-08)] — backend**: `GET /api/v1/admin/search/analytics/zero-results` |
 | **Search degradation ticker** | Recent `degraded: true` global-search responses + `EsRetry` recovery log volume | **[PLANNED]** — flag exists per-response (`GlobalSearchService`), nothing aggregates it |
@@ -266,7 +266,7 @@ no change and overrides take effect within one refresh interval (≤10 min).
   by dynamic mapping (the `EntityAsMap` era) mapped lifecycle fields as
   `text`, breaking `visibility`/`status`/`postType` term filters;
   `drop=true` recreates from the current entity `@Field` mapping and is the
-  documented repair path ([../search/indexing-and-reindex.md](../../search/indexing-and-reindex.md)).
+  documented repair path ([../search/indexing-and-reindex.md](../../../docs/search/indexing-and-reindex.md)).
   `drop=false` only refreshes documents/score counters and cannot fix a bad
   mapping.
 - **`irc-chat-messages` has no reindex hook by design** — it self-heals on

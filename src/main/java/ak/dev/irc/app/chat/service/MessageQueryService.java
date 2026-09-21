@@ -575,9 +575,11 @@ public class MessageQueryService {
     }
 
     /** The lowest message id this member may see, or {@code null} if unrestricted.
-     *  Combines the hidden-history join floor with the per-user "delete for me"
-     *  clear point (messages must be strictly newer than the cleared id). */
-    private Long floorMessageId(Conversation convo, ConversationMember me) {
+     *  Combines the hidden-history join floor with the per-user clear point
+     *  ("clear chat" / "delete for me" — messages must be strictly newer than the
+     *  cleared id). Package-visible and static so WRITE paths that re-publish a
+     *  read (MessageService.forward) can apply the identical floor. */
+    static Long floorMessageId(Conversation convo, ConversationMember me) {
         Long floor = null;
         if (hidesHistory(convo) && me.getJoinedAt() != null) {
             long joinMs = me.getJoinedAt().toInstant(ZoneOffset.UTC).toEpochMilli();
@@ -590,7 +592,7 @@ public class MessageQueryService {
         return floor;
     }
 
-    private boolean hidesHistory(Conversation convo) {
+    private static boolean hidesHistory(Conversation convo) {
         return convo.isGroup() && convo.getGroupSettings() != null
                 && !convo.getGroupSettings().isHistoryVisibleToNewMembers();
     }

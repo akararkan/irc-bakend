@@ -83,6 +83,22 @@ public class ChatSearchService {
         }
     }
 
+    /** Remove a whole page of messages from the index in one round trip — the
+     *  whole-conversation purge sweeps thousands of ids, and one {@link #deleteAsync}
+     *  per message would flood the async pool for no reason. Deliberately
+     *  SYNCHRONOUS and deliberately throwing: the purge destroys the Cassandra
+     *  rows that are the only record of these ids right after this call, so a
+     *  failure must reach the caller and defer the bucket to the next night —
+     *  an async fire-and-forget here would strand message bodies in the index
+     *  forever. Ids that were never indexed (SYSTEM, media-only) are silently
+     *  absent, which is fine. */
+    public void deleteBatch(java.util.Collection<Long> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) return;
+        List<String> docIds = messageIds.stream().map(ChatMessageDocument::idOf).toList();
+        EsRetry.run(() -> searchRepo.deleteAllById(docIds),
+                "[CHAT-SEARCH] purge batch of " + docIds.size());
+    }
+
     // ── Query ─────────────────────────────────────────────────────────────────────
 
     /**

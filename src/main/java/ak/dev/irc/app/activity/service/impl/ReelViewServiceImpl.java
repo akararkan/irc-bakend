@@ -16,6 +16,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -64,6 +66,15 @@ public class ReelViewServiceImpl implements ReelViewService {
         List<ReelViewResponse> content = reelRepo.firstPage(userId, pageable.getPageSize())
                 .stream().map(mapper::toResponse).toList();
         return new PageImpl<>(content, pageable, content.size());
+    }
+
+    @Override
+    public Set<UUID> recentlyWatchedPostIds(UUID userId, int limit) {
+        Set<UUID> ids = new HashSet<>();
+        for (ReelViewEntity row : reelRepo.firstPage(userId, Math.max(1, limit))) {
+            if (row.getPostId() != null) ids.add(row.getPostId());
+        }
+        return ids;
     }
 
     @Override

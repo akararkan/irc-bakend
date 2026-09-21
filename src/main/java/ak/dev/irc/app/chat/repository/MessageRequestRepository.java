@@ -60,4 +60,9 @@ public interface MessageRequestRepository extends JpaRepository<MessageRequest, 
         LIMIT :limit
         """, nativeQuery = true)
     java.util.List<Object[]> topBlockedRequesters(@Param("limit") int limit);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. */
+    @Modifying
+    @Query("DELETE FROM MessageRequest r WHERE r.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

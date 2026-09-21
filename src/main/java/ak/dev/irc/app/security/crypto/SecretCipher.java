@@ -22,9 +22,12 @@ import java.util.Base64;
  * <p>Ciphertext format: {@code base64(iv[12] || ciphertext || tag)}. A fresh
  * 96-bit IV per encryption is mandatory for GCM.</p>
  *
- * <p>If no key is configured, a process-ephemeral key is derived so the app
- * still boots in dev — but secrets then do not survive a restart, which is
- * logged loudly. Set the env var in any real deployment.</p>
+ * <p>If no key is configured, a random key is generated once and persisted to
+ * {@code ~/.irc/twofa-dev.key} so dev secrets survive restarts (a per-process
+ * ephemeral key would silently orphan every enrolled secret on the next boot).
+ * This is a dev convenience only and is logged loudly — set the env var in any
+ * real deployment. Only if that file can be neither read nor written does it
+ * fall back to a process-ephemeral key.</p>
  */
 @Slf4j
 @Component
@@ -42,12 +45,7 @@ public class SecretCipher {
             // Derive a stable 256-bit key from the configured secret (any length in).
             keyBytes = sha256(configuredKey.getBytes(StandardCharsets.UTF_8));
         } else {
-            byte[] ephemeral = new byte[32];
-            new SecureRandom().nextBytes(ephemeral);
-            keyBytes = ephemeral;
-            log.warn("[2FA-CIPHER] app.security.twofa.secret-key is not set — using a "
-                    + "process-ephemeral key. Enrolled 2FA secrets will NOT survive a restart. "
-                    + "Set TWOFA_AES_KEY in any real deployment.");
+            keyBytes = loadOrCreateDevKey();
         }
         this.key = new SecretKeySpec(keyBytes, "AES");
     }
@@ -82,6 +80,46 @@ public class SecretCipher {
             return new String(cipher.doFinal(ct), StandardCharsets.UTF_8);
         } catch (Exception ex) {
             throw new IllegalStateException("2FA secret decryption failed", ex);
+        }
+    }
+
+    /**
+     * No configured key: load a previously generated dev key from
+     * {@code ~/.irc/twofa-dev.key}, creating it on first use. Persisting the key
+     * is what lets enrolled 2FA secrets survive an app restart in dev; a
+     * per-process random key would make every stored secret undecryptable
+     * ({@code AEADBadTagException}) after the first restart.
+     */
+    private static byte[] loadOrCreateDevKey() {
+        java.nio.file.Path keyFile = java.nio.file.Path.of(
+                System.getProperty("user.home"), ".irc", "twofa-dev.key");
+        try {
+            if (java.nio.file.Files.exists(keyFile)) {
+                byte[] loaded = Base64.getDecoder().decode(
+                        java.nio.file.Files.readString(keyFile).strip());
+                if (loaded.length == 32) {
+                    log.warn("[2FA-CIPHER] app.security.twofa.secret-key is not set — using the "
+                            + "persisted dev key at {}. Set TWOFA_AES_KEY in any real deployment.",
+                            keyFile);
+                    return loaded;
+                }
+                log.warn("[2FA-CIPHER] dev key file {} is malformed — regenerating.", keyFile);
+            }
+            byte[] fresh = new byte[32];
+            new SecureRandom().nextBytes(fresh);
+            java.nio.file.Files.createDirectories(keyFile.getParent());
+            java.nio.file.Files.writeString(keyFile, Base64.getEncoder().encodeToString(fresh));
+            log.warn("[2FA-CIPHER] app.security.twofa.secret-key is not set — generated a dev key "
+                    + "and persisted it to {} so 2FA secrets survive restarts. "
+                    + "Set TWOFA_AES_KEY in any real deployment.", keyFile);
+            return fresh;
+        } catch (Exception ex) {
+            byte[] ephemeral = new byte[32];
+            new SecureRandom().nextBytes(ephemeral);
+            log.warn("[2FA-CIPHER] could not read/write dev key file {} ({}) — falling back to a "
+                    + "process-ephemeral key. Enrolled 2FA secrets will NOT survive a restart.",
+                    keyFile, ex.getMessage());
+            return ephemeral;
         }
     }
 

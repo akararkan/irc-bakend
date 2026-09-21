@@ -73,6 +73,97 @@ public interface ConversationRepository extends JpaRepository<Conversation, UUID
     @Query("UPDATE Conversation c SET c.deletedAt = :at WHERE c.id = :id")
     void softDelete(@Param("id") UUID id, @Param("at") LocalDateTime at);
 
+    // ── Hard-delete purge (ConversationPurgeJob) ─────────────────────────────────
+
+    /**
+     * DIRECT conversations that EVERY member has deleted-for-me AND floored at or
+     * past the newest message — nobody can see a single row, so the thread is a
+     * hard-delete candidate. Phase 1 of the purge job "retires" these by stamping
+     * {@code deletedAt}; the {@code EXISTS} guard keeps a memberless orphan row
+     * from qualifying vacuously.
+     */
+    @Query("""
+        SELECT c.id FROM Conversation c
+        WHERE c.type = ak.dev.irc.app.chat.enums.ConversationType.DIRECT
+          AND c.deletedAt IS NULL
+          AND EXISTS (
+              SELECT 1 FROM ConversationMember any_m
+              WHERE any_m.id.conversationId = c.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM ConversationMember m
+              WHERE m.id.conversationId = c.id
+                AND (m.deletedAt IS NULL
+                     OR (c.lastMessageId IS NOT NULL AND c.lastMessageId > m.clearedBeforeMessageId)))
+          AND NOT EXISTS (
+              SELECT 1 FROM ScheduledMessage s
+              WHERE s.conversationId = c.id
+                AND s.status = ak.dev.irc.app.chat.enums.ScheduledMessageStatus.PENDING)
+        """)
+    List<UUID> findFullyDeletedDirectIds(Pageable pageable);
+
+    /** Retired DMs whose grace has elapsed — the storage-purge slice, oldest first. */
+    @Query("""
+        SELECT c FROM Conversation c
+        WHERE c.type = ak.dev.irc.app.chat.enums.ConversationType.DIRECT
+          AND c.deletedAt IS NOT NULL AND c.deletedAt < :cutoff
+        ORDER BY c.deletedAt ASC
+        """)
+    List<Conversation> findRetiredDirectsBefore(@Param("cutoff") LocalDateTime cutoff, Pageable pageable);
+
+    /** Owner-deleted GROUPs/CHANNELs whose grace has elapsed, oldest first. */
+    @Query("""
+        SELECT c FROM Conversation c
+        WHERE c.type <> ak.dev.irc.app.chat.enums.ConversationType.DIRECT
+          AND c.deletedAt IS NOT NULL AND c.deletedAt < :cutoff
+        ORDER BY c.deletedAt ASC
+        """)
+    List<Conversation> findRetiredRoomsBefore(@Param("cutoff") LocalDateTime cutoff, Pageable pageable);
+
+    /** Guarded retire (phase-1 stamp): the eligibility was re-checked in this
+     *  transaction; the {@code deletedAt IS NULL} guard closes the last window
+     *  against a concurrent owner delete taking the same row. */
+    @Modifying
+    @Query("UPDATE Conversation c SET c.deletedAt = :at WHERE c.id = :id AND c.deletedAt IS NULL")
+    int retire(@Param("id") UUID id, @Param("at") LocalDateTime at);
+
+    /**
+     * Un-retire a DM. Two callers: {@code createDirect} reviving a
+     * both-sides-deleted thread someone wants to reopen (both floors still hide
+     * the old history, so it reopens empty), and the purge job stepping back from
+     * a retired DM that turned out to be resurrect-eligible. DIRECT-only by
+     * construction — an owner-deleted group/channel must never come back.
+     * {@code @Transactional} on the method because createDirect is deliberately
+     * non-transactional (race-catch), and a {@code @Modifying} query needs a
+     * transaction of its own.
+     *
+     * <p>The {@code directKey IS NOT NULL} arm is the purge fence: the moment
+     * the purge commits to a conversation it nulls the key under a row lock
+     * (see {@code ConversationPurgeService.beginPurge}), after which this
+     * update matches nothing — a concurrent {@code createDirect} then falls
+     * through to a fresh conversation on the freed key instead of reviving a
+     * thread whose storage is being irreversibly destroyed.</p>
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+        UPDATE Conversation c SET c.deletedAt = null
+        WHERE c.id = :id
+          AND c.type = ak.dev.irc.app.chat.enums.ConversationType.DIRECT
+          AND c.deletedAt IS NOT NULL
+          AND c.directKey IS NOT NULL
+        """)
+    int reviveRetiredDirect(@Param("id") UUID id);
+
+    /**
+     * Pessimistic hold on one row for the purge's final transaction: the child
+     * deletes and the row delete must not interleave with a concurrent
+     * {@link #reviveRetiredDirect} — the lock makes the revive wait, observe the
+     * deletion, update 0 rows, and fall through to a fresh create.
+     */
+    @Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM Conversation c WHERE c.id = :id")
+    Optional<Conversation> lockById(@Param("id") UUID id);
+
     // ── Channels ─────────────────────────────────────────────────────────────────
 
     /** Public channel lookup by @handle. */

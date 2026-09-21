@@ -35,7 +35,15 @@ public enum ModeratedEntityType {
     /** Live-stream chat line — the §6 real-time exception. Never queued. */
     LIVE_CHAT(                Duration.ofMillis(300), Duration.ofSeconds(5),  FallbackPolicy.FAIL_CLOSED,      true),
     /** Share caption / media alt-text / highlight title — short, low-volume text. */
-    CONTENT_ANNOTATION(       Duration.ofMillis(500), Duration.ofSeconds(10), FallbackPolicy.FAIL_CLOSED,      false);
+    CONTENT_ANNOTATION(       Duration.ofMillis(500), Duration.ofSeconds(10), FallbackPolicy.FAIL_CLOSED,      false),
+    /**
+     * An uploaded image (or video poster frame) flagged into the review queue by
+     * the NSFW image scorer (docs/moderation/image-moderation.md). NOT part of
+     * the text pipeline: no PENDING hold, no worker, no sweeper — the
+     * ImageModerationGate decides synchronously at ingest and only the
+     * borderline band lands here, already IN_REVIEW. entityRef = media assetId.
+     */
+    MEDIA_IMAGE(              Duration.ofSeconds(2),  Duration.ofSeconds(30), FallbackPolicy.FAIL_OPEN_SHADOW, false);
 
     private final Duration defaultInlineBudget;
     private final Duration defaultHoldCeiling;

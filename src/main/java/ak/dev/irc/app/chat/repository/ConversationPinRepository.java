@@ -22,4 +22,9 @@ public interface ConversationPinRepository extends JpaRepository<ConversationPin
     @Modifying
     @Query("DELETE FROM ConversationPin p WHERE p.conversationId = :cid AND p.messageId = :mid")
     int deletePin(@Param("cid") UUID conversationId, @Param("mid") long messageId);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only. */
+    @Modifying
+    @Query("DELETE FROM ConversationPin p WHERE p.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

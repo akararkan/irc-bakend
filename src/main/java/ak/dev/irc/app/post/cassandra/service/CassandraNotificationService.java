@@ -9,6 +9,7 @@ import ak.dev.irc.app.common.notification.NotificationKind;
 import ak.dev.irc.app.post.cassandra.repository.NotifActiveGroupRepository;
 import ak.dev.irc.app.post.cassandra.repository.NotificationLookupRepository;
 import ak.dev.irc.app.post.cassandra.repository.NotificationRepository;
+import ak.dev.irc.app.settings.notification.push.PushNotifier;
 import ak.dev.irc.app.user.entity.User;
 import ak.dev.irc.app.user.repository.UserBlockRepository;
 import ak.dev.irc.app.user.repository.UserRepository;
@@ -48,6 +49,11 @@ import java.util.function.Supplier;
  *        • recipient.emailNotificationsEnabled (master toggle)
  *        • the category-specific toggle is on
  *        • Redis throttle key wasn't set in the last hour for this groupKey
+ *   8. Mobile push — one per delivered event through {@link PushNotifier},
+ *      which applies the spec §8 gates (preference matrix on the PUSH
+ *      channel, DND quiet hours) and prunes dead tokens. Coalesced events
+ *      push too, with the rewritten "…and N others" body — a backgrounded
+ *      phone must hear every message of a chat burst, not just the first.
  *
  * Every public path delegates to an @Async wrapper so callers (reactions,
  * comments) return without waiting on Cassandra writes or SMTP.
@@ -73,6 +79,7 @@ public class CassandraNotificationService {
     private final UserBlockRepository          userBlockRepo;
     private final EmailService                 emailService;
     private final NotificationEmailFormatter   emailFormatter;
+    private final PushNotifier                 pushNotifier;
 
     public record DeliverRequest(
             UUID             userId,         // recipient
@@ -145,9 +152,11 @@ public class CassandraNotificationService {
         if (req.userId() == null || req.kind() == null) return Optional.empty();
         if (suppressed(req))                            return Optional.empty();
 
-        return req.kind().aggregable() && req.groupKey() != null
+        Optional<UUID> delivered = req.kind().aggregable() && req.groupKey() != null
                 ? aggregateInto(req)
                 : insertFresh(req);
+        delivered.ifPresent(id -> maybeSendPush(req));
+        return delivered;
     }
 
     // ── Read API ─────────────────────────────────────────────────────────────
@@ -418,6 +427,23 @@ public class CassandraNotificationService {
             emailService.sendAsync(recipient.getEmail(), msg.subject(), msg.plainText(), msg.html());
         } catch (Exception e) {
             log.debug("[NOTIF] email send skipped: {}", e.getMessage());
+        }
+    }
+
+    // ── Mobile push ──────────────────────────────────────────────────────────
+
+    /**
+     * Hand the event to {@link PushNotifier} (async), which applies the spec §8
+     * gates — preference matrix on the PUSH channel, DND quiet hours — and
+     * prunes tokens the provider reports as unregistered. Runs after the row is
+     * persisted so the badge counter read is already up to date.
+     */
+    private void maybeSendPush(DeliverRequest req) {
+        try {
+            pushNotifier.deliver(req.userId(), req.kind(), req.title(), req.body(),
+                    req.resourceType(), req.resourceId(), unreadCountFor(req.userId()));
+        } catch (Exception e) {
+            log.debug("[NOTIF] push handoff skipped: {}", e.getMessage());
         }
     }
 

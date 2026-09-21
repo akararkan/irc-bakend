@@ -42,10 +42,12 @@ import java.util.concurrent.CompletableFuture;
  *       cursor pagination stays stateless and loss-free.</li>
  *   <li><b>Channels</b> (first page only): fresh posts from subscribed
  *       broadcast channels via {@link ChannelFeedCandidateService}.</li>
- *   <li><b>Exploration</b> (first page only): ~5–10% trending reels from
- *       authors the viewer does NOT follow — the interest-graph discovery
- *       slice. Expands to fill the whole page for cold-start users with an
- *       empty timeline.</li>
+ *   <li><b>Exploration</b> (first page only): the discovery slice — trending
+ *       reels PLUS the newest public posts (via the ES discovery pool), all
+ *       from authors the viewer does NOT follow. Normally ~a quarter of the
+ *       page; tops the page up whenever the social graph can't fill it, and
+ *       expands to the whole page for cold-start users — a new account sees
+ *       a real feed before following anyone, like any social network.</li>
  *   <li><b>Live rail</b> (first page only): streams from followed hosts,
  *       topped up with the most-watched public streams — returned beside
  *       the items, Instagram-stories-style, not competing for item slots.</li>
@@ -76,7 +78,10 @@ public class HomeFeedService {
     private static final int LIVE_RAIL_MAX      = 10;
     private static final int CHANNEL_ITEMS_MAX  = 8;
     private static final int EXPLORE_MIN        = 1;
-    private static final int EXPLORE_MAX        = 3;
+    /** Normal ceiling ~a quarter of a 20-item page — visible discovery without
+     *  drowning the social graph. (The quota separately expands to fill
+     *  whatever part of the page the graph left empty — see exploreItems.) */
+    private static final int EXPLORE_MAX        = 6;
     private static final int EXPLORE_POOL_MULT  = 3;
 
     private final FeedTimelineService         feedTimeline;
@@ -91,6 +96,7 @@ public class HomeFeedService {
     private final UserFollowRepository        followRepo;
     private final ThreadPoolTaskExecutor      taskExecutor;
     private final ak.dev.irc.app.admin.feed.FeedTuningService feedTuning;
+    private final ak.dev.irc.app.post.search.service.PostDiscoveryService discoveryService;
 
     /** Ranked page + live rail + the stateless continuation cursor. */
     public record RankedFeed(List<FeedItemResponse> items,
@@ -189,6 +195,64 @@ public class HomeFeedService {
         return new RankedFeed(items, liveNow, nextCursor);
     }
 
+    /**
+     * The chronological "Latest" page — the follow-graph timeline merged BY
+     * TIME with the public-content discovery pool, so Latest shows strangers'
+     * public posts exactly like the ranked tab does, just in strict
+     * newest-first order (no scoring, no diversity pass — Latest promises
+     * chronology).
+     *
+     * <p>Cursor contract: both sources window on {@code createdAt} strictly
+     * below the cursor (timeline via {@code homeFeedAfter}, discovery via the
+     * keyset ES variant), so the cursor of the MERGED page — its oldest
+     * emitted row — re-enters both sources loss-free and duplicate-free.</p>
+     *
+     * <p>Discovery bypasses fanout, so the blocked-author filter must run
+     * here explicitly; timeline rows keep the legacy behavior. Discovery
+     * items are labeled {@code EXPLORE} so the UI shows its "Suggested for
+     * you" chrome and inline Follow.</p>
+     */
+    public RankedFeed latestFeed(UUID viewer, int pageSize, Instant cursor) {
+        boolean firstPage = cursor == null;
+        List<FeedByUserEntity> rows = firstPage
+                ? feedTimeline.homeFeed(viewer, pageSize)
+                : feedTimeline.homeFeedAfter(viewer, cursor, pageSize);
+        List<FeedItemResponse> timeline = hydrator.hydrateHomeFeed(rows);
+
+        Set<UUID> followingSet = new HashSet<>(followingIdsCache.getFilteredFollowingIds(viewer));
+        Set<UUID> seen = new HashSet<>();
+        timeline.forEach(i -> seen.add(i.id()));
+
+        List<UUID> discoveredIds = discoveryService
+                .recentPublicPosts(viewer, pageSize * EXPLORE_POOL_MULT, cursor)
+                .stream()
+                .filter(d -> d.authorId() != null
+                        && !d.authorId().equals(viewer)
+                        && !followingSet.contains(d.authorId())
+                        && !seen.contains(d.postId()))
+                .map(ak.dev.irc.app.post.search.service.PostDiscoveryService.DiscoveredPost::postId)
+                .toList();
+        List<FeedItemResponse> discovery = hydrator.hydrateByIds(discoveredIds);
+
+        Set<UUID> discoveryAuthors = new LinkedHashSet<>();
+        discovery.forEach(i -> { if (i.authorId() != null) discoveryAuthors.add(i.authorId()); });
+        Set<UUID> blocked = blockedAmong(viewer, discoveryAuthors);
+        if (!blocked.isEmpty()) {
+            discovery = discovery.stream().filter(i -> !blocked.contains(i.authorId())).toList();
+        }
+
+        List<FeedItemResponse> merged = new ArrayList<>(timeline.size() + discovery.size());
+        merged.addAll(timeline);
+        for (FeedItemResponse i : discovery) merged.add(i.withRanking(HomeFeedSources.EXPLORE, 0.0));
+        merged.sort(Comparator.comparing(FeedItemResponse::createdAt,
+                Comparator.nullsLast(Comparator.reverseOrder())));
+        if (merged.size() > pageSize) merged = new ArrayList<>(merged.subList(0, pageSize));
+
+        Instant next = null;
+        for (FeedItemResponse i : merged) { if (i.createdAt() != null) next = i.createdAt(); }
+        return new RankedFeed(merged, firstPage ? liveRail(viewer) : List.of(), next);
+    }
+
     // ── Live rail ────────────────────────────────────────────────────────────
 
     /**
@@ -255,33 +319,63 @@ public class HomeFeedService {
     // ── Candidate helpers ────────────────────────────────────────────────────
 
     /**
-     * Exploration slice: engagement-ranked recent reels from authors the
-     * viewer does NOT follow. Normal quota is ~5–10% of the page
-     * ({@value #EXPLORE_MIN}..{@value #EXPLORE_MAX} items); a cold-start
-     * viewer with an empty timeline gets a full page of discovery instead
-     * of an empty screen.
+     * Exploration slice — public content from authors the viewer does NOT
+     * follow, so a feed acts like a social network's rather than a private
+     * timeline. Two pools, blended:
+     * <ol>
+     *   <li>engagement-ranked recent reels ({@link ReelFeedService}) —
+     *       the original interest-graph slice;</li>
+     *   <li>the newest public posts of ANY type via the ES discovery pool
+     *       ({@link ak.dev.irc.app.post.search.service.PostDiscoveryService})
+     *       — this is what puts strangers' ordinary posts in front of a
+     *       viewer before they follow anyone.</li>
+     * </ol>
+     * Quota: normally {@value #EXPLORE_MIN}..{@value #EXPLORE_MAX} items,
+     * but it EXPANDS to whatever part of the page the social graph left
+     * unfilled — a cold-start viewer gets a full page of discovery, a
+     * sparse-graph viewer gets a full page rather than two lonely rows.
+     * Both pools drop self / followed authors / rows already on the page;
+     * the block filter and the EXPLORE score-damp run downstream.
      */
     private List<FeedItemResponse> exploreItems(UUID viewer, int pageSize,
                                                 Set<UUID> followingSet,
                                                 List<FeedItemResponse> timelineItems) {
-        int quota = timelineItems.isEmpty()
-                ? pageSize
-                : Math.min(EXPLORE_MAX, Math.max(EXPLORE_MIN, pageSize / 10));
+        int normal = Math.min(EXPLORE_MAX, Math.max(EXPLORE_MIN, pageSize / 4));
+        int quota = Math.max(normal, pageSize - timelineItems.size());
         try {
-            Set<UUID> alreadyShown = new HashSet<>();
-            timelineItems.forEach(i -> alreadyShown.add(i.id()));
+            Set<UUID> seen = new HashSet<>();
+            timelineItems.forEach(i -> seen.add(i.id()));
 
-            List<ReelsByDayEntity> pool = reelFeedService.forYouReels(viewer, quota * EXPLORE_POOL_MULT)
+            List<FeedItemResponse> out = new ArrayList<>(quota);
+
+            List<ReelsByDayEntity> reelPool = reelFeedService.forYouReels(viewer, quota * EXPLORE_POOL_MULT)
                     .stream()
                     .filter(r -> r.getAuthorId() != null
                             && !r.getAuthorId().equals(viewer)
                             && !followingSet.contains(r.getAuthorId())
-                            && !alreadyShown.contains(r.getPostId()))
+                            && !seen.contains(r.getPostId()))
                     .toList();
-            if (pool.isEmpty()) return List.of();
+            for (FeedItemResponse i : hydrator.hydrateReels(reelPool)) {
+                if (out.size() >= quota) break;
+                if (seen.add(i.id())) out.add(i);
+            }
 
-            List<FeedItemResponse> hydrated = hydrator.hydrateReels(pool);
-            return hydrated.size() > quota ? hydrated.subList(0, quota) : hydrated;
+            if (out.size() < quota) {
+                List<UUID> discovered = discoveryService
+                        .recentPublicPosts(viewer, quota * EXPLORE_POOL_MULT)
+                        .stream()
+                        .filter(d -> d.authorId() != null
+                                && !d.authorId().equals(viewer)
+                                && !followingSet.contains(d.authorId())
+                                && !seen.contains(d.postId()))
+                        .map(ak.dev.irc.app.post.search.service.PostDiscoveryService.DiscoveredPost::postId)
+                        .toList();
+                for (FeedItemResponse i : hydrator.hydrateByIds(discovered)) {
+                    if (out.size() >= quota) break;
+                    if (seen.add(i.id())) out.add(i);
+                }
+            }
+            return out;
         } catch (Exception e) {
             log.debug("[HOME-FEED] explore slice unavailable: {}", e.getMessage());
             return List.of();
@@ -314,7 +408,8 @@ public class HomeFeedService {
                 HomeFeedSources.CHANNEL,
                 null,
                 c.channel(),
-                Long.toString(c.messageId()));
+                Long.toString(c.messageId()),
+                null);
     }
 
     private Set<UUID> blockedAmong(UUID viewer, Set<UUID> candidateIds) {

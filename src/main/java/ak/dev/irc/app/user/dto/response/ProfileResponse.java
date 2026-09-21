@@ -5,6 +5,8 @@ import java.util.List;
 public record ProfileResponse(
     String  displayName,
     String  avatarUrl,
+    /** 150px square micro-thumb of the avatar (pipeline uploads); null on legacy avatars. */
+    String  avatarThumbUrl,
     String  coverImageUrl,
     String  profileBio,
     String  selfDescriber,

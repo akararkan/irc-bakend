@@ -182,11 +182,16 @@ public class PollService {
     /** Drop a deleted poll message's votes + count hash. */
     public void clear(long messageId) {
         try {
-            voteRepo.deleteAllForMessage(messageId);
-            redis.delete(HASH_PREFIX + messageId);
+            clearStrict(messageId);
         } catch (Exception e) {
             log.debug("[POLL] clear failed for {}: {}", messageId, e.getMessage());
         }
+    }
+
+    /** Strict variant for the whole-conversation purge — see ReactionService. */
+    public void clearStrict(long messageId) {
+        voteRepo.deleteAllForMessage(messageId);
+        redis.delete(HASH_PREFIX + messageId);
     }
 
     // ── Rendering / hydration ────────────────────────────────────────────────────
@@ -351,6 +356,13 @@ public class PollService {
     }
 
     private ConversationMember requireActiveMember(UUID conversationId, UUID userId) {
+        /* Every caller is a WRITE (vote / retract / close), and a soft-deleted
+           conversation — owner-deleted, or retired for the purge — takes no
+           writes: without this gate a vote could write into partitions the
+           purge job is irreversibly deleting. */
+        conversationRepo.findById(conversationId)
+                .filter(c -> c.getDeletedAt() == null)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversation", "id", conversationId));
         return memberRepo.findMember(conversationId, userId)
                 .filter(ConversationMember::isActive)
                 .orElseThrow(() -> new ForbiddenException(

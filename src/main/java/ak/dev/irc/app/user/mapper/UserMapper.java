@@ -43,6 +43,7 @@ public class UserMapper {
         return new ProfileResponse(
             p.getDisplayName(),
             p.getAvatarUrl(),
+            p.getAvatarThumbUrl(),
             p.getCoverImageUrl(),
             p.getProfileBio(),
             p.getSelfDescriber(),

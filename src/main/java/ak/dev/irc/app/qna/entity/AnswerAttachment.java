@@ -82,4 +82,8 @@ public class AnswerAttachment extends BaseAuditEntity {
     /** S3/R2 object key for the thumbnail */
     @Column(name = "thumbnail_s3_key", columnDefinition = "TEXT")
     private String thumbnailS3Key;
+
+    /** media_assets id when this file went through the ingest pipeline; null for legacy rows. */
+    @Column(name = "media_asset_id")
+    private UUID mediaAssetId;
 }

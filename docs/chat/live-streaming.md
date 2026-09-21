@@ -32,6 +32,30 @@ auth hook (`MediaAuthController` → `LiveStreamService.authorizeMediaAccess`),
 which allows a **publish** only with the right key and **reads** for any LIVE
 stream. Config: `mediamtx.yml` + the `mediamtx` service in `docker-compose.yml`.
 
+### Starting MediaMTX (do this first — nothing live works without it)
+
+```bash
+docker compose up -d mediamtx      # from the project root
+```
+
+| | |
+|---|---|
+| Check it's up | `docker ps \| grep media` |
+| Follow its logs | `docker logs -f irc-mediamtx-1` |
+| Restart / stop | `docker compose restart mediamtx` · `docker compose stop mediamtx` |
+| Start every service at once | `docker compose up -d` |
+
+A healthy boot logs listeners on `:1935` (RTMP), `:8888` (HLS), `:8889`
+(WebRTC) and `:9997` (API).
+
+> **The container does not survive a Mac or Docker restart.** When it is down,
+> the browser's WHIP request to `:8889` fails to connect and Firefox reports it
+> as *"Cross-Origin Request Blocked … CORS request did not succeed"* — which is
+> misleading, because CORS is fine (MediaMTX returns
+> `Access-Control-Allow-Origin: *`). The tell is **`Status code: (null)`**:
+> nothing answered at all. A genuine CORS rejection always carries a real status
+> code. So on that error, check `docker ps` before debugging anything else.
+
 Configure the media origins (defaults target the local `mediamtx` service):
 ```
 app.streaming.webrtc-base=http://localhost:8889     # WHIP publish + WHEP playback

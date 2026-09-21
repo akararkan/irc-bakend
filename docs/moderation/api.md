@@ -249,8 +249,8 @@ created. For an instant ban add it to the blocklist as well.
 `kind=words` rows with `blocklist=yes` also land on the platform blocklist in
 the same pass (instant ban). Rows are tagged source `ADMIN_IMPORT`. Returns a
 per-row error report; all-or-nothing unless `allowPartial`. Full column
-contract: [`../admin/trust-safety/automated-moderation.md`](../admin/trust-safety/automated-moderation.md) §4,
-wire shapes: [`../admin/api/automated-moderation.md`](../admin/api/automated-moderation.md).
+contract: [`../admin/trust-safety/automated-moderation.md`](../../admin%20doc/admin/trust-safety/automated-moderation.md) §4,
+wire shapes: [`../admin/api/automated-moderation.md`](../../admin%20doc/admin/api/automated-moderation.md).
 
 ### Golden set (§17) — `ADMIN` for writes
 

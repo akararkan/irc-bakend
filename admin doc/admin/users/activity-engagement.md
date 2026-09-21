@@ -21,7 +21,7 @@ ledger as the **cheapest existing engagement-telemetry source** the platform has
 Tag legend and ground rules: [README.md](../README.md). Underlying mechanics live in
 `app/activity`. Related: [analytics-kpis.md](../platform/analytics-kpis.md) (this ledger is a
 proposed analytics source), [users-roles.md](directory-and-roles.md) (the per-user
-activity tab links here), [../settings/data-export-deletion.md](../../settings/data-export-deletion.md)
+activity tab links here), [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md)
 (erasure obligations), [content-moderation.md](../trust-safety/content-moderation.md) (activity as
 corroborating evidence in abuse cases).
 
@@ -50,7 +50,7 @@ dashboard, not yet built.
 | In scope | Out of scope (see) |
 |----------|--------------------|
 | The **engagement-telemetry collector** — the sanctioned, privacy-preserving analytics path | Mining the private per-user store for analytics → **forbidden** by [analytics-kpis.md](../platform/analytics-kpis.md) §12 |
-| GDPR/admin **erasure** of a user's activity data (consistent with user-deletable) | The data-export/deletion account pipeline → [../settings/data-export-deletion.md](../../settings/data-export-deletion.md) |
+| GDPR/admin **erasure** of a user's activity data (consistent with user-deletable) | The data-export/deletion account pipeline → [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md) |
 | SSE activity-stream health (connections, heartbeat) | General SSE fleet ops → [operations.md](../platform/operations.md) §6 |
 | **Break-glass** per-user timeline access under legal/abuse process (tightly gated) | Routine per-user browsing → **not a thing**; default is no access |
 | Reel-watch history + reel-view analytics (collector-derived) | Notification inbox / delivery → [notifications-email.md](../communication/notifications-email.md) |
@@ -216,7 +216,7 @@ cross-user "who viewed this profile" reverse index (would turn `PROFILE_VIEW` in
 surveillance tool; keep it forward-only per user).
 
 > Erasure & the deletion pipeline: when an account is purged
-> ([../settings/data-export-deletion.md](../../settings/data-export-deletion.md)), its
+> ([../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md)), its
 > `activity_by_user*` and `reel_views_by_user` partitions **must** be dropped as
 > part of the cascade. Confirm this is wired into the account-purge job; if not,
 > it's a GDPR gap — activity is personal data. Flag as **[PLANNED verification]**.

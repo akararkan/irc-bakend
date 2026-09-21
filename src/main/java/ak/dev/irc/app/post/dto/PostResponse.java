@@ -31,6 +31,10 @@ public record PostResponse(
         String  shareLink,
         List<String> mediaUrls,
         List<String> mediaTypes,
+        /** Server-generated poster frame (JPEG) for the first VIDEO media; null otherwise. */
+        String  thumbnailUrl,
+        /** Rich media descriptors (variant URLs, processing state); null when the post has no media. */
+        List<PostMediaDto> media,
         // ── Live denormalised counters from post_counters (Cassandra) ────
         long    reactionCount,
         long    commentCount,

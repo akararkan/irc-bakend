@@ -49,6 +49,8 @@ import java.util.UUID;
 public class CassandraStoryService {
 
     private final StoryByAuthorRepository storyRepo;
+    private final ak.dev.irc.app.media.service.MediaVariantHydrator variantHydrator;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final StoryLookupRepository   storyLookupRepo;
     private final StoryViewRepository     storyViewRepo;
     private final CloseFriendsService     closeFriendsService;
@@ -100,6 +102,15 @@ public class CassandraStoryService {
                                            String visibility, String mediaUrl,
                                            String thumbnailUrl, String textContent,
                                            StoryLifetime lifetime) {
+        return createStory(authorId, storyType, visibility, mediaUrl, thumbnailUrl,
+                textContent, lifetime, null);
+    }
+
+    /** Full variant carrying the media pipeline asset id (multipart uploads). */
+    public StoryByAuthorEntity createStory(UUID authorId, String storyType,
+                                           String visibility, String mediaUrl,
+                                           String thumbnailUrl, String textContent,
+                                           StoryLifetime lifetime, String mediaAssetId) {
         if (lifetime == null) lifetime = StoryLifetime.DEFAULT;
         UUID    storyId = UUID.randomUUID();
         Instant now     = Instant.now();
@@ -121,6 +132,7 @@ public class CassandraStoryService {
                 .visibility(visibility)
                 .mediaUrl(mediaUrl)
                 .thumbnailUrl(thumbnailUrl)
+                .mediaAssetId(mediaAssetId)
                 .textContent(textContent)
                 .expiresAt(expires)
                 .moderationStatus(moderation.held() ? moderation.status().name() : null)
@@ -198,9 +210,32 @@ public class CassandraStoryService {
 
         // Core delete — must happen first so the HTTP path completes quickly
         // even if downstream cleanup hiccups.
+        // Capture the media asset id before the row is tombstoned so the
+        // stored renditions can be removed too. (TTL-expired stories skip this
+        // path — their orphaned objects are the admin reconcile job's business.)
+        String mediaAssetId = null;
+        try {
+            mediaAssetId = storyRepo.activeStories(authorId).stream()
+                    .filter(s -> storyId.equals(s.getStoryId()))
+                    .map(StoryByAuthorEntity::getMediaAssetId)
+                    .filter(java.util.Objects::nonNull)
+                    .findFirst().orElse(null);
+        } catch (Exception e) {
+            log.warn("[STORY] media-asset lookup for {} failed: {}", storyId, e.getMessage());
+        }
+
         storyRepo.delete(authorId, meta.getCreatedAt(), storyId);
         storyLookupRepo.deleteById(storyId);
         log.info("[STORY] tombstoned stories_by_author + story_lookup for storyId={}", storyId);
+
+        UUID assetId = ak.dev.irc.app.media.service.MediaVariantHydrator.parseAssetId(mediaAssetId);
+        if (assetId != null) {
+            try {
+                mediaIngest.deleteAsset(assetId);
+            } catch (Exception e) {
+                log.warn("[STORY] media asset delete for {} failed: {}", storyId, e.getMessage());
+            }
+        }
 
         // Poll cleanup (no-op when the story had no poll).
         try {
@@ -283,7 +318,26 @@ public class CassandraStoryService {
         for (StoryByAuthorEntity s : raw) {
             if (canView(s, viewerId)) visible.add(s);
         }
+        enrichVariants(visible);
         return visible;
+    }
+
+    /** One bulk variant load per page; entities carry the map as transients. */
+    private void enrichVariants(List<StoryByAuthorEntity> stories) {
+        var assetIds = new java.util.HashSet<UUID>();
+        for (StoryByAuthorEntity s : stories) {
+            UUID id = ak.dev.irc.app.media.service.MediaVariantHydrator.parseAssetId(s.getMediaAssetId());
+            if (id != null) assetIds.add(id);
+        }
+        if (assetIds.isEmpty()) return;
+        var sets = variantHydrator.load(assetIds);
+        for (StoryByAuthorEntity s : stories) {
+            UUID id = ak.dev.irc.app.media.service.MediaVariantHydrator.parseAssetId(s.getMediaAssetId());
+            var set = id == null ? null : sets.get(id);
+            if (set == null) continue;
+            s.setVariants(set.variants());
+            s.setMediaProcessing(set.processing());
+        }
     }
 
     public boolean canView(StoryByAuthorEntity story, UUID viewerId) {

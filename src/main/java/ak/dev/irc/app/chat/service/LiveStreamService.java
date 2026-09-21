@@ -21,6 +21,7 @@ import ak.dev.irc.app.chat.repository.StreamGiftTallyRepository;
 import ak.dev.irc.app.chat.repository.StreamGuestRepository;
 import ak.dev.irc.app.chat.repository.StreamViewerRepository;
 import ak.dev.irc.app.common.cache.RateLimiter;
+import ak.dev.irc.app.common.cache.TtlCache;
 import ak.dev.irc.app.common.exception.BadRequestException;
 import ak.dev.irc.app.common.exception.ForbiddenException;
 import ak.dev.irc.app.common.exception.ResourceNotFoundException;
@@ -87,6 +88,29 @@ public class LiveStreamService {
      *  lines (the §6 real-time exception). */
     private final ContentModerationService contentModeration;
     private final ModerationSettingsService moderationSettings;
+    /** Shared short-TTL cache for "who's watching right now" — see the class
+     *  Javadoc. Same cache {@link StreamStageService} reads for its reaction/gift
+     *  fan-out, so a join/leave here is visible to that path immediately (via
+     *  {@link StreamAudienceCache#invalidate}) instead of after up to 3s. */
+    private final StreamAudienceCache audienceCache;
+
+    /**
+     * Media-auth path resolution caches (see {@link #authorizeMediaAccess}).
+     * These are separate from {@link #audienceCache}: they cache the DB
+     * <em>resolution</em> of a media path to its {@code LiveStream} / {@code
+     * StreamGuest} row, not any authorization decision — the live/key checks in
+     * {@link #authorizeMediaAccess} and {@link #authorizeGuestMediaAccess} still
+     * run fresh against whatever entity snapshot comes back on every single call.
+     * TTL 8s: MediaMTX re-invokes this hook on every publish/read session
+     * establishment (bursts on a popular path, or an HLS client re-establishing
+     * sessions every few seconds), and this path is not proactively invalidated
+     * on stream-end/guest-removal — so, unlike {@link #audienceCache}, a stream
+     * that just ended or a guest that was just removed can keep authorizing
+     * brand-new sessions for up to ~8s. That is the accepted trade for collapsing
+     * a session-establishment burst on one path down to one DB read per window.
+     */
+    private final TtlCache<UUID, LiveStream> streamByIdCache = new TtlCache<>(Duration.ofSeconds(8));
+    private final TtlCache<String, StreamGuest> guestByPathCache = new TtlCache<>(Duration.ofSeconds(8));
 
     /** Default recording choice when {@code StartStreamRequest.record} is absent. */
     @Value("${app.streaming.recording.default-on:false}")
@@ -220,6 +244,10 @@ public class LiveStreamService {
         streamRepo.save(s);
         viewerRepo.deactivateAll(streamId);
         guestRepo.removeAllActive(streamId); // clear the stage + revoke every guest key
+        // Both bulk updates above bypass the save() paths that StreamStageService's
+        // broadcastRoster() invalidates through — do it here too so a stale
+        // pre-end viewer/guest list can't outlive the stream for up to 3s.
+        audienceCache.invalidate(streamId);
         LiveStreamResponse ended = toResponse(s, false);
         broadcaster.broadcast(audience, ChatRealtimeEvent.builder()
                 .eventType(ChatRealtimeEventType.STREAM_ENDED).stream(ended).build());
@@ -374,6 +402,10 @@ public class LiveStreamService {
         }
         viewerRepo.save(v);
         if (nowActive) {
+            // Invalidate first so this read is a guaranteed-fresh DB read (which
+            // also re-warms the cache) — the count and broadcast recipients below
+            // must reflect this join immediately, not up to 3s from now.
+            audienceCache.invalidate(streamId);
             // One id-list read serves both the new count and the broadcast
             // recipients (was a COUNT query + a second id-list query).
             List<UUID> viewers = activeViewerIds(streamId);
@@ -398,6 +430,7 @@ public class LiveStreamService {
         v.setActive(false);
         v.setLeftAt(Instant.now());
         viewerRepo.save(v);
+        audienceCache.invalidate(streamId); // next read must be fresh — see join()
         List<UUID> viewers = activeViewerIds(streamId); // post-save: excludes the leaver
         if (s.getStatus() == LiveStreamStatus.LIVE) {
             s.setViewerCount(viewers.size());
@@ -583,6 +616,7 @@ public class LiveStreamService {
         guestRepo.deleteByStreamId(streamId);       // clear stage rows
         giftTallyRepo.deleteByStreamId(streamId);   // clear gift leaderboard
         streamRepo.delete(s);                       // remove the control-plane record
+        audienceCache.invalidate(streamId);         // bulk deletes above bypass save() — see end()
     }
 
     /**
@@ -672,6 +706,17 @@ public class LiveStreamService {
      *   <li><b>read / playback</b> — public HLS playback: allowed for any LIVE stream.</li>
      * </ul>
      * Any unknown path, ended stream, wrong key, or unexpected action is denied.
+     *
+     * <p>{@link #pathToStream} and {@link #authorizeGuestMediaAccess}'s lookups are
+     * cached ({@link #streamByIdCache} / {@link #guestByPathCache}, 8s TTL) so a
+     * burst of session establishments on the same path (many viewers joining a
+     * popular stream, an HLS client re-establishing sessions) doesn't re-run the
+     * same DB lookup per call. Only the path→entity <em>resolution</em> is cached —
+     * the live/key checks above always run fresh against whatever entity snapshot
+     * the cache (or a fresh load) returns, so a logic change here still takes
+     * effect immediately. That snapshot itself can be up to 8s stale, which is the
+     * accepted trade; see the field Javadoc for why this cache, unlike {@link
+     * #audienceCache}, is not proactively invalidated on end/removal.</p>
      */
     @Transactional(readOnly = true)
     public boolean authorizeMediaAccess(String action, String path, String password, String query) {
@@ -698,9 +743,10 @@ public class LiveStreamService {
      */
     private boolean authorizeGuestMediaAccess(String action, String path, String password, String query) {
         if (!StringUtils.hasText(path)) return false;
-        StreamGuest g = guestRepo.findByPublishPath(path.trim()).orElse(null);
+        String trimmed = path.trim();
+        StreamGuest g = guestByPathCache.get(trimmed, () -> guestRepo.findByPublishPath(trimmed).orElse(null));
         if (g == null || g.getStatus() != StreamGuestStatus.ACTIVE) return false;
-        LiveStream parent = streamRepo.findById(g.getStreamId()).orElse(null);
+        LiveStream parent = streamByIdCache.get(g.getStreamId(), () -> streamRepo.findById(g.getStreamId()).orElse(null));
         boolean live = parent != null && parent.getStatus() == LiveStreamStatus.LIVE;
         return switch (action == null ? "" : action) {
             case "publish" -> live && guestKeyMatches(g, password, query);
@@ -720,11 +766,13 @@ public class LiveStreamService {
 
     private LiveStream pathToStream(String path) {
         if (!StringUtils.hasText(path)) return null;
+        UUID id;
         try {
-            return streamRepo.findById(UUID.fromString(path.trim())).orElse(null);
+            id = UUID.fromString(path.trim());
         } catch (IllegalArgumentException notAUuid) {
             return null; // paths that aren't a stream id are never authorized
         }
+        return streamByIdCache.get(id, () -> streamRepo.findById(id).orElse(null));
     }
 
     /** The publish credential is the streamKey; MediaMTX puts it in `password`,
@@ -756,8 +804,12 @@ public class LiveStreamService {
                         .build());
     }
 
+    /** Backed by {@link StreamAudienceCache} (short-TTL, shared with
+     *  {@link StreamStageService}) instead of an unconditional query on every
+     *  call — see that class for why. Callers that just changed viewer presence
+     *  (join/leave) invalidate it first so this stays a fresh read for them. */
     private List<UUID> activeViewerIds(UUID streamId) {
-        return viewerRepo.findActiveViewerIds(streamId);
+        return audienceCache.activeViewerIds(streamId);
     }
 
     private List<UUID> withHost(List<UUID> viewers, UUID hostId) {
@@ -770,8 +822,7 @@ public class LiveStreamService {
     /** Add any active co-host guests to a recipient set (deduped). A guest is on
      *  the stage even if they never registered as a plain viewer. */
     private List<UUID> withGuests(UUID streamId, List<UUID> recipients) {
-        List<StreamGuest> active = guestRepo.findByStreamIdAndStatusOrderByJoinedAtAsc(
-                streamId, StreamGuestStatus.ACTIVE);
+        List<StreamGuest> active = audienceCache.activeGuests(streamId);
         if (active.isEmpty()) return recipients;
         java.util.LinkedHashSet<UUID> set = new java.util.LinkedHashSet<>(recipients);
         active.forEach(g -> set.add(g.getUserId()));

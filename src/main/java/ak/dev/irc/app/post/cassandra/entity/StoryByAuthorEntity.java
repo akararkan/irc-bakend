@@ -32,6 +32,18 @@ public class StoryByAuthorEntity {
     @Column("visibility")    private String  visibility;
     @Column("media_url")     private String  mediaUrl;
     @Column("thumbnail_url") private String  thumbnailUrl;
+    /** media_assets id when the story media went through the ingest pipeline. */
+    @Column("media_asset_id") private String mediaAssetId;
+
+    // ── Read-time enrichment (serialized in responses, never persisted) ──────
+
+    /** Client variant map (thumb/feed/v720…); filled by the story read paths. */
+    @org.springframework.data.annotation.Transient
+    private java.util.Map<String, String> variants;
+
+    /** True while the story video's rendition ladder is still being produced. */
+    @org.springframework.data.annotation.Transient
+    private Boolean mediaProcessing;
     @Column("text_content")  private String  textContent;
     @Column("expires_at")    private Instant expiresAt;
 

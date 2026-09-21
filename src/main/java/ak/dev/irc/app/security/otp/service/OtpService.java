@@ -7,8 +7,8 @@ import ak.dev.irc.app.security.crypto.Hashing;
 import ak.dev.irc.app.security.otp.OtpProperties;
 import ak.dev.irc.app.security.otp.entity.OtpChallenge;
 import ak.dev.irc.app.security.otp.enums.OtpPurpose;
+import ak.dev.irc.app.security.otp.delivery.OtpDeliveryService;
 import ak.dev.irc.app.security.otp.repository.OtpChallengeRepository;
-import ak.dev.irc.app.security.otp.sms.SmsSender;
 import ak.dev.irc.app.security.phone.PhoneNormalizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,7 +47,7 @@ public class OtpService {
     private final OtpChallengeRepository challengeRepo;
     private final StringRedisTemplate redis;
     private final RateLimiter rateLimiter;
-    private final SmsSender smsSender;
+    private final OtpDeliveryService delivery;
 
     private final SecureRandom random = new SecureRandom();
 
@@ -60,6 +60,18 @@ public class OtpService {
      */
     @Transactional
     public String requestOtp(String rawPhone, OtpPurpose purpose, String ip, String deviceId) {
+        return requestOtp(rawPhone, purpose, ip, deviceId, null);
+    }
+
+    /**
+     * As {@link #requestOtp(String, OtpPurpose, String, String)}, with the
+     * recipient's email supplied by the caller. Required for phone
+     * <em>verification</em>: the number is not bound to the account yet, so the
+     * delivery layer cannot resolve the owner from the number itself.
+     */
+    @Transactional
+    public String requestOtp(String rawPhone, OtpPurpose purpose, String ip, String deviceId,
+                             String recipientEmail) {
         String e164 = phoneNormalizer.toE164(rawPhone);
         OtpPurpose p = purpose == null ? OtpPurpose.LOGIN : purpose;
 
@@ -71,32 +83,56 @@ public class OtpService {
                     props.getResendPerIpPerHour(), Duration.ofHours(1));
         }
 
+        String code = issueFor(e164, p, props.getTtlSeconds(), ip, deviceId);
+        delivery.deliver(e164, recipientEmail, code, props.getTtlSeconds() / 60);
+        return e164;
+    }
+
+    /**
+     * Mint a challenge for an <b>already-normalised</b> destination and return the
+     * plaintext code for the caller to deliver.
+     *
+     * <p>This is the phone-agnostic core: {@link #requestOtp} is it plus E.164
+     * normalisation, rate limiting and SMS/email dispatch. Non-phone flows (email
+     * verification) call it directly rather than re-implementing the hashing,
+     * TTL and attempt bookkeeping — one copy of that logic is the point, since a
+     * second copy is where the two would silently drift apart.</p>
+     *
+     * <p>The caller owns rate limiting: what counts as an "actor" differs per
+     * flow (a number, an account, an IP).</p>
+     *
+     * @param destination the identity the code is bound to — E.164, or a
+     *                    lower-cased email. Never stored in the clear.
+     * @param ttlSeconds  lifetime; email codes get longer than SMS codes.
+     * @return the plaintext code. Deliver it and drop it — it is never persisted.
+     */
+    @Transactional
+    public String issueFor(String destination, OtpPurpose purpose, long ttlSeconds,
+                           String ip, String deviceId) {
         String code = generateCode();
-        String destHash = Hashing.hmacSha256Hex(e164, props.getPepper());
+        String destHash = Hashing.hmacSha256Hex(destination, props.getPepper());
         String codeHash = Hashing.hmacSha256Hex(code, props.getPepper());
 
         // Redis holds the live challenge: the hashed code plus its own attempts
         // counter, both under the same TTL so expiry cleans up for free. A new
         // request overwrites the previous pair, which is what retires an older
         // code the moment a fresh one is sent.
-        Duration ttl = Duration.ofSeconds(props.getTtlSeconds());
-        redis.opsForValue().set(redisKey(p, destHash), codeHash, ttl);
-        redis.opsForValue().set(attemptsKey(p, destHash), "0", ttl);
+        Duration ttl = Duration.ofSeconds(ttlSeconds);
+        redis.opsForValue().set(redisKey(purpose, destHash), codeHash, ttl);
+        redis.opsForValue().set(attemptsKey(purpose, destHash), "0", ttl);
 
         // Postgres: durable audit trail + authoritative attempts counter.
         challengeRepo.save(OtpChallenge.builder()
                 .destinationHash(destHash)
                 .codeHash(codeHash)
-                .purpose(p)
-                .expiresAt(LocalDateTime.now().plusSeconds(props.getTtlSeconds()))
+                .purpose(purpose)
+                .expiresAt(LocalDateTime.now().plusSeconds(ttlSeconds))
                 .ip(ip)
                 .deviceId(deviceId)
                 .build());
 
-        smsSender.send(e164, SecurityMessages.NOTIF_OTP_SMS
-                .formatted(code, props.getTtlSeconds() / 60));
-        log.debug("[OTP] issued purpose={} destHash={}…", p, destHash.substring(0, 8));
-        return e164;
+        log.debug("[OTP] issued purpose={} destHash={}…", purpose, destHash.substring(0, 8));
+        return code;
     }
 
     /**
@@ -109,8 +145,20 @@ public class OtpService {
     @Transactional
     public String verifyOtp(String rawPhone, String code, OtpPurpose purpose) {
         String e164 = phoneNormalizer.toE164(rawPhone);
+        verifyFor(e164, code, purpose == null ? OtpPurpose.LOGIN : purpose);
+        return e164;
+    }
+
+    /**
+     * Verify a code against an <b>already-normalised</b> destination — the
+     * counterpart to {@link #issueFor}. Consumes the challenge on success.
+     *
+     * @throws BadRequestException on any invalid/expired/exhausted challenge.
+     */
+    @Transactional
+    public void verifyFor(String destination, String code, OtpPurpose purpose) {
         OtpPurpose p = purpose == null ? OtpPurpose.LOGIN : purpose;
-        String destHash = Hashing.hmacSha256Hex(e164, props.getPepper());
+        String destHash = Hashing.hmacSha256Hex(destination, props.getPepper());
 
         // Redis is authoritative for the live challenge; the Postgres row is the
         // audit trail. Reading the hash here (rather than off the row) is also
@@ -132,8 +180,12 @@ public class OtpService {
         Long attempts = redis.opsForValue().increment(attemptsKey(p, destHash));
         if (attempts != null && attempts == 1L) {
             // Counter recreated after its TTL lapsed — re-arm it so it cannot
-            // outlive the code it guards.
-            redis.expire(attemptsKey(p, destHash), Duration.ofSeconds(props.getTtlSeconds()));
+            // outlive the code it guards. Mirroring the code key's own remaining
+            // life keeps this right for every flow, whatever TTL it was issued
+            // with (SMS 5 min, email 15).
+            Long remaining = redis.getExpire(redisKey(p, destHash));
+            redis.expire(attemptsKey(p, destHash), Duration.ofSeconds(
+                    remaining != null && remaining > 0 ? remaining : props.getTtlSeconds()));
         }
         if (attempts == null || attempts > props.getMaxAttempts()) {
             burn(p, destHash);
@@ -158,7 +210,6 @@ public class OtpService {
                     row.setConsumedAt(LocalDateTime.now());
                     challengeRepo.save(row);
                 });
-        return e164;
     }
 
     // ── internals ───────────────────────────────────────────────────────────────

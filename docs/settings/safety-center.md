@@ -39,6 +39,23 @@ scored checklist with a level (`LOW`…`EXCELLENT`) and per-item recommendations
 Because it is **computed**, it is always current and needs no migration when a
 rule is added.
 
+| Check key | Label | Weight | Passes when | User action that clears it |
+|---|---|---:|---|---|
+| `two_factor` | Two-factor authentication enabled | 40 | `user.twoFactorEnabled` | `POST /security/2fa/setup` + `/2fa/verify` |
+| `recovery` | Account recovery configured | 30 | `user.isEmailVerified()` | `POST /security/email/request` + `/email/verify` |
+| `email_verified` | Email address verified | 20 | `user.isEmailVerified()` | same as above |
+| `recent_review` | Account activity reviewed recently | 10 | logged in within 90 days | passive |
+
+Note that **`recovery` and `email_verified` read the same flag**, so verifying
+an email clears both and moves the score by 50 points at once. That is
+deliberate for now — email *is* the recovery channel — but it means the two
+items can never disagree, and a future second recovery channel (a verified
+phone) should split them apart.
+
+Verifying an email is the one user-facing action here that had no endpoint until
+[auth-sessions.md § Email verification](auth-sessions.md#email-verification-4)
+added one; before that only an admin could clear those 50 points.
+
 ## API
 
 ```

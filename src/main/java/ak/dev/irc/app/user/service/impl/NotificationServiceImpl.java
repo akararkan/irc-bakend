@@ -355,21 +355,9 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     private static String deepLinkOf(String resourceType, UUID resourceId) {
-        if (resourceId == null || resourceType == null) return null;
-        return switch (resourceType) {
-            case "Post"     -> "/posts/"     + resourceId;
-            case "Comment"  -> "/comments/"  + resourceId;
-            case "Question" -> "/questions/" + resourceId;
-            case "Answer"   -> "/answers/"   + resourceId;
-            case "Research" -> "/researches/"+ resourceId;
-            case "User"     -> "/users/"     + resourceId;
-            // Chat: DMs/groups open the conversation, channels their own page,
-            // live streams the watch page (routes match the ika frontend).
-            case "Conversation" -> "/chat/"     + resourceId;
-            case "Channel"      -> "/channels/" + resourceId;
-            case "LiveStream"   -> "/live/"     + resourceId;
-            default         -> null;
-        };
+        // Shared with the push payloads (PushNotifier) — one grammar, one place.
+        return ak.dev.irc.app.common.notification.NotificationDeepLinks
+                .deepLinkOf(resourceType, resourceId);
     }
 
     private static NotificationType parseType(String name) {

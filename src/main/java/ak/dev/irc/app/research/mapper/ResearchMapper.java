@@ -26,6 +26,7 @@ public class ResearchMapper {
 
     private final CounterCache counterCache;
     private final RichTextService richText;
+    private final ak.dev.irc.app.media.service.MediaVariantHydrator variantHydrator;
 
     private static long nz(Long v) { return v == null ? 0L : v; }
 
@@ -140,7 +141,7 @@ public class ResearchMapper {
                 r.getShareToken(),
                 buildShareUrl(r.getShareToken()),
                 r.getTags().stream().map(ResearchTag::getTagName).toList(),
-                r.getMediaFiles().stream().map(this::toMediaResponse).toList(),
+                toMediaResponses(r.getMediaFiles()),
                 r.getSources().stream().map(this::toSourceResponse).toList(),
                 r.getContributors().stream().map(this::toContributorResponse).toList(),
                 reacted,
@@ -262,12 +263,35 @@ public class ResearchMapper {
     // ── Media ────────────────────────────────────────────────────────────────
 
     public MediaResponse toMediaResponse(ResearchMedia m) {
+        // Single-item path — one bulk load of one asset.
+        java.util.Map<java.util.UUID, ak.dev.irc.app.media.service.MediaVariantHydrator.VariantSet> sets =
+                m.getMediaAssetId() == null ? java.util.Map.of()
+                        : variantHydrator.load(java.util.Set.of(m.getMediaAssetId()));
+        return toMediaResponse(m, sets);
+    }
+
+    /** Bulk list mapping: ONE variant load for the whole media list (no N+1). */
+    public java.util.List<MediaResponse> toMediaResponses(java.util.List<ResearchMedia> media) {
+        java.util.Set<java.util.UUID> assetIds = new java.util.HashSet<>();
+        for (ResearchMedia m : media) {
+            if (m.getMediaAssetId() != null) assetIds.add(m.getMediaAssetId());
+        }
+        var sets = variantHydrator.load(assetIds);
+        return media.stream().map(m -> toMediaResponse(m, sets)).toList();
+    }
+
+    private MediaResponse toMediaResponse(
+            ResearchMedia m,
+            java.util.Map<java.util.UUID, ak.dev.irc.app.media.service.MediaVariantHydrator.VariantSet> sets) {
+        var set = m.getMediaAssetId() == null ? null : sets.get(m.getMediaAssetId());
         return new MediaResponse(
                 m.getId(), m.getFileUrl(), m.getOriginalFileName(),
                 m.getMimeType(), m.getMediaType(), m.getFileSize(),
                 m.getDisplayOrder(), m.getCaption(), m.getAltText(),
                 m.getDurationSeconds(), m.getThumbnailUrl(),
-                m.getWidthPx(), m.getHeightPx()
+                m.getWidthPx(), m.getHeightPx(),
+                set == null ? java.util.Map.of() : set.variants(),
+                set == null ? null : set.processing()
         );
     }
 

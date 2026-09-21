@@ -14,7 +14,7 @@ text-moderation system:
 and lives in [content-moderation.md](content-moderation.md) — see
 [Two queues, not one](../trust-safety/README.md#two-queues-not-one).
 
-Subsystem design: [`../../moderation/`](../../moderation/README.md).
+Subsystem design: [`../../moderation/`](../../../docs/moderation/README.md).
 UI wiring: [`../frontend/README.md`](../frontend/README.md).
 
 **Conventions used throughout:**
@@ -32,7 +32,7 @@ UI wiring: [`../frontend/README.md`](../frontend/README.md).
   Timestamps are `LocalDateTime` (`"2026-08-08T14:30:00"`).
 - **Page sizes** clamp to 1–100 (`Pages.clamp`).
 - **Errors** use the canonical envelope; codes are catalogued in
-  [`../../errors/user-facing-messages.md`](../../errors/user-facing-messages.md) §1.103a.
+  [`../../errors/user-facing-messages.md`](../../../docs/errors/user-facing-messages.md) §1.103a.
 
 ---
 
@@ -787,7 +787,7 @@ Marks a candidate `SHADOW` — scored but not enforced. **Access**: `ADMIN`.
 
 > Running an actual shadow replica pool is a deployment topology change, not
 > application code. The status and the promote path are ready for it; the second
-> pool is not wired. See [`../../moderation/architecture.md`](../../moderation/architecture.md) §6.
+> pool is not wired. See [`../../moderation/architecture.md`](../../../docs/moderation/architecture.md) §6.
 
 ### POST /api/v1/admin/moderation/model/rollback
 
@@ -876,4 +876,4 @@ GET  /healthz /readyz
 ```
 
 Container operations, failure modes and the safe-promotion checklist:
-[`../../moderation/operations.md`](../../moderation/operations.md).
+[`../../moderation/operations.md`](../../../docs/moderation/operations.md).

@@ -81,6 +81,7 @@ public class ResearchServiceImpl implements ResearchService {
     private final UserBlockRepository        blockRepo;
 
     private final S3StorageService       s3;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final VideoMetadataExtractor videoMetadataExtractor;
     private final ResearchMapper         mapper;
     private final IrcIdentifierService   ircIdentifierService;
@@ -223,18 +224,22 @@ public class ResearchServiceImpl implements ResearchService {
 
                     MediaUploadMetadata meta = i < metadataList.size() ? metadataList.get(i) : null;
 
-                    String s3Key = uploadFileToS3(
-                            file,
+                    var ingest = ingestFile(file,
+                            ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_MEDIA,
+                            researcherId,
                             "research/" + research.getId() + "/media",
                             ResearchMessages.MEDIA_UPLOAD_FAILED);
-                    uploadedS3Keys.add(s3Key);
-
-                    String publicUrl = getPublicUrlFromS3(s3Key);
+                    uploadedS3Keys.add(ingest.storageKey());
 
                     ResearchMedia media = ResearchMedia.builder()
                             .research(research)
-                            .fileUrl(publicUrl)
-                            .s3Key(s3Key)
+                            .fileUrl(ingest.url())
+                            .s3Key(ingest.storageKey())
+                            .thumbnailUrl(ingest.thumbnailUrl())
+                            .mediaAssetId(ingest.assetId())
+                            .widthPx(ingest.width())
+                            .heightPx(ingest.height())
+                            .durationSeconds(ingest.durationSeconds())
                             .originalFileName(sanitizeFileName(file.getOriginalFilename()))
                             .mimeType(file.getContentType())
                             .mediaType(resolveMediaType(file.getContentType()))
@@ -249,7 +254,7 @@ public class ResearchServiceImpl implements ResearchService {
                     research.getMediaFiles().add(saved);
 
                     log.debug("Media file [{}] uploaded for research {} → s3Key={}",
-                            i, research.getId(), s3Key);
+                            i, research.getId(), ingest.storageKey());
                 }
             }
 
@@ -289,10 +294,12 @@ public class ResearchServiceImpl implements ResearchService {
         if (CollectionUtils.isEmpty(s3Keys)) return;
         s3Keys.forEach(key -> {
             try {
-                s3.delete(key);
-                log.warn("Rolled back S3 object: {}", key);
+                // Pipeline keys (media/{assetId}/…) remove the whole asset;
+                // legacy keys delete the single object as before.
+                mediaIngest.deleteByStorageKey(key);
+                log.warn("Rolled back stored media: {}", key);
             } catch (Exception ex) {
-                log.error("S3 rollback failed for key={}: {}", key, ex.getMessage());
+                log.error("Media rollback failed for key={}: {}", key, ex.getMessage());
             }
         });
     }
@@ -923,25 +930,30 @@ public class ResearchServiceImpl implements ResearchService {
 
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         try {
-            // Clean up old video promo files
+            // Clean up old video promo files (asset-aware: pipeline keys remove all renditions)
             if (research.getVideoPromoS3Key() != null) {
-                try { s3.delete(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Old video promo delete failed: {}", e.getMessage()); }
+                try { mediaIngest.deleteByStorageKey(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Old video promo delete failed: {}", e.getMessage()); }
             }
             if (research.getVideoPromoThumbnailS3Key() != null) {
-                try { s3.delete(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Old video thumbnail delete failed: {}", e.getMessage()); }
+                try { mediaIngest.deleteByStorageKey(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Old video thumbnail delete failed: {}", e.getMessage()); }
             }
 
-            // Upload video
-            String videoS3Key = uploadFileToS3(video, "research/" + researchId + "/promo", ResearchMessages.VIDEO_UPLOAD_FAILED);
-            research.setVideoPromoS3Key(videoS3Key);
-            research.setVideoPromoUrl(getPublicUrlFromS3(videoS3Key));
-            research.setVideoPromoDurationSeconds(durationSeconds);
+            // Upload video (original stored + poster; H.264 ladder lands async)
+            var promo = ingestFile(video, ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_PROMO,
+                    researcherId, "research/" + researchId + "/promo", ResearchMessages.VIDEO_UPLOAD_FAILED);
+            research.setVideoPromoS3Key(promo.storageKey());
+            research.setVideoPromoUrl(promo.url());
+            research.setVideoPromoDurationSeconds(durationSeconds != null ? durationSeconds : promo.durationSeconds());
 
-            // Upload thumbnail if provided
+            // Upload thumbnail if provided; otherwise the server-extracted poster fills in.
             if (thumbnail != null && !thumbnail.isEmpty()) {
-                String thumbS3Key = uploadFileToS3(thumbnail, "research/" + researchId + "/promo-thumb", ResearchMessages.THUMBNAIL_UPLOAD_FAILED);
-                research.setVideoPromoThumbnailS3Key(thumbS3Key);
-                research.setVideoPromoThumbnailUrl(getPublicUrlFromS3(thumbS3Key));
+                var thumb = ingestFile(thumbnail, ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_PROMO_THUMB,
+                        researcherId, "research/" + researchId + "/promo-thumb", ResearchMessages.THUMBNAIL_UPLOAD_FAILED);
+                research.setVideoPromoThumbnailS3Key(thumb.storageKey());
+                research.setVideoPromoThumbnailUrl(thumb.url());
+            } else if (promo.thumbnailUrl() != null) {
+                research.setVideoPromoThumbnailS3Key(null);
+                research.setVideoPromoThumbnailUrl(promo.thumbnailUrl());
             } else {
                 research.setVideoPromoThumbnailS3Key(null);
                 research.setVideoPromoThumbnailUrl(null);
@@ -962,10 +974,10 @@ public class ResearchServiceImpl implements ResearchService {
     public ResearchResponse removeVideoPromo(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         if (research.getVideoPromoS3Key() != null) {
-            try { s3.delete(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Video promo S3 delete failed: {}", e.getMessage()); }
+            try { mediaIngest.deleteByStorageKey(research.getVideoPromoS3Key()); } catch (Exception e) { log.warn("Video promo S3 delete failed: {}", e.getMessage()); }
         }
         if (research.getVideoPromoThumbnailS3Key() != null) {
-            try { s3.delete(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Video thumbnail S3 delete failed: {}", e.getMessage()); }
+            try { mediaIngest.deleteByStorageKey(research.getVideoPromoThumbnailS3Key()); } catch (Exception e) { log.warn("Video thumbnail S3 delete failed: {}", e.getMessage()); }
         }
         research.setVideoPromoS3Key(null);
         research.setVideoPromoUrl(null);
@@ -983,11 +995,12 @@ public class ResearchServiceImpl implements ResearchService {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         try {
             if (research.getCoverImageS3Key() != null) {
-                try { s3.delete(research.getCoverImageS3Key()); } catch (Exception e) { log.warn("Old cover image delete failed: {}", e.getMessage()); }
+                try { mediaIngest.deleteByStorageKey(research.getCoverImageS3Key()); } catch (Exception e) { log.warn("Old cover image delete failed: {}", e.getMessage()); }
             }
-            String s3Key = uploadFileToS3(image, "research/" + researchId + "/cover", ResearchMessages.COVER_UPLOAD_FAILED);
-            research.setCoverImageS3Key(s3Key);
-            research.setCoverImageUrl(getPublicUrlFromS3(s3Key));
+            var coverIngest = ingestFile(image, ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_COVER,
+                    researcherId, "research/" + researchId + "/cover", ResearchMessages.COVER_UPLOAD_FAILED);
+            research.setCoverImageS3Key(coverIngest.storageKey());
+            research.setCoverImageUrl(coverIngest.url());
             researchRepo.save(research);
             return mapper.toResponse(research, researcherId);
         } catch (AppException e) { throw e; }
@@ -1001,7 +1014,7 @@ public class ResearchServiceImpl implements ResearchService {
     public ResearchResponse removeCoverImage(UUID researchId, UUID researcherId) {
         Research research = findResearchOwnedByOrThrow(researchId, researcherId);
         if (research.getCoverImageS3Key() != null) {
-            try { s3.delete(research.getCoverImageS3Key()); } catch (Exception e) { log.warn("Cover image S3 delete failed: {}", e.getMessage()); }
+            try { mediaIngest.deleteByStorageKey(research.getCoverImageS3Key()); } catch (Exception e) { log.warn("Cover image S3 delete failed: {}", e.getMessage()); }
         }
         research.setCoverImageS3Key(null);
         research.setCoverImageUrl(null);
@@ -1018,10 +1031,15 @@ public class ResearchServiceImpl implements ResearchService {
         // catch below would turn a deliberate 400 into a 500.
         moderateAnnotation(researchId, researcherId, "media_caption", caption, "media_alt_text", altText);
         try {
-            String s3Key     = uploadFileToS3(file, "research/" + researchId + "/media", ResearchMessages.MEDIA_UPLOAD_FAILED);
-            String publicUrl = getPublicUrlFromS3(s3Key);
+            var ingest = ingestFile(file, ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_MEDIA,
+                    researcherId, "research/" + researchId + "/media", ResearchMessages.MEDIA_UPLOAD_FAILED);
             ResearchMedia media = ResearchMedia.builder()
-                    .research(research).fileUrl(publicUrl).s3Key(s3Key)
+                    .research(research).fileUrl(ingest.url()).s3Key(ingest.storageKey())
+                    .thumbnailUrl(ingest.thumbnailUrl())
+                    .mediaAssetId(ingest.assetId())
+                    .widthPx(ingest.width())
+                    .heightPx(ingest.height())
+                    .durationSeconds(ingest.durationSeconds())
                     .originalFileName(sanitizeFileName(file.getOriginalFilename()))
                     .mimeType(file.getContentType())
                     .mediaType(resolveMediaType(file.getContentType()))
@@ -1111,11 +1129,12 @@ public class ResearchServiceImpl implements ResearchService {
             throw new ForbiddenException(ResearchMessages.SOURCE_MISMATCH_MSG);
         try {
             if (source.getS3Key() != null) {
-                try { s3.delete(source.getS3Key()); } catch (Exception e) { log.warn("Old source file delete failed: {}", e.getMessage()); }
+                try { mediaIngest.deleteByStorageKey(source.getS3Key()); } catch (Exception e) { log.warn("Old source file delete failed: {}", e.getMessage()); }
             }
-            String s3Key = uploadFileToS3(file, "research/" + researchId + "/sources", ResearchMessages.SOURCE_UPLOAD_FAILED);
-            source.setS3Key(s3Key);
-            source.setFileUrl(getPublicUrlFromS3(s3Key));
+            var ingest = ingestFile(file, ak.dev.irc.app.media.enums.MediaSurface.DOCUMENT,
+                    researcherId, "research/" + researchId + "/sources", ResearchMessages.SOURCE_UPLOAD_FAILED);
+            source.setS3Key(ingest.storageKey());
+            source.setFileUrl(ingest.url());
             source.setOriginalFileName(sanitizeFileName(file.getOriginalFilename()));
             source.setMimeType(file.getContentType());
             source.setFileSize(file.getSize());
@@ -1684,22 +1703,22 @@ public class ResearchServiceImpl implements ResearchService {
         String voiceUrl = request.voiceUrl();
         String voiceS3Key = request.voiceS3Key();
 
-        // Upload voice recording if present
+        // Upload voice recording if present (passthrough + accounting)
         if (voice != null && !voice.isEmpty()) {
-            voiceS3Key = s3.upload(voice, "research/comments/voice");
-            voiceUrl = s3.getPublicUrl(voiceS3Key);
+            var v = mediaIngest.ingest(voice,
+                    ak.dev.irc.app.media.enums.MediaSurface.VOICE, userId, "research/comments/voice");
+            voiceS3Key = v.storageKey();
+            voiceUrl = v.url();
         }
 
-        // Upload media file if present
+        // Upload media file if present (image resized / video original+poster)
         if (media != null && !media.isEmpty()) {
-            mediaS3Key = s3.upload(media, "research/comments/media");
-            mediaUrl = s3.getPublicUrl(mediaS3Key);
-            String contentType = media.getContentType();
-            if (contentType != null && contentType.startsWith("video")) {
-                mediaType = "VIDEO";
-            } else {
-                mediaType = "IMAGE";
-            }
+            var m = mediaIngest.ingest(media,
+                    ak.dev.irc.app.media.enums.MediaSurface.RESEARCH_COMMENT, userId, "research/comments/media");
+            mediaS3Key = m.storageKey();
+            mediaUrl = m.url();
+            if (mediaThumbnailUrl == null) mediaThumbnailUrl = m.thumbnailUrl();
+            mediaType = m.kind() == ak.dev.irc.app.media.enums.MediaKind.VIDEO ? "VIDEO" : "IMAGE";
         }
 
         // Build a new request with the uploaded URLs and S3 keys
@@ -2904,10 +2923,17 @@ public class ResearchServiceImpl implements ResearchService {
         return originalFilename.replaceAll("[^a-zA-Z0-9._\\-]", "_");
     }
 
-    private String uploadFileToS3(MultipartFile file, String prefix, String errorCode) {
-        try { return s3.upload(file, prefix); }
-        catch (MaxUploadSizeExceededException e) {
+    /** Media upload with research error mapping — bytes go through the ingest
+     *  pipeline (validation/resize/EXIF-strip/accounting). */
+    private ak.dev.irc.app.media.dto.IngestResult ingestFile(
+            MultipartFile file, ak.dev.irc.app.media.enums.MediaSurface surface,
+            UUID ownerId, String legacyPrefix, String errorCode) {
+        try {
+            return mediaIngest.ingest(file, surface, ownerId, legacyPrefix);
+        } catch (MaxUploadSizeExceededException e) {
             throw new BadRequestException(ResearchMessages.FILE_TOO_LARGE_MSG, ResearchMessages.FILE_TOO_LARGE);
+        } catch (AppException e) {
+            throw e;   // pipeline validation (type/size/duration/quota) is already a structured error
         } catch (Exception e) {
             throw new AppException(ResearchMessages.UPLOAD_TO_STORAGE_FAILED_MSG,
                     HttpStatus.SERVICE_UNAVAILABLE, errorCode);
@@ -2961,13 +2987,6 @@ public class ResearchServiceImpl implements ResearchService {
         });
     }
 
-    private String getPublicUrlFromS3(String s3Key) {
-        try { return s3.getPublicUrl(s3Key); }
-        catch (Exception e) {
-            throw new AppException(ResearchMessages.URL_GENERATION_ERROR_FILE_MSG,
-                    HttpStatus.INTERNAL_SERVER_ERROR, ResearchMessages.URL_GENERATION_ERROR);
-        }
-    }
 
     private MediaType resolveMediaType(String mimeType) {
         if (mimeType == null) return MediaType.OTHER;

@@ -35,6 +35,10 @@ public class PostByIdEntity {
     @Column("share_link")    private String  shareLink;
     @Column("media_urls")    private List<String> mediaUrls;
     @Column("media_types")   private List<String> mediaTypes;
+    /** media_assets ids, index-aligned with media_urls; "" for legacy entries. */
+    @Column("media_ids")     private List<String> mediaIds;
+    /** Server-generated poster frame (JPEG) for the first VIDEO media; null otherwise. */
+    @Column("thumbnail_url") private String  thumbnailUrl;
     @Column("created_at")    private Instant createdAt;
     @Column("updated_at")    private Instant updatedAt;
 }

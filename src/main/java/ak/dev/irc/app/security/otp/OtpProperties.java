@@ -30,6 +30,12 @@ public class OtpProperties {
      */
     private String pepper = "";
 
+    /**
+     * Transport for the code: {@code email} (default), {@code sms} or
+     * {@code log}. See {@code OtpDeliveryService}.
+     */
+    private String delivery = "email";
+
     /** Resends allowed per number per hour. */
     private int resendPerNumberPerHour = 3;
 

@@ -20,7 +20,7 @@ in [safety-reports.md](safety-reports.md); media-pipeline failures in
 | Story / highlight / poll moderation | Research retraction, QnA close/archive → [research-qna.md](../content/research-qna.md) |
 | Reel moderation (posts + reel-specific fan-out) | Channel-post & live-stream moderation → [chat-channels-live.md](../communication/chat-channels-live.md) |
 | **Sound library approval queue** (the full flow, spec'd here) | Trending manipulation controls → [search-feed-trending.md](../platform/search-feed-trending.md) |
-| Platform-level keyword blocklist (per-user exists; global proposed) | Per-user muted words UX → [../settings/privacy.md](../../settings/privacy.md) |
+| Platform-level keyword blocklist (per-user exists; global proposed) | Per-user muted words UX → [../settings/privacy.md](../../../docs/settings/privacy.md) |
 | Bulk actions, moderation analytics | Log Explorer → [logs-audit.md](../platform/logs-audit.md) |
 
 **Ground truth on moderation state (verified against source):**
@@ -69,7 +69,7 @@ severity, reportCount, firstSeen, lastSeen, status, assignee`):
 > **nobody but its author has seen yet**, and deciding it publishes or buries
 > rather than takes down. It also needs a row shape this one does not have —
 > per-label scores, the threshold band that applied, the model version.
-> Full detail: [../moderation/](../../moderation/README.md).
+> Full detail: [../moderation/](../../../docs/moderation/README.md).
 
 Widgets on this view:
 
@@ -188,7 +188,7 @@ The real flow today, end to end:
 > effect on the next request with no retrain, and it is still the right tool for
 > a slur that starts trending right now. The **slow** lever — the toxicity
 > classifier and its training set — generalises instead of matching strings, and
-> is documented in [../moderation/admin-guide.md](../../moderation/admin-guide.md).
+> is documented in [../moderation/admin-guide.md](../../../docs/moderation/admin-guide.md).
 > Enforcement moved inside `ContentModerationService`, which screens the deny-list
 > per field *before* calling the model (a hard hit means the model is never called
 > at all), so the behaviour below is unchanged but now covers edit paths and every
@@ -196,7 +196,7 @@ The real flow today, end to end:
 
 | Layer | Status | Detail |
 |-------|--------|--------|
-| Per-user muted words | **[EXISTS]** (data+CRUD) / **UNENFORCED** | `HiddenKeyword` (`hidden_keywords`: `keyword_display`, `keyword_normalized` unique per user), CRUD at `GET/POST /api/v1/settings/privacy/keywords`, `DELETE /keywords/{id}` — see [../settings/privacy.md](../../settings/privacy.md). Entity javadoc claims feed/notification enforcement, but **zero references exist outside settings/privacy** — feed assembly and fan-out never consult it |
+| Per-user muted words | **[EXISTS]** (data+CRUD) / **UNENFORCED** | `HiddenKeyword` (`hidden_keywords`: `keyword_display`, `keyword_normalized` unique per user), CRUD at `GET/POST /api/v1/settings/privacy/keywords`, `DELETE /keywords/{id}` — see [../settings/privacy.md](../../../docs/settings/privacy.md). Entity javadoc claims feed/notification enforcement, but **zero references exist outside settings/privacy** — feed assembly and fan-out never consult it |
 | `KeywordNormalizer` | **[EXISTS]** and excellent | NFKC + strip combining marks (Arabic tashkeel, tatweel) + case-fold + **Arabic/Kurdish variant unification** (ی→ي, ى→ي, ک→ك, ة→ه, أ/إ/آ→ا) + whitespace collapse; `matchesAny` contains-scan over normalized keywords |
 | Platform blocklist | **[PLANNED]** | New PG table `platform_keywords (id, keyword_display, keyword_normalized UNIQUE, severity FLAG\|BLOCK, scopes, added_by, note, created_at)` reusing the **same `KeywordNormalizer`** so Arabic/Kurdish variants can't dodge it. Normalized set cached in Redis, refreshed on mutation. Enforcement hooks at content-create paths (post/comment/story-caption/reel-caption text): `BLOCK` → reject at create with a policy error; `FLAG` → content publishes but a queue item is emitted (§2.1). Chat messages are **out of scope** (content-privacy boundary — [chat-channels-live.md](../communication/chat-channels-live.md)) |
 | Manager UI | **[PLANNED]** | CRUD table with severity + scope chips; **test box** ("paste text, see which keywords match after normalization"); per-keyword 7d hit sparkline |
@@ -319,7 +319,7 @@ reads — see [analytics-kpis.md](../platform/analytics-kpis.md). Honest sourcin
 - **Irreversibility is explicit in the UI**: comments (hard delete + reply
   subtree) and stories (TTL data) cannot be restored. Evidence snapshot is a
   *precondition* the endpoint enforces, not a UI courtesy; step-up auth
-  (`stepup:{userId}`, [../settings/auth-sessions.md](../../settings/auth-sessions.md))
+  (`stepup:{userId}`, [../settings/auth-sessions.md](../../../docs/settings/auth-sessions.md))
   required.
 - **Content-privacy boundary**: this section renders posts/comments/stories/
   reels/sounds — public-plane content. It must never render chat messages,

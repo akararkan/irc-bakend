@@ -70,6 +70,7 @@ public class AuthServiceImpl implements AuthService {
     private final ak.dev.irc.app.security.twofa.service.RecoveryCodeService recoveryCodeService;
     private final ak.dev.irc.app.security.twofa.service.MfaChallengeStore mfaChallengeStore;
     private final ak.dev.irc.app.security.twofa.TwoFaProperties twoFaProperties;
+    private final ak.dev.irc.app.security.email.EmailVerificationService emailVerificationService;
 
     // ══════════════════════════════════════════════════════════════════════════
     //  REGISTER
@@ -91,6 +92,17 @@ public class AuthServiceImpl implements AuthService {
                         true, false, "User registered"));
 
         log.info("User registered — id={}, email='{}'", user.getId(), user.getEmail());
+
+        // Send the verification code straight away, so a new account arrives with
+        // one already in the inbox instead of needing a second trip through
+        // Settings. Best-effort by design: a mail or rate-limit failure must not
+        // fail a registration that has already succeeded — the user can always
+        // resend from Settings → Security.
+        try {
+            emailVerificationService.requestVerification(user.getId(), null);
+        } catch (RuntimeException ex) {
+            log.warn("[REGISTER] verification code not sent for id={}: {}", user.getId(), ex.getMessage());
+        }
 
         return issueTokenPair(user, response);
     }

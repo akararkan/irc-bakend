@@ -73,6 +73,18 @@ public class UserProfile extends BaseAuditEntity {
     @Column(name = "cover_image_s3_key", columnDefinition = "TEXT")
     private String coverImageS3Key;
 
+    /** media_assets id when the avatar went through the ingest pipeline; null for legacy uploads. */
+    @Column(name = "avatar_media_id")
+    private java.util.UUID avatarMediaId;
+
+    /** 150px square micro-thumb of the avatar (pipeline uploads only). */
+    @Column(name = "avatar_thumb_url", columnDefinition = "TEXT")
+    private String avatarThumbUrl;
+
+    /** media_assets id when the cover went through the ingest pipeline; null for legacy uploads. */
+    @Column(name = "cover_media_id")
+    private java.util.UUID coverMediaId;
+
     // ── Academic / institutional ──────────────────────────────────────────────
 
     @Column(name = "academic_title", length = 150)

@@ -67,6 +67,30 @@ DEFAULT_VALIDATION_FRACTION = float(os.environ.get("TRAIN_VALIDATION_FRACTION", 
 MIN_EXAMPLES = int(os.environ.get("TRAIN_MIN_EXAMPLES", "20"))
 DECISION_THRESHOLD = float(os.environ.get("EVAL_THRESHOLD", "0.5"))
 
+FREEZE_EMBEDDINGS = os.environ.get("TRAIN_FREEZE_EMBEDDINGS", "true").lower() == "true"
+"""Freeze the token embedding matrix. On a multilingual checkpoint this is the
+difference between training and being OOM-killed: xlm-roberta-base carries a
+250k-token vocabulary, so its embeddings are 192M of its 278M parameters, and
+an unfrozen matrix costs a dense ~768MB gradient plus two AdamW moments of the
+same size on every single step. Fine-tuning a *classifier* has no business
+rewriting a pretrained multilingual vocabulary anyway — the encoder layers and
+the head are what adapt."""
+
+TORCH_THREADS = int(os.environ.get("TORCH_THREADS", "0"))
+"""0 = let torch decide. Set it when the container is sharing a host with the
+application and must not saturate every core."""
+
+POS_WEIGHT_CAP = float(os.environ.get("TRAIN_POS_WEIGHT_CAP", "10"))
+"""Per-label positive weighting for the BCE loss, capped here. The six labels
+are wildly imbalanced — `threat` and `identity_hate` are low single-digit
+percentages of any real corpus — and unweighted BCE correctly concludes that
+never firing a rare label is the loss-minimising strategy, reporting a clean
+F1 of exactly 0.000 for it. Weighting the positives makes the rare labels cost
+something. 0 disables it."""
+
+if TORCH_THREADS > 0:
+    torch.set_num_threads(TORCH_THREADS)
+
 MODEL_ROOT.mkdir(parents=True, exist_ok=True)
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -178,6 +202,45 @@ class LabeledDataset(Dataset):
         item = {key: torch.tensor(value[idx]) for key, value in self.encodings.items()}
         item["labels"] = torch.tensor(self.labels[idx], dtype=torch.float)
         return item
+
+
+class WeightedTrainer(Trainer):
+    """Trainer whose loss knows the labels are imbalanced.
+
+    `problem_type="multi_label_classification"` gives plain unweighted
+    `BCEWithLogitsLoss`. On this corpus that lets four of the six labels
+    collapse to "always 0" — a genuinely optimal solution to the loss, and a
+    useless classifier. Supplying `pos_weight` prices a missed positive higher
+    than a missed negative, per label.
+    """
+
+    def __init__(self, *args, pos_weight=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pos_weight = pos_weight
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        weight = self._pos_weight
+        if weight is not None:
+            weight = weight.to(outputs.logits.device)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            outputs.logits, labels, pos_weight=weight
+        )
+        return (loss, outputs) if return_outputs else loss
+
+
+def _pos_weight(matrix: np.ndarray) -> Optional[torch.Tensor]:
+    """neg/pos per label, clamped to [1, POS_WEIGHT_CAP]. A label with no
+    positives at all gets weight 1 — there is nothing to up-weight."""
+    if POS_WEIGHT_CAP <= 0:
+        return None
+    positives = matrix.sum(axis=0)
+    negatives = len(matrix) - positives
+    ratio = np.divide(negatives, np.maximum(positives, 1.0))
+    ratio = np.clip(ratio, 1.0, POS_WEIGHT_CAP)
+    ratio[positives == 0] = 1.0
+    return torch.tensor(ratio, dtype=torch.float)
 
 
 def _fetch_examples(req: TrainRequest) -> List[TrainingExample]:
@@ -394,6 +457,20 @@ def _run_job(job: Job, req: TrainRequest) -> None:
                 ignore_mismatched_sizes=True,
             )
 
+            if FREEZE_EMBEDDINGS:
+                frozen = 0
+                for name, parameter in model.named_parameters():
+                    # Word/position/type embeddings only — never the encoder
+                    # layers or the head, which are what actually adapt.
+                    if ".embeddings." in name:
+                        parameter.requires_grad = False
+                        frozen += parameter.numel()
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                log.info(
+                    "job %s — froze %.1fM embedding params, %.1fM trainable",
+                    job.id, frozen / 1e6, trainable / 1e6,
+                )
+
             def encode(indices: List[int]):
                 return tokenizer(
                     [texts[i] for i in indices],
@@ -415,7 +492,13 @@ def _run_job(job: Job, req: TrainRequest) -> None:
                 report_to=[],
                 use_cpu=not torch.cuda.is_available(),
             )
-            Trainer(model=model, args=args, train_dataset=train_ds).train()
+            pos_weight = _pos_weight(matrix[train_idx])
+            if pos_weight is not None:
+                log.info("job %s — pos_weight %s", job.id,
+                         {label: round(float(pos_weight[i]), 2)
+                          for i, label in enumerate(LABELS)})
+            WeightedTrainer(model=model, args=args, train_dataset=train_ds,
+                            pos_weight=pos_weight).train()
 
             job.status = "evaluating"
             if val_idx:

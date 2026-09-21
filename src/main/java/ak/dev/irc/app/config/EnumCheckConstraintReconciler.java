@@ -48,13 +48,20 @@ public class EnumCheckConstraintReconciler {
      *  when live-stream recording learned to record in takes. */
     private static final List<String[]> STALE_ENUM_CHECKS = List.<String[]>of(
             new String[]{"live_streams", "live_streams_recording_status_check"},
+            // media_assets.type gained DOCUMENT when the ingest facade learned
+            // to account for research/QnA attachments and sources.
+            new String[]{"media_assets", "media_assets_type_check"},
             // Role enum widened with the staff tiers (MODERATOR/SUPPORT/ANALYST)
             // — the pre-widening CHECK constraint would reject the new values.
             new String[]{"users", "users_role_check"},
             // Announcement Status gained SCHEDULED/CANCELLED with the scheduler.
             new String[]{"platform_announcements", "platform_announcements_status_check"},
             // TrainingExampleSource gained ADMIN_IMPORT with the CSV bulk import.
-            new String[]{"moderation_training_examples", "moderation_training_examples_source_check"}
+            new String[]{"moderation_training_examples", "moderation_training_examples_source_check"},
+            // OtpPurpose gained EMAIL_VERIFY when email verification shipped.
+            new String[]{"otp_challenges", "otp_challenges_purpose_check"},
+            // ModeratedEntityType gained MEDIA_IMAGE with NSFW image moderation.
+            new String[]{"moderation_cases", "moderation_cases_entity_type_check"}
     );
 
     /** table.constraint → outcome of the last startup run (ops report). */

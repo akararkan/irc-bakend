@@ -18,7 +18,7 @@ Wire-level request/response JSON: [../api/](../api/README.md).
 | Cassandra-backed lists (audit, sounds queue, content posts) | Keyset: `cursor` (ISO-8601 date-time of the last row) + `pageSize` → plain array | Infinite scroll / "Load more": pass the last row's `createdAt` as the next `cursor`. No total counts exist — don't render "page X of Y". |
 
 Responses are **raw DTOs / `Page<DTO>` — no success envelope**. Only errors
-are enveloped ([../errors/error-handling.md](../../errors/error-handling.md)).
+are enveloped ([../errors/error-handling.md](../../../docs/errors/error-handling.md)).
 
 ### 5.2 Time & filters
 

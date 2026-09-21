@@ -174,10 +174,12 @@ spring:
         debug: false
 
   # ── File Upload ────────────────────────────────────────────────────────────────
+  # Servlet cap must clear media.limits.video-max-bytes (512MB) or Tomcat rejects
+  # 500–512MB files before MediaIngestService can produce a proper error.
   servlet:
     multipart:
-      max-file-size: 500MB
-      max-request-size: 500MB
+      max-file-size: 520MB
+      max-request-size: 560MB
 
   web:
     resources:
@@ -203,7 +205,7 @@ irc:
     # Reading spring.mail.username here (instead of MAIL_USERNAME directly)
     # means the YAML default chain is honoured even when the env var is unset.
     from-address: ${MAIL_FROM:${spring.mail.username:no-reply@irc.example.com}}
-    from-name: ${MAIL_FROM_NAME:IRC Platform}
+    from-name: ${MAIL_FROM_NAME:Hikmah Web}
     enabled: ${MAIL_ENABLED:true}
     # Throttle window — same (recipient, groupKey) won't be emailed twice
     # inside this duration. Mirrors the in-app aggregation window.
@@ -258,6 +260,12 @@ app:
     code-length: 6
     ttl-seconds: ${OTP_TTL_SECONDS:300}
     max-attempts: 5
+    # How the code reaches the user (OtpDeliveryService):
+    #   email — mail it to the account address (default; no SMS gateway needed)
+    #   sms   — hand to SmsSender; today that is LoggingSmsSender, i.e. log only,
+    #           until a real gateway (Twilio, a local Iraqi aggregator) is wired
+    #   log   — never send; the code appears in the application log only
+    delivery: ${OTP_DELIVERY:email}
     pepper: ${OTP_PEPPER:}
     resend-per-number-per-hour: 3
     resend-per-ip-per-hour: 10
@@ -269,6 +277,28 @@ app:
   # Resolved-settings cache TTL (Settings §22.2).
   settings:
     cache-ttl-seconds: ${SETTINGS_CACHE_TTL_SECONDS:600}
+
+  # Mobile push delivery (Settings §8). `provider` selects the PushSender bean:
+  #   expo — the router (PushSenderRouter): EXPO rows (ExponentPushToken[...])
+  #          go to Expo's push API, FCM rows (native device tokens) direct to
+  #          the FCM HTTP v1 API; tokens the provider reports as unregistered
+  #          are pruned (token hygiene)
+  #   noop — log the intended delivery only (no credentials needed)
+  # Delivery is gated per event by the §8 preference matrix + DND window;
+  # incoming-call rings push directly on the calls_v1 channel.
+  push:
+    provider: ${PUSH_PROVIDER:expo}
+    expo:
+      url: https://exp.host/--/api/v2/push/send
+      timeout-ms: 10000
+    fcm:
+      # Firebase service-account JSON for the FCM HTTP v1 API — download from
+      # Firebase console → Project settings → Service accounts → Generate new
+      # private key, and drop the file at this path (backend repo root by
+      # default). Missing file: one startup warning, FCM sends treated as
+      # delivered (no pruning); adding the file requires a restart.
+      service-account-file: ${FCM_SERVICE_ACCOUNT_FILE:${user.dir}/firebase-service-account.json}
+      timeout-ms: 10000
 
   # About / app-config + policy versions (Settings §19). minSupportedVersion +
   # forceUpdate drive the client version gate served at GET /api/v1/app/config.
@@ -291,9 +321,13 @@ app:
   # to the auth hook — so only the host can publish. See MediaAuthController +
   # LiveStreamService.authorizeMediaAccess.
   streaming:
-    webrtc-base: ${STREAM_WEBRTC_BASE:http://localhost:8889}
-    ingest-base: ${STREAM_INGEST_BASE:rtmp://localhost:1935}
-    playback-base: ${STREAM_PLAYBACK_BASE:http://localhost:8888}
+    # LAN IP, not localhost: these origins are handed VERBATIM to clients, and
+    # on a phone `localhost` is the phone. Keep in sync with the machine's
+    # address (same value as EXPO_PUBLIC_API_BASE_URL in the mobile app's .env
+    # and webrtcAdditionalHosts in mediamtx.yml); env vars still override.
+    webrtc-base: ${STREAM_WEBRTC_BASE:http://192.168.33.19:8889}
+    ingest-base: ${STREAM_INGEST_BASE:rtmp://192.168.33.19:1935}
+    playback-base: ${STREAM_PLAYBACK_BASE:http://192.168.33.19:8888}
     # Shared secret in the media-auth hook URL — MediaMTX (mediamtx.yml
     # authHTTPAddress) MUST use the same value. Keep the two in sync; override
     # both in production.
@@ -339,6 +373,14 @@ app:
     # immediately. Never in production. (Same spirit as app.security.permit-all.)
     enabled: ${MODERATION_ENABLED:true}
 
+    # Fields with fewer words than this skip the model — the blocklist alone
+    # screens them. Below ~4 words the v4 classifier emits noise, not signal
+    # (unseen English words collapse to one constant score vector; short benign
+    # Kurdish greetings score 0.99+, indistinguishable from real slurs), so
+    # scoring them only manufactures false holds. Runtime override:
+    # moderation_settings key `text.min-scorable-words`. 0 scores everything.
+    min-scorable-words: ${MODERATION_MIN_SCORABLE_WORDS:4}
+
     inference:
       base-url: ${MODERATION_INFERENCE_URL:http://localhost:8000}
       # Must match INFERENCE_API_KEY on the container. Empty = no auth header,
@@ -379,6 +421,43 @@ app:
     live-chat:
       buffer-ms: 3000
       borderline-hidden: true
+
+    # ── NSFW image screening (docs/moderation/image-moderation.md) ──────────
+    # The scorer runs as a third Python container (docker-compose.yml):
+    #   image-inference :8002 — Falconsai/nsfw_image_detection, image → nsfw/normal
+    # Decided INLINE at ingest, before a byte is stored — no quarantine phase.
+    # Thresholds/fallback/enabled are bootstrap defaults; image.* keys in
+    # moderation_settings override them at runtime from the admin dashboard.
+    # The master MODERATION_ENABLED switch above also kills this gate.
+    image:
+      enabled: ${IMAGE_MODERATION_ENABLED:true}
+      base-url: ${IMAGE_MODERATION_URL:http://localhost:8002}
+      # Must match IMAGE_INFERENCE_API_KEY on the container. Empty = no header.
+      api-key: ${IMAGE_MODERATION_API_KEY:}
+      connect-timeout-ms: 1000
+      # Payloads are pre-scaled to ≤512px thumbnails before sending (see
+      # prescale-max-dim), so a tight ceiling is safe and fails fast.
+      timeout-ms: ${IMAGE_MODERATION_TIMEOUT_MS:4000}
+      max-attempts: 2
+      retry-backoff-ms: 200
+      circuit-window: 20
+      circuit-failure-rate-percent: 50
+      circuit-open-ms: 10000
+      # nsfw ≥ block  → upload rejected (MEDIA_NSFW_BLOCKED), nothing stored.
+      # review ≤ nsfw < block → publishes, filed into the admin review queue.
+      # PRECISION-TUNED: the target is pornographic/explicit content ONLY.
+      # Real explicit content scores ≥0.95 on this checkpoint almost always;
+      # portraits/beach/skin-adjacent benign images must pass without review.
+      block-threshold: 0.90
+      review-threshold: 0.80
+      # Longest edge sent to the scorer; the model works at 224×224 anyway.
+      # The dominant upload-latency lever. 0 = send originals verbatim.
+      prescale-max-dim: 512
+      # Scorer down: FAIL_OPEN_SHADOW publishes + queues for review (default —
+      # an outage must not take image uploads down); FAIL_CLOSED refuses with 503.
+      fallback: FAIL_OPEN_SHADOW
+      # Also screen the extracted poster frame of every uploaded video.
+      score-video-posters: true
 
     # SLA sweeper cadence (§5.6). Runs independently of the queue so held content
     # still reaches a defined outcome when the broker or the model is down.
@@ -486,14 +565,52 @@ media:
     avif-quality: 55
     webp-quality: 80
     jpeg-quality: 82             # progressive JPEG (pure-JDK guaranteed output)
+    thumb-edge: 320              # list/feed thumbnail long edge
+    square-thumb-edge: 150       # square-crop micro thumb
+    webp-enabled: true           # still WebP via ffmpeg; auto-off when the binary is absent
+    webp-timeout-seconds: 10
+    sync-budget-ms: 8000         # in-request budget; WebP rungs skipped past it
+    max-concurrent: 3            # concurrent in-request image decodes (heap guard)
   video:
     max-short-edge: 1080         # HARD CAP — do not raise
     max-fps: 30
     crf: 23
     audio-bitrate: 128k
+    # H.264 rendition ladder (ascending; rungs larger than the source are skipped —
+    # never upscale). Remove the block to fall back to identical code defaults.
+    ladder:
+      - { label: 360p,  short-edge: 360,  crf: 26, maxrate: 800k,  bufsize: 1600k,  audio-bitrate: 96k }
+      - { label: 480p,  short-edge: 480,  crf: 25, maxrate: 1400k, bufsize: 2800k,  audio-bitrate: 128k }
+      - { label: 720p,  short-edge: 720,  crf: 23, maxrate: 2800k, bufsize: 5600k,  audio-bitrate: 128k }
+      - { label: 1080p, short-edge: 1080, crf: 23, maxrate: 5000k, bufsize: 10000k, audio-bitrate: 128k }
+    duration-caps:
+      video-clip-seconds: 90     # reels/clips
+      film-seconds: 600
+      video-seconds: 600         # generic uploaded video (posts/chat default type)
+    # CMAF/fMP4 HLS packaging of the ladder (a -c copy remux — cheap). Only
+    # active alongside media.processing.enabled=true; ships as the `hls`
+    # variant key + FeedItemResponse.videoHlsUrl without touching MP4 URLs.
+    hls:
+      enabled: ${MEDIA_HLS_ENABLED:true}
+      segment-seconds: 4         # fMP4 segment target (snaps to keyframe grid)
+      keyframe-seconds: 2        # forced IDR grid — aligns rungs for seamless ABR
+      start-label: 480p          # master playlist leads with this rung (fast start)
+    # Short animated WebP hover/scrub preview (soft-fail, like the poster).
+    preview:
+      enabled: ${MEDIA_PREVIEW_ENABLED:true}
+      seconds: 2.5
+      fps: 12
+      edge: 240
+      quality: 45
+    # Days after READY before a video's stored original is purged (object+row).
+    # Requires an HLS master to exist. -1 disables (default) — flipping this on
+    # is an explicit storage-cost decision (original is the dedup/re-ladder source).
+    purge-ladder-original-after-days: ${MEDIA_PURGE_LADDER_ORIGINAL_DAYS:-1}
   limits:
     image-max-bytes: 26214400    # 25 MB
     video-max-bytes: 536870912   # 512 MB
+    audio-max-bytes: 20971520    # 20 MB (voice notes, sound uploads)
+    file-max-bytes: 104857600    # 100 MB (documents/attachments)
     max-input-megapixels: 100    # decompression-bomb guard (rejected before decode)
   processing:
     # Video transcode uses these binaries when enabled=true; otherwise the
@@ -502,6 +619,38 @@ media:
     ffprobe-bin: ${MEDIA_FFPROBE_BIN:ffprobe}
     enabled: ${MEDIA_TRANSCODE_ENABLED:false}
     timeout-seconds: 600
+    worker-concurrency: 1        # media.process Rabbit consumers (ffmpeg saturates cores)
+    max-attempts: 3              # sweeper republish ceiling → FAILED_PROCESSING after
+    stuck-after-seconds: 3600    # PROCESSING staleness before the sweeper intervenes
+    sweeper-initial-delay-ms: 30000
+    sweeper-interval-ms: 60000
+  ingest:
+    # Kill switch — false restores pre-pipeline behavior on every multipart surface
+    # (original bytes straight to storage, no asset rows, no variants).
+    enabled: ${MEDIA_INGEST_ENABLED:true}
+    # false → video ingest stores original+poster only (no ladder queue publish).
+    video-async-enabled: ${MEDIA_VIDEO_ASYNC_ENABLED:true}
+    # Per-role daily quotas (media_quotas) on all ingest surfaces. The demo seeder
+    # can trip the USER 100/day default — disable here or raise via the admin API.
+    quota-enabled: ${MEDIA_INGEST_QUOTA_ENABLED:true}
+  # ── Read-side delivery policy (all defaults = today's behavior) ──────────────
+  serving:
+    # CDN base URL; empty → proxy-relative URLs exactly as before. With a base:
+    #   PROXY  mode — CDN origin is this app  → {base}/api/v1/media/{key}
+    #   BUCKET mode — CDN fronts the bucket   → {base}/{key}   (no app hop)
+    cdn-base: ${MEDIA_CDN_BASE:}
+    cdn-mode: ${MEDIA_CDN_MODE:PROXY}
+    # HMAC-signed playback URLs — enforcement is scoped to protected-prefixes,
+    # so flipping this on never breaks existing public URLs.
+    signed-urls-enabled: ${MEDIA_SIGNED_URLS_ENABLED:false}
+    signing-secret: ${MEDIA_SIGNING_SECRET:}
+    signed-url-ttl-seconds: 3600
+    # protected-prefixes:
+    #   - media-private/
+  # Optional per-surface cap overrides (code defaults live on MediaSurface), e.g.:
+  # surfaces:
+  #   story:      { max-duration-seconds: 60 }
+  #   chat-media: { max-duration-seconds: 180, max-count: 10 }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

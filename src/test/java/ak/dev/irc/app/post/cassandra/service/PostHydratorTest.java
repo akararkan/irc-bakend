@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 class PostHydratorTest {
 
     @Mock private UserRepository userRepo;
+    @Mock private ak.dev.irc.app.media.service.MediaVariantHydrator variantHydrator;
     @Mock private PostByIdRepository postByIdRepo;
     @Mock private PostCounterRepository postCounterRepo;
     @Mock private CommentCounterRepository commentCounterRepo;
@@ -45,7 +46,7 @@ class PostHydratorTest {
     @BeforeEach
     void setUp() {
         hydrator = new PostHydrator(
-                userRepo, postByIdRepo, postCounterRepo, commentCounterRepo,
+                userRepo, variantHydrator, postByIdRepo, postCounterRepo, commentCounterRepo,
                 reactionRepo, commentReactionRepo, saveRepo);
     }
 

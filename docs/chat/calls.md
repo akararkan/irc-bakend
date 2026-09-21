@@ -64,6 +64,13 @@ Base path: `/api/v1`. Auth: `Authorization: Bearer <accessToken>`.
 3. Media connects peer-to-peer. Either side `POST /calls/{id}/end` to hang up.
 
 ## Notes
+- **Signal fast path:** `POST /calls/{id}/signal` is served from an in-memory
+  route cache (`CallSignalRouteCache`) — no transaction, no DB round-trip on the
+  steady state. The cache is primed when the call is created (participant sets
+  are immutable after initiate), invalidated when the call ends, and TTL-bounded
+  (30s) so a call ended on another instance can only be relayed into briefly. A
+  cache miss (restart, TTL expiry, or an invalid frame) falls back to the single
+  combined validity query and re-primes.
 - A blocked DM cannot be called (`403 BLOCKED`).
 - Media transport (STUN/TURN/SFU) is deployment configuration, outside this API.
 - **Missed-call bell:** when a call ends `MISSED` (rang out) or `CANCELLED`

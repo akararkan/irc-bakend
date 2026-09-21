@@ -7,7 +7,7 @@ and the step-up arming endpoint of `SecurityController` (`POST /api/v1/security/
 [users-roles.md](../users/directory-and-roles.md) and [user-administration.md](../users/administration.md); dashboard
 integration in [frontend-dashboard-guide.md](../frontend/README.md). Every error arrives in
 the canonical `ApiErrorResponse` envelope — see
-[frontend-error-handling.md](../../errors/frontend-error-handling.md).
+[frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 
 ## Conventions
 
@@ -1223,4 +1223,4 @@ The password branch is tried first when both are present.
 - `USER_NOT_FOUND` — 404 — authenticated user row missing (edge case).
 - bare `400 Bad Request` with **no envelope body** — both fields blank/absent, or the TOTP `code` did
   not verify (including 2FA not enabled). One of the known envelope escapes — see
-  [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+  [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).

@@ -24,4 +24,10 @@ public interface HiddenMessageRepository extends JpaRepository<HiddenMessage, Hi
     @Modifying
     @Query("DELETE FROM HiddenMessage h WHERE h.messageId = :mid")
     int deleteByMessageId(@Param("mid") long messageId);
+
+    /** Whole-conversation purge (ConversationPurgeJob) only — same seq-scan
+     *  trade-off as MessageStarRepository. */
+    @Modifying
+    @Query("DELETE FROM HiddenMessage h WHERE h.conversationId = :cid")
+    int deleteAllForConversation(@Param("cid") UUID conversationId);
 }

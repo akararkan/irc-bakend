@@ -269,7 +269,14 @@ Everything below arrives inside the standard error envelope with the listed stat
 
 | HTTP | Code | Message | Trigger | Surface |
 |---|---|---|---|---|
-| 400 | `OTP_INVALID` | Invalid or expired verification code. | no open challenge, challenge expired, max attempts reached, or code mismatch (single deliberately-vague message) | POST /api/v1/auth/otp/verify, POST /api/v1/security/phone/verify |
+| 400 | `OTP_INVALID` | Invalid or expired verification code. | no open challenge, challenge expired, max attempts reached, or code mismatch (single deliberately-vague message) | POST /api/v1/auth/otp/verify, POST /api/v1/security/phone/verify, POST /api/v1/security/email/verify |
+
+### 1.26b `security/email (EmailVerificationService)`
+
+| HTTP | Code | Message | Trigger | Surface |
+|---|---|---|---|---|
+| 409 | `EMAIL_ALREADY_VERIFIED` | Your email address is already verified. | either endpoint called once `users.email_verified_at` is set (the flag is one-way) | POST /api/v1/security/email/request, /email/verify |
+| 400 | `EMAIL_MISSING` | There is no email address on this account to verify. | account carries no address (phone-primary seam) | POST /api/v1/security/email/request, /email/verify |
 
 ### 1.27 `security/otp (RateLimiter)`
 
@@ -277,6 +284,8 @@ Everything below arrives inside the standard error envelope with the listed stat
 |---|---|---|---|---|
 | 429 | `RATE_LIMITED` | Too many otp:ip requests — please slow down | OTP resends per client IP exceed props.resendPerIpPerHour in 1h | POST /api/v1/auth/otp/request, POST /api/v1/security/phone/request |
 | 429 | `RATE_LIMITED` | Too many otp:num requests — please slow down | OTP resends per phone number exceed props.resendPerNumberPerHour in 1h; details carry action + retryAfterSeconds | POST /api/v1/auth/otp/request, POST /api/v1/security/phone/request |
+| 429 | `RATE_LIMITED` | Too many otp:email requests — please slow down | email-verification sends per **account** exceed props.resendPerNumberPerHour in 1h | POST /api/v1/security/email/request |
+| 429 | `RATE_LIMITED` | Too many otp:email:ip requests — please slow down | email-verification sends per client IP exceed props.resendPerIpPerHour in 1h | POST /api/v1/security/email/request |
 
 ### 1.28 `security/phone (PhoneNormalizer)`
 

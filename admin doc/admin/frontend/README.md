@@ -41,9 +41,9 @@ each page table links its section doc.
 | [../foundation/architecture.md](../foundation/architecture.md) | The access model behind the roles |
 | [../foundation/api-blueprint.md](../foundation/api-blueprint.md) | Endpoint catalog with danger levels |
 | [../foundation/api-controllers.md](../foundation/api-controllers.md) | Controller-level reference |
-| [../../errors/error-handling.md](../../errors/error-handling.md) | The error envelope |
-| [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md) | Client-side error handling — codes, retries, step-up, SSE |
-| [../../errors/user-facing-messages.md](../../errors/user-facing-messages.md) | Every message string the backend can return |
+| [../../errors/error-handling.md](../../../docs/errors/error-handling.md) | The error envelope |
+| [../../errors/frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md) | Client-side error handling — codes, retries, step-up, SSE |
+| [../../errors/user-facing-messages.md](../../../docs/errors/user-facing-messages.md) | Every message string the backend can return |
 | [../known-issues.md](../known-issues.md) | Freshness overlay — what's stale or knowingly open |
 
 ---

@@ -5,7 +5,7 @@ API reference for the two content-plane admin controllers:
 - `app/admin/content/AdminContentController` — base path **`/api/v1/admin/content`** (posts, comments, stories, highlight pins, platform keyword blocklist)
 - `app/admin/moderation/AdminModerationController` — base path **`/api/v1/admin/moderation`** (unified moderation queue, bulk actions)
 
-Concepts, policy, and data-flow: [../content-moderation.md](../trust-safety/content-moderation.md). Dashboard integration (auth, step-up UX, retry flow): [../frontend-dashboard-guide.md](../frontend/README.md). Error envelope (`ApiErrorResponse`, `errorCode` branching): [../../errors/frontend-error-handling.md](../../errors/frontend-error-handling.md).
+Concepts, policy, and data-flow: [../content-moderation.md](../trust-safety/content-moderation.md). Dashboard integration (auth, step-up UX, retry flow): [../frontend-dashboard-guide.md](../frontend/README.md). Error envelope (`ApiErrorResponse`, `errorCode` branching): [../../errors/frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 
 **Conventions (apply to every endpoint below)**
 
@@ -71,7 +71,7 @@ Author-scoped keyset browse of posts/reels/etc., newest first.
 **Errors**
 
 - `AUTHOR_SCOPE_REQUIRED` — 400 — `authorId` missing ("posts are partitioned by author"). In practice Spring also rejects the absent required param with a 400 before the service check.
-- Envelope shape: [frontend-error-handling.md](../../errors/frontend-error-handling.md).
+- Envelope shape: [frontend-error-handling.md](../../../docs/errors/frontend-error-handling.md).
 
 ### GET /api/v1/admin/content/posts/{postId}
 

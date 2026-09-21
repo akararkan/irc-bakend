@@ -187,7 +187,7 @@ required.
 | Read APIs | `GET /api/v1/admin/users/{userId}/settings-audit` (`AdminUserController`, A3) + the `settings` store in the Log Explorer (A1) [EXISTS (built 2026-08)] |
 | Retention | 2 y — enforced by `RetentionSweepJob` (nightly, built 2026-08) |
 | Dashboard views | Per-user "settings changes" tab in user inspection; Log Explorer store `settings` [EXISTS (built 2026-08) — backend] |
-| Why separate from §3.1 | Captures the `(key, old, new)` diff shape the generic request log cannot (bodies are never read); see [../settings/README.md](../../settings/README.md) §22.3 |
+| Why separate from §3.1 | Captures the `(key, old, new)` diff shape the generic request log cannot (bodies are never read); see [../settings/README.md](../../../docs/settings/README.md) §22.3 |
 
 ### 3.4 `login_events` — login history [EXISTS — writer wired (built 2026-08)]
 

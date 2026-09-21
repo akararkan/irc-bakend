@@ -53,6 +53,7 @@ public class AdminSoundService {
     private final AdminAuditor adminAuditor;
     private final S3StorageService storageService;
     private final VideoMetadataExtractor videoMetadataExtractor;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
 
     private static final String AUDIO_PREFIX = "sounds/audio";
     private static final String COVER_PREFIX = "sounds/cover";
@@ -142,19 +143,25 @@ public class AdminSoundService {
         Integer duration = durationSeconds != null ? durationSeconds
                 : videoMetadataExtractor.extractDurationSeconds(file);
 
-        String audioKey = storageService.upload(file, AUDIO_PREFIX);
-        String coverKey = null;
+        UUID adminId = ak.dev.irc.app.security.SecurityUtils.requireCurrentUserId();
+        var audio = mediaIngest.ingest(file,
+                ak.dev.irc.app.media.enums.MediaSurface.SOUND_AUDIO, adminId, AUDIO_PREFIX);
+        ak.dev.irc.app.media.dto.IngestResult coverResult = null;
         if (hasCover) {
             try {
-                coverKey = storageService.upload(cover, COVER_PREFIX);
+                coverResult = mediaIngest.ingest(cover,
+                        ak.dev.irc.app.media.enums.MediaSurface.SOUND_COVER, adminId, COVER_PREFIX);
             } catch (RuntimeException e) {
-                try { storageService.delete(audioKey); } catch (Exception ignored) { }
+                mediaIngest.rollback(audio);
                 throw e;
             }
         }
+        if (duration == null && audio.durationSeconds() != null) {
+            duration = audio.durationSeconds();
+        }
         return create(title, artistName,
-                storageService.getPublicUrl(audioKey),
-                coverKey == null ? null : storageService.getPublicUrl(coverKey),
+                audio.url(),
+                coverResult == null ? null : coverResult.url(),
                 duration, category, official);
     }
 

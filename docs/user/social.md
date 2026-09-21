@@ -67,7 +67,7 @@ call:
 | `isBlocking` | boolean | Caller blocks the target |
 | `isRestricting` | boolean | Caller restricts the target |
 | `isBlockedByThem` | boolean | Target blocks the caller |
-| `followerCount` / `followingCount` | long | **Target's** live counts from `user_follows` |
+| `followerCount` / `followingCount` | long | **Target's** live counts from `user_follows`, excluding soft-deleted accounts — the same rule the follower/following lists apply, so these never exceed the lists' `totalElements` |
 
 ---
 

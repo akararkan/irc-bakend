@@ -15,6 +15,7 @@ import ak.dev.irc.app.post.cassandra.repository.PostByIdRepository;
 import ak.dev.irc.app.post.cassandra.repository.PostCounterRepository;
 import ak.dev.irc.app.post.cassandra.repository.ReactionByPostRepository;
 import ak.dev.irc.app.post.cassandra.repository.SaveLookupRepository;
+import ak.dev.irc.app.media.service.MediaVariantHydrator;
 import ak.dev.irc.app.post.dto.AuthorSummary;
 import ak.dev.irc.app.post.dto.CommentResponse;
 import ak.dev.irc.app.post.dto.FeedItemResponse;
@@ -50,6 +51,7 @@ import java.util.function.Function;
 public class PostHydrator {
 
     private final UserRepository             userRepo;
+    private final ak.dev.irc.app.media.service.MediaVariantHydrator variantHydrator;
     private final PostByIdRepository         postByIdRepo;
     private final PostCounterRepository      postCounterRepo;
     private final CommentCounterRepository   commentCounterRepo;
@@ -108,6 +110,7 @@ public class PostHydrator {
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postsById.keySet());
         // savedByMe is always true here (we're hydrating the viewer's own saves)
         // but we still need bulk authors/counters and to honor savedAt/collection.
+        Map<UUID, MediaVariantHydrator.VariantSet> variantSets = bulkLoadVariants(postsById.values());
 
         List<PostResponse> out = new ArrayList<>(rows.size());
         for (SaveByUserEntity r : rows) {
@@ -120,9 +123,81 @@ public class PostHydrator {
                     true,
                     r.getCreatedAt(),
                     r.getCollectionName(),
-                    authors.get(p.getAuthorId())));
+                    authors.get(p.getAuthorId()),
+                    variantSets));
         }
         return out;
+    }
+
+    /** Best playable URL for a reel: processed rung when READY, stored original otherwise. */
+    private static String reelVideoUrl(PostByIdEntity live,
+                                       Map<UUID, MediaVariantHydrator.VariantSet> variantSets) {
+        String stored = firstVideoUrl(live.getMediaUrls(), live.getMediaTypes());
+        MediaVariantHydrator.VariantSet set = firstVideoVariantSet(live, variantSets);
+        if (set != null && set.bestVideoUrl() != null) return set.bestVideoUrl();
+        return stored;
+    }
+
+    /** Adaptive (HLS master) URL for a reel's video, once packaged. */
+    private static String reelHlsUrl(PostByIdEntity live,
+                                     Map<UUID, MediaVariantHydrator.VariantSet> variantSets) {
+        MediaVariantHydrator.VariantSet set = firstVideoVariantSet(live, variantSets);
+        return set == null ? null : set.hlsUrl();
+    }
+
+    /** The processed variant set of the post's first VIDEO entry, or null. */
+    private static MediaVariantHydrator.VariantSet firstVideoVariantSet(
+            PostByIdEntity live, Map<UUID, MediaVariantHydrator.VariantSet> variantSets) {
+        List<String> types = live.getMediaTypes();
+        List<String> ids = live.getMediaIds();
+        if (types == null || ids == null || variantSets == null) return null;
+        for (int i = 0; i < types.size() && i < ids.size(); i++) {
+            if (!"VIDEO".equalsIgnoreCase(types.get(i))) continue;
+            UUID assetId = MediaVariantHydrator.parseAssetId(ids.get(i));
+            MediaVariantHydrator.VariantSet set = assetId == null ? null : variantSets.get(assetId);
+            return set == null || set.processing() ? null : set;
+            // reels have one video; first VIDEO entry decides
+        }
+        return null;
+    }
+
+    /** One variant load for a whole page of posts (same discipline as bulkLoadCounters). */
+    private Map<UUID, MediaVariantHydrator.VariantSet> bulkLoadVariants(
+            java.util.Collection<PostByIdEntity> posts) {
+        Set<UUID> assetIds = new java.util.HashSet<>();
+        for (PostByIdEntity p : posts) {
+            assetIds.addAll(MediaVariantHydrator.collect(p.getMediaIds()));
+        }
+        return variantHydrator.load(assetIds);
+    }
+
+    /**
+     * Variant load scoped to REEL rows only — feed pages hydrate variants just
+     * for playable video items (rung upgrade + HLS), so an all-image page
+     * still costs zero extra queries.
+     */
+    private Map<UUID, MediaVariantHydrator.VariantSet> bulkLoadReelVariants(
+            java.util.Collection<PostByIdEntity> posts) {
+        Set<UUID> assetIds = new java.util.HashSet<>();
+        for (PostByIdEntity p : posts) {
+            if (p != null && "REEL".equals(p.getPostType())) {
+                assetIds.addAll(MediaVariantHydrator.collect(p.getMediaIds()));
+            }
+        }
+        return variantHydrator.load(assetIds);
+    }
+
+    /** Feed-path video URL: reels upgrade to the best processed rung. */
+    private static String feedVideoUrl(PostByIdEntity live, String postType,
+                                       Map<UUID, MediaVariantHydrator.VariantSet> reelVariants) {
+        if (!"REEL".equals(postType) || live == null) return liveVideoUrl(live, postType);
+        return reelVideoUrl(live, reelVariants);
+    }
+
+    /** Feed-path HLS URL: null for anything that isn't a packaged reel. */
+    private static String feedHlsUrl(PostByIdEntity live, String postType,
+                                     Map<UUID, MediaVariantHydrator.VariantSet> reelVariants) {
+        return "REEL".equals(postType) && live != null ? reelHlsUrl(live, reelVariants) : null;
     }
 
     // ── feed hydration (bulk) ────────────────────────────────────────────────
@@ -146,6 +221,8 @@ public class PostHydrator {
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = postIds.isEmpty() ? Set.of() : bulkLikedPosts(viewerId, postIds);
         Set<UUID> savedSet = postIds.isEmpty() ? Set.of() : bulkSavedPosts(viewerId, postIds);
+        Map<UUID, MediaVariantHydrator.VariantSet> reelVariants =
+                canonical.isEmpty() ? Map.of() : bulkLoadReelVariants(canonical.values());
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (FeedByUserEntity r : rows) {
@@ -164,7 +241,7 @@ public class PostHydrator {
                         r.getPostType(),
                         livePreview(live, r.getTextPreview()),
                         liveCoverMedia(live, r.getMediaUrl()),
-                        liveVideoUrl(live, r.getPostType()),
+                        feedVideoUrl(live, r.getPostType(), reelVariants),
                         nullSafe(c == null ? null : c.getReactionCount()),
                         nullSafe(c == null ? null : c.getCommentCount()),
                         nullSafe(c == null ? null : c.getViewCount()),
@@ -172,7 +249,8 @@ public class PostHydrator {
                         nullSafe(c == null ? null : c.getShareCount()),
                         likedSet.contains(r.getPostId()),
                         savedSet.contains(r.getPostId()),
-                        r.getCreatedAt()));
+                        r.getCreatedAt())
+                        .withVideoHls(feedHlsUrl(live, r.getPostType(), reelVariants)));
             } else {
                 // RESEARCH / QUESTION row — use the snapshot preview/media,
                 // zero the post counters (real counters live on the entity's
@@ -214,6 +292,8 @@ public class PostHydrator {
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
         Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+        Map<UUID, MediaVariantHydrator.VariantSet> reelVariants =
+                canonical.isEmpty() ? Map.of() : bulkLoadReelVariants(canonical.values());
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (PostByAuthorEntity r : rows) {
@@ -228,7 +308,7 @@ public class PostHydrator {
                     r.getPostType(),
                     livePreview(live, r.getTextPreview()),
                     liveCoverMedia(live, r.getMediaUrl()),
-                    liveVideoUrl(live, r.getPostType()),
+                    feedVideoUrl(live, r.getPostType(), reelVariants),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -236,7 +316,57 @@ public class PostHydrator {
                     nullSafe(c == null ? null : c.getShareCount()),
                     likedSet.contains(r.getPostId()),
                     savedSet.contains(r.getPostId()),
-                    toInstant(r.getCreatedAt())));
+                    toInstant(r.getCreatedAt()))
+                    .withVideoHls(feedHlsUrl(live, r.getPostType(), reelVariants)));
+        }
+        return out;
+    }
+
+    /**
+     * Hydrate bare post ids (the ES discovery pool has no Cassandra feed row
+     * to start from) into feed items, input order preserved. Everything comes
+     * off the canonical {@code posts_by_id} row — preview, cover, counters,
+     * viewer flags — with the same bulk discipline and the same servability
+     * gate as every other list path. Ids whose post is gone are dropped.
+     */
+    @Transactional(readOnly = true)
+    public List<FeedItemResponse> hydrateByIds(List<UUID> postIds) {
+        if (postIds == null || postIds.isEmpty()) return List.of();
+        Set<UUID> idSet = new LinkedHashSet<>(postIds);
+        Map<UUID, PostByIdEntity> canonical = bulkLoadPosts(idSet);
+        if (canonical.isEmpty()) return List.of();
+        Map<UUID, PostCounterEntity> counters = bulkLoadCounters(idSet);
+        Map<UUID, AuthorSummary> authors = bulkLoadAuthors(canonical.values(), PostByIdEntity::getAuthorId);
+        UUID viewerId = currentViewerId();
+        Set<UUID> likedSet = bulkLikedPosts(viewerId, idSet);
+        Set<UUID> savedSet = bulkSavedPosts(viewerId, idSet);
+
+        Map<UUID, MediaVariantHydrator.VariantSet> reelVariants =
+                canonical.isEmpty() ? Map.of() : bulkLoadReelVariants(canonical.values());
+
+        List<FeedItemResponse> out = new ArrayList<>(idSet.size());
+        for (UUID id : idSet) {
+            PostByIdEntity live = canonical.get(id);
+            if (live == null || !isServable(live)) continue;
+            PostCounterEntity c = counters.get(id);
+            out.add(new FeedItemResponse(
+                    id,
+                    live.getAuthorId(),
+                    authors.get(live.getAuthorId()),
+                    "POST",
+                    live.getPostType(),
+                    livePreview(live, null),
+                    liveCoverMedia(live, null),
+                    feedVideoUrl(live, live.getPostType(), reelVariants),
+                    nullSafe(c == null ? null : c.getReactionCount()),
+                    nullSafe(c == null ? null : c.getCommentCount()),
+                    nullSafe(c == null ? null : c.getViewCount()),
+                    nullSafe(c == null ? null : c.getSaveCount()),
+                    nullSafe(c == null ? null : c.getShareCount()),
+                    likedSet.contains(id),
+                    savedSet.contains(id),
+                    live.getCreatedAt())
+                    .withVideoHls(feedHlsUrl(live, live.getPostType(), reelVariants)));
         }
         return out;
     }
@@ -251,6 +381,7 @@ public class PostHydrator {
         UUID viewerId = currentViewerId();
         Set<UUID> likedSet = bulkLikedPosts(viewerId, postIds);
         Set<UUID> savedSet = bulkSavedPosts(viewerId, postIds);
+        Map<UUID, MediaVariantHydrator.VariantSet> variantSets = bulkLoadVariants(canonical.values());
 
         List<FeedItemResponse> out = new ArrayList<>(rows.size());
         for (ReelsByDayEntity r : rows) {
@@ -264,8 +395,14 @@ public class PostHydrator {
                     "POST",
                     "REEL",
                     r.getTextPreview(),
-                    r.getMediaUrl(),
-                    firstVideoUrl(live.getMediaUrls(), live.getMediaTypes()),
+                    // Cover/poster slot: the generated poster frame when one
+                    // exists; the day-bucket snapshot (the playable video URL)
+                    // otherwise — exactly the pre-poster behavior.
+                    live.getThumbnailUrl() != null ? live.getThumbnailUrl() : r.getMediaUrl(),
+                    // Best processed rendition once the ladder lands; the
+                    // stored original until then (no shape change). The HLS
+                    // master rides the additive videoHlsUrl field below.
+                    reelVideoUrl(live, variantSets),
                     nullSafe(c == null ? null : c.getReactionCount()),
                     nullSafe(c == null ? null : c.getCommentCount()),
                     nullSafe(c == null ? null : c.getViewCount()),
@@ -273,7 +410,8 @@ public class PostHydrator {
                     nullSafe(c == null ? null : c.getShareCount()),
                     likedSet.contains(r.getPostId()),
                     savedSet.contains(r.getPostId()),
-                    toInstant(r.getCreatedAt())));
+                    toInstant(r.getCreatedAt()))
+                    .withVideoHls(reelHlsUrl(live, variantSets)));
         }
         return out;
     }
@@ -392,8 +530,10 @@ public class PostHydrator {
                                            boolean savedByMe,
                                            Instant savedAt,
                                            String savedCollectionName) {
+        // Single-post path: one bulk load for this post's own assets.
         return buildPostResponse(p, counters, likedByMe, savedByMe, savedAt, savedCollectionName,
-                                 authorOf(p.getAuthorId()));
+                                 authorOf(p.getAuthorId()),
+                                 variantHydrator.load(MediaVariantHydrator.collect(p.getMediaIds())));
     }
 
     private PostResponse buildPostResponse(PostByIdEntity p,
@@ -402,7 +542,8 @@ public class PostHydrator {
                                            boolean savedByMe,
                                            Instant savedAt,
                                            String savedCollectionName,
-                                           AuthorSummary author) {
+                                           AuthorSummary author,
+                                           Map<UUID, MediaVariantHydrator.VariantSet> variantSets) {
         return new PostResponse(
                 p.getId(),
                 p.getAuthorId(),
@@ -420,6 +561,8 @@ public class PostHydrator {
                 p.getShareLink(),
                 p.getMediaUrls(),
                 p.getMediaTypes(),
+                p.getThumbnailUrl(),
+                buildMedia(p, variantSets),
                 nullSafe(counters == null ? null : counters.getReactionCount()),
                 nullSafe(counters == null ? null : counters.getCommentCount()),
                 nullSafe(counters == null ? null : counters.getViewCount()),
@@ -431,6 +574,45 @@ public class PostHydrator {
                 p.getUpdatedAt(),
                 savedAt,
                 savedCollectionName);
+    }
+
+    /**
+     * Per-item media descriptors, index-aligned with {@code media_urls}. Video
+     * items upgrade their URL to the best processed rendition at read time;
+     * legacy items (no asset id) ship with empty variants.
+     */
+    private static List<ak.dev.irc.app.post.dto.PostMediaDto> buildMedia(
+            PostByIdEntity p, Map<UUID, MediaVariantHydrator.VariantSet> variantSets) {
+        List<String> urls = p.getMediaUrls();
+        if (urls == null || urls.isEmpty()) return null;
+        List<String> types = p.getMediaTypes();
+        List<String> ids = p.getMediaIds();
+        List<ak.dev.irc.app.post.dto.PostMediaDto> out = new ArrayList<>(urls.size());
+        for (int i = 0; i < urls.size(); i++) {
+            String type = types != null && i < types.size() ? types.get(i) : null;
+            UUID assetId = ids != null && i < ids.size()
+                    ? MediaVariantHydrator.parseAssetId(ids.get(i)) : null;
+            MediaVariantHydrator.VariantSet set = assetId == null || variantSets == null
+                    ? null : variantSets.get(assetId);
+            String url = urls.get(i);
+            if (set != null && "VIDEO".equalsIgnoreCase(type) && !set.processing()
+                    && set.bestVideoUrl() != null) {
+                url = set.bestVideoUrl();
+            }
+            out.add(new ak.dev.irc.app.post.dto.PostMediaDto(
+                    url,
+                    type,
+                    set == null ? null
+                            : ak.dev.irc.app.media.dto.MediaVariants.thumbnailUrl(set.variants()),
+                    assetId,
+                    set == null ? Map.of() : set.variants(),
+                    set == null ? null : set.processing(),
+                    set == null ? null : set.width(),
+                    set == null ? null : set.height(),
+                    set == null || set.durationMs() == null ? null : set.durationMs() / 1000,
+                    set == null ? null : set.blurhash()));
+        }
+        return out;
     }
 
     /**
@@ -511,10 +693,21 @@ public class PostHydrator {
         return t.length() > 280 ? t.substring(0, 280) : t;
     }
 
-    /** Freshest cover image (= first non-video media url); falls back to snapshot. */
+    /**
+     * Freshest cover image; falls back to snapshot. When the leading media is a
+     * VIDEO and the server extracted a poster frame at upload time, the poster
+     * is the cover — clients get an image to paint instead of the video file
+     * itself. Image-first posts keep their first URL exactly as before.
+     */
     private static String liveCoverMedia(PostByIdEntity live, String snapshot) {
         if (live == null || live.getMediaUrls() == null || live.getMediaUrls().isEmpty()) return snapshot;
+        if (live.getThumbnailUrl() != null && firstMediaIsVideo(live)) return live.getThumbnailUrl();
         return live.getMediaUrls().get(0);
+    }
+
+    private static boolean firstMediaIsVideo(PostByIdEntity live) {
+        List<String> types = live.getMediaTypes();
+        return types != null && !types.isEmpty() && "VIDEO".equalsIgnoreCase(types.get(0));
     }
 
     /**

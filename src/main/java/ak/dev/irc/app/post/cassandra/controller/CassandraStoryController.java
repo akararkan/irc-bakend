@@ -44,6 +44,7 @@ public class CassandraStoryController {
     private final CloseFriendsService       closeFriendsService;
     private final CassandraStoryPollService pollService;
     private final S3StorageService          storageService;
+    private final ak.dev.irc.app.media.service.MediaIngestService mediaIngest;
     private final ak.dev.irc.app.post.realtime.StoryRealtimeService storyRealtimeService;
     private final ak.dev.irc.app.security.jwt.JwtTokenProvider      jwtTokenProvider;
     /** Per-user write throttling; fail-open if Redis is down. */
@@ -92,18 +93,26 @@ public class CassandraStoryController {
         rateLimiter.checkSocial(user.getId());
 
         String mediaUrl = null;
-        if (media != null && !media.isEmpty()) {
-            mediaUrl = storageService.getPublicUrl(storageService.upload(media, "stories/media"));
-        }
         String thumbnailUrl = null;
-        if (thumbnail != null && !thumbnail.isEmpty()) {
+        String mediaAssetId = null;
+        if (media != null && !media.isEmpty()) {
+            var result = mediaIngest.ingest(media,
+                    ak.dev.irc.app.media.enums.MediaSurface.STORY, user.getId(), "stories/media");
+            mediaUrl = result.url();
+            thumbnailUrl = result.thumbnailUrl();   // server thumb/poster supersedes the client's
+            mediaAssetId = result.assetId() == null ? null : result.assetId().toString();
+        }
+        // Client-supplied thumbnail honored only when the pipeline produced none
+        // (kill-switch mode, or media with no extractable frame) — contract keeps
+        // the part optional either way.
+        if (thumbnailUrl == null && thumbnail != null && !thumbnail.isEmpty()) {
             thumbnailUrl = storageService.getPublicUrl(storageService.upload(thumbnail, "stories/thumb"));
         }
 
         return ResponseEntity.ok(storyService.createStory(
                 user.getId(), storyType, visibility,
                 mediaUrl, thumbnailUrl, textContent,
-                StoryLifetime.fromHours(lifetimeHours)));
+                StoryLifetime.fromHours(lifetimeHours), mediaAssetId));
     }
 
     /**

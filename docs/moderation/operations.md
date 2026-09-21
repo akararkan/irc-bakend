@@ -48,6 +48,20 @@ the checkpoint into the image or mount a pre-populated `HF_HOME`, and set
 `ALLOW_BASE_FALLBACK=false` so a missing artifact fails loudly instead of
 silently serving base weights.
 
+> **The base fallback is English-only.** `unitary/toxic-bert` tokenizes every
+> Arabic-script word to `[UNK]`, so while the container is serving
+> `base:unitary/toxic-bert` no Kurdish or Arabic content is being scored in any
+> meaningful sense — the blocklist is the only live lever for those languages.
+> Falling back is therefore not a benign degraded state on this platform. After
+> promoting a multilingual artifact, pin `MODERATION_MODEL_PATH` to that
+> version directory and recreate the container, or the next restart silently
+> reverts to base. See [multilingual.md](multilingual.md).
+
+`MODERATION_MAX_LENGTH` sets the sequence window for **both** containers
+(inference `MAX_LENGTH`, trainer `TRAIN_MAX_LENGTH`). They must agree. The
+trainer pads every row to it, so raising it costs training time on every step
+whether or not the corpus has long documents in it.
+
 Health:
 
 ```bash

@@ -2,7 +2,7 @@
 
 Status legend: **[EXISTS]** = real today (class / endpoint cited) · **[PARTIAL]** = data layer or primitive exists, surface missing · **[PLANNED]** = proposed for the dashboard, not yet built.
 
-Related: [README.md](../README.md) · [../settings/data-export-deletion.md](../../settings/data-export-deletion.md) · [../settings/README.md](../../settings/README.md) · [../search/README.md](../../search/README.md) · [../user/users.md](../../user/users.md) · [../errors/error-handling.md](../../errors/error-handling.md)
+Related: [README.md](../README.md) · [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md) · [../settings/README.md](../../../docs/settings/README.md) · [../search/README.md](../../../docs/search/README.md) · [../user/users.md](../../../docs/user/users.md) · [../errors/error-handling.md](../../../docs/errors/error-handling.md)
 
 ## 1. Purpose & scope
 
@@ -53,7 +53,7 @@ Identity block: avatar, display name, @username, email, phone (masked by default
 | **Moderation** | Strikes against the user (`user_strikes`, 90-day decay `expires_at`), reports **against** (query `reports` by `target_type=USER, target_id`), reports **filed by** (`reporter_id` index) | **[EXISTS]** (built 2026-08) — admin reader `GET /api/v1/admin/users/{userId}/moderation`; `StrikeService.issueStrike` now fires from the admin strike endpoints and `ReportModerationService` |
 | **Audit trail** | Per-user HTTP audit from Cassandra `audit_log_by_user`: operation, outcome, method+path, status, duration_ms, ip, user_agent, keyset-paged | **[EXISTS]** — `GET /api/v1/admin/audit/users/{userId}` (`audit/controller/AuditLogController`) |
 | **Settings audit** | `settings_audit` rows: setting_key (dotted path e.g. `privacy.bio`, `security.2fa`), old/new value, ip, timestamp | **[EXISTS]** (built 2026-08) — `GET /api/v1/admin/users/{userId}/settings-audit` over `SettingsAuditService.history(userId, pageable)` |
-| **Data lifecycle** | Export jobs (`export_jobs`: status/size/expiry), deletion request state machine, `deleted_accounts` tombstone check | **[EXISTS]** tables (`settings/data/`) + admin reader `GET /api/v1/admin/users/{userId}/data` (built 2026-08) — see [../settings/data-export-deletion.md](../../settings/data-export-deletion.md) |
+| **Data lifecycle** | Export jobs (`export_jobs`: status/size/expiry), deletion request state machine, `deleted_accounts` tombstone check | **[EXISTS]** tables (`settings/data/`) + admin reader `GET /api/v1/admin/users/{userId}/data` (built 2026-08) — see [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md) |
 
 ### 2.4 Growth analytics view (population-level)
 
@@ -201,4 +201,4 @@ Delivery: **[EXISTS]** (built 2026-08) — the `/api/v1/admin/logs` alert rules 
 6. **2FA reset (A9)** — last, after step-up + audit + security-email patterns are proven; highest-risk action in the section.
 7. **Hygiene riders**: apply the missing 180d TTL `ALTER TABLE` on both Cassandra audit tables; add last-admin demotion guard to `AdminUserService.changeRole`; fix the phantom `SUPER_ADMIN` in `AuditLogController`'s `@PreAuthorize` while touching admin auth.
 
-Cross-section dependencies: moderation section owns report-triage/strike-issuance (this section only *reads* `reports`/`user_strikes`); data-lifecycle deep view (export ZIP handling, purge internals) belongs to [../settings/data-export-deletion.md](../../settings/data-export-deletion.md); alerts delivery depends on the ops section standing up actuator/metrics exposure.
+Cross-section dependencies: moderation section owns report-triage/strike-issuance (this section only *reads* `reports`/`user_strikes`); data-lifecycle deep view (export ZIP handling, purge internals) belongs to [../settings/data-export-deletion.md](../../../docs/settings/data-export-deletion.md); alerts delivery depends on the ops section standing up actuator/metrics exposure.

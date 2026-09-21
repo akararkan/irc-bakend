@@ -125,6 +125,40 @@ follows nobody → `[]`.
 
 ---
 
+## 2b. `GET /api/v1/posts/reels/following/new-count` — unwatched reels from followed accounts
+
+```
+GET /api/v1/posts/reels/following/new-count
+```
+
+**Auth:** required in practice — anonymous callers get `200` +
+`{ "count": 0, "since": null, "postIds": [] }` (not a 401).
+
+The number behind the **Following** tab's badge: reels from followed accounts posted in
+the **last 7 days** that the viewer has **no watch session** for
+(`POST /{postId}/reels/view`, §12.1 — a plain post view does not count as watched).
+
+**How it's built.** The same per-author fan-in as §2 (5 reels per author, newest first,
+top 100), filtered to the 7-day window, hydrated the way the feed is (removed / held reels
+are not counted), minus the post ids of the viewer's 500 most recent watch sessions.
+
+**Response `200`**
+
+```json
+{ "count": 3, "since": "2026-09-01T09:12:00Z", "postIds": ["…", "…", "…"] }
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `count` | int | Unwatched following reels within the window (`postIds.length`) |
+| `since` | Instant | Freshness floor the count was taken against (`now − 7d`) |
+| `postIds` | UUID[] | The counted reels, newest first — a client strikes one the moment it is watched instead of asking again |
+
+> Cheap enough for a badge (one fan-in + one watch-slice read) but not free — fetch it when
+> the reels surface opens, not on every navigation.
+
+---
+
 ## 3. `GET /api/v1/posts/reels/for-you` — engagement-ranked feed
 
 ```

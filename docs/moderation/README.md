@@ -12,12 +12,16 @@ all; the uncertain middle waits for a moderator.
 | [MODERATION_ROADMAP.md](MODERATION_ROADMAP.md) | The design. Sections are cited throughout the code as `§n`. | Everyone |
 | [architecture.md](architecture.md) | How the design is actually implemented here — packages, tables, call paths, what deviates and why. | Backend |
 | [admin-guide.md](admin-guide.md) | Running the review queue, tuning thresholds, teaching the model, promoting a version. | Moderators / admins |
+| [multilingual.md](multilingual.md) | **Kurdish and Arabic.** Why the base model had to change, how to compose a corpus that does not just learn "non-Latin = toxic", and the substring rule that decides whether a term may go on the blocklist at all. | ML / admins |
 | [api.md](api.md) | Every admin endpoint, request/response shapes, error codes. | Frontend / integrators |
 | [frontend/](frontend/README.md) | **Client & support contract** — response shapes, held-content UI states, notification copy, support answers. | Frontend / product / support |
 | [user-guide/](user-guide/README.md) | **Plain-language guide** to what happens when you post, comment, message, etc. — per content type, no jargon or JSON. | End users / help-center / onboarding |
 | [operations.md](operations.md) | Running the containers, health checks, failure modes, runbook. | Ops |
-| [model-inference/](../model-inference/) | The scoring container. | ML / ops |
+| [image-moderation.md](image-moderation.md) | **NSFW image screening** — the inline gate on every upload surface: model, thresholds, review-queue integration, fallback, ops. | Everyone |
+| [image-moderation-frontend.md](image-moderation-frontend.md) | What the image gate means for the web (ika) and mobile (ika-mobile-app) clients — error codes, UX rules, sample handlers. | Frontend |
+| [model-inference/](../model-inference/) | The text scoring container. | ML / ops |
 | [model-training/](../model-training/) | The fine-tuning container. | ML / ops |
+| [model-image-inference/](../model-image-inference/) | The image scoring container (:8002). | ML / ops |
 
 ## The shape of it in one picture
 

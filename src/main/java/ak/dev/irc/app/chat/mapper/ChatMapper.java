@@ -275,9 +275,21 @@ public class ChatMapper {
      *  share read receipts. */
     public ConversationResponse toConversation(Conversation c, ConversationMember me, ParticipantSummary peer,
                                                Long peerLastRead, Long peerLastDelivered) {
+        return toConversation(c, me, peer, peerLastRead, peerLastDelivered, true);
+    }
+
+    /** {@code perViewer=false} builds the same actor-perspective DTO minus the
+     *  cleared-view redaction below — for CONVERSATION_UPDATED payloads that fan
+     *  out to EVERY member: one member's clear floor must not blank the row in
+     *  everyone else's inbox. */
+    public ConversationResponse toConversation(Conversation c, ConversationMember me, ParticipantSummary peer,
+                                               Long peerLastRead, Long peerLastDelivered, boolean perViewer) {
         boolean marked = me != null && me.isMarkedUnread();
+        // The clear floor counts as read for the unread signal — clearing is NOT
+        // reading (the marker itself stays put; see ConversationService.advanceClearFloor),
+        // but nothing at or below the floor can be unread for this member either.
         boolean hasUnread = marked || (me != null && c.getLastMessageId() != null
-                && c.getLastMessageId() > me.getLastReadMessageId());
+                && c.getLastMessageId() > Math.max(me.getLastReadMessageId(), me.getClearedBeforeMessageId()));
         // A group's title/description is held for automated moderation exactly like
         // a message body. Unlike a channel — whose audience only ever arrives through
         // discovery, and so is fully gated by de-indexing — a group's members are
@@ -286,6 +298,15 @@ public class ChatMapper {
         // this list is where they would read it. Its author still sees their own text.
         boolean redactInfo = ChatModeration.held(c.getModerationStatus())
                 && (me == null || !me.isOwner());
+        // The caller cleared ("clear chat" / "delete for me") at or past the
+        // newest message, so their view of the thread is empty — the row must not
+        // quote a preview they can no longer open. `lastMessageAt` survives on
+        // purpose: it only drives sort order, and blanking it would teleport a
+        // freshly-cleared row to the bottom of the inbox. Per-viewer reads only —
+        // never a broadcast payload (see the perViewer overload above).
+        boolean clearedView = perViewer && me != null && me.getClearedBeforeMessageId() > 0
+                && (c.getLastMessageId() == null
+                    || c.getLastMessageId() <= me.getClearedBeforeMessageId());
         return new ConversationResponse(
                 c.getId(),
                 c.getType().name(),
@@ -295,9 +316,9 @@ public class ChatMapper {
                 resolveUrl(null, c.getAvatarKey()),
                 c.getOwnerId(),
                 c.getMemberCount(),
-                c.getLastMessageId(),
+                clearedView ? null : c.getLastMessageId(),
                 c.getLastMessageAt(),
-                c.getLastMessagePreview(),
+                clearedView ? null : c.getLastMessagePreview(),
                 c.getGroupSettings(),
                 c.getDisappearingSeconds(),
                 me != null ? me.getRole().name() : null,

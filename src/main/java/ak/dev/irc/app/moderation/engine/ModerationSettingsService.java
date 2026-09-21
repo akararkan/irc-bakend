@@ -55,6 +55,13 @@ public class ModerationSettingsService {
     public static final String KEY_LIVECHAT_BORDERLINE_HIDDEN = "livechat.borderline.hidden";
     public static final String KEY_RETRAIN_MAX_F1_DROP = "retrain.max-f1-drop";
     public static final String KEY_RETRAIN_REQUIRE_HUMAN_PROMOTE = "retrain.require-human-promote";
+    public static final String KEY_MIN_SCORABLE_WORDS = "text.min-scorable-words";
+    // NSFW image screening (docs/moderation/image-moderation.md)
+    public static final String KEY_IMAGE_ENABLED = "image.enabled";
+    public static final String KEY_IMAGE_BLOCK = "image.threshold.block";
+    public static final String KEY_IMAGE_REVIEW = "image.threshold.review";
+    public static final String KEY_IMAGE_FALLBACK = "image.fallback";
+    public static final String KEY_IMAGE_VIDEO_POSTERS = "image.video-posters";
 
     private final ModerationSettingRepository repository;
     private final ModerationProperties properties;
@@ -148,6 +155,50 @@ public class ModerationSettingsService {
         return bool(KEY_RETRAIN_REQUIRE_HUMAN_PROMOTE, properties.getRetrain().isRequireHumanPromote());
     }
 
+    /**
+     * Fields shorter than this many words skip the model (blocklist still
+     * screens them) — below the floor the classifier provably emits noise, not
+     * signal. See {@code ModerationProperties#minScorableWords}.
+     */
+    public int minScorableWords() {
+        return (int) Math.max(0, readLong(snapshot(), KEY_MIN_SCORABLE_WORDS,
+                properties.getMinScorableWords()));
+    }
+
+    // ── image screening (docs/moderation/image-moderation.md) ───────────
+
+    /** Master switch AND the image switch; both must be on, like {@link #enabled}. */
+    public boolean imageEnabled() {
+        return globallyEnabled() && bool(KEY_IMAGE_ENABLED, properties.getImage().isEnabled());
+    }
+
+    /** At/above this nsfw score, the upload is rejected outright. */
+    public double imageBlockThreshold() {
+        return clamp(readDouble(snapshot(), KEY_IMAGE_BLOCK,
+                properties.getImage().getBlockThreshold()));
+    }
+
+    /** At/above this (below block), the image publishes but queues for review. */
+    public double imageReviewThreshold() {
+        // Never above the block threshold, or the review band would be empty
+        // and a mistuned pair would silently disable the queue.
+        return Math.min(imageBlockThreshold(),
+                clamp(readDouble(snapshot(), KEY_IMAGE_REVIEW,
+                        properties.getImage().getReviewThreshold())));
+    }
+
+    /** What happens to an upload when the image scorer is unreachable. */
+    public FallbackPolicy imageFallback() {
+        FallbackPolicy bootstrap = parsePolicy(properties.getImage().getFallback(),
+                FallbackPolicy.FAIL_OPEN_SHADOW);
+        return parsePolicy(snapshot().get(KEY_IMAGE_FALLBACK), bootstrap);
+    }
+
+    /** Whether video poster frames are screened too. */
+    public boolean imageVideoPosters() {
+        return bool(KEY_IMAGE_VIDEO_POSTERS, properties.getImage().isScoreVideoPosters());
+    }
+
     // ── admin writes ────────────────────────────────────────────────────
 
     /** Every stored override, for the settings screen. */
@@ -166,9 +217,21 @@ public class ModerationSettingsService {
         out.put(KEY_LIVECHAT_BORDERLINE_HIDDEN, liveChatBorderlineHidden());
         out.put(KEY_RETRAIN_MAX_F1_DROP, retrainMaxF1Drop());
         out.put(KEY_RETRAIN_REQUIRE_HUMAN_PROMOTE, retrainRequiresHumanPromote());
+        out.put(KEY_MIN_SCORABLE_WORDS, minScorableWords());
+
+        Map<String, Object> image = new LinkedHashMap<>();
+        image.put("enabled", imageEnabled());
+        image.put("blockThreshold", imageBlockThreshold());
+        image.put("reviewThreshold", imageReviewThreshold());
+        image.put("fallback", imageFallback().name());
+        image.put("videoPosters", imageVideoPosters());
+        out.put("image", image);
 
         Map<String, Object> byType = new LinkedHashMap<>();
         for (ModeratedEntityType type : ModeratedEntityType.values()) {
+            // MEDIA_IMAGE is not part of the text pipeline — its knobs are the
+            // image.* block above, not per-label bands.
+            if (type == ModeratedEntityType.MEDIA_IMAGE) continue;
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("enabled", enabled(type));
             entry.put("holdMs", holdCeiling(type).toMillis());

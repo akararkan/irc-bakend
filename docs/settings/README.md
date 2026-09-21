@@ -35,7 +35,8 @@ the IRC codebase (base package `ak.dev.irc.app`):
 | 2 | Registration, phone + OTP, sessions | [B] | [auth-sessions.md](auth-sessions.md) |
 | 2/12 | **2FA, authenticator apps, recovery, OTP** — full reference | [B] | [two-factor-authentication.md](two-factor-authentication.md) |
 | 3 | Contact synchronization | [B] | [discovery-contacts.md](discovery-contacts.md) |
-| 4 | Account settings, sensitive changes | [B] | [auth-sessions.md](auth-sessions.md) |
+| 4 | Account settings, sensitive changes, email verification | [B] | [auth-sessions.md](auth-sessions.md) |
+| 2/4 | Phone + email verification — **frontend integration** | [C] | [phone-verification-frontend.md](phone-verification-frontend.md) · [email-verification-frontend.md](email-verification-frontend.md) |
 | 5 | Privacy — Visibility Resolver | [B] | [privacy.md](privacy.md) |
 | 6 | Search & discovery, QR | [B] | [discovery-contacts.md](discovery-contacts.md) |
 | 7 | Online presence | [B] | [presence.md](presence.md) |

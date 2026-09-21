@@ -316,7 +316,7 @@ Add a third client against any FastAPI/uvicorn service and it needs the same pin
 ### Known open edges
 
 Each of these is a deliberate stopping point, not an oversight. They are also
-tracked in [`../admin/known-issues.md`](../admin/known-issues.md) rows Q–T.
+tracked in [`../admin/known-issues.md`](../../admin%20doc/admin/known-issues.md) rows Q–T.
 
 **Platform-wide**
 

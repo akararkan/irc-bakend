@@ -49,7 +49,9 @@ public class ReelFeedService {
 
     private static final int MAX_FOLLOWING_FANIN = 500;  // max parallel Cassandra reads
     private static final int PER_AUTHOR_LIMIT    = 5;    // reels fetched per followed author
-    private static final int FOR_YOU_DAYS        = 3;    // day buckets to scan
+    private static final int FOR_YOU_DAYS        = 3;    // preferred (fresh) day buckets to scan
+    private static final int FOR_YOU_MAX_DAYS    = 30;   // fallback walk when the fresh buckets are dry
+    private static final int FOR_YOU_FLOOR       = 24;   // stop the fallback walk once the pool has this many
     private static final int FOR_YOU_POOL        = 200;  // candidate pool before ranking
 
     private final PostByAuthorRepository postByAuthorRepo;
@@ -147,11 +149,25 @@ public class ReelFeedService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Candidate pool: the last {@value #FOR_YOU_DAYS} day buckets at full
+     * quota — and when those come back nearly empty (a young network, or a
+     * quiet week), the walk CONTINUES into older buckets, up to
+     * {@value #FOR_YOU_MAX_DAYS} days, until the pool holds at least
+     * {@value #FOR_YOU_FLOOR} reels. Without the fallback every reel surface
+     * ("For you", the explore rail, the home-feed reel slice) read "no reels"
+     * the moment the corpus was older than three days, while the reels tab
+     * plainly had content. The 48-hour recency decay in {@link #score} still
+     * orders fresh above stale — the fallback only widens the POOL, not the
+     * ranking. Each bucket read is one cheap partition first-page; the walk
+     * stops the moment the floor is met.
+     */
     private List<ReelsByDayEntity> collectCandidates() {
         List<ReelsByDayEntity> all = new ArrayList<>(FOR_YOU_POOL);
         LocalDate today  = LocalDate.now(ZoneOffset.UTC);
         int       perDay = Math.max(1, FOR_YOU_POOL / FOR_YOU_DAYS);
-        for (int d = 0; d < FOR_YOU_DAYS && all.size() < FOR_YOU_POOL; d++) {
+        for (int d = 0; d < FOR_YOU_MAX_DAYS && all.size() < FOR_YOU_POOL; d++) {
+            if (d >= FOR_YOU_DAYS && all.size() >= FOR_YOU_FLOOR) break;
             String bucket = today.minusDays(d).toString();
             try {
                 all.addAll(reelsByDayRepo.firstPage(bucket, perDay));
