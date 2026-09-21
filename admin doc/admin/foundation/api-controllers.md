@@ -223,8 +223,8 @@ appended the **C/E/S/X** method families
   `UserInvite`/`TokenType.INVITE`), reusing the `provision(...)` extracted from
   `AuthServiceImpl.register`.
 - **Edit/credentials** — `PATCH /{id}` (identity), `POST /{id}/password/reset`,
-  `POST /{id}/2fa/reset`, `POST /{id}/email/verify` (the **only** intended writer of
-  `email_verified_at`).
+  `POST /{id}/2fa/reset`, `POST /{id}/email/verify` (the support override for
+  `email_verified_at`; users clear it themselves via `POST /security/email/verify`).
 - **State/sessions/lifecycle** — `POST /{id}/{disable|enable|lock|unlock}`,
   `POST /{id}/sessions/revoke-all`, `DELETE /{id}/sessions/{sid}`,
   `POST /{id}/deletion/{request|cancel}` (reuse `AccountLifecycleService`),

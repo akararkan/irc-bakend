@@ -409,6 +409,11 @@ Constraint: `reason` ≤ 500.
 ### POST /api/v1/admin/users/{userId}/email/verify
 Mark the user's email as verified (stamps `emailVerifiedAt` if not already set). Idempotent.
 
+> Support override, not the primary path. Users verify their own address with
+> `POST /api/v1/security/email/request` + `/email/verify` (emailed 6-digit code);
+> reach for this only when they genuinely cannot receive it. Both write the same
+> flag, which also clears two security-checkup items worth 50 points.
+
 **Access**: `ADMIN`. Step-up: **yes**.
 
 **Params**: `userId` — path, UUID, required.

@@ -111,9 +111,11 @@ codebase were channel/conversation-scoped (`ConversationInvite`); the 2026-08 bu
 added one (`POST /api/v1/admin/users/invite` + resend/revoke). To offer
 "invite by email," add a `UserInvite` (email, opaque token, role, expiry, used-at)
 and an endpoint `POST /api/v1/admin/users/invite` that emails a set-password link;
-consuming it creates the account pre-verified with the invited role. This reuses the
-existing `VerificationToken` *shape* (which is otherwise dead, §7) — one honest
-option is to revive `TokenType` with an `INVITE` value rather than add a parallel table.
+consuming it creates the account pre-verified with the invited role.
+
+> The old `VerificationToken` / `TokenType` scaffolding this section used to point
+> at was **deleted 2026-08-11** — it had zero injectors and had been superseded by
+> the OTP engine. A `UserInvite` table is now a clean addition, not a revival.
 
 ---
 
@@ -190,7 +192,7 @@ Cassandra row via the audit path (§7).
 | E2 | Edit identity | `PATCH /api/v1/admin/users/{id}` `{fname?,lname?,username?,email?}` | **high** (email = recovery vector) | **yes** | `ADMIN_USER_EDIT` |
 | E3 | Reset password | `POST /api/v1/admin/users/{id}/password/reset` `{temp?|sendLink}` | **critical** | **yes** | `ADMIN_PASSWORD_RESET` (+ revoke-all + notify) |
 | E4 | Reset 2FA | `POST /api/v1/admin/users/{id}/2fa/reset` `{reason}` | **critical** (takeover vector) | **yes, mandatory** | `ADMIN_2FA_RESET` (+ security email, bypass DND) |
-| E5 | Mark email verified | `POST /api/v1/admin/users/{id}/email/verify` | medium | yes | `ADMIN_EMAIL_VERIFY` — only intended writer of `email_verified_at` |
+| E5 | Mark email verified | `POST /api/v1/admin/users/{id}/email/verify` | medium | yes | `ADMIN_EMAIL_VERIFY` — support override for `email_verified_at`. Prefer asking the user to self-verify (`POST /security/email/request` + `/verify`); use this only when they cannot receive the code |
 
 ### 6.3 State / sessions / lifecycle
 
@@ -287,10 +289,13 @@ No badge column, no verification queue. The role picker **is** the badge control
 
 1. **Fixed 2026-08:** registration now grants `Role.USER` (still `isEnabled = true`,
    email unverified) — the historical hardcoded-`SCHOLAR` default is gone.
-2. **Email verification is dead scaffolding** — `VerificationToken` + repo exist with
-   `TokenType.EMAIL_VERIFY`, but **zero injectors**; `email_verified_at` is never set;
-   `isEmailVerified()` always returns false. Admin E5 (or reviving the token flow) is
-   the only path to a verified email.
+2. **Fixed 2026-08-11:** users verify their own address via
+   `POST /api/v1/security/email/{request,verify}` (emailed 6-digit code,
+   `EmailVerificationService`), and registration sends one automatically. Admin E5
+   is now the support override, not the only path. The dead `VerificationToken` /
+   `TokenType` link-token scaffolding was deleted in the same pass — its
+   `verification_tokens` table survives in existing databases (`ddl-auto: update`
+   never drops) and can be dropped by hand.
 3. **`is_account_non_locked` is now mutated by the admin lock/unlock endpoints
    (2026-08)**; `is_account_non_expired` / `is_credentials_non_expired` remain dead
    columns — never mutated. `isEnabled()` still doesn't consult the lock flag.
